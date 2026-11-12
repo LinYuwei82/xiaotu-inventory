@@ -1486,6 +1486,13 @@ int main() {
             "其他出库应保存业务类型");
       check(documents.list("OTH_IN").front().biz_category == "GIFT",
             "其他入库列表应返回业务类型");
+
+      xiaotu::ReportFilter category_filter;
+      category_filter.biz_category = "USAGE";
+      const auto usage_ledger = reports.stock_ledger(category_filter);
+      check(usage_ledger.size() == 1 && usage_ledger.front().biz_category == "USAGE" &&
+                usage_ledger.front().biz_type == "OTH_OUT",
+            "库存流水应能按业务类型筛选");
       other_balance = balance_of(other.id);
       check(other_balance.qty == q(3) && other_balance.amount_cents == 750,
             "其他出库应按移动加权平均结转成本，忽略录入单价");

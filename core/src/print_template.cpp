@@ -52,14 +52,15 @@ std::vector<PrintTargetDef> make_targets() {
       column_def("amount_cents", "金额（元）", "MONEY", "RIGHT", 22),
   };
   const std::vector<PrintColumnDef> ledger_columns = {
-      column_def("biz_time", "时间", "TEXT", "LEFT", 30),
-      column_def("biz_type", "类型", "TEXT", "CENTER", 14),
-      column_def("doc_no", "单据号", "TEXT", "LEFT", 28),
-      column_def("item_code", "商品编码", "TEXT", "LEFT", 24),
-      column_def("item_name", "商品名称", "TEXT", "LEFT", 38),
-      column_def("warehouse_name", "仓库", "TEXT", "LEFT", 24),
+      column_def("biz_time", "时间", "TEXT", "LEFT", 28),
+      column_def("biz_type", "类型", "TEXT", "CENTER", 12),
+      column_def("biz_category", "业务类型", "TEXT", "CENTER", 12),
+      column_def("doc_no", "单据号", "TEXT", "LEFT", 26),
+      column_def("item_code", "商品编码", "TEXT", "LEFT", 22),
+      column_def("item_name", "商品名称", "TEXT", "LEFT", 34),
+      column_def("warehouse_name", "仓库", "TEXT", "LEFT", 20),
       column_def("qty", "数量", "INTEGER", "RIGHT", 12),
-      column_def("amount_cents", "金额（元）", "MONEY", "RIGHT", 20),
+      column_def("amount_cents", "金额（元）", "MONEY", "RIGHT", 18),
   };
   const std::vector<PrintColumnDef> flow_columns = {
       column_def("item_code", "商品编码", "TEXT", "LEFT", 24),

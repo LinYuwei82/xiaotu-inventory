@@ -145,6 +145,7 @@ nlohmann::json ledger_to_json(const LedgerDetailRow& row) {
       {"id", row.id},
       {"biz_time", row.biz_time},
       {"biz_type", row.biz_type},
+      {"biz_category", row.biz_category},
       {"doc_no", row.doc_no},
       {"item_code", row.item_code},
       {"item_name", row.item_name},
@@ -323,6 +324,15 @@ std::string qty_direction_label(int direction) {
   return "全部";
 }
 
+std::string biz_category_label(const std::string& category) {
+  if (category == "GIFT") return "赠品";
+  if (category == "USAGE") return "领用";
+  if (category == "LOSS") return "报损";
+  if (category == "OPENING") return "期初";
+  if (category == "OTHER") return "其他";
+  return category;
+}
+
 std::string statement_kind_label(const StatementResult& result, const StatementLine& line) {
   if (line.kind == "DOC") return "单据";
   return result.direction == -1 ? "付款" : "收款";
@@ -477,20 +487,26 @@ void register_report_routes(httplib::Server& server, Services& services) {
                          req.has_param("flow") ? req.get_param_value("flow") : "";
                      if (flow == "in") filter.qty_direction = 1;
                      if (flow == "out") filter.qty_direction = -1;
+                     if (req.has_param("biz_category")) {
+                       filter.biz_category = req.get_param_value("biz_category");
+                     }
                      if (csv_requested(req) || xlsx_requested(req)) filter.limit = 100000;
                      const auto rows = services.reports.stock_ledger(filter);
                      const std::string scope =
                          period_label(filter) + "；" +
                          dimension_label(filter.item_id, "商品") + "；" +
                          dimension_label(filter.warehouse_id, "仓库") + "；方向 " +
-                         qty_direction_label(filter.qty_direction);
+                         qty_direction_label(filter.qty_direction) + "；业务类型 " +
+                         (filter.biz_category.empty() ? std::string("全部")
+                                                      : biz_category_label(filter.biz_category));
                      if (csv_requested(req)) {
                        std::string csv;
                        csv_preamble(csv, "库存流水明细", scope);
-                       csv_row(csv, {"时间", "类型", "单据号", "商品编码", "商品名称", "仓库",
-                                     "数量", "金额（元）"});
+                       csv_row(csv, {"时间", "类型", "业务类型", "单据号", "商品编码", "商品名称",
+                                     "仓库", "数量", "金额（元）"});
                        for (const auto& row : rows) {
-                         csv_row(csv, {row.biz_time, stock_biz_label(row.biz_type), row.doc_no,
+                         csv_row(csv, {row.biz_time, stock_biz_label(row.biz_type),
+                                       biz_category_label(row.biz_category), row.doc_no,
                                        row.item_code, row.item_name, row.warehouse_name,
                                        qty_text(row.qty), yuan(row.amount_cents)});
                        }
@@ -500,11 +516,12 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      if (xlsx_requested(req)) {
                        XlsxSheet sheet("库存流水明细");
                        xlsx_preamble(sheet, "库存流水明细", scope);
-                       sheet.add_header_row({"时间", "类型", "单据号", "商品编码", "商品名称",
-                                             "仓库", "数量", "金额（元）"});
+                       sheet.add_header_row({"时间", "类型", "业务类型", "单据号", "商品编码",
+                                             "商品名称", "仓库", "数量", "金额（元）"});
                        for (const auto& row : rows) {
                          sheet.add_row({XlsxCell::text(row.biz_time),
                                         XlsxCell::text(stock_biz_label(row.biz_type)),
+                                        XlsxCell::text(biz_category_label(row.biz_category)),
                                         XlsxCell::text(row.doc_no),
                                         XlsxCell::text(row.item_code),
                                         XlsxCell::text(row.item_name),

@@ -132,7 +132,7 @@ std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& fil
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
               "SELECT l.id, l.biz_time, l.biz_type, h.doc_no, i.code, i.name, w.name,"
-              " l.qty, l.amount_cents"
+              " l.qty, l.amount_cents, COALESCE(h.biz_category, '')"
               " FROM stock_ledger l"
               " JOIN doc_header h ON h.id = l.doc_id"
               " JOIN item i ON i.id = l.item_id"
@@ -142,6 +142,7 @@ std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& fil
               "   AND (? = 0 OR l.item_id = ?)"
               "   AND (? = 0 OR l.warehouse_id = ?)"
               "   AND (? = 0 OR l.qty * ? > 0)"
+              "   AND (? = '' OR COALESCE(h.biz_category, '') = ?)"
               " ORDER BY l.id DESC LIMIT ?;");
     stmt.bind(1, filter.from)
         .bind(2, filter.from)
@@ -153,7 +154,9 @@ std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& fil
         .bind(8, filter.warehouse_id)
         .bind(9, static_cast<std::int64_t>(filter.qty_direction))
         .bind(10, static_cast<std::int64_t>(filter.qty_direction))
-        .bind(11, static_cast<std::int64_t>(filter.limit));
+        .bind(11, filter.biz_category)
+        .bind(12, filter.biz_category)
+        .bind(13, static_cast<std::int64_t>(filter.limit));
     while (stmt.step()) {
       LedgerDetailRow row;
       row.id = stmt.i64(0);
@@ -165,6 +168,7 @@ std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& fil
       row.warehouse_name = stmt.text(6);
       row.qty = stmt.i64(7);
       row.amount_cents = stmt.i64(8);
+      row.biz_category = stmt.text(9);
       rows.push_back(std::move(row));
     }
   });

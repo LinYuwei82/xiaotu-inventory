@@ -202,6 +202,18 @@
     return String(value === null || value === undefined ? "" : value).startsWith("-");
   }
 
+  function bizCategoryText(value) {
+    return (
+      {
+        GIFT: "赠品",
+        USAGE: "领用",
+        LOSS: "报损",
+        OPENING: "期初",
+        OTHER: "其他",
+      }[value] || ""
+    );
+  }
+
   function bizTypeText(value) {
     const text = String(value);
     if (text === "REVERSE") return "反审核回冲";
@@ -894,6 +906,21 @@
   async function documentPage(mount, config) {
     const docType = config.docType;
     const costAdjust = !!config.costAdjust;
+    // 只有其他出入库有业务类型；入库可用期初，出库可用领用与报损，赠品两方向通用。
+    const otherDoc = docType === "OTH_IN" || docType === "OTH_OUT";
+    const categoryOptions =
+      docType === "OTH_IN"
+        ? [
+            ["GIFT", "赠品"],
+            ["OPENING", "期初"],
+            ["OTHER", "其他"],
+          ]
+        : [
+            ["GIFT", "赠品"],
+            ["USAGE", "领用"],
+            ["LOSS", "报损"],
+            ["OTHER", "其他"],
+          ];
     let warehouses = [];
     let items = [];
     let documents = [];
@@ -927,6 +954,13 @@
               )}" ${config.partnerApi ? "hidden" : ""} />
               <select data-role="partner-select" ${config.partnerApi ? "" : "hidden"}></select>
             </label>
+            <label class="field" ${otherDoc ? "" : "hidden"}><span>业务类型</span>
+              <select data-role="biz-category">
+                ${categoryOptions
+                  .map(([value, label]) => `<option value="${value}">${label}</option>`)
+                  .join("")}
+              </select>
+            </label>
           </div>
           <table class="table lines" data-role="lines"></table>
           <div class="form-actions">
@@ -947,6 +981,7 @@
     const dateInput = mount.querySelector('[data-role="date"]');
     const linesTable = mount.querySelector('[data-role="lines"]');
     const partnerSelect = mount.querySelector('[data-role="partner-select"]');
+    const bizCategorySelect = mount.querySelector('[data-role="biz-category"]');
     const documentsTable = mount.querySelector('[data-role="documents"]');
 
     dateInput.value = new Date().toISOString().slice(0, 10);
@@ -1076,7 +1111,7 @@
       documentsTable.innerHTML = `
         <thead><tr><th>单据号</th><th>日期</th><th>仓库</th><th>${escapeHtml(
           config.partnerLabel
-        )}</th><th>数量</th><th>金额（元）</th><th>状态</th><th class="actions">操作</th></tr></thead>
+        )}</th>${otherDoc ? "<th>业务类型</th>" : ""}<th>数量</th><th>金额（元）</th><th>状态</th><th class="actions">操作</th></tr></thead>
         <tbody>${documents
           .map(
             (doc) => `<tr data-id="${doc.id}">
@@ -1084,6 +1119,11 @@
               <td>${escapeHtml(doc.doc_date)}</td>
               <td>${escapeHtml(doc.warehouse_name)}</td>
               <td>${escapeHtml(doc.customer || "—")}</td>
+              ${
+                otherDoc
+                  ? `<td>${escapeHtml(bizCategoryText(doc.biz_category) || "—")}</td>`
+                  : ""
+              }
               <td>${costAdjust ? "—" : qtyText(doc.total_qty)}</td>
               <td>${money(doc.total_amount_cents)}</td>
               <td>${statusLabel(doc.status)}</td>
@@ -1142,6 +1182,7 @@
       mount.querySelector('[data-role="cancel-edit"]').hidden = true;
       form.querySelector('[data-role="partner"]').value = "";
       if (partnerSelect) partnerSelect.value = "";
+      if (otherDoc) bizCategorySelect.value = "OTHER";
       dateInput.value = new Date().toISOString().slice(0, 10);
       resetLines();
     }
@@ -1208,6 +1249,7 @@
             ? partnerOption.dataset.name || ""
             : ""
           : partnerInput.value.trim(),
+        biz_category: otherDoc ? bizCategorySelect.value : "",
         lines,
       };
       try {
@@ -1242,6 +1284,7 @@
         if (partnerSelect && !partnerSelect.hidden) {
           partnerSelect.value = detail.partner_id ? String(detail.partner_id) : "";
         }
+        if (otherDoc) bizCategorySelect.value = detail.biz_category || "OTHER";
         linesTable.innerHTML = costAdjust
           ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
           : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
@@ -2261,6 +2304,14 @@
             <option value="in">仅入库</option>
             <option value="out">仅出库</option>
           </select>
+          <select data-role="ledger-category">
+            <option value="">全部业务类型</option>
+            <option value="GIFT">赠品</option>
+            <option value="USAGE">领用</option>
+            <option value="LOSS">报损</option>
+            <option value="OPENING">期初</option>
+            <option value="OTHER">其他</option>
+          </select>
           <button class="btn small" data-role="export-ledger">导出 CSV</button>
           <button class="btn small" data-role="excel-ledger">导出 Excel</button>
           <button class="btn small" data-role="print-ledger">打印</button>
@@ -2353,6 +2404,7 @@
     const balancesTable = mount.querySelector('[data-role="balances"]');
     const ledgerTable = mount.querySelector('[data-role="ledger"]');
     const ledgerFlowSelect = mount.querySelector('[data-role="ledger-flow"]');
+    const ledgerCategorySelect = mount.querySelector('[data-role="ledger-category"]');
     const flowsTable = mount.querySelector('[data-role="flows"]');
     const summaryTable = mount.querySelector('[data-role="summary"]');
     const profitTable = mount.querySelector('[data-role="profit"]');
@@ -2377,11 +2429,15 @@
       );
     }
 
-    // 库存流水明细按出入库方向筛选，导出与打印共用。
+    // 库存流水明细按出入库方向与业务类型筛选，导出与打印共用。
     function ledgerQuery() {
-      return ledgerFlowSelect.value
+      let query = ledgerFlowSelect.value
         ? periodQuery() + "&flow=" + ledgerFlowSelect.value
         : periodQuery();
+      if (ledgerCategorySelect.value) {
+        query += "&biz_category=" + encodeURIComponent(ledgerCategorySelect.value);
+      }
+      return query;
     }
 
     // 采购明细与采购汇总共用期间与供应商 / 商品 / 仓库筛选。
@@ -2520,13 +2576,14 @@
              .join("")}</tbody>`;
 
       ledgerTable.innerHTML = !ledger.length
-        ? emptyRow("该期间暂无流水", 7)
-        : `<thead><tr><th>时间</th><th>类型</th><th>单据号</th><th>商品</th><th>仓库</th><th>数量</th><th>金额（元）</th></tr></thead>
+        ? emptyRow("该期间暂无流水", 8)
+        : `<thead><tr><th>时间</th><th>类型</th><th>业务类型</th><th>单据号</th><th>商品</th><th>仓库</th><th>数量</th><th>金额（元）</th></tr></thead>
            <tbody>${ledger
              .map(
                (row) => `<tr>
                  <td>${escapeHtml(row.biz_time)}</td>
                  <td>${escapeHtml(bizTypeText(row.biz_type))}</td>
+                 <td>${escapeHtml(bizCategoryText(row.biz_category) || "—")}</td>
                  <td>${escapeHtml(row.doc_no)}</td>
                  <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
                  <td>${escapeHtml(row.warehouse_name)}</td>
@@ -2820,6 +2877,7 @@
     directionSelect.addEventListener("change", reload);
     fundAccountSelect.addEventListener("change", reload);
     ledgerFlowSelect.addEventListener("change", reload);
+    ledgerCategorySelect.addEventListener("change", reload);
     purchaseBySelect.addEventListener("change", reload);
     purchaseSupplierSelect.addEventListener("change", reload);
     purchaseItemSelect.addEventListener("change", reload);

@@ -193,6 +193,15 @@ std::string qty_direction_label(int direction) {
   return "全部";
 }
 
+std::string stock_biz_category_label(const std::string& category) {
+  if (category == "GIFT") return "赠品";
+  if (category == "USAGE") return "领用";
+  if (category == "LOSS") return "报损";
+  if (category == "OPENING") return "期初";
+  if (category == "OTHER") return "其他";
+  return category;
+}
+
 std::string doc_status_label(const std::string& status) {
   if (status == "DRAFT") return "草稿";
   if (status == "APPROVED") return "已审核";
@@ -235,6 +244,7 @@ ReportFilter report_filter(const httplib::Request& req) {
   const std::string flow = param_text(req, "flow");
   if (flow == "in") filter.qty_direction = 1;
   if (flow == "out") filter.qty_direction = -1;
+  filter.biz_category = param_text(req, "biz_category");
   filter.limit = static_cast<int>(param_i64(req, "limit", 100000));
   return filter;
 }
@@ -270,10 +280,13 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
     render.subtitle = period_label(filter.from, filter.to) + "；" +
                       dimension_label(filter.item_id, "商品") + "；" +
                       dimension_label(filter.warehouse_id, "仓库") + "；方向 " +
-                      qty_direction_label(filter.qty_direction);
+                      qty_direction_label(filter.qty_direction) + "；业务类型 " +
+                      (filter.biz_category.empty() ? std::string("全部")
+                                                   : stock_biz_category_label(filter.biz_category));
     for (const auto& row : services.reports.stock_ledger(filter)) {
       render.rows.push_back({{"biz_time", row.biz_time},
                              {"biz_type", stock_biz_label(row.biz_type)},
+                             {"biz_category", stock_biz_category_label(row.biz_category)},
                              {"doc_no", row.doc_no},
                              {"item_code", row.item_code},
                              {"item_name", row.item_name},
@@ -562,8 +575,12 @@ void render_document(Services& services, const PrintTargetDef& target, const htt
       {{"label", "日期"}, {"value", detail.doc_date}},
       {{"label", "仓库"}, {"value", header_warehouse}},
       {{"label", "往来单位"}, {"value", detail.partner}},
-      {{"label", "状态"}, {"value", doc_status_label(detail.status)}},
   });
+  if (!detail.biz_category.empty()) {
+    render.header_fields.push_back(
+        {{"label", "业务类型"}, {"value", stock_biz_category_label(detail.biz_category)}});
+  }
+  render.header_fields.push_back({{"label", "状态"}, {"value", doc_status_label(detail.status)}});
   render.totals = {{"total_qty", qty_text(detail.total_qty)},
                    {"total_amount_cents", detail.total_amount_cents},
                    {"total_amount_text", money_text(detail.total_amount_cents)}};

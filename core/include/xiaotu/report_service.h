@@ -13,6 +13,7 @@ struct LedgerDetailRow {
   std::int64_t id = 0;
   std::string biz_time;
   std::string biz_type;
+  std::string biz_category;  // 其他出入库的业务类型，其余单据为空
   std::string doc_no;
   std::string item_code;
   std::string item_name;
@@ -147,6 +148,7 @@ struct ReportFilter {
   std::int64_t customer_id = 0;
   std::int64_t supplier_id = 0;
   int qty_direction = 0;  // 1 只看入库（qty>0）/ -1 只看出库（qty<0）/ 0 全部
+  std::string biz_category;  // 其他出入库的业务类型筛选，空表示全部
   int limit = 500;
 };
 
