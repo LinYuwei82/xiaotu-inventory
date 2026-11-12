@@ -105,7 +105,13 @@ CostRecalcResult CostRecalcService::recalculate(std::int64_t item_id,
         std::int64_t amount = stored_amount;
 
         if (qty > 0) {
-          if (ends_with(biz_type, "_IN")) {
+          if (biz_type == "STK_CNT_IN") {
+            // 盘盈：按当时结存的移动加权平均计价，不能走调拨入库腿分支。
+            amount = state.qty > 0 ? moving_average_cost(qty, price, state.qty, state.amount)
+                                   : mul_qty_price(qty, price);
+            line.regular = amount;
+            line.has_regular = true;
+          } else if (ends_with(biz_type, "_IN")) {
             // 调拨入库腿：金额与出库腿一致。
             amount = line.has_regular ? -line.regular : stored_amount;
             line.in_leg = amount;
@@ -114,14 +120,12 @@ CostRecalcResult CostRecalcService::recalculate(std::int64_t item_id,
             amount = mul_qty_price(qty, price);
             line.regular = amount;
             line.has_regular = true;
-          } else if (biz_type == "STK_CNT") {
-            amount = state.qty > 0 ? moving_average_cost(qty, price, state.qty, state.amount)
-                                   : mul_qty_price(qty, price);
-            line.regular = amount;
-            line.has_regular = true;
           }
         } else if (qty < 0) {
-          if (ends_with(biz_type, "_IN_REVERSE")) {
+          if (biz_type == "STK_CNT_IN_REVERSE") {
+            // 盘盈回冲：金额取盘盈行的负值，而不是误判成调拨入库腿回冲。
+            amount = line.has_regular ? -line.regular : stored_amount;
+          } else if (ends_with(biz_type, "_IN_REVERSE")) {
             amount = line.has_in_leg ? -line.in_leg : stored_amount;
           } else if (ends_with(biz_type, "REVERSE")) {
             amount = line.has_regular ? -line.regular : stored_amount;

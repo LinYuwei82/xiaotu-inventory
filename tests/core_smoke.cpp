@@ -75,7 +75,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 14, "迁移后 schema 版本应为 14");
+      check(db.schema_version() == 15, "迁移后 schema 版本应为 15");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -439,10 +439,16 @@ int main() {
       auto counted = balance_of(purchased.id);
       check(counted.qty == q(7) && counted.amount_cents == 9800,
             "盘亏 3 件后应为 7 件 / 9800 分");
+      check(stock.ledger(purchased.id).front().biz_type == "STK_CNT_OUT" &&
+                stock.ledger(purchased.id).front().qty == q(-3),
+            "盘亏应写 STK_CNT_OUT 流水且数量为负");
 
       documents.reverse(stocktake_doc.id);
       counted = balance_of(purchased.id);
       check(counted.qty == q(10) && counted.amount_cents == 14000, "反审核盘点后应回到 10 件 / 14000 分");
+      check(stock.ledger(purchased.id).front().biz_type == "STK_CNT_OUT_REVERSE" &&
+                stock.ledger(purchased.id).front().qty == q(3),
+            "盘亏反审核应写 STK_CNT_OUT_REVERSE 且数量回正");
 
       xiaotu::DocInput surplus;
       surplus.doc_type = "STK_CNT";
@@ -454,8 +460,19 @@ int main() {
       counted = balance_of(purchased.id);
       check(counted.qty == q(12) && counted.amount_cents == 16800,
             "盘盈 2 件后应为 12 件 / 16800 分");
+      check(stock.ledger(purchased.id).front().biz_type == "STK_CNT_IN" &&
+                stock.ledger(purchased.id).front().qty == q(2),
+            "盘盈应写 STK_CNT_IN 流水且数量为正");
+      {
+        xiaotu::CostRecalcService recalc(db);
+        check(recalc.recalculate(purchased.id).difference_count == 0,
+              "盘盈后成本重算应无差异");
+      }
       documents.reverse(surplus_doc.id);
       check(balance_of(purchased.id).qty == q(10), "反审核盘盈后应回到 10 件");
+      check(stock.ledger(purchased.id).front().biz_type == "STK_CNT_IN_REVERSE" &&
+                stock.ledger(purchased.id).front().qty == q(-2),
+            "盘盈反审核应写 STK_CNT_IN_REVERSE 且数量为负");
 
       bool negative_stocktake_rejected = false;
       try {

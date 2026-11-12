@@ -366,8 +366,8 @@ void apply_stocktake(sqlite3* conn, const DocumentDefinition& definition, std::i
   } else {
     amount = -moving_average_cost(-diff, line.price_cents, balance.qty, balance.amount);
   }
-  write_move(conn, definition.doc_type, doc_id, line_id, warehouse_id, line.item_id, biz_time, diff,
-             amount);
+  write_move(conn, definition.doc_type + (diff > 0 ? "_IN" : "_OUT"), doc_id, line_id,
+             warehouse_id, line.item_id, biz_time, diff, amount);
 }
 
 // 成本调整：数量不变，只改结存金额；零库存不允许留下金额，调整后金额不能为负。
@@ -1100,8 +1100,8 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
     {
       Stmt ledger(conn,
                   "SELECT doc_line_id, item_id, qty, amount_cents, warehouse_id, biz_type"
-                  " FROM stock_ledger WHERE doc_id = ? AND biz_type IN (?, ? || '_IN');");
-      ledger.bind(1, doc_id).bind(2, doc_type).bind(3, doc_type);
+                  " FROM stock_ledger WHERE doc_id = ? AND biz_type IN (?, ? || '_IN', ? || '_OUT');");
+      ledger.bind(1, doc_id).bind(2, doc_type).bind(3, doc_type).bind(4, doc_type);
       while (ledger.step()) {
         rows.push_back(LedgerRow{ledger.i64(0), ledger.i64(1), ledger.i64(2), ledger.i64(3),
                                  ledger.i64(4), ledger.text(5)});

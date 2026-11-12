@@ -614,6 +614,19 @@ BEGIN
 END;
 )SQL";
 
+// v15：盘点流水拆分盘盈/盘亏方向。历史行按 qty 符号回填标签（方向是事实，不是推断），
+// 只改 biz_type，不动数量与金额；反审核回冲行按其 qty 反推原方向。
+constexpr const char* kV15 = R"SQL(
+UPDATE stock_ledger
+SET biz_type = CASE WHEN qty > 0 THEN 'STK_CNT_IN' ELSE 'STK_CNT_OUT' END
+WHERE biz_type = 'STK_CNT' AND qty <> 0;
+
+UPDATE stock_ledger
+SET biz_type = CASE WHEN qty < 0 THEN 'STK_CNT_IN_REVERSE' ELSE 'STK_CNT_OUT_REVERSE' END
+WHERE biz_type = 'REVERSE' AND qty <> 0
+  AND doc_id IN (SELECT id FROM doc_header WHERE doc_type = 'STK_CNT');
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -643,6 +656,7 @@ const std::vector<Migration>& all_migrations() {
       {12, "v12_fund_account", kV12},
       {13, "v13_cost_adjust", kV13},
       {14, "v14_stock_balance_non_negative", kV14},
+      {15, "v15_stocktake_ledger_direction", kV15},
   };
   return migrations;
 }
