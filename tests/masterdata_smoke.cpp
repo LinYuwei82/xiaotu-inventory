@@ -12,6 +12,7 @@
 
 #include "xiaotu/db.h"
 #include "xiaotu/error.h"
+#include "xiaotu/item_category.h"
 #include "xiaotu/masterdata_io.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/xlsx.h"
@@ -29,10 +30,9 @@ void check(bool condition, const std::string& message) {
 
 std::string item_xlsx(const std::vector<std::vector<std::string>>& rows) {
   xiaotu::XlsxSheet sheet("商品");
-  sheet.add_header_row({"商品编码", "商品名称", "规格", "计量单位", "启用"});
-  for (const auto& row : rows) {
-    sheet.add_text_row({row[0], row[1], row[2], row[3], row[4]});
-  }
+  sheet.add_header_row(
+      {"商品编码", "商品名称", "规格", "计量单位", "分类路径", "条码", "税率%", "启用"});
+  for (const auto& row : rows) sheet.add_text_row(row);
   return sheet.build();
 }
 
@@ -83,8 +83,8 @@ int main() {
     // 1. 新增两条商品。
     auto report = xiaotu::import_master(
         db, xiaotu::MasterKind::Item,
-        item_xlsx({{"SP001", "矿泉水", "550ml", "瓶", "是"},
-                   {"SP002", "方便面", "", "件", ""}}),
+        item_xlsx({{"SP001", "矿泉水", "550ml", "瓶", "", "", "13", "是"},
+                   {"SP002", "方便面", "", "件", "", "", "", ""}}),
         "items.xlsx");
     check(report.ok(), "首次导入应成功");
     check(report.outcome.inserted == 2 && report.outcome.updated == 0, "首次导入应新增 2 条");
@@ -94,7 +94,7 @@ int main() {
     // 2. upsert：只改名称与单位，规格与启用留空应保持原值。
     report = xiaotu::import_master(
         db, xiaotu::MasterKind::Item,
-        item_xlsx({{"SP001", "矿泉水（新）", "", "件", ""}}), "items.xlsx");
+        item_xlsx({{"SP001", "矿泉水（新）", "", "件", "", "", "", ""}}), "items.xlsx");
     check(report.ok(), "按编码更新应成功");
     check(report.outcome.inserted == 0 && report.outcome.updated == 1, "应更新 1 条");
     {
@@ -105,15 +105,53 @@ int main() {
         check((*row)[1] == "矿泉水（新）", "名称应被更新");
         check((*row)[2] == "550ml", "规格留空应保持原值");
         check((*row)[3] == "件", "单位应被更新");
-        check((*row)[4] == "是", "启用留空应保持原值");
+        check((*row)[6] == "13.00", "税率留空应保持原值");
+        check((*row)[7] == "是", "启用留空应保持原值");
       }
     }
+
+    // 2b. 分类路径 / 条码 / 税率：分类必须已存在；条码唯一；税率按百分数换算成万分比。
+    xiaotu::ItemCategoryService categories(db);
+    const auto food = categories.create(0, "食品", 0, true);
+    const auto drink = categories.create(food.id, "饮料", 0, true);
+    report = xiaotu::import_master(
+        db, xiaotu::MasterKind::Item,
+        item_xlsx({{"SP010", "可乐", "330ml", "瓶", "食品/饮料", "6901234567890", "13.5", "是"}}),
+        "items.xlsx");
+    check(report.ok(), "带分类路径/条码/税率的商品应导入成功");
+    {
+      const auto items = xiaotu::export_master(db, xiaotu::MasterKind::Item);
+      const auto* row = find_row(items, "SP010");
+      check(row != nullptr, "应能导出 SP010");
+      if (row != nullptr) {
+        check((*row)[4] == "食品/饮料", "导出应带完整分类路径");
+        check((*row)[5] == "6901234567890", "导出应带条码");
+        check((*row)[6] == "13.50", "13.5% 应导出为 13.50");
+      }
+    }
+    report = xiaotu::import_master(
+        db, xiaotu::MasterKind::Item,
+        item_xlsx({{"SP011", "坏分类", "", "瓶", "食品/不存在", "", "", "是"}}), "items.xlsx");
+    check(!report.ok() && report.issues.size() == 1 &&
+              report.issues[0].column == "分类路径",
+          "不存在的分类路径应整批拒绝");
+    report = xiaotu::import_master(
+        db, xiaotu::MasterKind::Item,
+        item_xlsx({{"SP012", "重复条码", "", "瓶", "", "6901234567890", "", "是"}}), "items.xlsx");
+    check(!report.ok() && report.issues.size() == 1 && report.issues[0].column == "条码",
+          "与已有商品重复的条码应整批拒绝");
+    report = xiaotu::import_master(
+        db, xiaotu::MasterKind::Item,
+        item_xlsx({{"SP013", "坏税率", "", "瓶", "", "", "101", "是"}}), "items.xlsx");
+    check(!report.ok() && report.issues.size() == 1 && report.issues[0].column == "税率%",
+          "超过 100 的税率应整批拒绝");
 
     // 3. 一行有错：整批不写，且不产生备份。
     const std::size_t before = backup_count(backup_dir);
     report = xiaotu::import_master(
         db, xiaotu::MasterKind::Item,
-        item_xlsx({{"SP003", "新品", "", "瓶", "是"}, {"SP004", "坏行", "", "箱箱", "是"}}),
+        item_xlsx({{"SP003", "新品", "", "瓶", "", "", "", "是"},
+                   {"SP004", "坏行", "", "箱箱", "", "", "", "是"}}),
         "items.xlsx");
     check(!report.ok(), "单位不存在时应拒绝整批");
     check(report.issues.size() == 1 && report.issues[0].row == 3, "错误行号应为 Excel 第 3 行");
@@ -127,7 +165,8 @@ int main() {
     // 4. 文件内编码重复。
     report = xiaotu::import_master(
         db, xiaotu::MasterKind::Item,
-        item_xlsx({{"SP005", "甲", "", "瓶", "是"}, {"SP005", "乙", "", "瓶", "是"}}),
+        item_xlsx({{"SP005", "甲", "", "瓶", "", "", "", "是"},
+                   {"SP005", "乙", "", "瓶", "", "", "", "是"}}),
         "items.xlsx");
     check(!report.ok() && report.issues.size() == 1, "文件内重复编码应报错");
 
