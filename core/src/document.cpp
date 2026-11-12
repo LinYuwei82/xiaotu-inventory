@@ -43,6 +43,9 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .doc_no_prefix = "XSCK",
           .stock_mode = StockMode::Out,
           .affects_stock = true,
+          .partner_kind = PartnerKind::Customer,
+          .finance_direction = 1,
+          .finance_red = false,
           .price_source = PriceSource::Manual,
           .cost_hook = moving_average_cost,
           .on_approve = nullptr,
@@ -54,6 +57,9 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .doc_no_prefix = "CGRK",
           .stock_mode = StockMode::In,
           .affects_stock = true,
+          .partner_kind = PartnerKind::Supplier,
+          .finance_direction = -1,
+          .finance_red = false,
           .price_source = PriceSource::Manual,
           .cost_hook = amount_by_unit_price,
           .on_approve = nullptr,
@@ -65,6 +71,9 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .doc_no_prefix = "CGTH",
           .stock_mode = StockMode::Out,
           .affects_stock = true,
+          .partner_kind = PartnerKind::Supplier,
+          .finance_direction = -1,
+          .finance_red = true,
           .price_source = PriceSource::Manual,
           .cost_hook = amount_by_unit_price,
           .on_approve = nullptr,
@@ -76,6 +85,9 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .doc_no_prefix = "XSTH",
           .stock_mode = StockMode::In,
           .affects_stock = true,
+          .partner_kind = PartnerKind::Customer,
+          .finance_direction = 1,
+          .finance_red = true,
           .price_source = PriceSource::Manual,
           .cost_hook = amount_by_unit_price,
           .on_approve = nullptr,
@@ -310,14 +322,19 @@ ValidatedDoc validate_document(sqlite3* conn, const DocInput& input,
   validated.biz_time = validated.doc_date + " " + now_text().substr(11);
   validated.partner = input.partner;
 
-  // 引用了供应商档案时以档案名称为准，并校验其可用性。
+  // 引用了档案时以档案名称为准，并校验其可用性。
   if (input.partner_id != 0) {
-    Stmt supplier(conn, "SELECT name FROM supplier WHERE id = ? AND status = 1 AND is_deleted = 0;");
-    supplier.bind(1, input.partner_id);
-    if (!supplier.step()) {
-      throw AppError("NOT_FOUND", "供应商不存在或已停用");
+    const char* table =
+        definition.partner_kind == PartnerKind::Customer ? "customer" : "supplier";
+    const char* label =
+        definition.partner_kind == PartnerKind::Customer ? "客户不存在或已停用" : "供应商不存在或已停用";
+    Stmt partner(conn, std::string("SELECT name FROM ") + table +
+                           " WHERE id = ? AND status = 1 AND is_deleted = 0;");
+    partner.bind(1, input.partner_id);
+    if (!partner.step()) {
+      throw AppError("NOT_FOUND", label);
     }
-    validated.partner = supplier.text(0);
+    validated.partner = partner.text(0);
   }
 
   for (const DocLineInput& line : input.lines) {
@@ -366,50 +383,55 @@ std::vector<std::int64_t> insert_lines(sqlite3* conn, std::int64_t doc_id,
 }
 
 void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
-                   std::string_view doc_type, const DocInput& input,
+                   std::string_view doc_type, PartnerKind partner_kind, const DocInput& input,
                    const ValidatedDoc& validated, bool approved) {
   const AuditStamp stamp = audit_stamp();
+  // 供应商写 partner_id，客户写 customer_id；两者互斥，partner 文本都保留快照。
+  const std::int64_t supplier_id = partner_kind == PartnerKind::Supplier ? input.partner_id : 0;
+  const std::int64_t customer_id = partner_kind == PartnerKind::Customer ? input.partner_id : 0;
   if (approved) {
     Stmt header(conn,
                 "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id,"
-                " target_warehouse_id, partner_id, customer, status, total_qty,"
+                " target_warehouse_id, partner_id, customer_id, customer, status, total_qty,"
                 " total_amount_cents, created_at, created_by, approved_at, approved_by)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?);");
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?);");
     header.bind(1, id)
         .bind(2, doc_no)
         .bind(3, doc_type)
         .bind(4, validated.doc_date)
         .bind(5, input.warehouse_id)
         .bind(6, input.target_warehouse_id)
-        .bind(7, input.partner_id)
-        .bind(8, validated.partner)
-        .bind(9, validated.total_qty)
-        .bind(10, validated.total_amount)
-        .bind(11, stamp.at)
-        .bind(12, stamp.by)
-        .bind(13, stamp.at)
-        .bind(14, stamp.by)
+        .bind(7, supplier_id)
+        .bind(8, customer_id)
+        .bind(9, validated.partner)
+        .bind(10, validated.total_qty)
+        .bind(11, validated.total_amount)
+        .bind(12, stamp.at)
+        .bind(13, stamp.by)
+        .bind(14, stamp.at)
+        .bind(15, stamp.by)
         .run();
     return;
   }
 
   Stmt header(conn,
               "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id,"
-              " target_warehouse_id, partner_id, customer, status, total_qty,"
+              " target_warehouse_id, partner_id, customer_id, customer, status, total_qty,"
               " total_amount_cents, created_at, created_by, approved_at, approved_by)"
-              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, NULL, NULL);");
+              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, NULL, NULL);");
   header.bind(1, id)
       .bind(2, doc_no)
       .bind(3, doc_type)
       .bind(4, validated.doc_date)
       .bind(5, input.warehouse_id)
       .bind(6, input.target_warehouse_id)
-      .bind(7, input.partner_id)
-      .bind(8, validated.partner)
-      .bind(9, validated.total_qty)
-      .bind(10, validated.total_amount)
-      .bind(11, stamp.at)
-      .bind(12, stamp.by)
+      .bind(7, supplier_id)
+      .bind(8, customer_id)
+      .bind(9, validated.partner)
+      .bind(10, validated.total_qty)
+      .bind(11, validated.total_amount)
+      .bind(12, stamp.at)
+      .bind(13, stamp.by)
       .run();
 }
 
@@ -428,6 +450,72 @@ std::string doc_detail(const std::string& doc_type, const ValidatedDoc& validate
          ",\"amount_cents\":" + std::to_string(validated.total_amount) + "}";
 }
 
+std::string partner_key_of(PartnerKind kind, std::int64_t partner_id, const std::string& name) {
+  if (partner_id > 0) {
+    return (kind == PartnerKind::Customer ? "C:" : "S:") + std::to_string(partner_id);
+  }
+  if (!name.empty()) {
+    return "T:" + name;
+  }
+  return "T:（未指定）";
+}
+
+// 审核时生成往来台账：销售应收、采购应付，退货为负数（红字）。
+void create_ar_ap_entry(sqlite3* conn, const DocumentDefinition& definition,
+                        const DocInput& input, const ValidatedDoc& validated,
+                        std::int64_t doc_id, const std::string& doc_no) {
+  if (definition.finance_direction == 0) {
+    return;
+  }
+  const std::int64_t amount =
+      definition.finance_red ? -validated.total_amount : validated.total_amount;
+  const std::string partner_key =
+      partner_key_of(definition.partner_kind, input.partner_id, validated.partner);
+  Stmt stmt(conn,
+            "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction, partner_id,"
+            " partner_name, partner_key, biz_date, due_date, amount_cents, settled_cents,"
+            " status, created_at, created_by)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'OPEN', ?, ?);");
+  stmt.bind(1, next_id())
+      .bind(2, doc_id)
+      .bind(3, doc_no)
+      .bind(4, definition.doc_type)
+      .bind(5, static_cast<std::int64_t>(definition.finance_direction))
+      .bind(6, input.partner_id)
+      .bind(7, validated.partner)
+      .bind(8, partner_key)
+      .bind(9, validated.doc_date)
+      .bind(10, validated.doc_date)
+      .bind(11, amount)
+      .bind(12, audit_stamp().at)
+      .bind(13, audit_stamp().by)
+      .run();
+}
+
+// 反审核：已核销必须拦截；未核销则作废台账，不物理删除。
+void void_ar_ap_entry(sqlite3* conn, std::int64_t doc_id) {
+  std::int64_t entry_id = 0;
+  std::int64_t settled = 0;
+  {
+    Stmt query(conn,
+               "SELECT id, settled_cents FROM ar_ap_entry"
+               " WHERE doc_id = ? AND status <> 'VOIDED' LIMIT 1;");
+    query.bind(1, doc_id);
+    if (query.step()) {
+      entry_id = query.i64(0);
+      settled = query.i64(1);
+    }
+  }
+  if (entry_id == 0) {
+    return;
+  }
+  if (settled != 0) {
+    throw AppError("ENTRY_SETTLED", "该单据已有核销记录，请先撤销核销再反审核");
+  }
+  Stmt update(conn, "UPDATE ar_ap_entry SET status = 'VOIDED' WHERE id = ?;");
+  update.bind(1, entry_id).run();
+}
+
 }  // namespace
 
 DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input) {
@@ -441,7 +529,8 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input) 
     const ValidatedDoc validated = validate_document(conn, input, *definition, true);
     created.id = next_id();
     created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
-    insert_header(conn, created.id, created.doc_no, definition->doc_type, input, validated, true);
+    insert_header(conn, created.id, created.doc_no, definition->doc_type,
+                  definition->partner_kind, input, validated, true);
     const std::vector<std::int64_t> line_ids = insert_lines(conn, created.id, input.lines);
     if (definition->affects_stock) {
       apply_stock_moves(conn, *definition, created.id, input.warehouse_id,
@@ -450,6 +539,7 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input) 
     if (definition->on_approve) {
       definition->on_approve(conn, created.id);
     }
+    create_ar_ap_entry(conn, *definition, input, validated, created.id, created.doc_no);
     audit_write(conn, "approve", "document", created.id, created.doc_no,
                 doc_detail(definition->doc_type, validated));
   });
@@ -467,7 +557,8 @@ DocumentEngine::Created DocumentEngine::save_draft(const DocInput& input) {
     const ValidatedDoc validated = validate_document(conn, input, *definition, false);
     created.id = next_id();
     created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
-    insert_header(conn, created.id, created.doc_no, definition->doc_type, input, validated, false);
+    insert_header(conn, created.id, created.doc_no, definition->doc_type,
+                  definition->partner_kind, input, validated, false);
     insert_lines(conn, created.id, input.lines);
     audit_write(conn, "save_draft", "document", created.id, created.doc_no,
                 doc_detail(definition->doc_type, validated));
@@ -505,16 +596,21 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
     const ValidatedDoc validated = validate_document(conn, input, *definition, false);
     Stmt update(conn,
                 "UPDATE doc_header SET doc_date = ?, warehouse_id = ?, target_warehouse_id = ?,"
-                " partner_id = ?, customer = ?, total_qty = ?, total_amount_cents = ?"
-                " WHERE id = ?;");
+                " partner_id = ?, customer_id = ?, customer = ?, total_qty = ?,"
+                " total_amount_cents = ? WHERE id = ?;");
+    const std::int64_t supplier_id =
+        definition->partner_kind == PartnerKind::Supplier ? input.partner_id : 0;
+    const std::int64_t customer_id =
+        definition->partner_kind == PartnerKind::Customer ? input.partner_id : 0;
     update.bind(1, validated.doc_date)
         .bind(2, input.warehouse_id)
         .bind(3, input.target_warehouse_id)
-        .bind(4, input.partner_id)
-        .bind(5, validated.partner)
-        .bind(6, validated.total_qty)
-        .bind(7, validated.total_amount)
-        .bind(8, doc_id)
+        .bind(4, supplier_id)
+        .bind(5, customer_id)
+        .bind(6, validated.partner)
+        .bind(7, validated.total_qty)
+        .bind(8, validated.total_amount)
+        .bind(9, doc_id)
         .run();
 
     Stmt clear(conn, "DELETE FROM doc_line WHERE doc_id = ?;");
@@ -554,10 +650,12 @@ void DocumentEngine::approve(std::int64_t doc_id) {
     DocInput input;
     std::string status;
     std::string doc_no;
+    std::int64_t supplier_id = 0;
+    std::int64_t customer_id = 0;
     {
       Stmt header(conn,
                   "SELECT doc_type, status, warehouse_id, doc_date, customer, partner_id, doc_no,"
-                  " target_warehouse_id FROM doc_header WHERE id = ?;");
+                  " target_warehouse_id, customer_id FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
@@ -567,9 +665,10 @@ void DocumentEngine::approve(std::int64_t doc_id) {
       input.warehouse_id = header.i64(2);
       input.doc_date = header.text(3);
       input.partner = header.text(4);
-      input.partner_id = header.i64(5);
+      supplier_id = header.i64(5);
       doc_no = header.text(6);
       input.target_warehouse_id = header.i64(7);
+      customer_id = header.i64(8);
     }
     if (status != "DRAFT") {
       throw AppError("INVALID_STATUS", "只有草稿可以审核");
@@ -578,6 +677,8 @@ void DocumentEngine::approve(std::int64_t doc_id) {
     if (definition == nullptr) {
       throw AppError("UNKNOWN_DOC_TYPE", "未知单据类型: " + input.doc_type);
     }
+    input.partner_id =
+        definition->partner_kind == PartnerKind::Customer ? customer_id : supplier_id;
 
     std::vector<std::int64_t> line_ids;
     {
@@ -611,6 +712,7 @@ void DocumentEngine::approve(std::int64_t doc_id) {
     if (definition->on_approve) {
       definition->on_approve(conn, doc_id);
     }
+    create_ar_ap_entry(conn, *definition, input, validated, doc_id, doc_no);
     audit_write(conn, "approve", "document", doc_id, doc_no,
                 doc_detail(definition->doc_type, validated));
   });
@@ -622,7 +724,7 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
     {
       Stmt header(conn,
                   "SELECT id, doc_no, doc_type, doc_date, warehouse_id, target_warehouse_id,"
-                  " partner_id, customer, status, total_qty, total_amount_cents"
+                  " partner_id, customer_id, customer, status, total_qty, total_amount_cents"
                   " FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
@@ -634,11 +736,16 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
       detail.doc_date = header.text(3);
       detail.warehouse_id = header.i64(4);
       detail.target_warehouse_id = header.i64(5);
-      detail.partner_id = header.i64(6);
-      detail.partner = header.text(7);
-      detail.status = header.text(8);
-      detail.total_qty = header.i64(9);
-      detail.total_amount_cents = header.i64(10);
+      const std::int64_t supplier_id = header.i64(6);
+      const std::int64_t customer_id = header.i64(7);
+      detail.partner = header.text(8);
+      detail.status = header.text(9);
+      detail.total_qty = header.i64(10);
+      detail.total_amount_cents = header.i64(11);
+      const DocumentDefinition* definition = find_document_definition(detail.doc_type);
+      detail.partner_id = definition != nullptr && definition->partner_kind == PartnerKind::Customer
+                              ? customer_id
+                              : supplier_id;
     }
     Stmt lines(conn,
                "SELECT item_id, qty, price_cents FROM doc_line WHERE doc_id = ? ORDER BY line_no;");
@@ -701,6 +808,7 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
     if (status != "APPROVED") {
       throw AppError("INVALID_STATUS", "只有已审核的单据可以反审核");
     }
+    void_ar_ap_entry(conn, doc_id);
 
     struct LedgerRow {
       std::int64_t line_id;

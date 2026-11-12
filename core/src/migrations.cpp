@@ -261,6 +261,103 @@ constexpr const char* kV6 = R"SQL(
 ALTER TABLE doc_header ADD COLUMN target_warehouse_id INTEGER NOT NULL DEFAULT 0;
 )SQL";
 
+// v7：客户档案、单据客户引用、应收应付台账与核销（只追加）。
+constexpr const char* kV7 = R"SQL(
+CREATE TABLE customer (
+  id         INTEGER PRIMARY KEY,
+  code       TEXT    NOT NULL,
+  name       TEXT    NOT NULL,
+  contact    TEXT    NOT NULL DEFAULT '',
+  phone      TEXT    NOT NULL DEFAULT '',
+  address    TEXT    NOT NULL DEFAULT '',
+  status     INTEGER NOT NULL DEFAULT 1,
+  is_deleted INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT    NOT NULL,
+  created_by TEXT    NOT NULL DEFAULT 'system',
+  updated_at TEXT    NOT NULL,
+  updated_by TEXT    NOT NULL DEFAULT 'system',
+  CHECK (status IN (0, 1)),
+  CHECK (is_deleted IN (0, 1))
+);
+CREATE UNIQUE INDEX uk_customer_code ON customer(code);
+CREATE INDEX idx_customer_name ON customer(name);
+
+ALTER TABLE doc_header ADD COLUMN customer_id INTEGER NOT NULL DEFAULT 0;
+
+-- 存量回填：按去重名称建档（同名合并），只补 customer_id，不改金额与单号；重复执行不会重复建档。
+INSERT INTO customer (code, name, contact, phone, address, status, is_deleted,
+                      created_at, created_by, updated_at, updated_by)
+SELECT 'KH' || printf('%04d', COALESCE((SELECT MAX(id) FROM customer), 0)
+                             + ROW_NUMBER() OVER (ORDER BY h.name)),
+       h.name, '', '', '', 1, 0,
+       datetime('now', 'localtime'), 'system', datetime('now', 'localtime'), 'system'
+FROM (SELECT DISTINCT customer AS name FROM doc_header
+      WHERE customer <> '' AND customer_id = 0) h
+WHERE NOT EXISTS (SELECT 1 FROM customer c WHERE c.name = h.name);
+
+UPDATE doc_header
+SET customer_id = (SELECT id FROM customer c WHERE c.name = doc_header.customer)
+WHERE customer_id = 0 AND customer <> '';
+
+-- 往来台账：一张单据一条，退货为负数（红字），反审核置 VOIDED。
+CREATE TABLE ar_ap_entry (
+  id            INTEGER PRIMARY KEY,
+  doc_id        INTEGER NOT NULL,
+  doc_no        TEXT    NOT NULL,
+  doc_type      TEXT    NOT NULL,
+  direction     INTEGER NOT NULL,
+  partner_id    INTEGER NOT NULL DEFAULT 0,
+  partner_name  TEXT    NOT NULL,
+  partner_key   TEXT    NOT NULL,
+  biz_date      TEXT    NOT NULL,
+  due_date      TEXT    NOT NULL DEFAULT '',
+  amount_cents  INTEGER NOT NULL,
+  settled_cents INTEGER NOT NULL DEFAULT 0,
+  status        TEXT    NOT NULL DEFAULT 'OPEN',
+  created_at    TEXT    NOT NULL,
+  created_by    TEXT    NOT NULL DEFAULT 'system',
+  CHECK (direction IN (1, -1)),
+  CHECK (status IN ('OPEN', 'PARTIAL', 'SETTLED', 'VOIDED'))
+);
+CREATE UNIQUE INDEX uk_ar_ap_doc ON ar_ap_entry(doc_id);
+CREATE INDEX idx_ar_ap_partner ON ar_ap_entry(partner_key, direction, status);
+CREATE INDEX idx_ar_ap_biz_date ON ar_ap_entry(biz_date);
+
+-- 核销记录：只追加；撤销生成负数记录并指向原记录。
+CREATE TABLE settlement (
+  id           INTEGER PRIMARY KEY,
+  settle_no    TEXT    NOT NULL,
+  direction    INTEGER NOT NULL,
+  partner_key  TEXT    NOT NULL,
+  partner_name TEXT    NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  settled_on   TEXT    NOT NULL,
+  reverses_id  INTEGER NOT NULL DEFAULT 0,
+  note         TEXT    NOT NULL DEFAULT '',
+  created_at   TEXT    NOT NULL,
+  created_by   TEXT    NOT NULL DEFAULT 'system',
+  CHECK (direction IN (1, -1))
+);
+CREATE UNIQUE INDEX uk_settlement_no ON settlement(settle_no);
+CREATE INDEX idx_settlement_partner ON settlement(partner_key, direction, settled_on);
+
+-- 核销分摊：事实来源，entry 上的 settled_cents 只是同事务内的汇总缓存。
+CREATE TABLE settlement_allocation (
+  id            INTEGER PRIMARY KEY,
+  settlement_id INTEGER NOT NULL,
+  entry_id      INTEGER NOT NULL,
+  amount_cents  INTEGER NOT NULL,
+  created_at    TEXT    NOT NULL
+);
+CREATE UNIQUE INDEX uk_settlement_alloc ON settlement_allocation(settlement_id, entry_id);
+CREATE INDEX idx_settlement_alloc_entry ON settlement_allocation(entry_id);
+
+INSERT INTO app_role_permission (role_id, permission) VALUES
+  (2, 'customer.read'), (2, 'customer.write'),
+  (2, 'finance.read'), (2, 'finance.write'),
+  (3, 'customer.read'), (3, 'finance.read');
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -282,6 +379,7 @@ const std::vector<Migration>& all_migrations() {
       {4, "v4_unit", kV4},
       {5, "v5_audit_log", kV5},
       {6, "v6_transfer_stocktake", kV6},
+      {7, "v7_customer_finance", kV7},
   };
   return migrations;
 }

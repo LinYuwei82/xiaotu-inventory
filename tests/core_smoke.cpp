@@ -10,6 +10,8 @@
 #include "xiaotu/document.h"
 #include "xiaotu/edition.h"
 #include "xiaotu/error.h"
+#include "xiaotu/finance_service.h"
+#include "xiaotu/gen/customer_service.h"
 #include "xiaotu/gen/item_service.h"
 #include "xiaotu/gen/supplier_service.h"
 #include "xiaotu/gen/unit_service.h"
@@ -41,11 +43,12 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 6, "迁移后 schema 版本应为 6");
+      check(db.schema_version() == 7, "迁移后 schema 版本应为 7");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
       xiaotu::gen::SupplierService suppliers(db);
+      xiaotu::gen::CustomerService customers(db);
       xiaotu::gen::UnitService units(db);
       xiaotu::DocumentEngine documents(db);
       xiaotu::StockService stock(db);
@@ -442,6 +445,61 @@ int main() {
       check(bottled_updated.name == "瓶装商品（改名）" && bottled_updated.unit == "瓶",
             "商品更新应保留单位引用");
 
+      // 客户档案与往来台账：销售应收、采购应付，退货红字，反审核作废。
+      const auto customer = customers.create(
+          xiaotu::gen::CustomerRow{.code = "KH001", .name = "测试客户档案"});
+      check(customer.id > 0 && customer.name == "测试客户档案", "客户应创建成功");
+      xiaotu::FinanceService finance(db);
+      const auto sales_item =
+          items.create(xiaotu::gen::ItemRow{.code = "F001", .name = "往来商品", .unit_id = 1});
+      {
+        xiaotu::DocInput opening;
+        opening.doc_type = "PUR_IN";
+        opening.warehouse_id = warehouse_list.at(0).id;
+        opening.doc_date = "2026-11-12";
+        opening.lines.push_back(
+            xiaotu::DocLineInput{.item_id = sales_item.id, .qty = 10, .price_cents = 1000});
+        documents.save_and_approve(opening);
+      }
+
+      xiaotu::DocInput customer_sale;
+      customer_sale.doc_type = "SAL_OUT";
+      customer_sale.warehouse_id = warehouse_list.at(0).id;
+      customer_sale.doc_date = "2026-11-12";
+      customer_sale.partner_id = customer.id;
+      customer_sale.partner = "手工名称应被档案覆盖";
+      customer_sale.lines.push_back(
+          xiaotu::DocLineInput{.item_id = sales_item.id, .qty = 2, .price_cents = 2000});
+      const auto customer_sale_doc = documents.save_and_approve(customer_sale);
+      const std::string customer_key = "C:" + std::to_string(customer.id);
+      const auto ar_rows = finance.entries(1, customer_key);
+      check(ar_rows.size() == 1, "销售出库应生成一条应收记录");
+      check(ar_rows.at(0).amount_cents == 4000 && ar_rows.at(0).outstanding_cents == 4000,
+            "应收金额应为 4000 分且未核销");
+      check(ar_rows.at(0).partner_id == customer.id && ar_rows.at(0).partner_name == "测试客户档案",
+            "应收应引用客户档案");
+      check(documents.detail(customer_sale_doc.id).partner == "测试客户档案",
+            "销售单据应取客户档案名称");
+
+      documents.reverse(customer_sale_doc.id);
+      check(finance.entries(1, customer_key).at(0).status == "VOIDED",
+            "反审核后应收记录应作废");
+
+      xiaotu::DocInput customer_return;
+      customer_return.doc_type = "SAL_RET";
+      customer_return.warehouse_id = warehouse_list.at(0).id;
+      customer_return.doc_date = "2026-11-12";
+      customer_return.partner_id = customer.id;
+      customer_return.lines.push_back(
+          xiaotu::DocLineInput{.item_id = sales_item.id, .qty = 1, .price_cents = 2000});
+      documents.save_and_approve(customer_return);
+      check(finance.entries(1, customer_key).at(0).amount_cents == -2000,
+            "销售退货应生成负数应收（红字）");
+
+      const auto ap_rows = finance.entries(-1, "S:" + std::to_string(supplier.id));
+      check(ap_rows.size() == 1 && ap_rows.at(0).amount_cents == 1000,
+            "采购入库应生成应付记录");
+
       // 采购退货：先入库再退货，以及入库后部分退货。
       auto returned = items.create(xiaotu::gen::ItemRow{.code = "R001", .name = "退货商品"});
       make_doc("PUR_IN", returned.id, 10, 1000);
@@ -545,7 +603,9 @@ int main() {
       items.remove(item.id);
       items.remove(supplier_item.id);
       items.remove(bottled.id);
+      items.remove(sales_item.id);
       suppliers.remove(supplier.id);
+      customers.remove(customer.id);
       check(items.list().empty(), "软删除后列表中不应再出现该商品");
 
       // 审计日志：关键写操作都留痕，且能回答谁/何时/对象/动作。

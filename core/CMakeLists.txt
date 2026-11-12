@@ -57,6 +57,7 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/doc_number.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/document.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/edition.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/finance_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/ids.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/migrations.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/money.cpp"

@@ -20,6 +20,9 @@ enum class StockMode {
 };
 enum class PriceSource { Manual };
 
+// 单据往来单位类型：决定引用供应商还是客户档案。
+enum class PartnerKind { None, Supplier, Customer };
+
 // 成本钩子：返回本次变动应结转的金额（正数，单位分）。
 // 参数为数量、单价（分）与变动前的结存数量/金额，便于移动加权平均等算法复用。
 using CostHook = std::function<std::int64_t(std::int64_t qty, std::int64_t price_cents,
@@ -32,6 +35,10 @@ struct DocumentDefinition {
   std::string doc_no_prefix;  // XSCK / CGRK / ...
   StockMode stock_mode = StockMode::None;
   bool affects_stock = false;
+  PartnerKind partner_kind = PartnerKind::None;
+  // 往来方向：1 应收，-1 应付，0 不生成往来记录。
+  int finance_direction = 0;
+  bool finance_red = false;  // 退货：红字冲销同方向
   PriceSource price_source = PriceSource::Manual;
   CostHook cost_hook;
   // 审核 / 反审核的附加动作（往来账、库存占用等），M0 为空。

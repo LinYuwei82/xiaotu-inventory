@@ -15,6 +15,11 @@
     "script": "/gen/warehouse_page.js"
   },
   {
+    "key": "customer",
+    "title": "客户",
+    "script": "/gen/customer_page.js"
+  },
+  {
     "key": "supplier",
     "title": "供应商",
     "script": "/gen/supplier_page.js"

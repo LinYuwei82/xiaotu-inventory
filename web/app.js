@@ -565,6 +565,54 @@
 
   // ---------- 库存页面 ----------
 
+  async function financePage(mount) {
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>应收应付</h2>
+          <p class="page-sub">单据审核自动生成；退货为红字，反审核未核销时作废</p>
+        </div>
+        <div class="toolbar">
+          <select data-role="direction">
+            <option value="1">应收</option>
+            <option value="-1">应付</option>
+          </select>
+          <button class="btn" data-role="refresh">刷新</button>
+        </div>
+      </div>
+      <div class="card">
+        <table class="table" data-role="rows"></table>
+      </div>`;
+    const directionSelect = mount.querySelector('[data-role="direction"]');
+    const rowsTable = mount.querySelector('[data-role="rows"]');
+
+    async function reload() {
+      const rows = await api("GET", "/api/ar-ap?direction=" + directionSelect.value);
+      rowsTable.innerHTML = !rows.length
+        ? '<tbody><tr><td class="empty">暂无记录</td></tr></tbody>'
+        : `<thead><tr><th>单号</th><th>类型</th><th>往来单位</th><th>日期</th>
+             <th>金额（元）</th><th>已核销</th><th>未核销</th><th>状态</th></tr></thead>
+           <tbody>${rows
+             .map(
+               (row) => `<tr>
+                 <td>${escapeHtml(row.doc_no)}</td>
+                 <td>${escapeHtml(row.doc_type)}</td>
+                 <td>${escapeHtml(row.partner_name || "未指定")}</td>
+                 <td>${escapeHtml(row.biz_date)}</td>
+                 <td>${money(row.amount_cents)}</td>
+                 <td>${money(row.settled_cents)}</td>
+                 <td>${money(row.outstanding_cents)}</td>
+                 <td>${escapeHtml(row.status)}</td>
+               </tr>`
+             )
+             .join("")}</tbody>`;
+    }
+
+    mount.querySelector('[data-role="refresh"]').addEventListener("click", reload);
+    directionSelect.addEventListener("change", reload);
+    await reload();
+  }
+
   async function stockPage(mount) {
     let itemFilter = 0;
 
@@ -671,6 +719,7 @@
           subtitle: "保存即审核：同一事务内扣减库存并写入库存流水",
           partnerLabel: "客户",
           partnerPlaceholder: "可选",
+          partnerApi: "/api/customers",
           docLabel: "出库",
         }),
     },
@@ -684,6 +733,7 @@
           subtitle: "保存即审核：按成本单价增加库存并写入库存流水",
           partnerLabel: "客户",
           partnerPlaceholder: "可选",
+          partnerApi: "/api/customers",
           docLabel: "销售退货",
         }),
     },
@@ -713,6 +763,11 @@
           partnerPlaceholder: "可选",
           docLabel: "盘点",
         }),
+    },
+    {
+      key: "ar-ap",
+      title: "应收应付",
+      render: financePage,
     },
     { key: "stock", title: "库存", render: stockPage },
   ];
