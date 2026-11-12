@@ -1,6 +1,7 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,73 @@ ReportFilter parse_filter(const httplib::Request& req) {
   }
   if (req.has_param("limit")) filter.limit = std::stoi(req.get_param_value("limit"));
   return filter;
+}
+
+// ---------- CSV 导出 ----------
+
+bool csv_requested(const httplib::Request& req) {
+  return req.has_param("format") && req.get_param_value("format") == "csv";
+}
+
+std::string csv_escape(const std::string& value) {
+  if (value.find_first_of(",\"\r\n") == std::string::npos) return value;
+  std::string out = "\"";
+  for (const char ch : value) {
+    if (ch == '"') out += "\"\"";
+    else out += ch;
+  }
+  out += '"';
+  return out;
+}
+
+void csv_row(std::string& out, std::initializer_list<std::string> fields) {
+  bool first = true;
+  for (const auto& field : fields) {
+    if (!first) out += ',';
+    first = false;
+    out += csv_escape(field);
+  }
+  out += "\r\n";
+}
+
+// 金额统一按「元、两位小数」输出；从整数分换算，避免浮点误差。
+std::string yuan(std::int64_t cents) {
+  const bool negative = cents < 0;
+  const std::int64_t abs = negative ? -cents : cents;
+  std::string fraction = std::to_string(abs % 100);
+  if (fraction.size() < 2) fraction.insert(0, 2 - fraction.size(), '0');
+  return (negative ? "-" : "") + std::to_string(abs / 100) + "." + fraction;
+}
+
+std::string period_label(const ReportFilter& filter) {
+  if (filter.from.empty() && filter.to.empty()) return "全部期间";
+  return (filter.from.empty() ? std::string("起始不限") : filter.from) + " 至 " +
+         (filter.to.empty() ? std::string("截止不限") : filter.to);
+}
+
+std::string dimension_label(std::int64_t id, const char* name) {
+  return id == 0 ? std::string(name) + " 全部"
+                 : std::string(name) + " ID " + std::to_string(id);
+}
+
+void csv_preamble(std::string& out, const std::string& title, const std::string& scope) {
+  csv_row(out, {"报表", title});
+  csv_row(out, {"筛选条件", scope});
+  csv_row(out, {"导出时间", now_text()});
+  csv_row(out, {"金额说明",
+                "金额单位为元，由整数分按 1 元 = 100 分换算并保留两位小数，无浮点误差"});
+  out += "\r\n";
+}
+
+void send_csv(httplib::Response& res, const std::string& filename, const std::string& body) {
+  res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+  res.set_content("\xEF\xBB\xBF" + body, "text/csv; charset=utf-8");
+}
+
+std::string date_stamp() {
+  std::string stamp = now_text().substr(0, 10);
+  stamp.erase(std::remove(stamp.begin(), stamp.end(), '-'), stamp.end());
+  return stamp;
 }
 
 nlohmann::json balance_to_json(const StockBalanceRow& row) {
@@ -92,9 +160,23 @@ nlohmann::json aging_to_json(const AgingRow& row) {
 void register_report_routes(httplib::Server& server, Services& services) {
   server.Get("/api/reports/stock-balance",
              guard("stock.read",
-                   [&services](const httplib::Request&, httplib::Response& res) {
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     const auto rows = services.stock.balances();
+                     if (csv_requested(req)) {
+                       std::string csv;
+                       csv_preamble(csv, "库存余额表", "全部仓库 / 全部商品");
+                       csv_row(csv, {"商品编码", "商品名称", "单位", "仓库编码", "仓库名称",
+                                     "数量", "金额（元）"});
+                       for (const auto& row : rows) {
+                         csv_row(csv, {row.item_code, row.item_name, row.unit,
+                                       row.warehouse_code, row.warehouse_name,
+                                       std::to_string(row.qty), yuan(row.amount_cents)});
+                       }
+                       send_csv(res, "stock-balance-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
                      nlohmann::json list = nlohmann::json::array();
-                     for (const auto& row : services.stock.balances()) {
+                     for (const auto& row : rows) {
                        list.push_back(balance_to_json(row));
                      }
                      json_ok(res, list);
@@ -103,8 +185,27 @@ void register_report_routes(httplib::Server& server, Services& services) {
   server.Get("/api/reports/stock-ledger",
              guard("stock.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
+                     ReportFilter filter = parse_filter(req);
+                     if (csv_requested(req)) filter.limit = 100000;
+                     const auto rows = services.reports.stock_ledger(filter);
+                     if (csv_requested(req)) {
+                       std::string csv;
+                       csv_preamble(csv, "库存流水明细",
+                                    period_label(filter) + "；" +
+                                        dimension_label(filter.item_id, "商品") + "；" +
+                                        dimension_label(filter.warehouse_id, "仓库"));
+                       csv_row(csv, {"时间", "类型", "单据号", "商品编码", "商品名称", "仓库",
+                                     "数量", "金额（元）"});
+                       for (const auto& row : rows) {
+                         csv_row(csv, {row.biz_time, row.biz_type, row.doc_no, row.item_code,
+                                       row.item_name, row.warehouse_name,
+                                       std::to_string(row.qty), yuan(row.amount_cents)});
+                       }
+                       send_csv(res, "stock-ledger-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
                      nlohmann::json list = nlohmann::json::array();
-                     for (const auto& row : services.reports.stock_ledger(parse_filter(req))) {
+                     for (const auto& row : rows) {
                        list.push_back(ledger_to_json(row));
                      }
                      json_ok(res, list);
@@ -113,8 +214,29 @@ void register_report_routes(httplib::Server& server, Services& services) {
   server.Get("/api/reports/goods-flow",
              guard("stock.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
+                     const ReportFilter filter = parse_filter(req);
+                     const auto rows = services.reports.goods_flow(filter);
+                     if (csv_requested(req)) {
+                       std::string csv;
+                       csv_preamble(csv, "收发明细",
+                                    period_label(filter) + "；" +
+                                        dimension_label(filter.warehouse_id, "仓库"));
+                       csv_row(csv, {"商品编码", "商品名称", "单位", "仓库编码", "仓库名称",
+                                     "期初数量", "收入数量", "发出数量", "期末数量",
+                                     "收入金额（元）", "发出金额（元）"});
+                       for (const auto& row : rows) {
+                         csv_row(csv, {row.item_code, row.item_name, row.unit,
+                                       row.warehouse_code, row.warehouse_name,
+                                       std::to_string(row.opening_qty),
+                                       std::to_string(row.in_qty), std::to_string(row.out_qty),
+                                       std::to_string(row.closing_qty),
+                                       yuan(row.in_amount_cents), yuan(row.out_amount_cents)});
+                       }
+                       send_csv(res, "goods-flow-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
                      nlohmann::json list = nlohmann::json::array();
-                     for (const auto& row : services.reports.goods_flow(parse_filter(req))) {
+                     for (const auto& row : rows) {
                        list.push_back(flow_to_json(row));
                      }
                      json_ok(res, list);
@@ -131,12 +253,32 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      const std::string as_of = req.has_param("as_of")
                                                    ? req.get_param_value("as_of")
                                                    : today_text();
+                     const auto rows = services.reports.ar_ap_aging(direction, as_of);
+                     res.set_header(kArApScopeHeader, kArApScope);
+                     if (csv_requested(req)) {
+                       std::string csv;
+                       csv_preamble(csv, "应收应付余额与账龄",
+                                    std::string("方向 ") + (direction == -1 ? "应付" : "应收") +
+                                        "；截止日 " + as_of +
+                                        "；仅统计 v7 迁移后审核的单据");
+                       csv_row(csv, {"往来单位", "方向", "合计（元）", "未到期（元）", "1-30 天（元）",
+                                     "31-60 天（元）", "61-90 天（元）", "90 天以上（元）"});
+                       for (const auto& row : rows) {
+                         csv_row(csv, {row.partner_name.empty() ? row.partner_key
+                                                               : row.partner_name,
+                                       row.direction == -1 ? "应付" : "应收",
+                                       yuan(row.total_cents), yuan(row.not_due_cents),
+                                       yuan(row.d1_30_cents), yuan(row.d31_60_cents),
+                                       yuan(row.d61_90_cents), yuan(row.d90_plus_cents)});
+                       }
+                       send_csv(res, "ar-ap-aging-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
                      nlohmann::json list = nlohmann::json::array();
-                     for (const auto& row : services.reports.ar_ap_aging(direction, as_of)) {
+                     for (const auto& row : rows) {
                        list.push_back(aging_to_json(row));
                      }
                      json_ok(res, list);
-                     res.set_header(kArApScopeHeader, kArApScope);
                    }));
 }
 

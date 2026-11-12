@@ -286,6 +286,16 @@ struct DocumentDefinition {
 - 库存余额、库存流水、收发明细直接基于 `stock_ledger`，**不受影响**。
 - 需要全量历史往来时，目前只能通过单据反审核后重新审核来生成台账，或后续单独做期初往来录入。
 
+### 报表导出与打印
+
+- 四张报表（库存余额、库存流水、收发明细、应收应付账龄）都支持导出 CSV：在接口后加 `?format=csv`，
+  或直接点报表卡片右上角的「导出 CSV」。导出跟随页面当前筛选条件。
+- CSV 为带 BOM 的 UTF-8，Excel 直接打开不乱码；金额以元为单位、两位小数，由整数分按
+  `1 元 = 100 分` 换算，文件头部附金额说明，不使用浮点。
+- 报表页「打印」使用浏览器打印（`window.print()`）；单机版 WKWebView 通过原生桥接打开系统打印面板。
+  打印视图含单位名称、报表名、筛选区间与打印时间，表头在跨页时重复（`thead` 重复）。
+- 导出与查看同权限（`stock.read` / `finance.read`），不额外开放写权限。
+
 ## 9. M0 已知限制（对应方案待确认项）
 
 - 用户与角色：一次性 token 换取内置 `admin` 会话；已有 `admin` / `operator` / `viewer` 三角色与最小用户 CRUD（`/api/users`），口令登录与 `password_hash` 属于 M5。
@@ -293,7 +303,7 @@ struct DocumentDefinition {
 - 单据支持草稿态：存草稿只写单据与明细、不写库存流水，审核时才进单事务；反审核为整单反向。
 - 数量按整数件（精度策略见方案 Q4），无多单位、批次、序列号、价格体系。
 - 成本按移动加权平均，暂不支持其他计价方式。
-- 无打印、无 Excel 导出；报表为只读页面。
+- 无 Excel 导出（报表支持 CSV 与浏览器打印），无 PDF 输出与自定义打印模板。
 - 无请求幂等键（`request_id`）与 CSRF token；当前依赖一次性 token + HttpOnly Cookie + `SameSite=Lax`。
 - 未接入 vcpkg 时依赖 `third_party/` 内嵌头文件；接入 vcpkg 后 `vcpkg.json` 会自动生效。
 
@@ -322,4 +332,4 @@ tools/package/make_dmg.sh
 
 - 技术方案：`docs/进销存技术方案.md`
 - 数据库结构：`core/src/migrations.cpp`（v7）
-- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/ar-ap-aging`、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`
+- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/ar-ap-aging`（报表接口加 `?format=csv` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`

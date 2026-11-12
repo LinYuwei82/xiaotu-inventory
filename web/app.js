@@ -696,10 +696,11 @@
   async function reportPage(mount) {
     const today = new Date().toISOString().slice(0, 10);
     mount.innerHTML = `
+      <div class="print-only print-head" data-role="print-head"></div>
       <div class="page-head">
         <div>
           <h2>报表</h2>
-          <p class="page-sub">只读汇总；期间为含首含尾的自然日</p>
+          <p class="page-sub">只读汇总；期间为含首含尾的自然日；导出金额单位为元</p>
         </div>
         <div class="toolbar">
           <input type="date" data-role="from" value="${today.slice(0, 8)}01" />
@@ -709,22 +710,35 @@
             <option value="-1">应付账龄</option>
           </select>
           <button class="btn" data-role="refresh">刷新</button>
+          <button class="btn" data-role="print">打印</button>
         </div>
       </div>
       <div class="card">
-        <h3>库存余额表</h3>
+        <div class="card-head">
+          <h3>库存余额表</h3>
+          <button class="btn small" data-role="export-balance">导出 CSV</button>
+        </div>
         <table class="table" data-role="balances"></table>
       </div>
       <div class="card">
-        <h3>库存流水明细</h3>
+        <div class="card-head">
+          <h3>库存流水明细</h3>
+          <button class="btn small" data-role="export-ledger">导出 CSV</button>
+        </div>
         <table class="table" data-role="ledger"></table>
       </div>
       <div class="card">
-        <h3>收发明细</h3>
+        <div class="card-head">
+          <h3>收发明细</h3>
+          <button class="btn small" data-role="export-flows">导出 CSV</button>
+        </div>
         <table class="table" data-role="flows"></table>
       </div>
       <div class="card">
-        <h3>应收应付余额与账龄</h3>
+        <div class="card-head">
+          <h3>应收应付余额与账龄</h3>
+          <button class="btn small" data-role="export-aging">导出 CSV</button>
+        </div>
         <p class="page-sub">统计范围：仅 v7 迁移后审核的单据，升级前已审核单据不计入往来与账龄；上方库存类报表不受影响</p>
         <table class="table" data-role="aging"></table>
       </div>`;
@@ -732,6 +746,7 @@
     const fromInput = mount.querySelector('[data-role="from"]');
     const toInput = mount.querySelector('[data-role="to"]');
     const directionSelect = mount.querySelector('[data-role="direction"]');
+    const printHead = mount.querySelector('[data-role="print-head"]');
     const balancesTable = mount.querySelector('[data-role="balances"]');
     const ledgerTable = mount.querySelector('[data-role="ledger"]');
     const flowsTable = mount.querySelector('[data-role="flows"]');
@@ -741,15 +756,66 @@
       return `<tbody><tr><td class="empty" colspan="${colspan}">${text}</td></tr></tbody>`;
     }
 
+    function periodQuery() {
+      return (
+        "?from=" + encodeURIComponent(fromInput.value) + "&to=" + encodeURIComponent(toInput.value)
+      );
+    }
+
+    function renderPrintHead() {
+      const scope =
+        `期间 ${fromInput.value || "不限"} 至 ${toInput.value || "不限"}` +
+        `；账龄方向 ${directionSelect.value === "-1" ? "应付" : "应收"}`;
+      printHead.innerHTML = `
+        <div><strong>单位名称：</strong>小兔进销存</div>
+        <div><strong>报表：</strong>库存余额表 / 库存流水明细 / 收发明细 / 应收应付余额与账龄</div>
+        <div><strong>筛选区间：</strong>${escapeHtml(scope)}</div>
+        <div><strong>打印时间：</strong>${escapeHtml(new Date().toLocaleString("zh-CN", { hour12: false }))}</div>`;
+    }
+
+    async function downloadCsv(path) {
+      const response = await fetch(API_BASE + path, { credentials: "include" });
+      if (!response.ok) {
+        let message = "导出失败（HTTP " + response.status + "）";
+        try {
+          const payload = await response.json();
+          if (payload && payload.message) message = payload.message;
+        } catch (error) {
+          /* 非 JSON 响应，保留默认提示 */
+        }
+        throw new Error(message);
+      }
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const match = /filename="([^"]+)"/.exec(disposition);
+      const filename = match ? match[1] : "report.csv";
+      // response.text() 会丢掉 BOM，这里统一补回，保证 Excel 按 UTF-8 打开。
+      const text = await response.text();
+      const content = "\uFEFF" + text;
+      const handlers = window.webkit && window.webkit.messageHandlers;
+      if (handlers && handlers.xiaotuExport) {
+        handlers.xiaotuExport.postMessage({ filename, content });
+        return;
+      }
+      const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
     async function reload() {
-      const period =
-        "?from=" + encodeURIComponent(fromInput.value) + "&to=" + encodeURIComponent(toInput.value);
+      const period = periodQuery();
       const [balances, ledger, flows, aging] = await Promise.all([
         api("GET", "/api/reports/stock-balance"),
         api("GET", "/api/reports/stock-ledger" + period + "&limit=500"),
         api("GET", "/api/reports/goods-flow" + period),
         api("GET", "/api/reports/ar-ap-aging?direction=" + directionSelect.value),
       ]);
+      renderPrintHead();
 
       balancesTable.innerHTML = !balances.length
         ? emptyRow("暂无库存", 5)
@@ -822,6 +888,34 @@
              .join("")}</tbody>`;
     }
 
+    function wireExport(role, pathFn) {
+      mount.querySelector(`[data-role="${role}"]`).addEventListener("click", async () => {
+        try {
+          await downloadCsv(pathFn());
+          showNotice("已导出 CSV", "ok");
+        } catch (error) {
+          showNotice(error.message, "error");
+        }
+      });
+    }
+
+    wireExport("export-balance", () => "/api/reports/stock-balance?format=csv");
+    wireExport("export-ledger", () => "/api/reports/stock-ledger" + periodQuery() + "&format=csv");
+    wireExport("export-flows", () => "/api/reports/goods-flow" + periodQuery() + "&format=csv");
+    wireExport(
+      "export-aging",
+      () => "/api/reports/ar-ap-aging?direction=" + directionSelect.value + "&format=csv"
+    );
+
+    mount.querySelector('[data-role="print"]').addEventListener("click", () => {
+      renderPrintHead();
+      const handlers = window.webkit && window.webkit.messageHandlers;
+      if (handlers && handlers.xiaotuPrint) {
+        handlers.xiaotuPrint.postMessage("");
+      } else {
+        window.print();
+      }
+    });
     mount.querySelector('[data-role="refresh"]').addEventListener("click", reload);
     directionSelect.addEventListener("change", reload);
     await reload();

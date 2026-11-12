@@ -143,6 +143,27 @@ main {
   font-weight: 600;
 }
 
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.card-head h3 {
+  margin: 0;
+}
+
+.btn.small {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.print-only {
+  display: none;
+}
+
 .btn {
   appearance: none;
   border: 1px solid var(--line);
@@ -285,4 +306,81 @@ main {
 .lines input.readonly {
   background: #f9fafb;
   color: var(--muted);
+}
+
+/* ---------- 打印视图 ---------- */
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 10mm;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  .sidebar,
+  .notice,
+  .toolbar,
+  .btn,
+  .link {
+    display: none !important;
+  }
+
+  main {
+    padding: 0;
+    overflow: visible;
+  }
+
+  .page-head {
+    margin-bottom: 8px;
+  }
+
+  .card {
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    margin: 0 0 14px;
+  }
+
+  .card-head {
+    margin-bottom: 6px;
+  }
+
+  .table {
+    font-size: 10pt;
+  }
+
+  .table th,
+  .table td {
+    padding: 4px 6px;
+    border-bottom: 1px solid #999;
+  }
+
+  .table th {
+    background: transparent;
+    color: #000;
+  }
+
+  .table thead {
+    display: table-header-group;
+  }
+
+  .table tr {
+    break-inside: avoid;
+  }
+
+  .print-only {
+    display: block;
+  }
+
+  .print-head {
+    display: grid;
+    gap: 2px;
+    font-size: 10pt;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #000;
+  }
 }
