@@ -218,9 +218,10 @@
     await reload();
   }
 
-  // ---------- 单据（销售出库）页面 ----------
+  // ---------- 单据页面（销售出库 / 采购入库共用） ----------
 
-  async function documentPage(mount) {
+  async function documentPage(mount, config) {
+    const docType = config.docType;
     let warehouses = [];
     let items = [];
     let documents = [];
@@ -228,8 +229,8 @@
     mount.innerHTML = `
       <div class="page-head">
         <div>
-          <h2>销售出库</h2>
-          <p class="page-sub">保存即审核：同一事务内扣减库存并写入库存流水</p>
+          <h2>${escapeHtml(config.title)}</h2>
+          <p class="page-sub">${escapeHtml(config.subtitle)}</p>
         </div>
         <button class="btn" data-role="refresh">刷新</button>
       </div>
@@ -242,8 +243,10 @@
             <label class="field"><span>单据日期</span>
               <input type="date" data-role="date" required />
             </label>
-            <label class="field"><span>客户</span>
-              <input type="text" data-role="partner" placeholder="可选" />
+            <label class="field"><span>${escapeHtml(config.partnerLabel)}</span>
+              <input type="text" data-role="partner" placeholder="${escapeHtml(
+                config.partnerPlaceholder
+              )}" />
             </label>
           </div>
           <table class="table lines" data-role="lines"></table>
@@ -303,11 +306,13 @@
     function renderDocuments() {
       if (!documents.length) {
         documentsTable.innerHTML =
-          '<tbody><tr><td class="empty">还没有出库单</td></tr></tbody>';
+          `<tbody><tr><td class="empty">还没有${escapeHtml(config.docLabel)}单</td></tr></tbody>`;
         return;
       }
       documentsTable.innerHTML = `
-        <thead><tr><th>单据号</th><th>日期</th><th>仓库</th><th>客户</th><th>数量</th><th>金额（元）</th><th>状态</th><th class="actions">操作</th></tr></thead>
+        <thead><tr><th>单据号</th><th>日期</th><th>仓库</th><th>${escapeHtml(
+          config.partnerLabel
+        )}</th><th>数量</th><th>金额（元）</th><th>状态</th><th class="actions">操作</th></tr></thead>
         <tbody>${documents
           .map(
             (doc) => `<tr data-id="${doc.id}">
@@ -332,7 +337,7 @@
       const [warehouseList, itemList, docList] = await Promise.all([
         api("GET", "/api/warehouses"),
         api("GET", "/api/items"),
-        api("GET", "/api/documents?doc_type=SAL_OUT"),
+        api("GET", "/api/documents?doc_type=" + docType),
       ]);
       warehouses = warehouseList;
       items = itemList;
@@ -371,7 +376,7 @@
       }
       try {
         const result = await api("POST", "/api/documents", {
-          doc_type: "SAL_OUT",
+          doc_type: docType,
           warehouse_id: Number(warehouseSelect.value),
           doc_date: dateInput.value,
           partner: mount.querySelector('[data-role="partner"]').value.trim(),
@@ -472,7 +477,32 @@
   // ---------- 导航与启动 ----------
 
   const FIXED_PAGES = [
-    { key: "sales", title: "销售出库", render: documentPage },
+    {
+      key: "purchase",
+      title: "采购入库",
+      render: (mount) =>
+        documentPage(mount, {
+          docType: "PUR_IN",
+          title: "采购入库",
+          subtitle: "保存即审核：同一事务内增加库存并写入库存流水",
+          partnerLabel: "供应商",
+          partnerPlaceholder: "可选",
+          docLabel: "入库",
+        }),
+    },
+    {
+      key: "sales",
+      title: "销售出库",
+      render: (mount) =>
+        documentPage(mount, {
+          docType: "SAL_OUT",
+          title: "销售出库",
+          subtitle: "保存即审核：同一事务内扣减库存并写入库存流水",
+          partnerLabel: "客户",
+          partnerPlaceholder: "可选",
+          docLabel: "出库",
+        }),
+    },
     { key: "stock", title: "库存", render: stockPage },
   ];
 

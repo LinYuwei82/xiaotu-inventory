@@ -1,4 +1,4 @@
-// M0 冒烟测试：迁移 → 建商品 → 出库 → 查库存 → 反审核。
+// M0 冒烟测试：迁移 → 建商品 → 销售出库 → 采购入库与加权平均 → 反审核 → 查库存。
 #include <unistd.h>
 
 #include <filesystem>
@@ -91,6 +91,66 @@ int main() {
       }
       check(double_reverse_rejected, "重复反审核应被拒绝");
 
+      // 采购入库：按单据金额入账，出库成本走移动加权平均。
+      auto purchased = items.create(xiaotu::gen::ItemRow{.code = "P001", .name = "采购商品"});
+      const auto balance_of = [&stock](std::int64_t item_id) {
+        for (const auto& row : stock.balances()) {
+          if (row.item_id == item_id) return row;
+        }
+        return xiaotu::StockBalanceRow{};
+      };
+      const auto purchase = [&](std::int64_t qty, std::int64_t price_cents) {
+        xiaotu::DocInput doc;
+        doc.doc_type = "PUR_IN";
+        doc.warehouse_id = warehouse_list.at(0).id;
+        doc.doc_date = "2026-11-12";
+        doc.partner = "测试供应商";
+        doc.lines.push_back(xiaotu::DocLineInput{.item_id = purchased.id, .qty = qty,
+                                                 .price_cents = price_cents});
+        return documents.save_and_approve(doc);
+      };
+
+      const auto first_purchase = purchase(10, 1000);
+      check(first_purchase.doc_no.rfind("CGRK", 0) == 0, "采购入库单号应以 CGRK 开头");
+      auto purchased_balance = balance_of(purchased.id);
+      check(purchased_balance.qty == 10, "采购入库后数量应为 10");
+      check(purchased_balance.amount_cents == 10000, "采购入库后金额应为 10000 分");
+
+      purchase(10, 1400);
+      purchased_balance = balance_of(purchased.id);
+      check(purchased_balance.qty == 20, "两笔入库后数量应为 20");
+      check(purchased_balance.amount_cents == 24000, "两笔入库后金额应为 24000 分");
+
+      // 出库 5 件，成本 = 24000 * 5 / 20 = 6000 分，结存应为 15 件 / 18000 分。
+      xiaotu::DocInput sale;
+      sale.doc_type = "SAL_OUT";
+      sale.warehouse_id = warehouse_list.at(0).id;
+      sale.doc_date = "2026-11-12";
+      sale.lines.push_back(xiaotu::DocLineInput{.item_id = purchased.id, .qty = 5,
+                                                .price_cents = 2000});
+      const auto sale_doc = documents.save_and_approve(sale);
+      purchased_balance = balance_of(purchased.id);
+      check(purchased_balance.qty == 15, "加权平均出库后数量应为 15");
+      check(purchased_balance.amount_cents == 18000, "加权平均出库后金额应为 18000 分");
+
+      documents.reverse(sale_doc.id);
+      purchased_balance = balance_of(purchased.id);
+      check(purchased_balance.qty == 20 && purchased_balance.amount_cents == 24000,
+            "反审核出库后应回到 20 件 / 24000 分");
+
+      documents.reverse(first_purchase.id);
+      purchased_balance = balance_of(purchased.id);
+      check(purchased_balance.qty == 10, "反审核首笔入库后数量应为 10");
+      check(purchased_balance.amount_cents == 14000, "反审核首笔入库后金额应为 14000 分");
+      check(stock.ledger(purchased.id).size() == 5,
+            "采购入库链路应保留原流水并追加 REVERSE（共 5 条）");
+
+      const auto purchase_docs = documents.list("PUR_IN");
+      check(purchase_docs.size() == 2, "应有两张采购入库单");
+      check(purchase_docs.at(0).status == "APPROVED" && purchase_docs.at(1).status == "VOIDED",
+            "反审核的入库单应标记为 VOIDED");
+
+      items.remove(purchased.id);
       items.remove(item.id);
       check(items.list().empty(), "软删除后列表中不应再出现该商品");
     }
