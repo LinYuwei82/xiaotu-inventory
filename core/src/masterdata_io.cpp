@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -21,6 +22,7 @@
 #include "xiaotu/gen/item_dao.h"
 #include "xiaotu/gen/supplier_dao.h"
 #include "xiaotu/gen/unit_dao.h"
+#include "xiaotu/item_barcode.h"
 #include "xiaotu/item_category.h"
 #include "xiaotu/xlsx_reader.h"
 
@@ -75,6 +77,7 @@ BoolCell parse_bool(const std::string& text) {
 struct ItemRecord {
   gen::ItemRow row;
   bool deleted = false;
+  std::vector<std::string> barcodes;  // 主码在前
 };
 
 struct PartnerRecord {
@@ -104,6 +107,19 @@ std::vector<ItemRecord> load_items(Db& db) {
       record.row.tax_rate_bp = stmt.i64(9);
       record.row.barcode = stmt.text(10);
       records.push_back(std::move(record));
+    }
+    std::unordered_map<std::int64_t, std::vector<std::string>> codes;
+    Stmt barcode_stmt(conn,
+                      "SELECT item_id, barcode FROM item_barcode"
+                      " ORDER BY item_id, is_primary DESC, id;");
+    while (barcode_stmt.step()) {
+      codes[barcode_stmt.i64(0)].push_back(barcode_stmt.text(1));
+    }
+    for (auto& record : records) {
+      const auto found = codes.find(record.row.id);
+      if (found != codes.end()) {
+        record.barcodes = found->second;
+      }
     }
   });
   return records;
@@ -184,7 +200,7 @@ struct ItemPlan {
   bool has_category = false;
   std::int64_t category_id = 0;
   bool has_barcode = false;
-  std::string barcode;
+  std::vector<std::string> barcodes;  // 主码在前
   bool has_tax = false;
   std::int64_t tax_rate_bp = 0;
   bool has_status = false;
@@ -322,8 +338,14 @@ std::vector<ItemPlan> validate_items(const SheetTable& table, const ColumnMap& c
   std::unordered_map<std::string, std::string> barcode_owner;
   for (const auto& record : records) {
     by_code.emplace(record.row.code, &record);
-    if (!record.row.barcode.empty()) {
-      barcode_owner.emplace(record.row.barcode, record.row.code);
+    if (record.barcodes.empty()) {
+      if (!record.row.barcode.empty()) {
+        barcode_owner.emplace(record.row.barcode, record.row.code);
+      }
+    } else {
+      for (const auto& code : record.barcodes) {
+        barcode_owner.emplace(code, record.row.code);
+      }
     }
   }
 
@@ -404,20 +426,51 @@ std::vector<ItemPlan> validate_items(const SheetTable& table, const ColumnMap& c
       }
     }
 
-    const std::string barcode = columns.cell(sheet_row, "条码");
-    if (!barcode.empty()) {
-      const auto owner = barcode_owner.find(barcode);
-      const auto duplicate = seen_barcode.find(barcode);
-      if (owner != barcode_owner.end() && owner->second != plan.code) {
-        reject_row(issues, plan.row, "条码",
-                   "条码已被商品 " + owner->second + " 占用");
-      } else if (duplicate != seen_barcode.end()) {
-        reject_row(issues, plan.row, "条码",
-                   "与第 " + std::to_string(duplicate->second) + " 行重复");
-      } else {
+    const std::string barcode_cell = columns.cell(sheet_row, "条码");
+    if (!barcode_cell.empty()) {
+      // 多个码用 | 分隔，第一个是主码；同一行重复、与其他商品冲突都整批拒绝。
+      std::vector<std::string> codes;
+      std::unordered_set<std::string> local;
+      bool valid = true;
+      std::size_t begin = 0;
+      while (begin <= barcode_cell.size()) {
+        const auto end = barcode_cell.find('|', begin);
+        std::string code = barcode_cell.substr(begin, end == std::string::npos
+                                                          ? std::string::npos
+                                                          : end - begin);
+        const auto first = code.find_first_not_of(" \t\r\n");
+        if (first != std::string::npos) {
+          code = code.substr(first, code.find_last_not_of(" \t\r\n") - first + 1);
+        } else {
+          code.clear();
+        }
+        if (!code.empty()) {
+          if (!local.insert(code).second) {
+            reject_row(issues, plan.row, "条码", "同一行条码重复：" + code);
+            valid = false;
+          } else if (const auto owner = barcode_owner.find(code);
+                     owner != barcode_owner.end() && owner->second != plan.code) {
+            reject_row(issues, plan.row, "条码",
+                       "条码已被商品 " + owner->second + " 占用：" + code);
+            valid = false;
+          } else if (const auto duplicate = seen_barcode.find(code);
+                     duplicate != seen_barcode.end()) {
+            reject_row(issues, plan.row, "条码",
+                       "与第 " + std::to_string(duplicate->second) + " 行重复：" + code);
+            valid = false;
+          } else {
+            seen_barcode.emplace(code, plan.row);
+            codes.push_back(code);
+          }
+        }
+        if (end == std::string::npos) {
+          break;
+        }
+        begin = end + 1;
+      }
+      if (valid && !codes.empty()) {
         plan.has_barcode = true;
-        plan.barcode = barcode;
-        seen_barcode.emplace(barcode, plan.row);
+        plan.barcodes = std::move(codes);
       }
     }
 
@@ -604,12 +657,26 @@ MasterExport export_master(Db& db, MasterKind kind) {
       category_names.emplace(categories.rows[i].id, categories.names[i]);
     }
     gen::ItemDao dao(db);
+    std::unordered_map<std::int64_t, std::string> barcode_text;
+    for (const auto& record : load_items(db)) {
+      if (record.barcodes.empty()) {
+        barcode_text.emplace(record.row.id, record.row.barcode);
+        continue;
+      }
+      std::string joined;
+      for (std::size_t i = 0; i < record.barcodes.size(); ++i) {
+        if (i != 0) joined += "|";
+        joined += record.barcodes[i];
+      }
+      barcode_text.emplace(record.row.id, joined);
+    }
     for (const auto& row : dao.list()) {
       const auto category = category_names.find(row.category_id);
+      const auto barcodes = barcode_text.find(row.id);
       result.rows.push_back({row.code, row.name, row.spec, row.unit,
                              category == category_names.end() ? "" : category->second,
-                             row.barcode, format_tax_bp(row.tax_rate_bp),
-                             row.status ? "是" : "否"});
+                             barcodes == barcode_text.end() ? row.barcode : barcodes->second,
+                             format_tax_bp(row.tax_rate_bp), row.status ? "是" : "否"});
     }
     return result;
   }
@@ -672,7 +739,7 @@ ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
           row.unit = plan.unit_name;
         }
         if (plan.has_category) row.category_id = plan.category_id;
-        if (plan.has_barcode) row.barcode = plan.barcode;
+        if (plan.has_barcode) row.barcode = plan.barcodes.front();
         if (plan.has_tax) row.tax_rate_bp = plan.tax_rate_bp;
         if (plan.has_status) row.status = plan.status;
         if (plan.current != nullptr) {
@@ -681,6 +748,10 @@ ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
         } else {
           gen::ItemDao::insert(conn, row);
           ++report.outcome.inserted;
+        }
+        // 条码单元非空才整体替换；空单元保持原有条码不动。
+        if (plan.has_barcode) {
+          replace_item_barcodes(conn, row.id, plan.barcodes);
         }
       }
       audit_write(conn, "import", "item", 0, name,

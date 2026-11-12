@@ -41,6 +41,9 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v20 | 应收应付期初标记 `ar_ap_entry.opening`，`uk_ar_ap_doc` 放宽为只约束 `doc_id > 0` |
 | v21 | `item_barcode.item_id` 的唯一索引改为普通索引，为一商品多码预留；条码全局唯一不变 |
 | v22 | 新增 `app_setting` 键值表（公司名称/电话/地址）与 `setting.read` / `setting.write` 权限 |
+| v23 | 负库存开关 `allow_negative_stock`（默认关），结存非负触发器改为按开关判断 |
+| v24 | 会话超时参数 `session_idle_minutes` / `session_absolute_hours`（默认 30 分钟 / 12 小时） |
+| v25 | 把已有 `item.barcode` 回填为主码行，一商品多码正式启用 |
 
 ## 1. 环境要求
 
@@ -588,7 +591,7 @@ struct DocumentDefinition {
 - 桌面版已支持直接「导出 PDF」（原生保存面板，不弹系统打印面板）；尚无针式打印模板与 A4 / 针式纸张尺寸选择，这两类纸张输出属于 M4 未完成项。
 - Windows：顶层 CMake 不构建 GUI 壳（`XIAOTU_BUILD_SHELL=OFF`），界面通过浏览器访问；`shell/win` 另有独立的 Win32 + WebView2 壳工程，尚未接入顶层构建与安装包。
 - 导航使用 `#/<key>` 路由：**刷新保页**在单机版与网络版都有效；**前进 / 后退**只在 `--server` 的浏览器里有效，单机版 WKWebView 没有后退入口。单机版有意不开 `allowsBackForwardNavigationGestures`、也不加后退 / 前进菜单项：侧栏已经是完整导航路径，录入页的脏标记会拦住误跳，横扫手势还会和明细表的横向滚动冲突。未保存离开确认与提示 / 输入框都是页内自绘（`askDialog`），不依赖 `window.confirm` / `alert` / `prompt`（WKWebView 未实现对应面板）；单机版直接关闭窗口不会拦（WKWebView 不执行 `beforeunload`），网络版浏览器会提示，单机版请先保存再关窗。
-- 商品条码当前是**一商品一码**：只有 `item.barcode` 单列（全局唯一，空串可重复，多条空串允许）。`item_barcode` 表只是预留，代码尚未写入；v21 把它的 `item_id` 唯一索引改成普通索引，仅为将来多码留位，**一商品多码未实施**。
+- 商品条码支持**一商品多码**（v25 起正式启用）：`item_barcode` 保存全部码，其中一个为主码；`item.barcode` 只作主码镜像并由应用层同步，避免两处真相。条码全局唯一，空码不占位；商品表单可增删码并切换主码，扫码按任意码精确命中商品。导入导出用 `|` 分隔多个码、第一个为主码。升级时 v25 会把已有 `item.barcode` 回填为主码行，不丢码。箱码换算、一码多商品、校验位计算未实现。
 - 含税价**未实施**：本期只存商品级税率 `item.tax_rate_bp`（整数万分比）用于展示与导入导出，没有单据行税率覆盖、也没有 `price_includes_tax` 之类的含税标记，税额不参与任何计算。
 - 审计日志覆盖登录成功 / 失败（失败记录尝试的用户名与来源 IP）、导出（`format=csv|xlsx` 与 `/export`，记录路径与筛选条件）、手动备份与恢复、用户角色变更（`role_change`，含原角色与新角色）、系统参数修改（`entity=setting`，逐键记录原值与新值）、主数据导入、单据审核 / 反审核、收付款、成本超限确认等。导出审计只记 200 成功的请求并在响应写出前落库；`config.toml` 仍由运维改文件后重启生效，不写审计。
 - 无 Developer ID 证书，`.dmg` 为 ad-hoc 签名且未公证，Gatekeeper 会拦截首次打开，处理方式见第 10 节。

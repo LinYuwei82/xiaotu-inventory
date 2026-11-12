@@ -790,6 +790,16 @@ INSERT INTO app_setting (key, value, updated_at, updated_by) VALUES
   ('session_absolute_hours', '12', datetime('now', 'localtime'), 'system');
 )SQL";
 
+// v25：一商品多码正式启用。把现有 item.barcode 回填成主码行，升级不丢码；
+// 之后 item.barcode 作为主码镜像由应用层同步，item_barcode 存全部码。
+constexpr const char* kV25 = R"SQL(
+INSERT INTO item_barcode (item_id, barcode, is_primary, created_at)
+SELECT i.id, i.barcode, 1, datetime('now', 'localtime')
+FROM item i
+WHERE i.barcode <> ''
+  AND NOT EXISTS (SELECT 1 FROM item_barcode b WHERE b.item_id = i.id);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -829,6 +839,7 @@ const std::vector<Migration>& all_migrations() {
       {22, "v22_app_setting", kV22},
       {23, "v23_allow_negative_stock", kV23},
       {24, "v24_session_timeout", kV24},
+      {25, "v25_item_barcode_backfill", kV25},
   };
   return migrations;
 }

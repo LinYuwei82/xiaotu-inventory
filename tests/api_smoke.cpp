@@ -135,6 +135,51 @@ void run_server_mode(const std::filesystem::path& dir) {
     check(rows.is_array() && rows.size() == 1, "按关键字查询应命中一条商品");
   }
 
+  // 一商品多码：主码 + 备用码，扫码命中副码，列表回传全部码。
+  const std::string item_path = "/api/items/" + std::to_string(item_body.value("id", 0LL)) +
+                                "/barcodes";
+  const auto codes_saved = client.Put(item_path,
+                                      R"({"barcodes":["6900000000012","6900000000029"]})",
+                                      "application/json");
+  check(codes_saved && codes_saved->status == 200, "保存多个条码应返回 200");
+  if (codes_saved) {
+    const auto codes = nlohmann::json::parse(codes_saved->body)["barcodes"];
+    check(codes.size() == 2 && codes[0].value("primary", false) &&
+              codes[0].value("barcode", "") == "6900000000012",
+          "第一个条码应为主码");
+  }
+  const auto scanned = client.Get("/api/items?barcode=6900000000029");
+  check(scanned && scanned->status == 200, "按备用码扫码应返回 200");
+  if (scanned) {
+    const auto rows = nlohmann::json::parse(scanned->body);
+    check(rows.is_array() && rows.size() == 1 &&
+              rows[0].value("code", "") == "SMOKE1",
+          "按备用码扫码应命中同一商品");
+  }
+  const auto listed_codes = client.Get("/api/items?q=SMOKE1");
+  if (listed_codes) {
+    const auto rows = nlohmann::json::parse(listed_codes->body);
+    check(rows.size() == 1 && rows[0]["barcodes"].size() == 2,
+          "列表应回传主码与备用码");
+  }
+
+  const auto created2 = client.Post(
+      "/api/items", R"({"code":"SMOKE2","name":"冒烟商品二","unit_id":1})", "application/json");
+  const auto item2 =
+      created2 ? nlohmann::json::parse(created2->body) : nlohmann::json::object();
+  const auto conflict = client.Put(
+      "/api/items/" + std::to_string(item2.value("id", 0LL)) + "/barcodes",
+      R"({"barcodes":["6900000000012"]})", "application/json");
+  check(conflict && conflict->status != 200 &&
+            conflict->body.find("条码已被商品") != std::string::npos,
+        "与其他商品条码冲突应被拒绝");
+  const auto duplicated = client.Put(item_path,
+                                     R"({"barcodes":["6900000000036","6900000000036"]})",
+                                     "application/json");
+  check(duplicated && duplicated->status != 200 &&
+            duplicated->body.find("条码重复") != std::string::npos,
+        "同一商品重复条码应被拒绝");
+
   const auto csv = client.Get("/api/reports/stock-balance?format=csv");
   check(csv && csv->status == 200 && csv->get_header_value("Content-Type").rfind("text/csv", 0) == 0,
         "库存余额导出 CSV 应返回 200");
@@ -203,8 +248,8 @@ void run_server_mode(const std::filesystem::path& dir) {
   check(diagnostic && diagnostic->status == 200, "诊断信息应返回 200");
   if (diagnostic) {
     const auto data = nlohmann::json::parse(diagnostic->body);
-    check(data.value("schema_version", 0) == 24, "诊断信息里的 schema 应为 24");
-    check(data.value("migrations", 0) == 24, "诊断信息里的迁移条数应为 24");
+    check(data.value("schema_version", 0) == 25, "诊断信息里的 schema 应为 25");
+    check(data.value("migrations", 0) == 25, "诊断信息里的迁移条数应为 25");
     check(data.value("mode", "") == "server", "网络版诊断信息 mode 应为 server");
     check(!data.value("data_dir", "").empty(), "诊断信息应包含数据目录");
     check(data.value("database_bytes", 0LL) > 0, "诊断信息应包含大于 0 的数据库大小");

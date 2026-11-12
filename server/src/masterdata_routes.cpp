@@ -7,11 +7,13 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "xiaotu/error.h"
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
+#include "xiaotu/item_barcode.h"
 #include "xiaotu/item_category.h"
 #include "xiaotu/masterdata_io.h"
 #include "xiaotu/opening_import.h"
@@ -318,26 +320,34 @@ void register_masterdata_routes(httplib::Server& server, Services& services) {
                          json_ok(res, nlohmann::json::array());
                          return;
                        }
-                       sql += " AND i.barcode = ?";
+                       sql +=
+                           " AND (i.barcode = ? OR EXISTS (SELECT 1 FROM item_barcode b"
+                           " WHERE b.item_id = i.id AND b.barcode = ?))";
+                       bindings.push_back(barcode);
                        bindings.push_back(barcode);
                      }
                      if (req.has_param("q")) {
                        sql +=
                            " AND (i.code LIKE ? ESCAPE '\\' OR i.name LIKE ? ESCAPE '\\'"
-                           " OR i.barcode LIKE ? ESCAPE '\\')";
+                           " OR i.barcode LIKE ? ESCAPE '\\'"
+                           " OR EXISTS (SELECT 1 FROM item_barcode b WHERE b.item_id = i.id"
+                           " AND b.barcode LIKE ? ESCAPE '\\'))";
                        const std::string pattern = like_pattern(req.get_param_value("q"));
+                       bindings.push_back(pattern);
                        bindings.push_back(pattern);
                        bindings.push_back(pattern);
                        bindings.push_back(pattern);
                      }
                      sql += " ORDER BY i.code;";
                      nlohmann::json list = nlohmann::json::array();
+                     std::vector<std::int64_t> item_ids;
                      services.db.read([&](sqlite3* conn) {
                        Stmt stmt(conn, sql);
                        for (std::size_t i = 0; i < bindings.size(); ++i) {
                          stmt.bind(static_cast<std::int64_t>(i + 1), bindings[i]);
                        }
                        while (stmt.step()) {
+                         item_ids.push_back(stmt.i64(0));
                          list.push_back(nlohmann::json{
                              {"id", stmt.i64(0)},
                              {"code", stmt.text(1)},
@@ -350,10 +360,59 @@ void register_masterdata_routes(httplib::Server& server, Services& services) {
                              {"tax_rate_bp", stmt.i64(8)},
                              {"barcode", stmt.text(9)},
                              {"status", stmt.i64(10) != 0},
+                             {"barcodes", nlohmann::json::array()},
                          });
                        }
                      });
+                     // 主码在前，其余按录入顺序；列表页与编辑表单共用。
+                     if (!item_ids.empty()) {
+                       std::string ids;
+                       for (std::size_t i = 0; i < item_ids.size(); ++i) {
+                         if (i != 0) ids += ", ";
+                         ids += std::to_string(item_ids[i]);
+                       }
+                       std::unordered_map<std::int64_t, std::size_t> index_of;
+                       for (std::size_t i = 0; i < item_ids.size(); ++i) {
+                         index_of.emplace(item_ids[i], i);
+                       }
+                       services.db.read([&](sqlite3* conn) {
+                         Stmt stmt(conn,
+                                   "SELECT item_id, barcode FROM item_barcode WHERE item_id IN (" +
+                                       ids + ") ORDER BY item_id, is_primary DESC, id;");
+                         while (stmt.step()) {
+                           const auto it = index_of.find(stmt.i64(0));
+                           if (it != index_of.end()) {
+                             list[it->second]["barcodes"].push_back(stmt.text(1));
+                           }
+                         }
+                       });
+                     }
                      json_ok(res, list);
+                   }));
+
+  // 一商品多码：整体替换，第一项为主码并同步 item.barcode；空数组表示清空。
+  server.Put(R"(/api/items/(\d+)/barcodes)",
+             guard("item.write",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     const std::int64_t id = std::stoll(req.matches[1].str());
+                     const auto body = json_body(req);
+                     if (!body.contains("barcodes") || !body["barcodes"].is_array()) {
+                       throw AppError("INVALID_INPUT", "barcodes 应为条码数组");
+                     }
+                     std::vector<std::string> codes;
+                     for (const auto& value : body["barcodes"]) {
+                       if (!value.is_string()) {
+                         throw AppError("INVALID_INPUT", "barcodes 只能包含字符串");
+                       }
+                       codes.push_back(value.get<std::string>());
+                     }
+                     replace_item_barcodes(services.db, id, codes);
+                     nlohmann::json result = nlohmann::json::array();
+                     for (const auto& row : item_barcodes(services.db, id)) {
+                       result.push_back(
+                           nlohmann::json{{"barcode", row.barcode}, {"primary", row.primary}});
+                     }
+                     json_ok(res, nlohmann::json{{"barcodes", result}});
                    }));
 
   server.Get("/api/item-categories",
