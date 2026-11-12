@@ -277,6 +277,15 @@ struct DocumentDefinition {
 | 软删除 | `core/src/crud.cpp` | `soft_delete()` 置 `is_deleted=1` 并刷新修改人；查询统一过滤 |
 | 请求上下文 | `core/include/xiaotu/context.h` | 中间件按请求填充 `current_context()`（用户、角色、request id） |
 
+### 应收应付统计口径
+
+`ar_ap_entry` 只在单据审核时写入。v7 迁移为历史销售单按名称回填了 `customer_id`，但**不会为升级前已审核的单据补建往来记录**。因此：
+
+- 应收应付台账（`/api/ar-ap`）、核销（`/api/settlements`）与账龄（`/api/reports/ar-ap-aging`）仅统计 **v7 迁移之后审核的单据**；升级前已审核单据不计入往来余额与账龄。
+- 上述接口在响应头返回 `X-Xiaotu-Data-Scope: ar_ap_since_v7`，返回体结构不变。
+- 库存余额、库存流水、收发明细直接基于 `stock_ledger`，**不受影响**。
+- 需要全量历史往来时，目前只能通过单据反审核后重新审核来生成台账，或后续单独做期初往来录入。
+
 ## 9. M0 已知限制（对应方案待确认项）
 
 - 用户与角色：一次性 token 换取内置 `admin` 会话；已有 `admin` / `operator` / `viewer` 三角色与最小用户 CRUD（`/api/users`），口令登录与 `password_hash` 属于 M5。

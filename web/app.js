@@ -571,6 +571,7 @@
         <div>
           <h2>应收应付</h2>
           <p class="page-sub">单据审核自动生成；退货为红字，反审核未核销时作废</p>
+          <p class="page-sub">统计范围：仅统计 v7 迁移之后审核的单据，升级前已审核单据不计入往来与账龄</p>
         </div>
         <div class="toolbar">
           <select data-role="direction">
@@ -724,6 +725,7 @@
       </div>
       <div class="card">
         <h3>应收应付余额与账龄</h3>
+        <p class="page-sub">统计范围：仅 v7 迁移后审核的单据，升级前已审核单据不计入往来与账龄；上方库存类报表不受影响</p>
         <table class="table" data-role="aging"></table>
       </div>`;
 

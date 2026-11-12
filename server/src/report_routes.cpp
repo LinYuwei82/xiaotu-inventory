@@ -13,6 +13,10 @@
 namespace xiaotu {
 namespace {
 
+// 账龄口径与应收应付台账一致：只统计 v7 迁移后审核的单据。
+constexpr const char* kArApScopeHeader = "X-Xiaotu-Data-Scope";
+constexpr const char* kArApScope = "ar_ap_since_v7";
+
 ReportFilter parse_filter(const httplib::Request& req) {
   ReportFilter filter;
   if (req.has_param("from")) filter.from = req.get_param_value("from");
@@ -132,6 +136,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        list.push_back(aging_to_json(row));
                      }
                      json_ok(res, list);
+                     res.set_header(kArApScopeHeader, kArApScope);
                    }));
 }
 

@@ -11,6 +11,10 @@
 namespace xiaotu {
 namespace {
 
+// 应收应付统计口径：迁移只回填历史单据的客户引用，不补建升级前的往来记录。
+constexpr const char* kArApScopeHeader = "X-Xiaotu-Data-Scope";
+constexpr const char* kArApScope = "ar_ap_since_v7";
+
 nlohmann::json settlement_json(const SettlementRow& row) {
   return nlohmann::json{
       {"id", row.id},
@@ -60,6 +64,7 @@ void register_finance_routes(httplib::Server& server, Services& services) {
                        });
                      }
                      json_ok(res, list);
+                     res.set_header(kArApScopeHeader, kArApScope);
                    }));
 
   server.Get("/api/settlements",
@@ -76,6 +81,7 @@ void register_finance_routes(httplib::Server& server, Services& services) {
                        list.push_back(settlement_json(row));
                      }
                      json_ok(res, list);
+                     res.set_header(kArApScopeHeader, kArApScope);
                    }));
 
   server.Post("/api/settlements",
