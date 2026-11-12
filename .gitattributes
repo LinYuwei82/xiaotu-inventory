@@ -1,0 +1,32 @@
+# 默认按文本处理并统一 LF；避免 Windows 上换行被改写
+* text=auto eol=lf
+
+# 源码与配置
+*.c            text
+*.h            text
+*.cpp          text
+*.hpp          text
+*.mm           text
+*.js           text
+*.css          text
+*.html         text
+*.json         text
+*.md           text
+*.j2           text
+*.yml          text
+*.yaml         text
+*.txt          text
+*.cmake        text
+CMakeLists.txt text
+*.sh           text eol=lf
+*.plist        text eol=lf
+
+# 二进制资源与本地数据
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.gif          binary
+*.icns         binary
+*.dmg          binary
+*.zip          binary
+*.db           binary

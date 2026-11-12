@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  小兔进销存夜间任务 · launchd 模板
+  使用前把 __REPO__ 换成仓库绝对路径、__LOG_DIR__ 换成日志目录，再放到
+  ~/Library/LaunchAgents/com.simem.xiaotu.nightly.plist。
+  安装步骤见 tools/nightly/README.md；仓库不会自动加载它。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.simem.xiaotu.nightly</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__REPO__/tools/nightly/nightly.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>2</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/launchd.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>XIAOTU_LOG_DIR</key>
+    <string>__LOG_DIR__</string>
+    <key>XIAOTU_NIGHTLY_WEBHOOK</key>
+    <string></string>
+  </dict>
+</dict>
+</plist>
