@@ -189,14 +189,28 @@ int main() {
         stmt.bind(1, xiaotu::hash_token(sliding_token)).run();
       });
       bool renewed = false;
-      check(sessions.get(sliding_token, &renewed).has_value(), "续期前会话应有效");
+      check(sessions.get(sliding_token, 30, 12, &renewed).has_value(),
+            "续期前会话应有效");
       check(renewed, "超过续期间隔的访问应触发续期");
       const std::string expires =
           column_text(db, "SELECT expires_at FROM app_session WHERE token_hash = ?;",
                       xiaotu::hash_token(sliding_token));
-      const std::string eight_hours =
-          read_text(db, "SELECT datetime('now', 'localtime', '+7 hours');");
-      check(expires > eight_hours, "续期后有效期应接近 8 小时");
+      const std::string twenty_five_minutes =
+          read_text(db, "SELECT datetime('now', 'localtime', '+25 minutes');");
+      check(expires > twenty_five_minutes, "续期后空闲有效期应接近 30 分钟");
+
+      // 绝对上限：签发已超过 12 小时，即使最近访问过也拒绝。
+      const std::string absolute_token = sessions.create(admin.id).id;
+      db.write([&](sqlite3* conn) {
+        xiaotu::Stmt stmt(conn,
+                          "UPDATE app_session SET created_at = datetime('now', 'localtime',"
+                          " '-13 hours'), last_seen_at = datetime('now', 'localtime',"
+                          " '-2 minutes'), expires_at = datetime('now', 'localtime', '+1 hour')"
+                          " WHERE token_hash = ?;");
+        stmt.bind(1, xiaotu::hash_token(absolute_token)).run();
+      });
+      check(!sessions.get(absolute_token).has_value(),
+            "超过签发后绝对上限的会话应被拒绝");
     }
 
     fs::remove_all(dir);

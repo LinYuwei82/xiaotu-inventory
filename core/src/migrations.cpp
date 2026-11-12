@@ -782,6 +782,14 @@ BEGIN
 END;
 )SQL";
 
+// v24：会话超时口径改为「空闲 30 分钟 + 绝对 12 小时」。
+// 空闲窗口沿用滑动续期，绝对上限由 created_at 控制，两者都可调。
+constexpr const char* kV24 = R"SQL(
+INSERT INTO app_setting (key, value, updated_at, updated_by) VALUES
+  ('session_idle_minutes', '30', datetime('now', 'localtime'), 'system'),
+  ('session_absolute_hours', '12', datetime('now', 'localtime'), 'system');
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -820,6 +828,7 @@ const std::vector<Migration>& all_migrations() {
       {21, "v21_item_barcode_multi", kV21},
       {22, "v22_app_setting", kV22},
       {23, "v23_allow_negative_stock", kV23},
+      {24, "v24_session_timeout", kV24},
   };
   return migrations;
 }

@@ -17,6 +17,14 @@ struct CompanySettings {
 struct SystemSettings {
   CompanySettings company;
   bool allow_negative_stock = false;
+  int session_idle_minutes = 30;
+  int session_absolute_hours = 12;
+};
+
+// 会话超时：空闲窗口滑动续期，绝对上限从签发时刻起算。
+struct SessionPolicy {
+  int idle_minutes = 30;
+  int absolute_hours = 12;
 };
 
 // 键白名单写死在实现里，避免演进成任意配置表。
@@ -26,6 +34,7 @@ class SettingService {
 
   CompanySettings company() const;
   SystemSettings load() const;
+  SessionPolicy session_policy() const;
 
   // 校验后保存公司抬头与负库存开关；只有值发生变化的键写审计
   // （action=update、entity=setting、entity_no=键名，detail 记录 from/to）。

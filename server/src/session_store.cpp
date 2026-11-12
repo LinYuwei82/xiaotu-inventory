@@ -10,14 +10,17 @@
 namespace xiaotu {
 namespace {
 
-// 与 Cookie 的 Max-Age 保持一致；两处都改才算改动有效期。
-constexpr const char* kLifetimeSql = "+8 hours";
 // 滑动续期的写库间隔，避免每个请求都产生一次写事务。
 constexpr const char* kRenewAfterSql = "-60 seconds";
+
+std::string minutes_modifier(int minutes) { return "+" + std::to_string(minutes) + " minutes"; }
+
+std::string hours_modifier(int hours) { return "-" + std::to_string(hours) + " hours"; }
 
 constexpr const char* kSelect =
     "SELECT s.user_id, u.username, r.code, s.csrf,"
     " s.expires_at <= datetime('now', 'localtime') AS expired,"
+    " s.created_at <= datetime('now', 'localtime', ?) AS too_old,"
     " s.last_seen_at <= datetime('now', 'localtime', ?) AS needs_renew,"
     " u.is_deleted, u.status"
     " FROM app_session s"
@@ -30,7 +33,7 @@ constexpr const char* kSelect =
 
 SessionStore::SessionStore(Db& db) : db_(db) { purge_expired(); }
 
-CreatedSession SessionStore::create(std::int64_t user_id) {
+CreatedSession SessionStore::create(std::int64_t user_id, int idle_minutes) {
   CreatedSession created{.id = random_hex(32), .csrf = random_hex(32)};
   db_.write([&](sqlite3* conn) {
     Stmt stmt(conn,
@@ -41,13 +44,14 @@ CreatedSession SessionStore::create(std::int64_t user_id) {
     stmt.bind(1, hash_token(created.id))
         .bind(2, user_id)
         .bind(3, created.csrf)
-        .bind(4, kLifetimeSql)
+        .bind(4, minutes_modifier(idle_minutes))
         .run();
   });
   return created;
 }
 
-std::optional<Session> SessionStore::get(const std::string& id, bool* renewed) {
+std::optional<Session> SessionStore::get(const std::string& id, int idle_minutes,
+                                         int absolute_hours, bool* renewed) {
   if (renewed != nullptr) {
     *renewed = false;
   }
@@ -58,27 +62,31 @@ std::optional<Session> SessionStore::get(const std::string& id, bool* renewed) {
   const std::string digest = hash_token(id);
   std::optional<Session> session;
   bool expired = false;
+  bool too_old = false;
   bool needs_renew = false;
   bool usable = false;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn, kSelect);
-    stmt.bind(1, kRenewAfterSql).bind(2, digest);
+    stmt.bind(1, hours_modifier(absolute_hours))
+        .bind(2, kRenewAfterSql)
+        .bind(3, digest);
     if (stmt.step()) {
       session = Session{.user_id = stmt.i64(0),
                         .user = stmt.text(1),
                         .role = stmt.text(2),
                         .csrf = stmt.text(3)};
       expired = stmt.i64(4) != 0;
-      needs_renew = stmt.i64(5) != 0;
-      usable = stmt.i64(6) == 0 && stmt.i64(7) != 0;
+      too_old = stmt.i64(5) != 0;
+      needs_renew = stmt.i64(6) != 0;
+      usable = stmt.i64(7) == 0 && stmt.i64(8) != 0;
     }
   });
 
   if (!session.has_value()) {
     return std::nullopt;
   }
-  // 过期、用户被停用或删除：立即拒绝并清掉这条记录。
-  if (expired || !usable) {
+  // 空闲过期、超过签发后的绝对上限、用户被停用或删除：立即拒绝并清掉这条记录。
+  if (expired || too_old || !usable) {
     erase(id);
     return std::nullopt;
   }
@@ -90,7 +98,7 @@ std::optional<Session> SessionStore::get(const std::string& id, bool* renewed) {
                 "UPDATE app_session SET last_seen_at = datetime('now', 'localtime'),"
                 " expires_at = datetime('now', 'localtime', ?)"
                 " WHERE token_hash = ? AND last_seen_at <= datetime('now', 'localtime', ?);");
-      stmt.bind(1, kLifetimeSql).bind(2, digest).bind(3, kRenewAfterSql).run();
+      stmt.bind(1, minutes_modifier(idle_minutes)).bind(2, digest).bind(3, kRenewAfterSql).run();
       if (renewed != nullptr) {
         *renewed = sqlite3_changes(conn) > 0;
       }

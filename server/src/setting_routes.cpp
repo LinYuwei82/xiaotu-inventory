@@ -14,6 +14,8 @@ nlohmann::json to_json(const SystemSettings& settings) {
                                  {"phone", settings.company.phone},
                                  {"address", settings.company.address}}},
       {"allow_negative_stock", settings.allow_negative_stock},
+      {"session_idle_minutes", settings.session_idle_minutes},
+      {"session_absolute_hours", settings.session_absolute_hours},
   };
 }
 
@@ -27,6 +29,12 @@ void merge_json(const nlohmann::json& body, SystemSettings& settings) {
   }
   if (body.contains("allow_negative_stock")) {
     settings.allow_negative_stock = body.value("allow_negative_stock", false);
+  }
+  if (body.contains("session_idle_minutes")) {
+    settings.session_idle_minutes = body.value("session_idle_minutes", 30);
+  }
+  if (body.contains("session_absolute_hours")) {
+    settings.session_absolute_hours = body.value("session_absolute_hours", 12);
   }
 }
 

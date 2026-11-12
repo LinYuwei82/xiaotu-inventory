@@ -86,8 +86,10 @@ std::string query_text(const httplib::Request& req) {
 }
 
 // 反向代理终结 TLS 时按 X-Forwarded-Proto 决定是否加 Secure。
-std::string cookie_attributes(const httplib::Request& req) {
-  std::string attributes = "; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800";
+// max_age_seconds 与空闲超时一致，服务端续期时同步延长。
+std::string cookie_attributes(const httplib::Request& req, int max_age_seconds) {
+  std::string attributes =
+      "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" + std::to_string(max_age_seconds);
   if (req.get_header_value("X-Forwarded-Proto") == "https") {
     attributes += "; Secure";
   }
@@ -160,10 +162,13 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
       [this](const httplib::Request& req, httplib::Response& res) {
         const std::string sid = cookie_value(req, "sid");
         bool renewed = false;
-        const auto session = sessions_.get(sid, &renewed);
+        const SessionPolicy policy = services_.settings.session_policy();
+        const auto session =
+            sessions_.get(sid, policy.idle_minutes, policy.absolute_hours, &renewed);
         if (renewed) {
           // 服务端滑动续期后同步延长浏览器 Cookie，否则 Cookie 会比会话先过期。
-          res.set_header("Set-Cookie", "sid=" + sid + cookie_attributes(req));
+          res.set_header("Set-Cookie",
+                         "sid=" + sid + cookie_attributes(req, policy.idle_minutes * 60));
         }
         current_context() = RequestContext{session ? session->user : std::string{},
                                            session ? session->role : std::string{},
@@ -322,12 +327,14 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
       json_error(res, 403, "USER_DISABLED", "内置管理员已停用");
       return;
     }
-    const CreatedSession session = sessions_.create(admin.id);
+    const SessionPolicy policy = services_.settings.session_policy();
+    const CreatedSession session = sessions_.create(admin.id, policy.idle_minutes);
     services_.db.write([&](sqlite3* conn) {
       audit_write_as(conn, admin.username, "login", "auth", admin.id, admin.username,
                      "单机令牌");
     });
-    res.set_header("Set-Cookie", "sid=" + session.id + cookie_attributes(req));
+    res.set_header("Set-Cookie",
+                   "sid=" + session.id + cookie_attributes(req, policy.idle_minutes * 60));
     nlohmann::json result;
     result["ok"] = true;
     result["user"] = admin.username;
@@ -372,8 +379,10 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     });
     // 登录成功后顺手清掉过期会话，不需要额外的定时任务。
     sessions_.purge_expired();
-    const CreatedSession session = sessions_.create(user.id);
-    res.set_header("Set-Cookie", "sid=" + session.id + cookie_attributes(req));
+    const SessionPolicy policy = services_.settings.session_policy();
+    const CreatedSession session = sessions_.create(user.id, policy.idle_minutes);
+    res.set_header("Set-Cookie",
+                   "sid=" + session.id + cookie_attributes(req, policy.idle_minutes * 60));
     nlohmann::json result;
     result["ok"] = true;
     result["user"] = user.username;

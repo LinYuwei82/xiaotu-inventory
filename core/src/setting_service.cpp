@@ -17,6 +17,18 @@ std::string read_value(sqlite3* conn, const char* key) {
   return stmt.step() ? stmt.text(0) : std::string{};
 }
 
+int read_int(sqlite3* conn, const char* key, int fallback) {
+  const std::string text = read_value(conn, key);
+  if (text.empty()) {
+    return fallback;
+  }
+  try {
+    return std::stoi(text);
+  } catch (const std::exception&) {
+    return fallback;
+  }
+}
+
 void check_length(const std::string& value, std::size_t limit, const char* label) {
   if (value.size() > limit) {
     throw AppError("INVALID_INPUT",
@@ -70,6 +82,17 @@ SystemSettings SettingService::load() const {
     out.company.phone = read_value(conn, "company_phone");
     out.company.address = read_value(conn, "company_address");
     out.allow_negative_stock = read_value(conn, "allow_negative_stock") == "1";
+    out.session_idle_minutes = read_int(conn, "session_idle_minutes", 30);
+    out.session_absolute_hours = read_int(conn, "session_absolute_hours", 12);
+  });
+  return out;
+}
+
+SessionPolicy SettingService::session_policy() const {
+  SessionPolicy out;
+  db_.read([&](sqlite3* conn) {
+    out.idle_minutes = read_int(conn, "session_idle_minutes", 30);
+    out.absolute_hours = read_int(conn, "session_absolute_hours", 12);
   });
   return out;
 }
@@ -80,11 +103,22 @@ SystemSettings SettingService::update(const SystemSettings& input) {
   check_length(input.company.name, 100, "公司名称");
   check_length(input.company.phone, 50, "联系电话");
   check_length(input.company.address, 200, "公司地址");
+  if (input.session_idle_minutes < 1 || input.session_idle_minutes > 1440) {
+    throw AppError("INVALID_INPUT", "会话空闲超时应在 1–1440 分钟之间");
+  }
+  if (input.session_absolute_hours < 1 || input.session_absolute_hours > 720) {
+    throw AppError("INVALID_INPUT", "会话绝对上限应在 1–720 小时之间");
+  }
+  if (input.session_absolute_hours * 60 <= input.session_idle_minutes) {
+    throw AppError("INVALID_INPUT", "会话绝对上限必须大于空闲超时");
+  }
   db_.write([&](sqlite3* conn) {
     save_one(conn, "company_name", input.company.name);
     save_one(conn, "company_phone", input.company.phone);
     save_one(conn, "company_address", input.company.address);
     save_one(conn, "allow_negative_stock", input.allow_negative_stock ? "1" : "0");
+    save_one(conn, "session_idle_minutes", std::to_string(input.session_idle_minutes));
+    save_one(conn, "session_absolute_hours", std::to_string(input.session_absolute_hours));
   });
   return load();
 }

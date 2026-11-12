@@ -5347,6 +5347,9 @@
             <label class="inline-check"><input type="checkbox" data-field="allow_negative_stock" ${writable ? "" : "disabled"} /> <span>开启后出库可把结存做成负数</span></label>
             <span class="page-sub" data-role="negative-state"></span>
           </div>
+          <label class="field"><span>会话空闲超时（分钟）</span><input type="number" min="1" max="1440" step="1" data-field="session_idle_minutes" ${writable ? "" : "disabled"} /></label>
+          <label class="field"><span>会话绝对上限（小时）</span><input type="number" min="1" max="720" step="1" data-field="session_absolute_hours" ${writable ? "" : "disabled"} /></label>
+          <span class="page-sub">空闲超时按最近访问滑动续期；绝对上限从登录时刻起算，超过后需重新登录。</span>
           <div class="form-actions">
             ${writable ? '<button class="btn primary" type="submit">保存</button>' : '<span class="page-sub">当前角色只读</span>'}
           </div>
@@ -5376,6 +5379,8 @@
       input("phone").value = company.phone || "";
       input("address").value = company.address || "";
       input("allow_negative_stock").checked = data.allow_negative_stock === true;
+      input("session_idle_minutes").value = data.session_idle_minutes || 30;
+      input("session_absolute_hours").value = data.session_absolute_hours || 12;
       renderNegativeState();
     } catch (error) {
       showNotice(error.message, "error");
@@ -5395,6 +5400,8 @@
             address: input("address").value.trim(),
           },
           allow_negative_stock: input("allow_negative_stock").checked,
+          session_idle_minutes: Number(input("session_idle_minutes").value),
+          session_absolute_hours: Number(input("session_absolute_hours").value),
         });
         renderNegativeState();
         showNotice("系统参数已保存", "ok");

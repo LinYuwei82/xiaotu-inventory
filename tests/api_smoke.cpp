@@ -177,6 +177,18 @@ void run_server_mode(const std::filesystem::path& dir) {
   client.Put("/api/settings", R"({"allow_negative_stock":false})", "application/json");
   check(audit_count(db, "update", "setting") == 5, "关回开关也应写一条审计");
 
+  const auto timeout_saved = client.Put(
+      "/api/settings",
+      R"({"session_idle_minutes":45,"session_absolute_hours":10})", "application/json");
+  check(timeout_saved && timeout_saved->status == 200, "保存会话超时应返回 200");
+  if (timeout_saved) {
+    const auto data = nlohmann::json::parse(timeout_saved->body);
+    check(data.value("session_idle_minutes", 0) == 45 &&
+              data.value("session_absolute_hours", 0) == 10,
+          "应返回新的会话超时值");
+  }
+  check(audit_count(db, "update", "setting") == 7, "两个会话超时键应各写一条审计");
+
   // 模板抬头为空时，打印用公司名称兜底。
   const auto printed = client.Get("/api/print/render?target_type=REPORT&target_key=sales-profit");
   check(printed && printed->status == 200, "打印渲染应返回 200");
@@ -191,8 +203,8 @@ void run_server_mode(const std::filesystem::path& dir) {
   check(diagnostic && diagnostic->status == 200, "诊断信息应返回 200");
   if (diagnostic) {
     const auto data = nlohmann::json::parse(diagnostic->body);
-    check(data.value("schema_version", 0) == 23, "诊断信息里的 schema 应为 23");
-    check(data.value("migrations", 0) == 23, "诊断信息里的迁移条数应为 23");
+    check(data.value("schema_version", 0) == 24, "诊断信息里的 schema 应为 24");
+    check(data.value("migrations", 0) == 24, "诊断信息里的迁移条数应为 24");
     check(data.value("mode", "") == "server", "网络版诊断信息 mode 应为 server");
     check(!data.value("data_dir", "").empty(), "诊断信息应包含数据目录");
     check(data.value("database_bytes", 0LL) > 0, "诊断信息应包含大于 0 的数据库大小");
