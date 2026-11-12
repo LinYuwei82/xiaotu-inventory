@@ -1,9 +1,13 @@
 // M0 冒烟测试：迁移 → 建商品 → 销售出库 → 采购入库与加权平均 → 反审核 → 查库存。
 #include <unistd.h>
 
+#include <atomic>
 #include <filesystem>
 #include <iostream>
+#include <latch>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include "xiaotu/audit.h"
 #include "xiaotu/db.h"
@@ -1071,6 +1075,77 @@ int main() {
       }
       check(other_out_rejected, "其他出库库存不足应整单拒绝");
       check(balance_of(other.id).qty == 3, "被拒绝的其他出库不应改变库存");
+
+      // 并发验收：8 张草稿同时审核、库存只够 3 张，必须恰好成功 3 张且不超卖。
+      auto concurrent =
+          items.create(xiaotu::gen::ItemRow{.code = "CC1", .name = "并发商品"});
+      make_doc("PUR_IN", concurrent.id, 10, 100);
+
+      std::vector<std::int64_t> draft_ids;
+      for (int index = 0; index < 8; ++index) {
+        xiaotu::DocInput draft;
+        draft.doc_type = "SAL_OUT";
+        draft.warehouse_id = warehouse_list.at(0).id;
+        draft.doc_date = "2026-11-12";
+        draft.lines.push_back(
+            xiaotu::DocLineInput{.item_id = concurrent.id, .qty = 3, .price_cents = 500});
+        draft_ids.push_back(documents.save_draft(draft).id);
+      }
+
+      std::latch start(1);
+      std::atomic<int> approved{0};
+      std::atomic<int> insufficient_count{0};
+      std::atomic<int> unexpected{0};
+      std::vector<std::thread> threads;
+      threads.reserve(draft_ids.size());
+      for (const std::int64_t doc_id : draft_ids) {
+        threads.emplace_back([&, doc_id]() {
+          start.wait();
+          try {
+            documents.approve(doc_id);
+            ++approved;
+          } catch (const xiaotu::AppError& error) {
+            if (error.code() == "STOCK_INSUFFICIENT") {
+              ++insufficient_count;
+            } else {
+              ++unexpected;
+            }
+          }
+        });
+      }
+      start.count_down();
+      for (auto& thread : threads) {
+        thread.join();
+      }
+
+      check(approved.load() == 3, "并发审核应恰好成功 3 张（库存 10 / 每张 3）");
+      check(insufficient_count.load() == 5, "其余 5 张应因库存不足被拒绝");
+      check(unexpected.load() == 0, "并发审核不应出现其他错误");
+      const auto concurrent_balance = balance_of(concurrent.id);
+      check(concurrent_balance.qty == 1, "并发审核后库存应为 1，不能为负");
+      check(concurrent_balance.amount_cents == 100, "并发审核后结存金额应为 100 分");
+      check(stock.ledger(concurrent.id).size() == 4,
+            "并发审核后应只有 1 条入库与 3 条出库流水");
+
+      int approved_docs = 0;
+      int draft_docs = 0;
+      std::int64_t draft_entries = 0;
+      for (const std::int64_t doc_id : draft_ids) {
+        const auto detail = documents.detail(doc_id);
+        if (detail.status == "APPROVED") {
+          ++approved_docs;
+        } else if (detail.status == "DRAFT") {
+          ++draft_docs;
+          db.read([&](sqlite3* conn) {
+            xiaotu::Stmt stmt(conn, "SELECT COUNT(*) FROM ar_ap_entry WHERE doc_id = ?;");
+            stmt.bind(1, doc_id);
+            if (stmt.step()) draft_entries += stmt.i64(0);
+          });
+        }
+      }
+      check(approved_docs == 3 && draft_docs == 5,
+            "并发后应保留 3 张已审核、5 张未动的草稿");
+      check(draft_entries == 0, "被拒绝的草稿不应留下应收记录");
 
       // 成本重算只读核对：健康数据应无差异，篡改账面金额后应报出差异。
       xiaotu::CostRecalcService cost_recalc(db);
