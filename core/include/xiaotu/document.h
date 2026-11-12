@@ -53,6 +53,12 @@ struct DocumentDefinition {
 const std::vector<DocumentDefinition>& document_definitions();
 const DocumentDefinition* find_document_definition(std::string_view doc_type);
 
+// 移动加权平均成本：按结存金额比例结转，四舍五入到分，保证清零时金额精确归零。
+// 出库成本重算与单据审核共用这一实现，避免两套口径。
+std::int64_t moving_average_cost(std::int64_t qty, std::int64_t price_cents,
+                                 std::int64_t balance_qty,
+                                 std::int64_t balance_amount_cents);
+
 struct DocInput {
   std::string doc_type;
   std::int64_t warehouse_id = 0;

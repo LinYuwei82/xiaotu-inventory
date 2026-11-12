@@ -7,6 +7,7 @@
 #include "xiaotu/gen/item_service.h"
 #include "xiaotu/gen/supplier_service.h"
 #include "xiaotu/gen/unit_service.h"
+#include "xiaotu/cost_recalc.h"
 #include "xiaotu/gen/warehouse_service.h"
 #include "xiaotu/print_template.h"
 #include "xiaotu/report_service.h"
@@ -31,6 +32,7 @@ struct Services {
         settlements(database),
         reports(database),
         print_templates(database),
+        cost_recalc(database),
         users(database) {}
 
   Db& db;
@@ -45,6 +47,7 @@ struct Services {
   SettlementService settlements;
   ReportService reports;
   PrintTemplateService print_templates;
+  CostRecalcService cost_recalc;
   UserService users;
 };
 

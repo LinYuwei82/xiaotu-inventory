@@ -17,6 +17,7 @@
 #include "xiaotu/gen/unit_service.h"
 #include "xiaotu/gen/warehouse_service.h"
 #include "xiaotu/migrations.h"
+#include "xiaotu/cost_recalc.h"
 #include "xiaotu/permissions.h"
 #include "xiaotu/print_template.h"
 #include "xiaotu/report_service.h"
@@ -1017,6 +1018,24 @@ int main() {
         closed_rejected = error.code() == "INVALID_STATUS";
       }
       check(closed_rejected, "关闭后应拒绝转出");
+
+      // 成本重算只读核对：健康数据应无差异，篡改账面金额后应报出差异。
+      xiaotu::CostRecalcService cost_recalc(db);
+      const auto healthy = cost_recalc.recalculate();
+      check(healthy.ledger_rows > 0, "重算应读取到库存流水");
+      check(healthy.qty_difference_count == 0, "健康数据重算数量应一致");
+      check(healthy.difference_count == 0, "健康数据重算金额应无差异");
+
+      db.write([&](sqlite3* conn) {
+        xiaotu::Stmt stmt(conn,
+                  "UPDATE stock_balance SET amount_cents = amount_cents + 12345"
+                  " WHERE item_id = ?;");
+        stmt.bind(1, ordered.id).run();
+      });
+      const auto tampered = cost_recalc.recalculate(ordered.id);
+      check(tampered.difference_count >= 1, "篡改账面金额后应报出差异");
+      check(tampered.differences.at(0).amount_diff_cents == -12345,
+            "差异应为重算金额减账面金额");
 
     }
   } catch (const std::exception& error) {

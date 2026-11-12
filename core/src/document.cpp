@@ -16,16 +16,6 @@
 namespace xiaotu {
 namespace {
 
-// 移动加权平均：按结存金额比例结转，保证清零时金额精确归零。
-std::int64_t moving_average_cost(std::int64_t qty, std::int64_t /*price*/, std::int64_t balance_qty,
-                                 std::int64_t balance_amount) {
-  if (balance_qty <= 0 || balance_amount <= 0) {
-    return 0;
-  }
-  const std::int64_t cost = (balance_amount * qty + balance_qty / 2) / balance_qty;
-  return std::clamp<std::int64_t>(cost, 0, balance_amount);
-}
-
 // 入库/退货：按录入单价入账（采购入库与销售退货的成本口径）。
 std::int64_t amount_by_unit_price(std::int64_t qty, std::int64_t price,
                                   std::int64_t /*balance_qty*/,
@@ -34,6 +24,15 @@ std::int64_t amount_by_unit_price(std::int64_t qty, std::int64_t price,
 }
 
 }  // namespace
+
+std::int64_t moving_average_cost(std::int64_t qty, std::int64_t /*price_cents*/,
+                                 std::int64_t balance_qty, std::int64_t balance_amount) {
+  if (balance_qty <= 0 || balance_amount <= 0) {
+    return 0;
+  }
+  const std::int64_t cost = (balance_amount * qty + balance_qty / 2) / balance_qty;
+  return std::clamp<std::int64_t>(cost, 0, balance_amount);
+}
 
 const std::vector<DocumentDefinition>& document_definitions() {
   static const std::vector<DocumentDefinition> definitions = {

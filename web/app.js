@@ -2208,10 +2208,21 @@
       <div class="card">
         <h3>库存流水</h3>
         <table class="table" data-role="ledger"></table>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h3>成本重算核对</h3>
+          <button class="btn small" data-role="recalc">开始核对</button>
+        </div>
+        <p class="page-sub">按库存流水重放移动加权平均，与当前账面结存比对；只读，不修改任何数据</p>
+        <p class="page-sub" data-role="recalc-summary"></p>
+        <table class="table" data-role="recalc"></table>
       </div>`;
 
     const balancesTable = mount.querySelector('[data-role="balances"]');
     const ledgerTable = mount.querySelector('[data-role="ledger"]');
+    const recalcTable = mount.querySelector('[data-role="recalc"]');
+    const recalcSummary = mount.querySelector('[data-role="recalc-summary"]');
 
     async function reload() {
       const [balances, ledger] = await Promise.all([
@@ -2252,6 +2263,43 @@
     }
 
     mount.querySelector('[data-role="refresh"]').addEventListener("click", () => reload());
+    mount.querySelector('[data-role="recalc"]').addEventListener("click", async () => {
+      try {
+        const result = await api(
+          "GET",
+          "/api/stock/cost-recalc" + (itemFilter ? "?item_id=" + itemFilter : "")
+        );
+        recalcSummary.textContent =
+          `读取 ${result.ledger_rows} 条流水，核对 ${result.item_count} 个商品/仓库组合，` +
+          `差异 ${result.difference_count} 条（数量差异 ${result.qty_difference_count} 条）`;
+        if (!result.differences.length) {
+          recalcTable.innerHTML =
+            '<tbody><tr><td class="empty">账面结存与重算结果一致</td></tr></tbody>';
+          return;
+        }
+        recalcTable.innerHTML = `
+          <thead><tr><th>商品</th><th>仓库</th><th>账面数量</th><th>重算数量</th><th>数量差</th>
+            <th>账面金额（元）</th><th>重算金额（元）</th><th>金额差（元）</th></tr></thead>
+          <tbody>${result.differences
+            .map(
+              (row) => `<tr>
+                <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
+                <td>${escapeHtml(row.warehouse_name)}</td>
+                <td class="${row.book_qty < 0 ? "negative" : ""}">${row.book_qty}</td>
+                <td class="${row.replay_qty < 0 ? "negative" : ""}">${row.replay_qty}</td>
+                <td class="${row.qty_diff !== 0 ? "negative" : ""}">${row.qty_diff}</td>
+                <td>${money(row.book_amount_cents)}</td>
+                <td>${money(row.replay_amount_cents)}</td>
+                <td class="${row.amount_diff_cents !== 0 ? "negative" : ""}">${money(
+                  row.amount_diff_cents
+                )}</td>
+              </tr>`
+            )
+            .join("")}</tbody>`;
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
     await reload();
   }
 

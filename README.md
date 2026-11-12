@@ -5,7 +5,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 - 不带参数启动 = **单机版**：内嵌服务只监听 `127.0.0.1` 的随机端口，生成一次性 token，用系统 WKWebView 打开本地页面。
 - `--server` 启动 = **网络版**：监听 `0.0.0.0`，用浏览器访问（启动日志会输出带 token 的一次性访问链接）。
 
-当前 M2 收口中，已打通：**商品 / 单位 / 仓库 / 客户 / 供应商档案 → 采购入库、销售出库、采购退货、销售退货、调拨、盘点（草稿与反审核）→ 销售订单确认与转出库 → 库存余额与流水 → 应收应付台账与核销 → 往来对账单 → 七类报表导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志与 macOS `.dmg` 打包。成本重算任务尚在方案确认阶段，尚未落地。
+当前 M2 收口中，已打通：**商品 / 单位 / 仓库 / 客户 / 供应商档案 → 采购入库、销售出库、采购退货、销售退货、调拨、盘点（草稿与反审核）→ 销售订单确认与转出库 → 库存余额与流水 → 应收应付台账与核销 → 往来对账单 → 七类报表导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志与 macOS `.dmg` 打包。成本重算已提供只读核对与差异清单，写回策略待确认。
 
 ## 0. 数据库结构版本
 
@@ -437,7 +437,7 @@ struct DocumentDefinition {
 - 单据支持草稿态：存草稿只写单据与明细、不写库存流水，审核时才进单事务；反审核为整单反向。
 - 销售订单只做需求确认与转出库来源：确认不动库存、不写流水、不产生往来，只有转出的销售出库单才产生库存与应收。
 - 数量按整数件（精度策略见方案 Q4），无多单位、批次、序列号、价格体系。
-- 成本按移动加权平均，暂不支持其他计价方式；成本重算任务仍在方案确认阶段，尚未提供页面或接口。
+- 成本按移动加权平均，暂不支持其他计价方式；成本重算已提供**只读核对**（`/api/stock/cost-recalc` 与库存页「成本重算核对」），写回尚未实现，需先满足数量一致、核对批次确认、只改 `stock_balance.amount_cents` 且不动历史单据金额等条件后另行确认。
 - 无内置 PDF 导出与针式打印模板：当前通过系统打印面板「另存为 PDF」，A4 / 针式两种尺寸的输出属于 M4。
 - Windows 只构建服务端与测试，没有 GUI 壳（`XIAOTU_BUILD_SHELL=OFF`），界面通过浏览器访问。
 - 无 Developer ID 证书，`.dmg` 为 ad-hoc 签名且未公证，Gatekeeper 会拦截首次打开，处理方式见第 10 节。
@@ -488,4 +488,4 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 
 - 技术方案：`docs/进销存技术方案.md`
 - 数据库结构：`core/src/migrations.cpp`（v9）
-- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`
+- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`、`/api/stock/cost-recalc`
