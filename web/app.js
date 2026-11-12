@@ -11,6 +11,7 @@
   const state = {
     current: null,
     pages: [],
+    allPages: [],
     csrf: "",
     permissions: [],
   };
@@ -3504,6 +3505,34 @@
     }
   }
 
+  // 页面路由：#/<key>。key 用固定英文短名，和 nav 的 data-key 一致。
+  function hashPageKey() {
+    const match = /^#\/([A-Za-z0-9_-]+)$/.exec(location.hash || "");
+    return match ? match[1] : "";
+  }
+
+  function replaceHash(key) {
+    history.replaceState(null, "", key ? "#/" + key : location.pathname + location.search);
+  }
+
+  function handleHashChange() {
+    const pages = state.allPages;
+    if (!pages.length) return;
+    const page = pages.find((item) => item.key === hashPageKey());
+    if (!page) {
+      const fallback = pages[0];
+      replaceHash(fallback.key);
+      if (fallback.key !== state.current) mountPage(fallback);
+      return;
+    }
+    if (page.key !== state.current) mountPage(page);
+  }
+
+  function goToPage(page) {
+    if (page.key === state.current) return;
+    location.hash = "#/" + page.key;
+  }
+
   function mountPage(page, options) {
     const persist = !options || options.persist !== false;
     state.current = page.key;
@@ -3612,12 +3641,21 @@
         const button = event.target.closest("button[data-key]");
         if (!button) return;
         const page = all.find((item) => item.key === button.dataset.key);
-        if (page) mountPage(page);
+        if (page) goToPage(page);
       });
 
+      // 路由优先：hash > 上次页面 > 默认页；无权或未知 key 回退到默认页。
+      state.allPages = all;
+      const hashKey = hashPageKey();
       const savedPage = readNavState("xiaotu.nav.page");
-      const initial = all.find((page) => page.key === savedPage) || all[0];
-      if (initial) mountPage(initial, { persist: false });
+      const initial =
+        all.find((page) => page.key === hashKey) ||
+        all.find((page) => page.key === savedPage) ||
+        all[0];
+      if (initial) {
+        if (hashKey !== initial.key) replaceHash(initial.key);
+        mountPage(initial, { persist: false });
+      }
     } catch (error) {
       if (error.status === 401) {
         renderLogin("请使用用户名与口令登录");
@@ -3627,5 +3665,6 @@
     }
   }
 
+  window.addEventListener("hashchange", handleHashChange);
   bootstrap();
 })();
