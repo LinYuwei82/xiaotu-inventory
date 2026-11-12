@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -13,6 +14,7 @@
 #include "xiaotu/http_json.h"
 #include "xiaotu/item_category.h"
 #include "xiaotu/masterdata_io.h"
+#include "xiaotu/opening_import.h"
 #include "xiaotu/services.h"
 #include "xiaotu/xlsx.h"
 
@@ -199,6 +201,74 @@ std::vector<std::string> category_names(const std::vector<ItemCategoryRow>& rows
 }
 
 }  // namespace
+
+nlohmann::json opening_report_json(const OpeningReport& report) {
+  nlohmann::json errors = nlohmann::json::array();
+  for (const auto& issue : report.issues) {
+    errors.push_back(
+        nlohmann::json{{"row", issue.row}, {"column", issue.column}, {"reason", issue.reason}});
+  }
+  return nlohmann::json{{"inserted", report.inserted},
+                        {"updated", 0},
+                        {"backup", report.backup},
+                        {"doc_nos", report.doc_nos},
+                        {"errors", errors}};
+}
+
+std::optional<OpeningKind> opening_kind_from(std::string_view text) {
+  if (text == "stock") return OpeningKind::Stock;
+  if (text == "receivable") return OpeningKind::Receivable;
+  if (text == "payable") return OpeningKind::Payable;
+  if (text == "fund") return OpeningKind::Fund;
+  return std::nullopt;
+}
+
+void register_opening_routes(httplib::Server& server, Services& services) {
+  server.Get("/api/openings/status",
+             guard("opening.write",
+                   [&services](const httplib::Request&, httplib::Response& res) {
+                     nlohmann::json list = nlohmann::json::array();
+                     for (const auto kind : {OpeningKind::Stock, OpeningKind::Receivable,
+                                             OpeningKind::Payable, OpeningKind::Fund}) {
+                       const std::string reason = opening_blocker(services.db, kind);
+                       list.push_back(nlohmann::json{{"kind", opening_key(kind)},
+                                                     {"label", opening_label(kind)},
+                                                     {"allowed", reason.empty()},
+                                                     {"reason", reason}});
+                     }
+                     json_ok(res, list);
+                   }));
+
+  server.Get(R"(/api/openings/(stock|receivable|payable|fund)/template)",
+             guard("opening.write",
+                   [](const httplib::Request& req, httplib::Response& res) {
+                     const auto kind = opening_kind_from(req.matches[1].str());
+                     if (!kind.has_value()) {
+                       throw AppError("NOT_FOUND", "未知期初类型");
+                     }
+                     XlsxSheet sheet(opening_label(*kind));
+                     sheet.add_header_row(opening_columns(*kind));
+                     send_xlsx(res, opening_key(*kind) + "-opening-template.xlsx", sheet.build());
+                   }));
+
+  server.Post(R"(/api/openings/(stock|receivable|payable|fund)/import)",
+              guard("opening.write",
+                    [&services](const httplib::Request& req, httplib::Response& res) {
+                      const auto kind = opening_kind_from(req.matches[1].str());
+                      if (!kind.has_value()) {
+                        throw AppError("NOT_FOUND", "未知期初类型");
+                      }
+                      const OpeningReport report = import_opening(
+                          services.db, *kind, req.body, import_filename(req));
+                      if (!report.ok()) {
+                        res.status = 400;
+                        res.set_content(opening_report_json(report).dump(),
+                                        "application/json; charset=utf-8");
+                        return;
+                      }
+                      json_ok(res, opening_report_json(report));
+                    }));
+}
 
 void register_masterdata_routes(httplib::Server& server, Services& services) {
   // 商品列表：分类子树、条码精确匹配、编码/名称/条码关键字。
@@ -392,6 +462,8 @@ void register_masterdata_routes(httplib::Server& server, Services& services) {
                            build_xlsx(sheet, table));
                }));
   }
+
+  register_opening_routes(server, services);
 }
 
 }  // namespace xiaotu

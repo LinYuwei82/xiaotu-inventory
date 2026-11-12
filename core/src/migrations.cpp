@@ -717,6 +717,16 @@ CREATE INDEX idx_customer_tax_no ON customer(tax_no) WHERE tax_no <> '';
 CREATE INDEX idx_supplier_tax_no ON supplier(tax_no) WHERE tax_no <> '';
 )SQL";
 
+// v20：应收应付期初。期初直接写 ar_ap_entry 并打标记，doc_id 固定为 0，
+// 因此把原来「一张单据一条台账」的唯一索引放宽为只约束真实单据。
+constexpr const char* kV20 = R"SQL(
+ALTER TABLE ar_ap_entry ADD COLUMN opening INTEGER NOT NULL DEFAULT 0;
+DROP INDEX uk_ar_ap_doc;
+CREATE UNIQUE INDEX uk_ar_ap_doc ON ar_ap_entry(doc_id) WHERE doc_id > 0;
+CREATE INDEX idx_ar_ap_opening ON ar_ap_entry(opening) WHERE opening = 1;
+INSERT INTO app_role_permission (role_id, permission) VALUES (2, 'opening.write');
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -751,6 +761,7 @@ const std::vector<Migration>& all_migrations() {
       {17, "v17_item_category_barcode_tax", kV17},
       {18, "v18_employee_salesperson", kV18},
       {19, "v19_partner_tax_no_credit_limit", kV19},
+      {20, "v20_ar_ap_opening", kV20},
   };
   return migrations;
 }

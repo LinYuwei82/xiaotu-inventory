@@ -78,7 +78,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 19, "迁移后 schema 版本应为 19");
+      check(db.schema_version() == 20, "迁移后 schema 版本应为 20");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
