@@ -20,6 +20,7 @@
 @property(nonatomic, weak) WKWebView* webview;
 @property(nonatomic, weak) NSWindow* window;
 - (void)printDocument:(id)sender;
+- (void)savePdfWithFilename:(NSString*)filename;
 @end
 
 @implementation XiaotuScriptHandler
@@ -27,6 +28,15 @@
       didReceiveScriptMessage:(WKScriptMessage*)message {
   if ([message.name isEqualToString:@"xiaotuPrint"]) {
     [self printDocument:nil];
+    return;
+  }
+  if ([message.name isEqualToString:@"xiaotuPrintPdf"]) {
+    NSDictionary* body = message.body;
+    NSString* filename =
+        [body isKindOfClass:[NSDictionary class]] && [body[@"filename"] isKindOfClass:[NSString class]]
+            ? body[@"filename"]
+            : @"export.pdf";
+    [self savePdfWithFilename:filename];
     return;
   }
   if (![message.name isEqualToString:@"xiaotuExport"]) {
@@ -72,6 +82,48 @@
   if (operation != nil) {
     [operation runOperation];
   }
+}
+
+// 不弹系统打印面板：用同一条打印链路把页面写成 PDF 文件。
+// 前端在调用前已经挂好打印视图，完成或取消后由 JS 负责清理。
+- (void)finishPdfWithResult:(NSString*)result {
+  NSString* script = [NSString
+      stringWithFormat:@"window.xiaotuPdfDone && window.xiaotuPdfDone('%@');", result];
+  [self.webview evaluateJavaScript:script completionHandler:nil];
+}
+
+- (void)savePdfWithFilename:(NSString*)filename {
+  if (self.webview == nil) {
+    return;
+  }
+  NSSavePanel* panel = [NSSavePanel savePanel];
+  panel.nameFieldStringValue = filename.length > 0 ? filename : @"export.pdf";
+  panel.canCreateDirectories = YES;
+  __weak XiaotuScriptHandler* weak_self = self;
+  [panel beginSheetModalForWindow:self.window
+                completionHandler:^(NSModalResponse result) {
+                  XiaotuScriptHandler* strong_self = weak_self;
+                  if (strong_self == nil) {
+                    return;
+                  }
+                  if (result != NSModalResponseOK || panel.URL == nil) {
+                    [strong_self finishPdfWithResult:@"cancel"];
+                    return;
+                  }
+                  NSPrintInfo* info = [NSPrintInfo sharedPrintInfo];
+                  [info setJobDisposition:NSPrintSaveJob];
+                  [[info dictionary] setObject:panel.URL forKey:NSPrintJobSavingURL];
+                  NSPrintOperation* operation =
+                      [strong_self.webview printOperationWithPrintInfo:info];
+                  if (operation == nil) {
+                    [strong_self finishPdfWithResult:@"error"];
+                    return;
+                  }
+                  [operation setShowsPrintPanel:NO];
+                  [operation setShowsProgressPanel:NO];
+                  const BOOL saved = [operation runOperation];
+                  [strong_self finishPdfWithResult:saved ? @"ok" : @"error"];
+                }];
 }
 @end
 
@@ -156,6 +208,7 @@ int run_webview(const std::string& url, const std::string& title) {
     WKUserContentController* controller = [[WKUserContentController alloc] init];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuExport"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuPrint"];
+    [controller addScriptMessageHandler:script_handler name:@"xiaotuPrintPdf"];
     configuration.userContentController = controller;
     WKWebView* webview = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
     [webview setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];

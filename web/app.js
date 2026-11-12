@@ -409,7 +409,7 @@
     return `@page { size: ${size}${orientation}; margin: ${Number(tmpl.margin_mm)}mm;${pageNumber} }`;
   }
 
-  function printWithTemplate(data) {
+  function mountPrintView(data) {
     for (const node of document.querySelectorAll("[data-print-view]")) node.remove();
     const view = document.createElement("section");
     view.className = "print-view";
@@ -421,14 +421,50 @@
     style.textContent = printPageCss(data.template || {});
     document.head.appendChild(style);
     document.body.classList.add("print-mode");
-    const cleanup = () => {
+    return () => {
       document.body.classList.remove("print-mode");
       view.remove();
       style.remove();
     };
+  }
+
+  function printWithTemplate(data) {
+    const cleanup = mountPrintView(data);
     // 浏览器打印结束（含取消）后清理；单机版桥接不触发时，下次打印会先清掉旧视图。
     window.addEventListener("afterprint", cleanup, { once: true });
     printPage();
+  }
+
+  function pdfBridge() {
+    const handlers = window.webkit && window.webkit.messageHandlers;
+    return handlers && handlers.xiaotuPrintPdf ? handlers.xiaotuPrintPdf : null;
+  }
+
+  function pdfFileName(name) {
+    const base = String(name || "导出").replace(/[\\/:*?"<>|]/g, "_").trim() || "导出";
+    return base + ".pdf";
+  }
+
+  // 直接导出 PDF：复用打印视图，交给原生保存面板写文件，不弹系统打印对话框。
+  async function exportPdfTarget(path, filename) {
+    const bridge = pdfBridge();
+    if (!bridge) {
+      showNotice("直接导出 PDF 仅在桌面版可用；浏览器请用系统打印另存为 PDF", "error");
+      return;
+    }
+    try {
+      const data = await api("GET", path);
+      const cleanup = mountPrintView(data);
+      window.xiaotuPdfDone = (result) => {
+        cleanup();
+        delete window.xiaotuPdfDone;
+        if (result === "ok") showNotice("PDF 已导出", "ok");
+        else if (result === "error") showNotice("PDF 导出失败", "error");
+      };
+      bridge.postMessage({ filename: pdfFileName(filename || data.title) });
+    } catch (error) {
+      showNotice(error.message, "error");
+    }
   }
 
   async function printTarget(path) {
@@ -1002,7 +1038,9 @@
     }
 
     function actionsFor(doc) {
-      const print = '<button class="link" data-role="print">打印</button>';
+      const print =
+        '<button class="link" data-role="print">打印</button>' +
+        '<button class="link" data-role="pdf">导出 PDF</button>';
       if (costAdjust && !can("cost.adjust")) {
         return doc.status === "DRAFT"
           ? print + '<button class="link" data-role="edit">编辑</button>'
@@ -1239,6 +1277,14 @@
           );
           return;
         }
+        if (button.dataset.role === "pdf") {
+          const doc = documents.find((row) => row.id === id);
+          await exportPdfTarget(
+            "/api/print/render?target_type=DOC&target_key=" + docType + "&doc_id=" + id,
+            doc ? doc.doc_no : undefined
+          );
+          return;
+        }
         if (button.dataset.role === "reverse") {
           if (!(await askConfirm("反审核会生成反向库存流水，确认继续？"))) return;
           await api("POST", "/api/documents/" + id + "/reverse");
@@ -1412,7 +1458,9 @@
     }
 
     function actionsFor(doc) {
-      const print = '<button class="link" data-role="print">打印</button>';
+      const print =
+        '<button class="link" data-role="print">打印</button>' +
+        '<button class="link" data-role="pdf">导出 PDF</button>';
       if (doc.status === "DRAFT") {
         return (
           print +
@@ -1649,6 +1697,14 @@
               docType +
               "&doc_id=" +
               id
+          );
+          return;
+        }
+        if (button.dataset.role === "pdf") {
+          const doc = documents.find((row) => row.id === id);
+          await exportPdfTarget(
+            "/api/print/render?target_type=DOC&target_key=" + docType + "&doc_id=" + id,
+            doc ? doc.doc_no : undefined
           );
           return;
         }
@@ -2043,6 +2099,7 @@
           <button class="btn small" data-role="export-fund">导出 CSV</button>
           <button class="btn small" data-role="excel-fund">导出 Excel</button>
           <button class="btn small" data-role="print-fund">打印</button>
+          <button class="btn small" data-role="pdf-fund">导出 PDF</button>
         </div>
         <p class="page-sub">期初 + 收款 − 付款 = 余额；「未指定账户」是升级前没有账户归属的历史记录</p>
         <table class="table" data-role="fund-ledger"></table>
@@ -2060,6 +2117,7 @@
           <button class="btn small" data-role="export-balance">导出 CSV</button>
           <button class="btn small" data-role="excel-balance">导出 Excel</button>
           <button class="btn small" data-role="print-balance">打印</button>
+          <button class="btn small" data-role="pdf-balance">导出 PDF</button>
         </div>
         <table class="table" data-role="balances"></table>
       </div>
@@ -2069,6 +2127,7 @@
           <button class="btn small" data-role="export-ledger">导出 CSV</button>
           <button class="btn small" data-role="excel-ledger">导出 Excel</button>
           <button class="btn small" data-role="print-ledger">打印</button>
+          <button class="btn small" data-role="pdf-ledger">导出 PDF</button>
         </div>
         <table class="table" data-role="ledger"></table>
       </div>
@@ -2078,6 +2137,7 @@
           <button class="btn small" data-role="export-flows">导出 CSV</button>
           <button class="btn small" data-role="excel-flows">导出 Excel</button>
           <button class="btn small" data-role="print-flows">打印</button>
+          <button class="btn small" data-role="pdf-flows">导出 PDF</button>
         </div>
         <table class="table" data-role="flows"></table>
       </div>
@@ -2087,6 +2147,7 @@
           <button class="btn small" data-role="export-summary">导出 CSV</button>
           <button class="btn small" data-role="excel-summary">导出 Excel</button>
           <button class="btn small" data-role="print-summary">打印</button>
+          <button class="btn small" data-role="pdf-summary">导出 PDF</button>
         </div>
         <p class="page-sub">按商品跨仓库汇总：期初 + 入库 − 出库 = 期末，数量与金额双口径</p>
         <table class="table" data-role="summary"></table>
@@ -2097,6 +2158,7 @@
           <button class="btn small" data-role="export-profit">导出 CSV</button>
           <button class="btn small" data-role="excel-profit">导出 Excel</button>
           <button class="btn small" data-role="print-profit">打印</button>
+          <button class="btn small" data-role="pdf-profit">导出 PDF</button>
         </div>
         <p class="page-sub">收入取单据金额，成本取审核写入的库存流水；已反审核单据不计入</p>
         <table class="table" data-role="profit"></table>
@@ -2107,6 +2169,7 @@
           <button class="btn small" data-role="export-aging">导出 CSV</button>
           <button class="btn small" data-role="excel-aging">导出 Excel</button>
           <button class="btn small" data-role="print-aging">打印</button>
+          <button class="btn small" data-role="pdf-aging">导出 PDF</button>
         </div>
         <p class="page-sub">统计范围：仅 v7 迁移后审核的单据，升级前已审核单据不计入往来与账龄；上方库存类报表不受影响</p>
         <table class="table" data-role="aging"></table>
@@ -2387,6 +2450,8 @@
 
     function wirePrint(role, pathFn) {
       mount.querySelector(`[data-role="${role}"]`).addEventListener("click", () => printTarget(pathFn()));
+      const pdf = mount.querySelector(`[data-role="${role.replace(/^print-/, "pdf-")}"]`);
+      if (pdf) pdf.addEventListener("click", () => exportPdfTarget(pathFn(), null));
     }
 
     wirePrint("print-balance", () => "/api/print/render?target_type=REPORT&target_key=stock-balance");
@@ -2453,6 +2518,7 @@
           <button class="btn" data-role="export">导出 CSV</button>
           <button class="btn" data-role="excel">导出 Excel</button>
           <button class="btn" data-role="print">打印</button>
+          <button class="btn" data-role="pdf">导出 PDF</button>
         </div>
       </div>
       <div class="card">
@@ -2603,6 +2669,13 @@
         return;
       }
       printTarget(renderPath());
+    });
+    mount.querySelector('[data-role="pdf"]').addEventListener("click", () => {
+      if (!partnerSelect.value) {
+        showNotice("请先选择往来单位", "error");
+        return;
+      }
+      exportPdfTarget(renderPath(), null);
     });
 
     await loadPartners();
