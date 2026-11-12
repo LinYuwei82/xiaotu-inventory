@@ -40,3 +40,8 @@ add_executable(xiaotu_report_smoke "${CMAKE_CURRENT_SOURCE_DIR}/report_smoke.cpp
 target_link_libraries(xiaotu_report_smoke PRIVATE xiaotu_server Threads::Threads)
 
 add_test(NAME report_smoke COMMAND xiaotu_report_smoke)
+
+add_executable(xiaotu_api_smoke "${CMAKE_CURRENT_SOURCE_DIR}/api_smoke.cpp")
+target_link_libraries(xiaotu_api_smoke PRIVATE xiaotu_server Threads::Threads)
+
+add_test(NAME api_smoke COMMAND xiaotu_api_smoke)
