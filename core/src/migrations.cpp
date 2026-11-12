@@ -727,6 +727,14 @@ CREATE INDEX idx_ar_ap_opening ON ar_ap_entry(opening) WHERE opening = 1;
 INSERT INTO app_role_permission (role_id, permission) VALUES (2, 'opening.write');
 )SQL";
 
+// v21：修正 item_barcode 预留位的自相矛盾。v17 给 item_id 建了唯一索引，
+// 等于一商品只允许一行码，与「预留一商品多码」的注释冲突；这里改成普通索引。
+// 条码本身的全局唯一（uk_item_barcode_code）保持不变；表当前无数据，行为不变。
+constexpr const char* kV21 = R"SQL(
+DROP INDEX uk_item_barcode_item;
+CREATE INDEX idx_item_barcode_item ON item_barcode(item_id);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -762,6 +770,7 @@ const std::vector<Migration>& all_migrations() {
       {18, "v18_employee_salesperson", kV18},
       {19, "v19_partner_tax_no_credit_limit", kV19},
       {20, "v20_ar_ap_opening", kV20},
+      {21, "v21_item_barcode_multi", kV21},
   };
   return migrations;
 }

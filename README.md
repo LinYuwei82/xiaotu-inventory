@@ -15,7 +15,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 ## 0. 数据库结构版本
 
-当前 schema 为 **v20**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
+当前 schema 为 **v21**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -39,6 +39,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v18 | 职员档案 `employee` 与单据业务员 `doc_header.salesperson_id` / `salesperson_name`（仅销售类单据） |
 | v19 | 客户 / 供应商税号 `tax_no`，客户信用额度 `credit_limit_cents`（0 视为不限制） |
 | v20 | 应收应付期初标记 `ar_ap_entry.opening`，`uk_ar_ap_doc` 放宽为只约束 `doc_id > 0` |
+| v21 | `item_barcode.item_id` 的唯一索引改为普通索引，为一商品多码预留；条码全局唯一不变 |
 
 ## 1. 环境要求
 
