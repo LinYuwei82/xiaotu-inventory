@@ -11,8 +11,11 @@
 // WIN32_LEAN_AND_MEAN 下 windows.h 不带 basetyps.h，而 WebView2.h 用到其中的
 // interface 宏与 COM 声明，必须显式包含。
 #include <objbase.h>
+// CommandLineToArgvW
+#include <shellapi.h>
 
 #include <atomic>
+#include <cstdio>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -27,9 +30,16 @@ constexpr wchar_t kWindowTitle[] = L"小兔进销存";
 constexpr UINT kMsgServerUrl = WM_APP + 1;
 constexpr UINT kMsgServerExited = WM_APP + 2;
 constexpr UINT_PTR kTimerStartup = 1;
-constexpr UINT kStartupTimeoutMs = 30000;
+constexpr UINT kDefaultStartupTimeoutMs = 30000;
+constexpr UINT kMinStartupTimeoutMs = 1000;
+constexpr UINT kMaxStartupTimeoutMs = 600000;
 constexpr int kDefaultWidth = 1280;
 constexpr int kDefaultHeight = 840;
+
+// 单实例：Local\ 前缀表示"当前登录会话"，同一台机器上不同用户（含 RDP 会话）
+// 各有自己的实例，不会互相挤掉；不要换成 Global\。
+constexpr wchar_t kInstanceMutexName[] = L"Local\\xiaotu-shell-single-instance";
+constexpr wchar_t kWindowStateFileName[] = L"shell-window.txt";
 
 struct AppState {
   HWND hwnd = nullptr;
@@ -52,6 +62,11 @@ struct AppState {
 };
 
 AppState g_app;
+
+// 首屏等待上限：命令行 --startup-timeout <秒> > 环境变量 XIAOTU_SHELL_STARTUP_TIMEOUT > 默认 30 秒。
+UINT g_startup_timeout_ms = kDefaultStartupTimeoutMs;
+// 单实例互斥体句柄，进程存活期间一直持有。
+HANDLE g_instance_mutex = nullptr;
 
 // ---------- 文本与路径 ----------
 
@@ -93,6 +108,133 @@ std::wstring output_tail(size_t limit = 1200) {
   std::lock_guard<std::mutex> lock(g_app.output_mutex);
   if (g_app.output_bytes.size() <= limit) return decode_output(g_app.output_bytes);
   return decode_output(g_app.output_bytes.substr(g_app.output_bytes.size() - limit));
+}
+
+// ---------- 路径、启动参数与窗口状态 ----------
+
+// 与服务端同一域：%LOCALAPPDATA%\com.simem.xiaotu
+std::wstring app_data_dir() {
+  wchar_t buf[MAX_PATH];
+  DWORD len = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
+  std::wstring base = (len > 0 && len < MAX_PATH) ? std::wstring(buf, len) : exe_directory();
+  return base + L"\\com.simem.xiaotu";
+}
+
+void ensure_directory(const std::wstring& dir) {
+  size_t pos = dir.find(L'\\');
+  while (pos != std::wstring::npos) {
+    CreateDirectoryW(dir.substr(0, pos).c_str(), nullptr);
+    pos = dir.find(L'\\', pos + 1);
+  }
+  CreateDirectoryW(dir.c_str(), nullptr);
+}
+
+bool parse_timeout_seconds(const wchar_t* text, UINT* out_ms) {
+  if (!text || !*text) return false;
+  wchar_t* end = nullptr;
+  long value = wcstol(text, &end, 10);
+  if (end == text || *end != L'\0') return false;
+  if (value <= 0 || value > static_cast<long>(kMaxStartupTimeoutMs / 1000)) return false;
+  UINT ms = static_cast<UINT>(value) * 1000;
+  if (ms < kMinStartupTimeoutMs) return false;
+  *out_ms = ms;
+  return true;
+}
+
+// 优先级：--startup-timeout <秒> > XIAOTU_SHELL_STARTUP_TIMEOUT > 默认 30 秒。
+void resolve_startup_timeout() {
+  UINT ms = 0;
+  wchar_t env[32] = {};
+  DWORD n = GetEnvironmentVariableW(L"XIAOTU_SHELL_STARTUP_TIMEOUT", env, 32);
+  if (n > 0 && n < 32 && parse_timeout_seconds(env, &ms)) g_startup_timeout_ms = ms;
+
+  int argc = 0;
+  LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (!argv) return;
+  for (int i = 1; i < argc; ++i) {
+    if (wcscmp(argv[i], L"--startup-timeout") == 0 && i + 1 < argc) {
+      if (parse_timeout_seconds(argv[i + 1], &ms)) {
+        g_startup_timeout_ms = ms;
+      } else {
+        std::wstring msg = L"--startup-timeout 参数无效：";
+        msg += argv[i + 1];
+        msg += L"\n应为 1–600 的秒数，已沿用当前值 "
+               + std::to_wstring(g_startup_timeout_ms / 1000) + L" 秒。";
+        MessageBoxW(nullptr, msg.c_str(), kWindowTitle, MB_OK | MB_ICONWARNING);
+      }
+      ++i;
+    }
+  }
+  LocalFree(argv);
+}
+
+struct WindowState {
+  RECT rc{};
+  bool maximized = false;
+  bool valid = false;
+};
+
+// 只接受"至少 200x100 落在某个显示器工作区内"的矩形，换显示器/分辨率变小后自动回退默认值。
+bool visible_on_monitor(const RECT& rc) {
+  if (rc.right - rc.left < 400 || rc.bottom - rc.top < 300) return false;
+  HMONITOR monitor = MonitorFromRect(&rc, MONITOR_DEFAULTTONULL);
+  if (!monitor) return false;
+  MONITORINFO info{};
+  info.cbSize = sizeof(info);
+  if (!GetMonitorInfoW(monitor, &info)) return false;
+  RECT inter{};
+  if (!IntersectRect(&inter, &rc, &info.rcWork)) return false;
+  return (inter.right - inter.left) >= 200 && (inter.bottom - inter.top) >= 100;
+}
+
+WindowState load_window_state() {
+  WindowState state;
+  const std::wstring path = app_data_dir() + L"\\" + kWindowStateFileName;
+  FILE* file = nullptr;
+  if (_wfopen_s(&file, path.c_str(), L"r, ccs=UTF-8") != 0 || file == nullptr) return state;
+  wchar_t line[128] = {};
+  if (fgetws(line, 128, file)) {
+    long x = 0, y = 0, w = 0, h = 0;
+    int maximized = 0;
+    if (swscanf_s(line, L"%ld %ld %ld %ld %d", &x, &y, &w, &h, &maximized) == 5) {
+      RECT rc{x, y, x + w, y + h};
+      if (visible_on_monitor(rc)) {
+        state.rc = rc;
+        state.maximized = maximized != 0;
+        state.valid = true;
+      }
+    }
+  }
+  fclose(file);
+  return state;
+}
+
+void save_window_state(HWND hwnd) {
+  if (!hwnd) return;
+  WINDOWPLACEMENT placement{};
+  placement.length = sizeof(placement);
+  if (!GetWindowPlacement(hwnd, &placement)) return;
+  // 最大化时用 rcNormalPosition，恢复后仍回到原来的大小与位置。
+  const RECT rc = placement.rcNormalPosition;
+  const int maximized = (placement.showCmd == SW_SHOWMAXIMIZED) ? 1 : 0;
+
+  const std::wstring dir = app_data_dir();
+  ensure_directory(dir);
+  const std::wstring path = dir + L"\\" + kWindowStateFileName;
+  FILE* file = nullptr;
+  if (_wfopen_s(&file, path.c_str(), L"w, ccs=UTF-8") != 0 || file == nullptr) return;
+  fwprintf(file, L"%ld %ld %ld %ld %d\n", rc.left, rc.top, rc.right - rc.left,
+           rc.bottom - rc.top, maximized);
+  fclose(file);
+}
+
+// 第二个实例：把已有窗口提到前台后退出。
+bool activate_existing_instance() {
+  HWND existing = FindWindowW(kWindowClass, nullptr);
+  if (!existing) return false;
+  ShowWindow(existing, IsIconic(existing) ? SW_RESTORE : SW_SHOW);
+  SetForegroundWindow(existing);
+  return true;
 }
 
 // ---------- 子进程 ----------
@@ -344,22 +486,8 @@ class EnvironmentCompleted
 
 // WebView2 的用户数据目录沿用服务端应用数据目录下的子目录。
 std::wstring webview_user_data_dir() {
-  wchar_t buf[MAX_PATH];
-  DWORD len = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
-  std::wstring base;
-  if (len > 0 && len < MAX_PATH) {
-    base.assign(buf, len);
-  } else {
-    base = exe_directory();
-  }
-  std::wstring dir = base + L"\\com.simem.xiaotu\\webview2";
-  // 逐级创建，已存在时 CreateDirectory 返回 ERROR_ALREADY_EXISTS，忽略。
-  size_t pos = dir.find(L"\\");
-  while (pos != std::wstring::npos) {
-    CreateDirectoryW(dir.substr(0, pos).c_str(), nullptr);
-    pos = dir.find(L'\\', pos + 1);
-  }
-  CreateDirectoryW(dir.c_str(), nullptr);
+  std::wstring dir = app_data_dir() + L"\\webview2";
+  ensure_directory(dir);  // 已存在时返回 ERROR_ALREADY_EXISTS，忽略
   return dir;
 }
 
@@ -421,7 +549,13 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case kMsgServerExited:
       if (!g_app.navigated) {
         KillTimer(hwnd, kTimerStartup);
-        show_error(L"服务端在给出访问地址前就退出了。\n\n最后输出：\n" + output_tail());
+        DWORD code = 0;
+        if (g_app.child) GetExitCodeProcess(g_app.child, &code);
+        std::wstring text = L"服务端未能启动（退出码 " + std::to_wstring(code) +
+                            L"），没有给出访问地址。\n\n"
+                            L"常见原因：数据目录不可写、数据库被其他实例占用、"
+                            L"配置文件有误。\n\n最后输出：\n" + output_tail();
+        show_error(text);
         DestroyWindow(hwnd);
       }
       return 0;
@@ -429,7 +563,10 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_TIMER:
       if (wparam == kTimerStartup && !g_app.navigated) {
         KillTimer(hwnd, kTimerStartup);
-        show_error(L"等待服务端启动超时（30 秒）。\n\n最后输出：\n" + output_tail());
+        show_error(L"等待服务端启动超时（" + std::to_wstring(g_startup_timeout_ms / 1000) +
+                   L" 秒）。\n\n可用 --startup-timeout <秒> 或环境变量 "
+                   L"XIAOTU_SHELL_STARTUP_TIMEOUT 调整等待上限。\n\n最后输出：\n" +
+                   output_tail());
         DestroyWindow(hwnd);
       }
       return 0;
@@ -439,6 +576,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       return 0;
 
     case WM_DESTROY:
+      save_window_state(hwnd);
       shutdown_child();
       if (g_app.webview) {
         g_app.webview->Release();
@@ -468,6 +606,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   SetProcessDPIAware();
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
+  resolve_startup_timeout();
+
+  // 单实例：Local\ 命名互斥体按登录会话隔离（不同用户/RDP 会话互不影响），
+  // 已存在时把旧窗口提到前台再退出，避免两个壳各起一个服务端抢同一数据目录。
+  g_instance_mutex = CreateMutexW(nullptr, TRUE, kInstanceMutexName);
+  if (g_instance_mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+    activate_existing_instance();
+    CloseHandle(g_instance_mutex);
+    g_instance_mutex = nullptr;
+    CoUninitialize();
+    return 0;
+  }
+
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
   wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -482,16 +633,32 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     return 1;
   }
 
-  g_app.hwnd = CreateWindowExW(0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW,
-                               CW_USEDEFAULT, CW_USEDEFAULT, kDefaultWidth, kDefaultHeight,
-                               nullptr, nullptr, instance, nullptr);
+  // 恢复上次的窗口位置与大小；越界（换显示器/分辨率变小）时用默认值。
+  const WindowState placement = load_window_state();
+  int x = CW_USEDEFAULT;
+  int y = CW_USEDEFAULT;
+  int width = kDefaultWidth;
+  int height = kDefaultHeight;
+  if (placement.valid) {
+    x = placement.rc.left;
+    y = placement.rc.top;
+    width = placement.rc.right - placement.rc.left;
+    height = placement.rc.bottom - placement.rc.top;
+  }
+
+  g_app.hwnd = CreateWindowExW(0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW, x, y, width,
+                               height, nullptr, nullptr, instance, nullptr);
   if (!g_app.hwnd) {
     MessageBoxW(nullptr, L"创建窗口失败。", kWindowTitle, MB_OK | MB_ICONERROR);
     CoUninitialize();
     return 1;
   }
 
-  ShowWindow(g_app.hwnd, show == 0 ? SW_SHOWNORMAL : show);
+  if (placement.valid && placement.maximized) {
+    ShowWindow(g_app.hwnd, SW_SHOWMAXIMIZED);
+  } else {
+    ShowWindow(g_app.hwnd, show == 0 ? SW_SHOWNORMAL : show);
+  }
   UpdateWindow(g_app.hwnd);
 
   std::wstring error;
@@ -510,7 +677,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   }
 
   start_reader();
-  SetTimer(g_app.hwnd, kTimerStartup, kStartupTimeoutMs, nullptr);
+  SetTimer(g_app.hwnd, kTimerStartup, g_startup_timeout_ms, nullptr);
 
   MSG msg{};
   while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -518,6 +685,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     DispatchMessageW(&msg);
   }
 
+  if (g_instance_mutex) {
+    CloseHandle(g_instance_mutex);
+    g_instance_mutex = nullptr;
+  }
   CoUninitialize();
   return static_cast<int>(msg.wParam);
 }
