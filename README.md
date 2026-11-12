@@ -297,7 +297,28 @@ struct DocumentDefinition {
 - 无请求幂等键（`request_id`）与 CSRF token；当前依赖一次性 token + HttpOnly Cookie + `SameSite=Lax`。
 - 未接入 vcpkg 时依赖 `third_party/` 内嵌头文件；接入 vcpkg 后 `vcpkg.json` 会自动生效。
 
-## 10. 参考
+## 10. 打包（macOS .dmg）
+
+一条命令从构建到出可分发的 dmg：
+
+```bash
+tools/package/make_dmg.sh
+```
+
+产物：`build/package/xiaotu-inventory-0.1.0.dmg`（版本取自 `CMakeLists.txt`），内含 `小兔进销存.app`
+与指向 `/Applications` 的「应用程序」软链。脚本、签名参数与校验方式见
+[tools/package/README.md](tools/package/README.md)。
+
+**签名现状**：仓库当前没有 Developer ID 证书，脚本默认做 ad-hoc 签名，也未做公证。用户通过网络下载或
+拷贝 dmg 后，Gatekeeper 会拦截首次打开。处理方式：
+
+1. macOS 15+：系统设置 → 隐私与安全性 → 底部「仍要打开」，再双击确认；
+2. macOS 13/14：右键应用 →「打开」→ 再次「打开」；
+3. 命令行：`xattr -d com.apple.quarantine /Applications/小兔进销存.app`。
+
+拿到 Developer ID 证书后可设置 `XIAOTU_SIGN_IDENTITY` 重新打包；要免拦截仍需额外公证与 staple，当前不在仓库范围内。
+
+## 11. 参考
 
 - 技术方案：`docs/进销存技术方案.md`
 - 数据库结构：`core/src/migrations.cpp`（v7）
