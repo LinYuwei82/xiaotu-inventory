@@ -199,6 +199,12 @@ main {
   color: var(--danger);
 }
 
+.btn:disabled,
+.link:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;

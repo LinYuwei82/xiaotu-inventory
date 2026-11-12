@@ -19,7 +19,7 @@ namespace {
 constexpr std::int64_t kBuiltinAdminId = 1;
 
 constexpr const char* kSelect =
-    "SELECT u.id, u.username, u.display_name, r.code, u.status, u.created_at"
+    "SELECT u.id, u.username, u.display_name, r.code, u.status, u.created_at, u.updated_at"
     " FROM app_user u JOIN app_role r ON r.id = u.role_id";
 
 UserRow read_row(const Stmt& stmt) {
@@ -28,7 +28,8 @@ UserRow read_row(const Stmt& stmt) {
                  .display_name = stmt.text(2),
                  .role = stmt.text(3),
                  .active = stmt.i64(4) != 0,
-                 .created_at = stmt.text(5)};
+                 .created_at = stmt.text(5),
+                 .updated_at = stmt.text(6)};
 }
 
 void validate(const UserInput& input) {
@@ -217,12 +218,12 @@ UserRow UserService::authenticate(std::string_view username,
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
               "SELECT u.id, u.username, u.display_name, r.code, u.status, u.created_at,"
-              " u.password_hash FROM app_user u JOIN app_role r ON r.id = u.role_id"
+              " u.updated_at, u.password_hash FROM app_user u JOIN app_role r ON r.id = u.role_id"
               " WHERE u.username = ? AND u.is_deleted = 0 LIMIT 1;");
     stmt.bind(1, username);
     if (stmt.step()) {
       row = read_row(stmt);
-      hash = stmt.text(6);
+      hash = stmt.text(7);
     }
   });
   if (!row.has_value() || !row->active || !verify_password(hash, password)) {

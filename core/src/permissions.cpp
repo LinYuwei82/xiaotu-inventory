@@ -2,9 +2,11 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "xiaotu/db.h"
 
@@ -39,6 +41,18 @@ bool role_has_permission(std::string_view role, std::string_view permission) {
     return false;
   }
   return it->second.count("*") > 0 || it->second.count(std::string(permission)) > 0;
+}
+
+std::vector<std::string> role_permissions(std::string_view role) {
+  std::vector<std::string> result;
+  const auto& table = mutable_table();
+  const auto it = table.find(std::string(role));
+  if (it == table.end()) {
+    return result;
+  }
+  result.assign(it->second.begin(), it->second.end());
+  std::sort(result.begin(), result.end());
+  return result;
 }
 
 bool role_exists(std::string_view role) {

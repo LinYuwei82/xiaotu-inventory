@@ -13,6 +13,7 @@
 #include "xiaotu/http_json.h"
 #include "xiaotu/ids.h"
 #include "xiaotu/log.h"
+#include "xiaotu/permissions.h"
 #include "xiaotu/resources.h"
 #include "xiaotu/routes.h"
 
@@ -182,6 +183,8 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     body["user"] = context.user;
     body["role"] = context.role;
     body["csrf"] = context.csrf;
+    // 前端据此隐藏无权限的入口；真正的拦截仍在路由的 guard 里。
+    body["permissions"] = role_permissions(context.role);
     json_ok(res, body);
   });
 

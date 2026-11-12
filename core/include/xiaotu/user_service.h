@@ -16,6 +16,7 @@ struct UserRow {
   std::string role;  // 角色码：admin / operator / viewer
   bool active = true;
   std::string created_at;
+  std::string updated_at;
 };
 
 struct UserInput {
