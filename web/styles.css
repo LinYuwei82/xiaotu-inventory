@@ -79,6 +79,26 @@ body {
   color: #fff;
 }
 
+/* 二级导航：组标题只做分组，不占页面 key。 */
+.sidebar nav .nav-group {
+  margin-top: 6px;
+}
+
+.nav-group-title {
+  color: #9ca3af;
+  font-size: 12px;
+  padding: 6px 10px 2px;
+}
+
+.sidebar nav button[data-group] {
+  padding-left: 22px;
+  font-size: 13px;
+}
+
+.sidebar nav .nav-top {
+  margin-top: 6px;
+}
+
 .sidebar-foot {
   margin-top: auto;
   color: #6b7280;

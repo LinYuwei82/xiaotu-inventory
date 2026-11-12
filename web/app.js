@@ -3231,10 +3231,96 @@
 
   // ---------- 导航与启动 ----------
 
+  // 二级导航：组只影响展示，页面 key 与权限判定不变。
+  // 报表的归属还没定，先作为顶层入口，不放进任何组。
+  const NAV_GROUPS = [
+    { key: "purchase", title: "采购" },
+    { key: "sales", title: "销售" },
+    { key: "stock", title: "库存" },
+    { key: "finance", title: "财务" },
+    { key: "master", title: "基础资料" },
+    { key: "system", title: "系统" },
+  ];
+  // 一级顺序：组与顶层页面可以交错；没有列出的组或页面按原顺序补在后面。
+  const NAV_LAYOUT = [
+    { type: "group", key: "purchase" },
+    { type: "group", key: "sales" },
+    { type: "group", key: "stock" },
+    { type: "group", key: "finance" },
+    { type: "page", key: "reports" },
+    { type: "group", key: "master" },
+    { type: "group", key: "system" },
+  ];
+
+  function buildNav(all) {
+    const groups = new Map(
+      NAV_GROUPS.map((group) => [group.key, { ...group, pages: [] }])
+    );
+    const direct = new Map();
+    for (const page of all) {
+      const group = page.group ? groups.get(page.group) : null;
+      if (group) {
+        group.pages.push(page);
+      } else {
+        direct.set(page.key, page);
+      }
+    }
+
+    const entries = [];
+    const usedGroups = new Set();
+    const usedPages = new Set();
+    for (const item of NAV_LAYOUT) {
+      if (item.type === "group") {
+        const group = groups.get(item.key);
+        if (group && group.pages.length) {
+          entries.push({ type: "group", group });
+          usedGroups.add(group.key);
+        }
+      } else if (direct.has(item.key)) {
+        entries.push({ type: "page", page: direct.get(item.key) });
+        usedPages.add(item.key);
+      }
+    }
+    for (const group of groups.values()) {
+      if (group.pages.length && !usedGroups.has(group.key)) {
+        entries.push({ type: "group", group });
+      }
+    }
+    for (const [key, page] of direct) {
+      if (!usedPages.has(key)) entries.push({ type: "page", page });
+    }
+    return entries;
+  }
+
+  function navHtml(entries) {
+    return entries
+      .map((entry) => {
+        if (entry.type === "page") {
+          return `<button type="button" class="nav-top" data-key="${entry.page.key}">${escapeHtml(
+            entry.page.title
+          )}</button>`;
+        }
+        const items = entry.group.pages
+          .map(
+            (page) =>
+              `<button type="button" data-key="${page.key}" data-group="${entry.group.key}">${escapeHtml(
+                page.title
+              )}</button>`
+          )
+          .join("");
+        return `<div class="nav-group" data-group="${entry.group.key}">
+            <div class="nav-group-title">${escapeHtml(entry.group.title)}</div>
+            ${items}
+          </div>`;
+      })
+      .join("");
+  }
+
   const FIXED_PAGES = [
     {
       key: "purchase",
       title: "采购入库",
+      group: "purchase",
       render: (mount) =>
         documentPage(mount, {
           docType: "PUR_IN",
@@ -3249,6 +3335,7 @@
     {
       key: "purchase-return",
       title: "采购退货",
+      group: "purchase",
       render: (mount) =>
         documentPage(mount, {
           docType: "PUR_RET",
@@ -3263,6 +3350,7 @@
     {
       key: "sales",
       title: "销售出库",
+      group: "sales",
       render: (mount) =>
         documentPage(mount, {
           docType: "SAL_OUT",
@@ -3277,6 +3365,7 @@
     {
       key: "sales-return",
       title: "销售退货",
+      group: "sales",
       render: (mount) =>
         documentPage(mount, {
           docType: "SAL_RET",
@@ -3291,6 +3380,7 @@
     {
       key: "other-in",
       title: "其他入库",
+      group: "stock",
       render: (mount) =>
         documentPage(mount, {
           docType: "OTH_IN",
@@ -3304,6 +3394,7 @@
     {
       key: "other-out",
       title: "其他出库",
+      group: "stock",
       render: (mount) =>
         documentPage(mount, {
           docType: "OTH_OUT",
@@ -3317,11 +3408,13 @@
     {
       key: "sales-orders",
       title: "销售订单",
+      group: "sales",
       render: orderPage,
     },
     {
       key: "transfer",
       title: "调拨",
+      group: "stock",
       render: (mount) =>
         documentPage(mount, {
           docType: "STK_TRF",
@@ -3336,6 +3429,7 @@
     {
       key: "stocktake",
       title: "盘点",
+      group: "stock",
       render: (mount) =>
         documentPage(mount, {
           docType: "STK_CNT",
@@ -3349,6 +3443,7 @@
     {
       key: "cost-adjust",
       title: "成本调整",
+      group: "finance",
       render: (mount) =>
         documentPage(mount, {
           docType: "CST_ADJ",
@@ -3363,20 +3458,30 @@
     {
       key: "ar-ap",
       title: "收付款",
+      group: "finance",
       render: financePage,
     },
-    { key: "statement", title: "对账单", render: statementPage },
-    { key: "stock", title: "库存", render: stockPage },
-    { key: "print-templates", title: "打印模板", render: printTemplatePage },
+    { key: "statement", title: "对账单", group: "finance", render: statementPage },
+    { key: "stock", title: "库存", group: "stock", render: stockPage },
+    { key: "print-templates", title: "打印模板", group: "system", render: printTemplatePage },
     { key: "reports", title: "报表", render: reportPage },
-    { key: "users", title: "用户", permission: "user.read", render: userPage },
-    { key: "audit", title: "审计日志", permission: "audit.read", render: auditPage },
+    { key: "users", title: "用户", group: "system", permission: "user.read", render: userPage },
+    {
+      key: "audit",
+      title: "审计日志",
+      group: "system",
+      permission: "audit.read",
+      render: auditPage,
+    },
   ];
 
   function mountPage(page) {
     state.current = page.key;
-    for (const link of nav.querySelectorAll("button")) {
+    for (const link of nav.querySelectorAll("button[data-key]")) {
       link.classList.toggle("active", link.dataset.key === page.key);
+    }
+    for (const group of nav.querySelectorAll(".nav-group")) {
+      group.classList.toggle("active", group.dataset.group === page.group);
     }
     main.querySelectorAll(":scope > *").forEach((node) => {
       if (node !== notice) node.remove();
@@ -3452,17 +3557,14 @@
         ...pages.map((page) => ({
           key: page.key,
           title: page.title,
+          group: page.group || "",
+          permission: page.permission || "",
           render: (mount, ui) => window.XiaotuPages[page.key].render(mount, ui),
         })),
         ...FIXED_PAGES,
       ].filter((page) => !page.permission || can(page.permission));
 
-      nav.innerHTML = all
-        .map(
-          (page) =>
-            `<button type="button" data-key="${page.key}">${escapeHtml(page.title)}</button>`
-        )
-        .join("");
+      nav.innerHTML = navHtml(buildNav(all));
       nav.addEventListener("click", (event) => {
         const button = event.target.closest("button");
         if (!button) return;

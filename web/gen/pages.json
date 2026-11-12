@@ -2,31 +2,43 @@
   {
     "key": "item",
     "title": "商品",
-    "script": "/gen/item_page.js"
+    "script": "/gen/item_page.js",
+    "permission": "item.read",
+    "group": "master"
   },
   {
     "key": "unit",
     "title": "计量单位",
-    "script": "/gen/unit_page.js"
+    "script": "/gen/unit_page.js",
+    "permission": "unit.read",
+    "group": "master"
   },
   {
     "key": "warehouse",
     "title": "仓库",
-    "script": "/gen/warehouse_page.js"
+    "script": "/gen/warehouse_page.js",
+    "permission": "warehouse.read",
+    "group": "master"
   },
   {
     "key": "customer",
     "title": "客户",
-    "script": "/gen/customer_page.js"
+    "script": "/gen/customer_page.js",
+    "permission": "customer.read",
+    "group": "master"
   },
   {
     "key": "supplier",
     "title": "供应商",
-    "script": "/gen/supplier_page.js"
+    "script": "/gen/supplier_page.js",
+    "permission": "supplier.read",
+    "group": "master"
   },
   {
     "key": "fund_account",
     "title": "资金账户",
-    "script": "/gen/fund_account_page.js"
+    "script": "/gen/fund_account_page.js",
+    "permission": "finance.read",
+    "group": "finance"
   }
 ]

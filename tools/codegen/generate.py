@@ -49,6 +49,10 @@ def json_default(field_type: str, default):
     return str(int(default))
 
 
+# 二级导航的组名；与 web/app.js 的 NAV_GROUPS 保持一致。
+NAV_GROUP_VALUES = {"purchase", "sales", "stock", "finance", "master", "system"}
+
+
 def prepare_table(table: dict) -> dict:
     fields = []
     for raw in table["fields"]:
@@ -203,11 +207,16 @@ def generate_tables(schema: dict, env: Environment, check: bool) -> int:
             write(directory / filename, content, check)
             generated[target_key].append(directory / filename)
 
+        nav_group = prepared.get("nav_group", "")
+        if nav_group and nav_group not in NAV_GROUP_VALUES:
+            raise SystemExit(f"表 {key} 的 nav_group 不受支持: {nav_group}")
         pages.append(
             {
                 "key": key,
                 "title": prepared["entity"],
                 "script": f"/gen/{key}_page.js",
+                "permission": prepared["permissions"]["read"],
+                "group": nav_group,
             }
         )
 

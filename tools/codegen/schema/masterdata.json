@@ -14,6 +14,7 @@
       "entity": "商品",
       "api": "/api/items",
       "permissions": { "read": "item.read", "write": "item.write" },
+      "nav_group": "master",
       "order_by": "code",
       "fields": [
         { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
@@ -31,6 +32,7 @@
       "entity": "计量单位",
       "api": "/api/units",
       "permissions": { "read": "unit.read", "write": "unit.write" },
+      "nav_group": "master",
       "order_by": "code",
       "fields": [
         { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
@@ -45,6 +47,7 @@
       "entity": "仓库",
       "api": "/api/warehouses",
       "permissions": { "read": "warehouse.read", "write": "warehouse.write" },
+      "nav_group": "master",
       "order_by": "code",
       "fields": [
         { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
@@ -59,6 +62,7 @@
       "entity": "客户",
       "api": "/api/customers",
       "permissions": { "read": "customer.read", "write": "customer.write" },
+      "nav_group": "master",
       "order_by": "code",
       "fields": [
         { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
@@ -75,6 +79,7 @@
       "entity": "供应商",
       "api": "/api/suppliers",
       "permissions": { "read": "supplier.read", "write": "supplier.write" },
+      "nav_group": "master",
       "order_by": "code",
       "fields": [
         { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
@@ -91,6 +96,7 @@
       "entity": "资金账户",
       "api": "/api/fund-accounts",
       "permissions": { "read": "finance.read", "write": "finance.write" },
+      "nav_group": "finance",
       "order_by": "sort_order, id",
       "fields": [
         { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
