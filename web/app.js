@@ -721,12 +721,19 @@
       mount.querySelector('[data-role="submit"]').hidden = true;
     }
 
+    function itemLabel(item) {
+      return [item.code, item.name, item.spec]
+        .map((part) => (part || "").trim())
+        .filter(Boolean)
+        .join(" ");
+    }
+
     function itemOptions(selected) {
       return items
         .map(
           (item) =>
             `<option value="${item.id}" ${String(item.id) === String(selected) ? "selected" : ""}>${escapeHtml(
-              item.code + " " + item.name
+              itemLabel(item)
             )}</option>`
         )
         .join("");
@@ -765,7 +772,7 @@
       }
       row.innerHTML = `
         <td><select data-role="item">${itemOptions(line ? line.item_id : undefined)}</select></td>
-        <td><input type="text" inputmode="decimal" value="1" data-role="qty" /></td>
+        <td><span class="qty-cell"><input type="text" inputmode="decimal" value="1" data-role="qty" /><span class="unit-hint" data-role="unit"></span></span></td>
         <td><input type="number" min="0" step="0.01" value="0.00" data-role="price" /></td>
         <td><input type="text" class="readonly" value="—" data-role="amount" disabled /></td>
         <td class="actions"><button class="link danger" type="button" data-role="remove">移除</button></td>`;
@@ -778,6 +785,14 @@
       };
       row.querySelector('[data-role="qty"]').addEventListener("input", recalc);
       row.querySelector('[data-role="price"]').addEventListener("input", recalc);
+      const itemSelect = row.querySelector('[data-role="item"]');
+      const unitHint = row.querySelector('[data-role="unit"]');
+      const updateUnit = () => {
+        const item = items.find((candidate) => String(candidate.id) === String(itemSelect.value));
+        unitHint.textContent = item && item.unit ? item.unit : "";
+      };
+      itemSelect.addEventListener("change", updateUnit);
+      updateUnit();
       if (line) {
         row.querySelector('[data-role="qty"]').value = qtyText(line.qty);
         row.querySelector('[data-role="price"]').value = (line.price_cents / 100).toFixed(2);
@@ -1144,12 +1159,19 @@
       return item ? item.code + " " + item.name : String(itemId);
     }
 
+    function itemLabel(item) {
+      return [item.code, item.name, item.spec]
+        .map((part) => (part || "").trim())
+        .filter(Boolean)
+        .join(" ");
+    }
+
     function itemOptions(selected) {
       return items
         .map(
           (item) =>
             `<option value="${item.id}" ${String(item.id) === String(selected) ? "selected" : ""}>${escapeHtml(
-              item.code + " " + item.name
+              itemLabel(item)
             )}</option>`
         )
         .join("");
@@ -1159,7 +1181,7 @@
       const row = document.createElement("tr");
       row.innerHTML = `
         <td><select data-role="item">${itemOptions(line ? line.item_id : undefined)}</select></td>
-        <td><input type="text" inputmode="decimal" value="1" data-role="qty" /></td>
+        <td><span class="qty-cell"><input type="text" inputmode="decimal" value="1" data-role="qty" /><span class="unit-hint" data-role="unit"></span></span></td>
         <td><input type="number" min="0" step="0.01" value="0.00" data-role="price" /></td>
         <td><input type="text" class="readonly" value="—" data-role="amount" disabled /></td>
         <td class="actions"><button class="link danger" type="button" data-role="remove">移除</button></td>`;
@@ -1172,6 +1194,14 @@
       };
       row.querySelector('[data-role="qty"]').addEventListener("input", recalc);
       row.querySelector('[data-role="price"]').addEventListener("input", recalc);
+      const itemSelect = row.querySelector('[data-role="item"]');
+      const unitHint = row.querySelector('[data-role="unit"]');
+      const updateUnit = () => {
+        const item = items.find((candidate) => String(candidate.id) === String(itemSelect.value));
+        unitHint.textContent = item && item.unit ? item.unit : "";
+      };
+      itemSelect.addEventListener("change", updateUnit);
+      updateUnit();
       if (line) {
         row.querySelector('[data-role="qty"]').value = qtyText(line.qty);
         row.querySelector('[data-role="price"]').value = (line.price_cents / 100).toFixed(2);
