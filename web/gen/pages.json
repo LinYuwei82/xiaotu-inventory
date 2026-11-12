@@ -35,6 +35,13 @@
     "group": "master"
   },
   {
+    "key": "employee",
+    "title": "职员",
+    "script": "/gen/employee_page.js",
+    "permission": "employee.read",
+    "group": "master"
+  },
+  {
     "key": "fund_account",
     "title": "资金账户",
     "script": "/gen/fund_account_page.js",

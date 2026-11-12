@@ -100,6 +100,25 @@
       ]
     },
     {
+      "table": "employee",
+      "key": "employee",
+      "entity": "职员",
+      "api": "/api/employees",
+      "permissions": { "read": "employee.read", "write": "employee.write" },
+      "nav_group": "master",
+      "order_by": "code",
+      "quota": "max_employees",
+      "fields": [
+        { "name": "code", "label": "工号", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
+        { "name": "name", "label": "姓名", "type": "string", "required": true, "unique": false, "in_list": true, "in_form": true },
+        { "name": "phone", "label": "电话", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true },
+        { "name": "department", "label": "部门", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true },
+        { "name": "position", "label": "职位", "type": "string", "required": false, "unique": false, "in_list": false, "in_form": true },
+        { "name": "user_id", "label": "绑定登录账号", "type": "int", "required": false, "unique": false, "in_list": false, "in_form": false, "default": 0 },
+        { "name": "status", "label": "在职", "type": "bool", "required": false, "unique": false, "in_list": true, "in_form": true, "default": true }
+      ]
+    },
+    {
       "table": "fund_account",
       "key": "fund_account",
       "entity": "资金账户",

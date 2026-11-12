@@ -1186,6 +1186,7 @@
     const costAdjust = !!config.costAdjust;
     // 只有其他出入库有业务类型；入库可用期初，出库可用领用与报损，赠品两方向通用。
     const otherDoc = docType === "OTH_IN" || docType === "OTH_OUT";
+    const salesDoc = docType === "SAL_OUT" || docType === "SAL_RET";
     const categoryOptions =
       docType === "OTH_IN"
         ? [
@@ -1239,6 +1240,11 @@
                   .join("")}
               </select>
             </label>
+            <label class="field" ${salesDoc ? "" : "hidden"}><span>业务员</span>
+              <select data-role="salesperson">
+                <option value="0">（未指定）</option>
+              </select>
+            </label>
           </div>
           <table class="table lines" data-role="lines"></table>
           <div class="form-actions">
@@ -1260,6 +1266,7 @@
     const linesTable = mount.querySelector('[data-role="lines"]');
     const partnerSelect = mount.querySelector('[data-role="partner-select"]');
     const bizCategorySelect = mount.querySelector('[data-role="biz-category"]');
+    const salespersonSelect = mount.querySelector('[data-role="salesperson"]');
     const documentsTable = mount.querySelector('[data-role="documents"]');
 
     dateInput.value = new Date().toISOString().slice(0, 10);
@@ -1389,7 +1396,7 @@
       documentsTable.innerHTML = `
         <thead><tr><th>单据号</th><th>日期</th><th>仓库</th><th>${escapeHtml(
           config.partnerLabel
-        )}</th>${otherDoc ? "<th>业务类型</th>" : ""}<th>数量</th><th>金额（元）</th><th>状态</th><th class="actions">操作</th></tr></thead>
+        )}</th>${otherDoc ? "<th>业务类型</th>" : ""}${salesDoc ? "<th>业务员</th>" : ""}<th>数量</th><th>金额（元）</th><th>状态</th><th class="actions">操作</th></tr></thead>
         <tbody>${documents
           .map(
             (doc) => `<tr data-id="${doc.id}">
@@ -1402,6 +1409,11 @@
                   ? `<td>${escapeHtml(bizCategoryText(doc.biz_category) || "—")}</td>`
                   : ""
               }
+              ${
+                salesDoc
+                  ? `<td>${escapeHtml(doc.salesperson_name || "未指定")}</td>`
+                  : ""
+              }
               <td>${costAdjust ? "—" : qtyText(doc.total_qty)}</td>
               <td>${money(doc.total_amount_cents)}</td>
               <td>${statusLabel(doc.status)}</td>
@@ -1412,11 +1424,12 @@
     }
 
     async function reload() {
-      const [warehouseList, itemList, docList, partnerList] = await Promise.all([
+      const [warehouseList, itemList, docList, partnerList, employeeList] = await Promise.all([
         api("GET", "/api/warehouses"),
         api("GET", "/api/items"),
         api("GET", "/api/documents?doc_type=" + docType),
         config.partnerApi ? api("GET", config.partnerApi) : Promise.resolve([]),
+        salesDoc ? api("GET", "/api/employees") : Promise.resolve([]),
       ]);
       warehouses = warehouseList;
       items = itemList;
@@ -1431,6 +1444,19 @@
                 `<option value="${partner.id}" data-name="${escapeHtml(partner.name)}">${escapeHtml(
                   partner.code + " " + partner.name
                 )}</option>`
+            )
+            .join("");
+      }
+      if (salesDoc) {
+        // 停用/离职职员仍列在历史单据里，这里保留可选项并标注，不隐藏。
+        salespersonSelect.innerHTML =
+          '<option value="0">（未指定）</option>' +
+          employeeList
+            .map(
+              (person) =>
+                `<option value="${person.id}">${escapeHtml(
+                  person.code + " " + person.name
+                )}${person.status ? "" : "（停用）"}</option>`
             )
             .join("");
       }
@@ -1461,6 +1487,7 @@
       form.querySelector('[data-role="partner"]').value = "";
       if (partnerSelect) partnerSelect.value = "";
       if (otherDoc) bizCategorySelect.value = "OTHER";
+      if (salesDoc) salespersonSelect.value = "0";
       dateInput.value = new Date().toISOString().slice(0, 10);
       resetLines();
     }
@@ -1528,6 +1555,7 @@
             : ""
           : partnerInput.value.trim(),
         biz_category: otherDoc ? bizCategorySelect.value : "",
+        salesperson_id: salesDoc ? Number(salespersonSelect.value || 0) : 0,
         lines,
       };
       try {
@@ -1563,6 +1591,7 @@
           partnerSelect.value = detail.partner_id ? String(detail.partner_id) : "";
         }
         if (otherDoc) bizCategorySelect.value = detail.biz_category || "OTHER";
+        if (salesDoc) salespersonSelect.value = String(detail.salesperson_id || 0);
         linesTable.innerHTML = costAdjust
           ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
           : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
@@ -1713,6 +1742,15 @@
             <label class="field"><span>${escapeHtml(config.partnerLabel)}</span>
               <select data-role="customer"></select>
             </label>
+            ${
+              docType === "SAL_ORDER"
+                ? `<label class="field"><span>业务员</span>
+                    <select data-role="salesperson">
+                      <option value="0">（未指定）</option>
+                    </select>
+                  </label>`
+                : ""
+            }
           </div>
           <table class="table lines" data-role="lines"></table>
           <div class="form-actions">
@@ -1758,6 +1796,7 @@
     const warehouseSelect = mount.querySelector('[data-role="warehouse"]');
     const dateInput = mount.querySelector('[data-role="date"]');
     const customerSelect = mount.querySelector('[data-role="customer"]');
+    const salespersonSelect = mount.querySelector('[data-role="salesperson"]');
     const linesTable = mount.querySelector('[data-role="lines"]');
     const documentsTable = mount.querySelector('[data-role="documents"]');
     const convertCard = mount.querySelector('[data-role="convert-card"]');
@@ -1905,7 +1944,7 @@
       documentsTable.innerHTML = `
         <thead><tr><th>订单号</th><th>日期</th><th>仓库</th><th>${escapeHtml(
           config.partnerLabel
-        )}</th><th>数量</th>
+        )}</th>${docType === "SAL_ORDER" ? "<th>业务员</th>" : ""}<th>数量</th>
           <th>金额（元）</th><th>状态</th><th class="actions">操作</th></tr></thead>
         <tbody>${visible
           .map(
@@ -1914,6 +1953,11 @@
               <td>${escapeHtml(doc.doc_date)}</td>
               <td>${escapeHtml(doc.warehouse_name)}</td>
               <td>${escapeHtml(doc.customer || "—")}</td>
+              ${
+                docType === "SAL_ORDER"
+                  ? `<td>${escapeHtml(doc.salesperson_name || "未指定")}</td>`
+                  : ""
+              }
               <td>${qtyText(doc.total_qty)}</td>
               <td>${money(doc.total_amount_cents)}</td>
               <td>${orderStatusLabel(doc)}</td>
@@ -1924,11 +1968,12 @@
     }
 
     async function reload() {
-      const [warehouseList, itemList, docList, customerList] = await Promise.all([
+      const [warehouseList, itemList, docList, customerList, employeeList] = await Promise.all([
         api("GET", "/api/warehouses"),
         api("GET", "/api/items"),
         api("GET", "/api/documents?doc_type=" + docType),
         api("GET", config.partnerApi),
+        docType === "SAL_ORDER" ? api("GET", "/api/employees") : Promise.resolve([]),
       ]);
       warehouses = warehouseList;
       items = itemList;
@@ -1954,6 +1999,18 @@
               )}</option>`
           )
           .join("");
+      if (salespersonSelect) {
+        salespersonSelect.innerHTML =
+          '<option value="0">（未指定）</option>' +
+          employeeList
+            .map(
+              (person) =>
+                `<option value="${person.id}">${escapeHtml(
+                  person.code + " " + person.name
+                )}${person.status ? "" : "（停用）"}</option>`
+            )
+            .join("");
+      }
       renderDocuments();
       if (!linesTable.querySelector("tbody") || !linesTable.querySelector("tbody").children.length) {
         resetLines();
@@ -1964,6 +2021,7 @@
       editingId = 0;
       mount.querySelector('[data-role="cancel-edit"]').hidden = true;
       customerSelect.value = "";
+      if (salespersonSelect) salespersonSelect.value = "0";
       dateInput.value = new Date().toISOString().slice(0, 10);
       resetLines();
     }
@@ -2000,6 +2058,7 @@
         doc_date: dateInput.value,
         partner_id: Number(customerSelect.value || 0),
         partner: option && option.value ? option.dataset.name || "" : "",
+        salesperson_id: salespersonSelect ? Number(salespersonSelect.value || 0) : 0,
         lines,
       };
       try {
@@ -2025,6 +2084,7 @@
         warehouseSelect.value = String(detail.warehouse_id);
         dateInput.value = detail.doc_date;
         customerSelect.value = detail.partner_id ? String(detail.partner_id) : "";
+        if (salespersonSelect) salespersonSelect.value = String(detail.salesperson_id || 0);
         linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
         for (const line of detail.lines) addLine(line);
         mount.querySelector('[data-role="cancel-edit"]').hidden = false;

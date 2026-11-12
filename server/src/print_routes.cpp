@@ -673,6 +673,10 @@ void render_document(Services& services, const PrintTargetDef& target, const htt
     render.header_fields.push_back(
         {{"label", "业务类型"}, {"value", stock_biz_category_label(detail.biz_category)}});
   }
+  if (!detail.salesperson_name.empty()) {
+    render.header_fields.push_back(
+        {{"label", "业务员"}, {"value", detail.salesperson_name}});
+  }
   render.header_fields.push_back({{"label", "状态"}, {"value", doc_status_label(detail.status)}});
   render.totals = {{"total_qty", qty_text(detail.total_qty)},
                    {"total_amount_cents", detail.total_amount_cents},

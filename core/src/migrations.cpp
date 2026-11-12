@@ -675,6 +675,38 @@ CREATE UNIQUE INDEX uk_item_barcode_code ON item_barcode(barcode);
 CREATE UNIQUE INDEX uk_item_barcode_item ON item_barcode(item_id);
 )SQL";
 
+// v18：职员档案与单据业务员。职员是业务档案，不强制绑定登录账号（user_id 预留），
+// 与社区版「1 个账号、10 名职员」的额度口径一致。业务员落在单据表头，
+// 销售订单 / 销售出库 / 销售退货适用，保存名称快照避免改名影响历史单据。
+constexpr const char* kV18 = R"SQL(
+CREATE TABLE employee (
+  id         INTEGER PRIMARY KEY,
+  code       TEXT    NOT NULL,
+  name       TEXT    NOT NULL,
+  phone      TEXT    NOT NULL DEFAULT '',
+  department TEXT    NOT NULL DEFAULT '',
+  position   TEXT    NOT NULL DEFAULT '',
+  user_id    INTEGER NOT NULL DEFAULT 0,
+  status     INTEGER NOT NULL DEFAULT 1,
+  is_deleted INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT    NOT NULL,
+  created_by TEXT    NOT NULL DEFAULT 'system',
+  updated_at TEXT    NOT NULL,
+  updated_by TEXT    NOT NULL DEFAULT 'system',
+  CHECK (status IN (0, 1)),
+  CHECK (is_deleted IN (0, 1))
+);
+CREATE UNIQUE INDEX uk_employee_code ON employee(code);
+
+ALTER TABLE doc_header ADD COLUMN salesperson_id   INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doc_header ADD COLUMN salesperson_name TEXT    NOT NULL DEFAULT '';
+CREATE INDEX idx_doc_header_salesperson ON doc_header(salesperson_id, doc_date);
+
+INSERT INTO app_role_permission (role_id, permission) VALUES
+  (2, 'employee.read'), (2, 'employee.write'),
+  (3, 'employee.read');
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -707,6 +739,7 @@ const std::vector<Migration>& all_migrations() {
       {15, "v15_stocktake_ledger_direction", kV15},
       {16, "v16_document_biz_category", kV16},
       {17, "v17_item_category_barcode_tax", kV17},
+      {18, "v18_employee_salesperson", kV18},
   };
   return migrations;
 }

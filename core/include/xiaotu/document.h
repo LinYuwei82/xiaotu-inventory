@@ -76,6 +76,8 @@ struct DocInput {
   // 其他出入库的业务类型：GIFT / USAGE / LOSS / OPENING / OTHER；其他单据为
   // 空串，由引擎校验方向与白名单。
   std::string biz_category;
+  // 业务员：仅销售订单 / 销售出库 / 销售退货使用，0 表示未指定；名称由服务端快照。
+  std::int64_t salesperson_id = 0;
   std::vector<DocLineInput> lines;
 };
 
@@ -90,6 +92,8 @@ struct DocDetail {
   std::int64_t partner_id = 0;
   std::string partner;
   std::string biz_category;  // 其他出入库的业务类型，其余单据为空
+  std::int64_t salesperson_id = 0;
+  std::string salesperson_name;
   std::string status;
   std::string order_status;  // 仅订单：'' / CONFIRMED / CONVERTED / CLOSED
   std::int64_t total_qty = 0;

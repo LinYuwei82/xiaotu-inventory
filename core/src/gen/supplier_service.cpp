@@ -8,6 +8,7 @@
 
 #include "xiaotu/audit.h"
 #include "xiaotu/crud.h"
+#include "xiaotu/edition.h"
 #include "xiaotu/error.h"
 
 namespace xiaotu::gen {

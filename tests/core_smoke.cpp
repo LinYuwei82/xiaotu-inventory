@@ -27,6 +27,7 @@
 #include "xiaotu/password.h"
 #include "xiaotu/gen/supplier_service.h"
 #include "xiaotu/gen/unit_service.h"
+#include "xiaotu/gen/employee_service.h"
 #include "xiaotu/gen/warehouse_service.h"
 #include "xiaotu/item_category.h"
 #include "xiaotu/migrations.h"
@@ -76,7 +77,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 17, "迁移后 schema 版本应为 17");
+      check(db.schema_version() == 18, "迁移后 schema 版本应为 18");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -333,15 +334,46 @@ int main() {
           xiaotu::DocLineInput{.item_id = item.id, .qty = q(5), .price_cents = 1000});
       const auto opening_doc = documents.save_and_approve(opening);
 
+      xiaotu::gen::EmployeeService employees(db);
+      const auto person =
+          employees.create(xiaotu::gen::EmployeeRow{.code = "E001", .name = "张三",
+                                                    .phone = "13800000000"});
+      check(person.id > 0, "应能创建职员档案");
+
       xiaotu::DocInput input;
       input.doc_type = "SAL_OUT";
       input.warehouse_id = warehouse_list.at(0).id;
       input.doc_date = kToday;
       input.partner = "测试客户";
+      input.salesperson_id = person.id;
       input.lines.push_back(xiaotu::DocLineInput{.item_id = item.id, .qty = q(5), .price_cents = 1000});
 
       const auto created = documents.save_and_approve(input);
       check(!created.doc_no.empty(), "应生成单据号");
+
+      const auto created_detail = documents.detail(created.id);
+      check(created_detail.salesperson_id == person.id &&
+                created_detail.salesperson_name == "张三",
+            "销售出库应保存业务员 id 与名称快照");
+
+      xiaotu::DocInput unknown_person = input;
+      unknown_person.salesperson_id = 999999;
+      bool unknown_rejected = false;
+      try {
+        documents.save_draft(unknown_person);
+      } catch (const xiaotu::AppError& error) {
+        unknown_rejected = error.code() == "NOT_FOUND";
+      }
+      check(unknown_rejected, "不存在的业务员应被拒绝");
+
+      // 非销售单据即使客户端传了业务员也应清空，避免污染报表维度。
+      xiaotu::DocInput other_input = input;
+      other_input.doc_type = "OTH_IN";
+      other_input.biz_category = "OTHER";
+      const auto other_draft = documents.save_draft(other_input);
+      const auto other_detail = documents.detail(other_draft.id);
+      check(other_detail.salesperson_id == 0 && other_detail.salesperson_name.empty(),
+            "非销售单据不应保存业务员");
 
       const auto balances = stock.balances();
       check(balances.size() == 1, "应有一条库存余额");

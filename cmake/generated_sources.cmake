@@ -2,6 +2,8 @@
 set(XIAOTU_GENERATED_CORE_SOURCES
   "${CMAKE_SOURCE_DIR}/core/src/gen/customer_dao.cpp"
   "${CMAKE_SOURCE_DIR}/core/src/gen/customer_service.cpp"
+  "${CMAKE_SOURCE_DIR}/core/src/gen/employee_dao.cpp"
+  "${CMAKE_SOURCE_DIR}/core/src/gen/employee_service.cpp"
   "${CMAKE_SOURCE_DIR}/core/src/gen/fund_account_dao.cpp"
   "${CMAKE_SOURCE_DIR}/core/src/gen/fund_account_service.cpp"
   "${CMAKE_SOURCE_DIR}/core/src/gen/item_dao.cpp"
@@ -15,6 +17,7 @@ set(XIAOTU_GENERATED_CORE_SOURCES
 )
 set(XIAOTU_GENERATED_SERVER_SOURCES
   "${CMAKE_SOURCE_DIR}/server/src/gen/customer_routes.cpp"
+  "${CMAKE_SOURCE_DIR}/server/src/gen/employee_routes.cpp"
   "${CMAKE_SOURCE_DIR}/server/src/gen/fund_account_routes.cpp"
   "${CMAKE_SOURCE_DIR}/server/src/gen/item_routes.cpp"
   "${CMAKE_SOURCE_DIR}/server/src/gen/supplier_routes.cpp"
