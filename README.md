@@ -1,5 +1,9 @@
 # 小兔进销存（M2）
 
+> 主仓库在 Gitee：`git@gitee.com:lin-yuwei168/xiaotu-inventory.git`。GitHub 的 `LinYuwei82/xiaotu-inventory` 是同源镜像，只是快照：不接收 PR，也不跑 CI。
+>
+> 开发、提交与发版都以 Gitee 为准；自动门禁在 Gitee Go，仓库里没有 `.github/workflows/`。
+
 macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 - 不带参数启动 = **单机版**：内嵌服务只监听 `127.0.0.1` 的随机端口，生成一次性 token，用系统 WKWebView 打开本地页面。
