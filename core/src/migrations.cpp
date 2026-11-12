@@ -179,6 +179,34 @@ VALUES (1, 'admin', '管理员', 1, '', 1, 0,
         datetime('now', 'localtime'), 'system', datetime('now', 'localtime'), 'system');
 )SQL";
 
+// v3：供应商档案，并让单据可以引用供应商（名称快照保留在 doc_header.customer）。
+constexpr const char* kV3 = R"SQL(
+CREATE TABLE supplier (
+  id         INTEGER PRIMARY KEY,
+  code       TEXT    NOT NULL,
+  name       TEXT    NOT NULL,
+  contact    TEXT    NOT NULL DEFAULT '',
+  phone      TEXT    NOT NULL DEFAULT '',
+  address    TEXT    NOT NULL DEFAULT '',
+  status     INTEGER NOT NULL DEFAULT 1,
+  is_deleted INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT    NOT NULL,
+  created_by TEXT    NOT NULL DEFAULT 'system',
+  updated_at TEXT    NOT NULL,
+  updated_by TEXT    NOT NULL DEFAULT 'system',
+  CHECK (status IN (0, 1)),
+  CHECK (is_deleted IN (0, 1))
+);
+CREATE UNIQUE INDEX uk_supplier_code ON supplier(code);
+
+-- 0 表示未引用档案（历史单据与销售类单据）；非 0 时指向 supplier。
+ALTER TABLE doc_header ADD COLUMN partner_id INTEGER NOT NULL DEFAULT 0;
+
+INSERT INTO app_role_permission (role_id, permission) VALUES
+  (2, 'supplier.read'), (2, 'supplier.write'),
+  (3, 'supplier.read');
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -196,6 +224,7 @@ const std::vector<Migration>& all_migrations() {
   static const std::vector<Migration> migrations = {
       {1, "v1_initial_schema", kV1},
       {2, "v2_user_and_role", kV2},
+      {3, "v3_supplier", kV3},
   };
   return migrations;
 }

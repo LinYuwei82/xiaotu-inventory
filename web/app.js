@@ -247,7 +247,8 @@
             <label class="field"><span>${escapeHtml(config.partnerLabel)}</span>
               <input type="text" data-role="partner" placeholder="${escapeHtml(
                 config.partnerPlaceholder
-              )}" />
+              )}" ${config.partnerApi ? "hidden" : ""} />
+              <select data-role="partner-select" ${config.partnerApi ? "" : "hidden"}></select>
             </label>
           </div>
           <table class="table lines" data-role="lines"></table>
@@ -267,6 +268,7 @@
     const warehouseSelect = mount.querySelector('[data-role="warehouse"]');
     const dateInput = mount.querySelector('[data-role="date"]');
     const linesTable = mount.querySelector('[data-role="lines"]');
+    const partnerSelect = mount.querySelector('[data-role="partner-select"]');
     const documentsTable = mount.querySelector('[data-role="documents"]');
 
     dateInput.value = new Date().toISOString().slice(0, 10);
@@ -356,14 +358,28 @@
     }
 
     async function reload() {
-      const [warehouseList, itemList, docList] = await Promise.all([
+      const [warehouseList, itemList, docList, partnerList] = await Promise.all([
         api("GET", "/api/warehouses"),
         api("GET", "/api/items"),
         api("GET", "/api/documents?doc_type=" + docType),
+        config.partnerApi ? api("GET", config.partnerApi) : Promise.resolve([]),
       ]);
       warehouses = warehouseList;
       items = itemList;
       documents = docList;
+      if (config.partnerApi) {
+        partnerSelect.innerHTML =
+          '<option value="">（不指定）</option>' +
+          partnerList
+            .filter((partner) => partner.status)
+            .map(
+              (partner) =>
+                `<option value="${partner.id}" data-name="${escapeHtml(partner.name)}">${escapeHtml(
+                  partner.code + " " + partner.name
+                )}</option>`
+            )
+            .join("");
+      }
       warehouseSelect.innerHTML = warehouses
         .filter((warehouse) => warehouse.status)
         .map(
@@ -381,6 +397,7 @@
       editingId = 0;
       mount.querySelector('[data-role="cancel-edit"]').hidden = true;
       form.querySelector('[data-role="partner"]').value = "";
+      if (partnerSelect) partnerSelect.value = "";
       dateInput.value = new Date().toISOString().slice(0, 10);
       resetLines();
     }
@@ -407,11 +424,19 @@
     async function save(draft) {
       const lines = collectLines();
       if (!lines) return;
+      const partnerInput = form.querySelector('[data-role="partner"]');
+      const usePartnerSelect = partnerSelect && !partnerSelect.hidden;
+      const partnerOption = usePartnerSelect ? partnerSelect.selectedOptions[0] : null;
       const body = {
         doc_type: docType,
         warehouse_id: Number(warehouseSelect.value),
         doc_date: dateInput.value,
-        partner: form.querySelector('[data-role="partner"]').value.trim(),
+        partner_id: usePartnerSelect ? Number(partnerSelect.value || 0) : 0,
+        partner: usePartnerSelect
+          ? partnerOption && partnerOption.value
+            ? partnerOption.dataset.name || ""
+            : ""
+          : partnerInput.value.trim(),
         lines,
       };
       try {
@@ -440,6 +465,9 @@
         warehouseSelect.value = String(detail.warehouse_id);
         dateInput.value = detail.doc_date;
         form.querySelector('[data-role="partner"]').value = detail.partner || "";
+        if (partnerSelect && !partnerSelect.hidden) {
+          partnerSelect.value = detail.partner_id ? String(detail.partner_id) : "";
+        }
         linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
         for (const line of detail.lines) addLine(line);
         mount.querySelector('[data-role="cancel-edit"]').hidden = false;
@@ -567,6 +595,7 @@
           subtitle: "保存即审核：同一事务内增加库存并写入库存流水",
           partnerLabel: "供应商",
           partnerPlaceholder: "可选",
+          partnerApi: "/api/suppliers",
           docLabel: "入库",
         }),
     },
@@ -580,6 +609,7 @@
           subtitle: "保存即审核：按退货单价冲减库存并写入库存流水",
           partnerLabel: "供应商",
           partnerPlaceholder: "可选",
+          partnerApi: "/api/suppliers",
           docLabel: "采购退货",
         }),
     },

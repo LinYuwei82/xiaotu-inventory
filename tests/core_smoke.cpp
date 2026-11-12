@@ -10,6 +10,7 @@
 #include "xiaotu/edition.h"
 #include "xiaotu/error.h"
 #include "xiaotu/gen/item_service.h"
+#include "xiaotu/gen/supplier_service.h"
 #include "xiaotu/gen/warehouse_service.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/permissions.h"
@@ -38,10 +39,11 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 2, "迁移后 schema 版本应为 2");
+      check(db.schema_version() == 3, "迁移后 schema 版本应为 3");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
+      xiaotu::gen::SupplierService suppliers(db);
       xiaotu::DocumentEngine documents(db);
       xiaotu::StockService stock(db);
 
@@ -255,6 +257,48 @@ int main() {
       check(purchase_docs.at(0).status == "APPROVED" && purchase_docs.at(1).status == "VOIDED",
             "反审核的入库单应标记为 VOIDED");
 
+      // 供应商档案：CRUD、编码唯一，并能被采购单据引用。
+      const auto supplier = suppliers.create(
+          xiaotu::gen::SupplierRow{.code = "GYS001", .name = "测试供应商", .contact = "张三"});
+      check(supplier.id > 0 && supplier.name == "测试供应商", "供应商应创建成功");
+      bool duplicate_supplier_rejected = false;
+      try {
+        suppliers.create(xiaotu::gen::SupplierRow{.code = "GYS001", .name = "重复供应商"});
+      } catch (const xiaotu::AppError& error) {
+        duplicate_supplier_rejected = error.code() == "DUPLICATE_CODE";
+      }
+      check(duplicate_supplier_rejected, "重复供应商编码应被拒绝");
+
+      const auto supplier_item =
+          items.create(xiaotu::gen::ItemRow{.code = "G001", .name = "供应商商品"});
+      xiaotu::DocInput supplier_doc;
+      supplier_doc.doc_type = "PUR_IN";
+      supplier_doc.warehouse_id = warehouse_list.at(0).id;
+      supplier_doc.doc_date = "2026-11-12";
+      supplier_doc.partner_id = supplier.id;
+      supplier_doc.partner = "手工填写的名称应被档案覆盖";
+      supplier_doc.lines.push_back(
+          xiaotu::DocLineInput{.item_id = supplier_item.id, .qty = 2, .price_cents = 500});
+      const auto supplier_doc_created = documents.save_and_approve(supplier_doc);
+      const auto supplier_doc_detail = documents.detail(supplier_doc_created.id);
+      check(supplier_doc_detail.partner_id == supplier.id, "采购单据应记录供应商 id");
+      check(supplier_doc_detail.partner == "测试供应商", "单据往来单位应取供应商档案名称");
+
+      bool missing_supplier_rejected = false;
+      try {
+        xiaotu::DocInput bad;
+        bad.doc_type = "PUR_IN";
+        bad.warehouse_id = warehouse_list.at(0).id;
+        bad.doc_date = "2026-11-12";
+        bad.partner_id = 999999;
+        bad.lines.push_back(
+            xiaotu::DocLineInput{.item_id = supplier_item.id, .qty = 1, .price_cents = 100});
+        documents.save_and_approve(bad);
+      } catch (const xiaotu::AppError& error) {
+        missing_supplier_rejected = error.code() == "NOT_FOUND";
+      }
+      check(missing_supplier_rejected, "引用不存在的供应商应被拒绝");
+
       // 采购退货：先入库再退货，以及入库后部分退货。
       auto returned = items.create(xiaotu::gen::ItemRow{.code = "R001", .name = "退货商品"});
       make_doc("PUR_IN", returned.id, 10, 1000);
@@ -356,6 +400,8 @@ int main() {
       items.remove(returned.id);
       items.remove(purchased.id);
       items.remove(item.id);
+      items.remove(supplier_item.id);
+      suppliers.remove(supplier.id);
       check(items.list().empty(), "软删除后列表中不应再出现该商品");
     }
   } catch (const std::exception& error) {

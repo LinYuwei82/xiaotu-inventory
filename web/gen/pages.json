@@ -8,5 +8,10 @@
     "key": "warehouse",
     "title": "仓库",
     "script": "/gen/warehouse_page.js"
+  },
+  {
+    "key": "supplier",
+    "title": "供应商",
+    "script": "/gen/supplier_page.js"
   }
 ]

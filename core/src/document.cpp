@@ -165,6 +165,7 @@ void ensure_warehouse(sqlite3* conn, std::int64_t warehouse_id) {
 struct ValidatedDoc {
   std::string doc_date;
   std::string biz_time;
+  std::string partner;
   std::int64_t total_qty = 0;
   std::int64_t total_amount = 0;
 };
@@ -181,6 +182,17 @@ ValidatedDoc validate_document(sqlite3* conn, const DocInput& input, bool requir
     throw AppError("INVALID_INPUT", "单据日期格式应为 YYYY-MM-DD");
   }
   validated.biz_time = validated.doc_date + " " + now_text().substr(11);
+  validated.partner = input.partner;
+
+  // 引用了供应商档案时以档案名称为准，并校验其可用性。
+  if (input.partner_id != 0) {
+    Stmt supplier(conn, "SELECT name FROM supplier WHERE id = ? AND status = 1 AND is_deleted = 0;");
+    supplier.bind(1, input.partner_id);
+    if (!supplier.step()) {
+      throw AppError("NOT_FOUND", "供应商不存在或已停用");
+    }
+    validated.partner = supplier.text(0);
+  }
 
   for (const DocLineInput& line : input.lines) {
     if (line.item_id == 0) {
@@ -233,39 +245,43 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
   const AuditStamp stamp = audit_stamp();
   if (approved) {
     Stmt header(conn,
-                "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id, customer,"
-                " status, total_qty, total_amount_cents, created_at, created_by, approved_at,"
-                " approved_by) VALUES (?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?);");
+                "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id, partner_id,"
+                " customer, status, total_qty, total_amount_cents, created_at, created_by,"
+                " approved_at, approved_by)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?);");
     header.bind(1, id)
         .bind(2, doc_no)
         .bind(3, doc_type)
         .bind(4, validated.doc_date)
         .bind(5, input.warehouse_id)
-        .bind(6, input.partner)
-        .bind(7, validated.total_qty)
-        .bind(8, validated.total_amount)
-        .bind(9, stamp.at)
-        .bind(10, stamp.by)
-        .bind(11, stamp.at)
-        .bind(12, stamp.by)
+        .bind(6, input.partner_id)
+        .bind(7, validated.partner)
+        .bind(8, validated.total_qty)
+        .bind(9, validated.total_amount)
+        .bind(10, stamp.at)
+        .bind(11, stamp.by)
+        .bind(12, stamp.at)
+        .bind(13, stamp.by)
         .run();
     return;
   }
 
   Stmt header(conn,
-              "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id, customer,"
-              " status, total_qty, total_amount_cents, created_at, created_by, approved_at,"
-              " approved_by) VALUES (?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, NULL, NULL);");
+              "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id, partner_id,"
+              " customer, status, total_qty, total_amount_cents, created_at, created_by,"
+              " approved_at, approved_by)"
+              " VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, NULL, NULL);");
   header.bind(1, id)
       .bind(2, doc_no)
       .bind(3, doc_type)
       .bind(4, validated.doc_date)
       .bind(5, input.warehouse_id)
-      .bind(6, input.partner)
-      .bind(7, validated.total_qty)
-      .bind(8, validated.total_amount)
-      .bind(9, stamp.at)
-      .bind(10, stamp.by)
+      .bind(6, input.partner_id)
+      .bind(7, validated.partner)
+      .bind(8, validated.total_qty)
+      .bind(9, validated.total_amount)
+      .bind(10, stamp.at)
+      .bind(11, stamp.by)
       .run();
 }
 
@@ -348,14 +364,15 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
 
     const ValidatedDoc validated = validate_document(conn, input, false);
     Stmt update(conn,
-                "UPDATE doc_header SET doc_date = ?, warehouse_id = ?, customer = ?,"
-                " total_qty = ?, total_amount_cents = ? WHERE id = ?;");
+                "UPDATE doc_header SET doc_date = ?, warehouse_id = ?, partner_id = ?,"
+                " customer = ?, total_qty = ?, total_amount_cents = ? WHERE id = ?;");
     update.bind(1, validated.doc_date)
         .bind(2, input.warehouse_id)
-        .bind(3, input.partner)
-        .bind(4, validated.total_qty)
-        .bind(5, validated.total_amount)
-        .bind(6, doc_id)
+        .bind(3, input.partner_id)
+        .bind(4, validated.partner)
+        .bind(5, validated.total_qty)
+        .bind(6, validated.total_amount)
+        .bind(7, doc_id)
         .run();
 
     Stmt clear(conn, "DELETE FROM doc_line WHERE doc_id = ?;");
@@ -391,8 +408,8 @@ void DocumentEngine::approve(std::int64_t doc_id) {
     std::string status;
     {
       Stmt header(conn,
-                  "SELECT doc_type, status, warehouse_id, doc_date, customer FROM doc_header"
-                  " WHERE id = ?;");
+                  "SELECT doc_type, status, warehouse_id, doc_date, customer, partner_id"
+                  " FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
@@ -402,6 +419,7 @@ void DocumentEngine::approve(std::int64_t doc_id) {
       input.warehouse_id = header.i64(2);
       input.doc_date = header.text(3);
       input.partner = header.text(4);
+      input.partner_id = header.i64(5);
     }
     if (status != "DRAFT") {
       throw AppError("INVALID_STATUS", "只有草稿可以审核");
@@ -451,8 +469,8 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
   db_.read([&](sqlite3* conn) {
     {
       Stmt header(conn,
-                  "SELECT id, doc_no, doc_type, doc_date, warehouse_id, customer, status,"
-                  " total_qty, total_amount_cents FROM doc_header WHERE id = ?;");
+                  "SELECT id, doc_no, doc_type, doc_date, warehouse_id, partner_id, customer,"
+                  " status, total_qty, total_amount_cents FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
@@ -462,10 +480,11 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
       detail.doc_type = header.text(2);
       detail.doc_date = header.text(3);
       detail.warehouse_id = header.i64(4);
-      detail.partner = header.text(5);
-      detail.status = header.text(6);
-      detail.total_qty = header.i64(7);
-      detail.total_amount_cents = header.i64(8);
+      detail.partner_id = header.i64(5);
+      detail.partner = header.text(6);
+      detail.status = header.text(7);
+      detail.total_qty = header.i64(8);
+      detail.total_amount_cents = header.i64(9);
     }
     Stmt lines(conn,
                "SELECT item_id, qty, price_cents FROM doc_line WHERE doc_id = ? ORDER BY line_no;");

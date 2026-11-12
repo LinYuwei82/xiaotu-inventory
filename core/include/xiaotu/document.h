@@ -40,7 +40,8 @@ struct DocInput {
   std::string doc_type;
   std::int64_t warehouse_id = 0;
   std::string doc_date;  // 空则取今天
-  std::string partner;   // M0 仅记录客户/供应商名称
+  std::int64_t partner_id = 0;  // 供应商档案 id；0 表示只记录名称
+  std::string partner;          // 往来单位名称快照（客户/供应商）
   std::vector<DocLineInput> lines;
 };
 
@@ -51,6 +52,7 @@ struct DocDetail {
   std::string doc_type;
   std::string doc_date;
   std::int64_t warehouse_id = 0;
+  std::int64_t partner_id = 0;
   std::string partner;
   std::string status;
   std::int64_t total_qty = 0;

@@ -36,6 +36,22 @@
         { "name": "is_default", "label": "默认仓", "type": "bool", "required": false, "unique": false, "in_list": true, "in_form": true, "default": false },
         { "name": "status", "label": "启用", "type": "bool", "required": false, "unique": false, "in_list": true, "in_form": true, "default": true }
       ]
+    },
+    {
+      "table": "supplier",
+      "key": "supplier",
+      "entity": "供应商",
+      "api": "/api/suppliers",
+      "permissions": { "read": "supplier.read", "write": "supplier.write" },
+      "order_by": "code",
+      "fields": [
+        { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
+        { "name": "name", "label": "名称", "type": "string", "required": true, "unique": false, "in_list": true, "in_form": true },
+        { "name": "contact", "label": "联系人", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true },
+        { "name": "phone", "label": "电话", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true },
+        { "name": "address", "label": "地址", "type": "string", "required": false, "unique": false, "in_list": false, "in_form": true },
+        { "name": "status", "label": "启用", "type": "bool", "required": false, "unique": false, "in_list": true, "in_form": true, "default": true }
+      ]
     }
   ]
 }

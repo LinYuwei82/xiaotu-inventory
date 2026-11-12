@@ -2,10 +2,13 @@
 set(XIAOTU_GENERATED_CORE_SOURCES
   "${CMAKE_SOURCE_DIR}/core/src/gen/item_dao.cpp"
   "${CMAKE_SOURCE_DIR}/core/src/gen/item_service.cpp"
+  "${CMAKE_SOURCE_DIR}/core/src/gen/supplier_dao.cpp"
+  "${CMAKE_SOURCE_DIR}/core/src/gen/supplier_service.cpp"
   "${CMAKE_SOURCE_DIR}/core/src/gen/warehouse_dao.cpp"
   "${CMAKE_SOURCE_DIR}/core/src/gen/warehouse_service.cpp"
 )
 set(XIAOTU_GENERATED_SERVER_SOURCES
   "${CMAKE_SOURCE_DIR}/server/src/gen/item_routes.cpp"
+  "${CMAKE_SOURCE_DIR}/server/src/gen/supplier_routes.cpp"
   "${CMAKE_SOURCE_DIR}/server/src/gen/warehouse_routes.cpp"
 )
