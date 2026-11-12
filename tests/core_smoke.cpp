@@ -1283,6 +1283,23 @@ int main() {
       check(purchase_order.doc_no.rfind("CGDD", 0) == 0, "采购订单单号应以 CGDD 开头");
       auto purchase_detail = documents.detail(purchase_order.id);
       check(purchase_detail.order_status == "CONFIRMED", "采购订单确认后应为 CONFIRMED");
+      check(purchase_detail.partner == "订单供应商", "采购订单应保存供应商名称快照");
+      const auto* sales_order_print = xiaotu::find_print_target("DOC", "SAL_ORDER");
+      const auto* purchase_order_print = xiaotu::find_print_target("DOC", "PUR_ORDER");
+      bool same_print_columns = sales_order_print != nullptr && purchase_order_print != nullptr &&
+                                sales_order_print->columns.size() ==
+                                    purchase_order_print->columns.size();
+      if (same_print_columns) {
+        for (std::size_t i = 0; i < sales_order_print->columns.size(); ++i) {
+          if (sales_order_print->columns[i].label != purchase_order_print->columns[i].label) {
+            same_print_columns = false;
+            break;
+          }
+        }
+      }
+      check(purchase_order_print != nullptr && purchase_order_print->name == "采购订单" &&
+                same_print_columns,
+            "采购订单打印目标与销售订单列应一致");
       check(balance_of(purchase_item.id).qty == 0, "采购订单确认不应改变库存");
       check(stock.ledger(purchase_item.id).empty(), "采购订单确认不应写库存流水");
       check(ap_entries(purchase_order.id) == 0, "采购订单确认不应产生应付");
