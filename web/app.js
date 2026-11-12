@@ -491,6 +491,19 @@
         }),
     },
     {
+      key: "purchase-return",
+      title: "采购退货",
+      render: (mount) =>
+        documentPage(mount, {
+          docType: "PUR_RET",
+          title: "采购退货",
+          subtitle: "保存即审核：按退货单价冲减库存并写入库存流水",
+          partnerLabel: "供应商",
+          partnerPlaceholder: "可选",
+          docLabel: "采购退货",
+        }),
+    },
+    {
       key: "sales",
       title: "销售出库",
       render: (mount) =>
@@ -501,6 +514,19 @@
           partnerLabel: "客户",
           partnerPlaceholder: "可选",
           docLabel: "出库",
+        }),
+    },
+    {
+      key: "sales-return",
+      title: "销售退货",
+      render: (mount) =>
+        documentPage(mount, {
+          docType: "SAL_RET",
+          title: "销售退货",
+          subtitle: "保存即审核：按成本单价增加库存并写入库存流水",
+          partnerLabel: "客户",
+          partnerPlaceholder: "可选",
+          docLabel: "销售退货",
         }),
     },
     { key: "stock", title: "库存", render: stockPage },

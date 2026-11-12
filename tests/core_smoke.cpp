@@ -99,24 +99,25 @@ int main() {
         }
         return xiaotu::StockBalanceRow{};
       };
-      const auto purchase = [&](std::int64_t qty, std::int64_t price_cents) {
+      const auto make_doc = [&](const std::string& doc_type, std::int64_t item_id,
+                                std::int64_t qty, std::int64_t price_cents) {
         xiaotu::DocInput doc;
-        doc.doc_type = "PUR_IN";
+        doc.doc_type = doc_type;
         doc.warehouse_id = warehouse_list.at(0).id;
         doc.doc_date = "2026-11-12";
-        doc.partner = "测试供应商";
-        doc.lines.push_back(xiaotu::DocLineInput{.item_id = purchased.id, .qty = qty,
+        doc.partner = "测试往来单位";
+        doc.lines.push_back(xiaotu::DocLineInput{.item_id = item_id, .qty = qty,
                                                  .price_cents = price_cents});
         return documents.save_and_approve(doc);
       };
 
-      const auto first_purchase = purchase(10, 1000);
+      const auto first_purchase = make_doc("PUR_IN", purchased.id, 10, 1000);
       check(first_purchase.doc_no.rfind("CGRK", 0) == 0, "采购入库单号应以 CGRK 开头");
       auto purchased_balance = balance_of(purchased.id);
       check(purchased_balance.qty == 10, "采购入库后数量应为 10");
       check(purchased_balance.amount_cents == 10000, "采购入库后金额应为 10000 分");
 
-      purchase(10, 1400);
+      make_doc("PUR_IN", purchased.id, 10, 1400);
       purchased_balance = balance_of(purchased.id);
       check(purchased_balance.qty == 20, "两笔入库后数量应为 20");
       check(purchased_balance.amount_cents == 24000, "两笔入库后金额应为 24000 分");
@@ -150,6 +151,42 @@ int main() {
       check(purchase_docs.at(0).status == "APPROVED" && purchase_docs.at(1).status == "VOIDED",
             "反审核的入库单应标记为 VOIDED");
 
+      // 采购退货：先入库再退货，以及入库后部分退货。
+      auto returned = items.create(xiaotu::gen::ItemRow{.code = "R001", .name = "退货商品"});
+      make_doc("PUR_IN", returned.id, 10, 1000);
+      const auto purchase_return = make_doc("PUR_RET", returned.id, 4, 1000);
+      check(purchase_return.doc_no.rfind("CGTH", 0) == 0, "采购退货单号应以 CGTH 开头");
+      auto returned_balance = balance_of(returned.id);
+      check(returned_balance.qty == 6 && returned_balance.amount_cents == 6000,
+            "采购退货 4 件后应为 6 件 / 6000 分");
+
+      const auto partial_return = make_doc("PUR_RET", returned.id, 3, 1000);
+      returned_balance = balance_of(returned.id);
+      check(returned_balance.qty == 3 && returned_balance.amount_cents == 3000,
+            "部分退货再退 3 件后应为 3 件 / 3000 分");
+      documents.reverse(partial_return.id);
+      returned_balance = balance_of(returned.id);
+      check(returned_balance.qty == 6 && returned_balance.amount_cents == 6000,
+            "反审核部分退货后应回到 6 件 / 6000 分");
+      check(stock.ledger(returned.id).size() == 4,
+            "采购退货链路应为入库 + 两次退货 + REVERSE 共 4 条流水");
+
+      // 销售退货：先出库再退回，按成本单价入库。
+      auto sales_returned = items.create(xiaotu::gen::ItemRow{.code = "S001", .name = "销退商品"});
+      make_doc("PUR_IN", sales_returned.id, 10, 1000);
+      make_doc("SAL_OUT", sales_returned.id, 4, 1500);
+      const auto sales_return = make_doc("SAL_RET", sales_returned.id, 2, 1000);
+      check(sales_return.doc_no.rfind("XSTH", 0) == 0, "销售退货单号应以 XSTH 开头");
+      auto sales_returned_balance = balance_of(sales_returned.id);
+      check(sales_returned_balance.qty == 8 && sales_returned_balance.amount_cents == 8000,
+            "销售退货 2 件后应为 8 件 / 8000 分");
+      documents.reverse(sales_return.id);
+      sales_returned_balance = balance_of(sales_returned.id);
+      check(sales_returned_balance.qty == 6 && sales_returned_balance.amount_cents == 6000,
+            "反审核销售退货后应回到 6 件 / 6000 分");
+
+      items.remove(sales_returned.id);
+      items.remove(returned.id);
       items.remove(purchased.id);
       items.remove(item.id);
       check(items.list().empty(), "软删除后列表中不应再出现该商品");

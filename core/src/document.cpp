@@ -25,9 +25,10 @@ std::int64_t moving_average_cost(std::int64_t qty, std::int64_t /*price*/, std::
   return std::clamp<std::int64_t>(cost, 0, balance_amount);
 }
 
-// 入库：按单据金额入账。
-std::int64_t purchase_cost(std::int64_t qty, std::int64_t price, std::int64_t /*balance_qty*/,
-                           std::int64_t /*balance_amount*/) {
+// 入库/退货：按录入单价入账（采购入库与销售退货的成本口径）。
+std::int64_t amount_by_unit_price(std::int64_t qty, std::int64_t price,
+                                  std::int64_t /*balance_qty*/,
+                                  std::int64_t /*balance_amount*/) {
   return qty * price;
 }
 
@@ -53,7 +54,29 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .stock_direction = StockDirection::In,
           .affects_stock = true,
           .price_source = PriceSource::Manual,
-          .cost_hook = purchase_cost,
+          .cost_hook = amount_by_unit_price,
+          .on_approve = nullptr,
+          .on_reverse = nullptr,
+      },
+      // 采购退货：出库方向，按录入退货单价冲减库存金额（供应商退款口径）。
+      DocumentDefinition{
+          .doc_type = "PUR_RET",
+          .doc_no_prefix = "CGTH",
+          .stock_direction = StockDirection::Out,
+          .affects_stock = true,
+          .price_source = PriceSource::Manual,
+          .cost_hook = amount_by_unit_price,
+          .on_approve = nullptr,
+          .on_reverse = nullptr,
+      },
+      // 销售退货：入库方向，按录入成本单价增加库存金额。
+      DocumentDefinition{
+          .doc_type = "SAL_RET",
+          .doc_no_prefix = "XSTH",
+          .stock_direction = StockDirection::In,
+          .affects_stock = true,
+          .price_source = PriceSource::Manual,
+          .cost_hook = amount_by_unit_price,
           .on_approve = nullptr,
           .on_reverse = nullptr,
       },
