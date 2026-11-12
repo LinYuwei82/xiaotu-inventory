@@ -18,6 +18,7 @@
 #include "xiaotu/gen/warehouse_service.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/permissions.h"
+#include "xiaotu/print_template.h"
 #include "xiaotu/report_service.h"
 #include "xiaotu/settlement_service.h"
 #include "xiaotu/stock_service.h"
@@ -790,6 +791,101 @@ int main() {
       check(has_audit("update_draft", "document"), "草稿编辑应写审计日志");
       check(has_audit("delete_draft", "document"), "草稿删除应写审计日志");
       check(has_audit("reverse", "document"), "反审核应写审计日志");
+
+      // 打印模板：列白名单、默认唯一、软删除回退与乐观锁。
+      xiaotu::PrintTemplateService templates(db);
+      check(xiaotu::print_targets().size() == 13, "打印目标应包含 6 种单据与 7 张报表");
+      const auto* ledger_target = xiaotu::find_print_target("REPORT", "stock-ledger");
+      check(ledger_target != nullptr && !ledger_target->columns.empty(),
+            "库存流水明细应登记列白名单");
+      check(xiaotu::find_print_target("REPORT", "not-exist") == nullptr, "未知报表不应登记为目标");
+
+      const auto builtin = templates.resolve("REPORT", "stock-ledger");
+      check(builtin.id == 0 && builtin.name.find("内置默认") != std::string::npos,
+            "未配置模板时应回退到内置默认");
+      check(xiaotu::resolved_print_columns(builtin).size() == ledger_target->columns.size(),
+            "内置默认应显示全部登记列");
+
+      xiaotu::PrintTemplate tmpl;
+      tmpl.code = "PT-LEDGER";
+      tmpl.name = "流水打印";
+      tmpl.target_type = "REPORT";
+      tmpl.target_key = "stock-ledger";
+      tmpl.is_default = true;
+      tmpl.header_text = "测试单位";
+      tmpl.columns = {
+          {.column_key = "biz_time", .position = 1, .visible = true},
+          {.column_key = "item_name", .position = 2, .visible = true},
+      };
+      const auto created_tmpl = templates.create(tmpl);
+      check(created_tmpl.id > 0 && created_tmpl.version == 1 && created_tmpl.is_default, "应能创建默认模板");
+      check(templates.resolve("REPORT", "stock-ledger").id == created_tmpl.id,
+            "目标默认模板应优先于内置默认");
+
+      auto second = tmpl;
+      second.code = "PT-LEDGER-2";
+      second.name = "流水打印二";
+      const auto created_tmpl2 = templates.create(second);
+      check(!templates.get(created_tmpl.id).is_default && templates.get(created_tmpl2.id).is_default,
+            "同一目标只应保留一个默认模板");
+
+      const auto switched = templates.set_default(created_tmpl.id);
+      check(switched.is_default && !templates.get(created_tmpl2.id).is_default, "切换默认应取消旧默认");
+
+      auto stale = switched;
+      stale.version = 0;
+      bool version_conflict = false;
+      try {
+        templates.update(created_tmpl.id, stale);
+      } catch (const xiaotu::AppError& error) {
+        version_conflict = error.code() == "VERSION_CONFLICT";
+      }
+      check(version_conflict, "版本不一致应拒绝更新");
+
+      auto edited = templates.get(created_tmpl.id);
+      edited.name = "流水打印（改）";
+      edited.columns.at(1).visible = false;
+      const auto saved = templates.update(created_tmpl.id, edited);
+      check(saved.version == edited.version + 1 && saved.name == "流水打印（改）",
+            "版本一致时应更新并递增版本");
+      const auto rendered = xiaotu::resolved_print_columns(saved);
+      check(rendered.size() == 1 && rendered.front().def.key == "biz_time",
+            "隐藏列不应进入渲染列");
+
+      auto hand_made = builtin;
+      hand_made.columns.push_back(
+          {.column_key = "removed-column", .position = 99, .visible = true});
+      check(xiaotu::resolved_print_columns(hand_made).size() == ledger_target->columns.size(),
+            "渲染时应跳过目标中已不存在的列");
+
+      auto unknown_column = tmpl;
+      unknown_column.code = "PT-BAD-COLUMN";
+      unknown_column.columns = {{.column_key = "hack", .position = 1, .visible = true}};
+      bool bad_column_rejected = false;
+      try {
+        templates.create(unknown_column);
+      } catch (const xiaotu::AppError& error) {
+        bad_column_rejected = error.code() == "INVALID_INPUT";
+      }
+      check(bad_column_rejected, "未知列应在保存时拒绝");
+
+      auto unknown_target = tmpl;
+      unknown_target.code = "PT-BAD-TARGET";
+      unknown_target.target_key = "not-exist";
+      bool bad_target_rejected = false;
+      try {
+        templates.create(unknown_target);
+      } catch (const xiaotu::AppError& error) {
+        bad_target_rejected = error.code() == "INVALID_INPUT";
+      }
+      check(bad_target_rejected, "未知目标应在保存时拒绝");
+
+      templates.remove(created_tmpl.id);
+      check(templates.resolve("REPORT", "stock-ledger").id == 0,
+            "删除默认模板后应回退到内置默认");
+      templates.remove(created_tmpl2.id);
+      check(templates.list("REPORT", "stock-ledger").empty(), "软删除后列表应为空");
+
     }
   } catch (const std::exception& error) {
     std::cerr << "异常: " << error.what() << std::endl;
