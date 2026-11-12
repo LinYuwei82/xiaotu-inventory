@@ -4,10 +4,12 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <thread>
 
 #include "xiaotu/backup.h"
+#include "xiaotu/config.h"
 #include "xiaotu/db.h"
 #include "xiaotu/error.h"
 #include "xiaotu/http_server.h"
@@ -31,8 +33,10 @@ void on_signal(int) { g_stop = true; }
 
 struct Options {
   bool server = false;
-  int port = 8080;
+  std::optional<int> port;
+  std::string listen;
   std::filesystem::path data_dir;
+  std::filesystem::path config_path;
   bool backup = false;
   std::filesystem::path restore_from;
   std::string set_password_user;
@@ -43,14 +47,17 @@ void print_usage(const char* program) {
   std::cout << "小兔进销存 " << XIAOTU_VERSION << "\n\n"
             << "用法: " << program << " [选项]\n\n"
             << "不带参数启动 = 单机模式（仅监听 127.0.0.1；有 WebView 壳时打开窗口，否则打印浏览器地址）\n"
-            << "  --server        以网络版启动，监听 0.0.0.0\n"
+            << "  --server        以网络版启动，默认监听 0.0.0.0\n"
             << "  --port <端口>   网络版监听端口，默认 8080\n"
+            << "  --listen <地址> 网络版监听地址，默认 0.0.0.0\n"
             << "  --data <目录>   数据目录，默认为系统应用数据目录\n"
+            << "  --config <文件> 配置文件；默认依次查找 $XIAOTU_CONFIG、<数据目录>/config.toml\n"
             << "  --backup        立即生成一次数据库备份并退出\n"
             << "  --restore <文件> 用指定备份覆盖当前数据库并退出（先自动留安全备份）\n"
             << "  --set-password <用户名> 用环境变量 XIAOTU_PASSWORD 设置该用户口令并退出\n"
             << "  --version       输出版本号\n"
-            << "  --help          输出本帮助\n";
+            << "  --help          输出本帮助\n"
+            << "\n配置优先级：命令行 > 环境变量 > config.toml > 内置默认。\n";
 }
 
 Options parse_args(int argc, char** argv) {
@@ -61,6 +68,10 @@ Options parse_args(int argc, char** argv) {
       options.server = true;
     } else if (arg == "--port" && i + 1 < argc) {
       options.port = std::stoi(argv[++i]);
+    } else if (arg == "--listen" && i + 1 < argc) {
+      options.listen = argv[++i];
+    } else if (arg == "--config" && i + 1 < argc) {
+      options.config_path = argv[++i];
     } else if (arg == "--data" && i + 1 < argc) {
       options.data_dir = argv[++i];
     } else if (arg == "--backup") {
@@ -77,6 +88,9 @@ Options parse_args(int argc, char** argv) {
     } else {
       throw xiaotu::AppError("BAD_ARGUMENT", "无法识别的参数: " + arg);
     }
+  }
+  if (options.port.has_value() && (*options.port < 1 || *options.port > 65535)) {
+    throw xiaotu::AppError("BAD_ARGUMENT", "--port 应在 1–65535 之间");
   }
   return options;
 }
@@ -95,27 +109,79 @@ int main(int argc, char** argv) {
       return 0;
     }
 
-    const std::filesystem::path data_dir =
+    // ---- 配置解析：命令行 > 环境变量 > config.toml > 内置默认 ----
+    std::filesystem::path data_dir =
         options.data_dir.empty() ? xiaotu::platform::app_data_dir() : options.data_dir;
+
+    std::filesystem::path config_path;
+    const char* env_config = std::getenv("XIAOTU_CONFIG");
+    bool config_explicit = false;
+    if (!options.config_path.empty()) {
+      config_path = options.config_path;
+      config_explicit = true;
+    } else if (env_config != nullptr && *env_config != '\0') {
+      config_path = env_config;
+      config_explicit = true;
+    } else {
+      config_path = data_dir / "config.toml";
+    }
+
+    xiaotu::ConfigValues file_config;
+    bool config_loaded = false;
+    std::error_code config_error;
+    if (std::filesystem::exists(config_path, config_error)) {
+      file_config = xiaotu::load_config_file(config_path);
+      config_loaded = true;
+    } else if (config_explicit) {
+      throw xiaotu::AppError("NOT_FOUND", "指定的配置文件不存在：" + config_path.string());
+    }
+    // 配置文件里的数据目录只在不带 --data 时生效；它不会反过来改变配置文件的查找位置。
+    if (options.data_dir.empty() && file_config.data_dir.has_value()) {
+      data_dir = *file_config.data_dir;
+    }
+
+    const std::string listen =
+        !options.listen.empty() ? options.listen : file_config.listen.value_or("0.0.0.0");
+    const int port = options.port.has_value() ? *options.port : file_config.port.value_or(8080);
+
+    std::filesystem::path log_dir;
+    if (const char* env = std::getenv("XIAOTU_LOG_DIR"); env != nullptr && *env != '\0') {
+      log_dir = env;
+    } else if (file_config.log_dir.has_value()) {
+      log_dir = *file_config.log_dir;
+    } else {
+      log_dir = data_dir / "logs";
+    }
+    std::string level_text;
+    if (const char* env = std::getenv("XIAOTU_LOG_LEVEL"); env != nullptr && *env != '\0') {
+      level_text = env;
+    } else {
+      level_text = file_config.log_level.value_or("info");
+    }
+
     std::filesystem::create_directories(data_dir);
     const std::filesystem::path database_path = data_dir / "app.db";
 
     xiaotu::LogOptions log_options;
-    const char* log_dir = std::getenv("XIAOTU_LOG_DIR");
-    log_options.directory = (log_dir != nullptr && *log_dir != '\0')
-                                ? std::filesystem::path(log_dir)
-                                : data_dir / "logs";
-    const char* log_level = std::getenv("XIAOTU_LOG_LEVEL");
-    log_options.level = xiaotu::parse_log_level(log_level != nullptr ? log_level : "");
+    log_options.directory = log_dir;
+    log_options.level = xiaotu::parse_log_level(level_text);
     xiaotu::init_logging(log_options);
     xiaotu::log_info(std::string("启动 版本=") + XIAOTU_VERSION +
                      " 模式=" + (options.server ? "server" : "local") +
-                     " 数据目录=" + data_dir.string());
+                     " 数据目录=" + data_dir.string() + " 监听=" +
+                     (options.server ? listen + ":" + std::to_string(port) : "127.0.0.1:自动"));
 
     std::cout << "小兔进销存 " << XIAOTU_VERSION << " (" << xiaotu::platform::name()
               << (options.server ? " / 网络版" : " / 单机版") << ")\n"
+              << "配置:     " << config_path.string()
+              << (config_loaded ? "（已加载）" : "（未找到，使用内置默认）") << "\n"
               << "数据目录: " << data_dir.string() << "\n"
-              << "数据库:   " << database_path.string() << std::endl;
+              << "数据库:   " << database_path.string() << "\n"
+              << "日志:     " << log_dir.string() << " 级别 "
+              << xiaotu::log_level_name(log_options.level) << "\n"
+              << "监听:     "
+              << (options.server ? listen + ":" + std::to_string(port) : std::string("127.0.0.1:自动端口"))
+              << std::endl;
 
     if (!options.restore_from.empty()) {
       if (options.backup) {
@@ -217,11 +283,11 @@ int main(int argc, char** argv) {
 #endif
     }
 
-    const int port = http.bind("0.0.0.0", options.port);
-    xiaotu::log_info("监听 0.0.0.0:" + std::to_string(port));
+    const int bound_port = http.bind(listen, port);
+    xiaotu::log_info("监听 " + listen + ":" + std::to_string(bound_port));
     http.serve_async();
-    std::cout << "服务地址: http://0.0.0.0:" << port << "/\n"
-              << "局域网访问时，把 0.0.0.0 换成本机 IP；使用用户名与口令登录。" << std::endl;
+    std::cout << "服务地址: http://" << listen << ":" << bound_port << "/\n"
+              << "局域网访问时，把监听地址换成本机 IP；使用用户名与口令登录。" << std::endl;
     if (!services.users.has_password(1)) {
       std::cout << "警告: 内置管理员尚未设置口令。请先执行（服务可先停止）:\n"
                 << "  XIAOTU_PASSWORD=<新口令> " << argv[0]

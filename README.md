@@ -166,6 +166,23 @@ XIAOTU_PASSWORD='你的口令' ./build/release/server/xiaotu-server \
 ./build/release/server/xiaotu-server --server --port 8080 --data /tmp/xt-data
 ```
 
+端口、监听地址、数据目录、日志级别/目录也可以写在 `config.toml` 里，避免每次拼参数：
+
+```toml
+[server]
+listen = "0.0.0.0"
+port = 8080
+
+[storage]
+data_dir = "/var/lib/xiaotu"
+
+[log]
+level = "info"
+dir = "/var/log/xiaotu"
+```
+
+默认读取 `<数据目录>/config.toml`，也可用 `--config` 或 `XIAOTU_CONFIG` 指定。优先级：**命令行 > 环境变量 > config.toml > 内置默认**。配置文件只支持 `[server]`、`[storage]`、`[log]` 三个段的上述键，写错段名/键名会带行号报错。完整说明、systemd 单元与运维步骤见 [docs/部署与配置.md](docs/部署与配置.md)，示例见 `deploy/config.toml.example`、`deploy/systemd/xiaotu.service`。
+
 浏览器访问 `http://<本机 IP>:8080/`，用 `admin` 和新口令登录。局域网其他机器访问时把 IP 换成本机地址；若前面有 TLS 反向代理，带上 `X-Forwarded-Proto: https`，会话 Cookie 会自动加 `Secure`。
 
 登录安全现状：

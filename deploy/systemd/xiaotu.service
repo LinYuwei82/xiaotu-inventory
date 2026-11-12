@@ -1,0 +1,27 @@
+[Unit]
+Description=小兔进销存（网络版）
+Documentation=file:/opt/xiaotu/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xiaotu
+Group=xiaotu
+WorkingDirectory=/opt/xiaotu
+ExecStart=/opt/xiaotu/xiaotu-server --server --config /etc/xiaotu/config.toml
+Restart=on-failure
+RestartSec=3
+
+# 环境变量优先级高于 config.toml，仅在需要临时覆盖时打开（日志级别同理）。
+# Environment=XIAOTU_LOG_LEVEL=info
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/xiaotu /var/log/xiaotu
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
