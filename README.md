@@ -40,9 +40,11 @@ cmake --build --preset dev
 产物：
 
 ```text
-build/release/shell/xiaotu-inventory
-build/dev/shell/xiaotu-inventory
+build/release/shell/xiaotu-inventory.app
+build/dev/shell/xiaotu-inventory.app
 ```
+
+macOS 产物是 `.app` bundle（图标、Info.plist、前端资源都在 bundle 内），可执行文件位于 `Contents/MacOS/xiaotu-inventory`。
 
 运行测试：
 
@@ -64,7 +66,7 @@ ctest --test-dir build/release --output-on-failure
 ### 单机版
 
 ```bash
-./build/release/shell/xiaotu-inventory
+open ./build/release/shell/xiaotu-inventory.app
 ```
 
 程序会：定位数据目录 → 初始化/迁移数据库 → 绑定 `127.0.0.1:随机端口` → 生成一次性 token → 打开 WKWebView 加载 `http://127.0.0.1:<port>/#t=<token>`。关闭窗口即退出。
@@ -72,7 +74,7 @@ ctest --test-dir build/release --output-on-failure
 ### 网络版
 
 ```bash
-./build/release/shell/xiaotu-inventory --server --port 8080
+./build/release/shell/xiaotu-inventory.app/Contents/MacOS/xiaotu-inventory --server --port 8080
 ```
 
 启动日志中的「访问凭据」链接即为一次性登录地址（10 分钟内有效、只能使用一次）。局域网其他机器访问时，把 URL 中的 `127.0.0.1` 换成本机 IP。
@@ -84,7 +86,7 @@ ctest --test-dir build/release --output-on-failure
 python3 -m http.server 5173 --directory web
 
 # 终端 B：开发态构建的骨架
-./build/dev/shell/xiaotu-inventory
+open ./build/dev/shell/xiaotu-inventory.app
 ```
 
 WebView 会打开 `http://127.0.0.1:5173/?api=http://127.0.0.1:<port>#t=<token>`，页面通过 `?api=` 找到后端；改 `web/` 下的文件后刷新窗口即可。也可用 `XIAOTU_DEV_URL` 环境变量指定其他地址。
@@ -107,7 +109,7 @@ WebView 会打开 `http://127.0.0.1:5173/?api=http://127.0.0.1:<port>#t=<token>`
 等价的命令行验证（网络版）：
 
 ```bash
-./build/release/shell/xiaotu-inventory --server --port 18080 --data /tmp/xt-data > /tmp/xt.log 2>&1 &
+./build/release/shell/xiaotu-inventory.app/Contents/MacOS/xiaotu-inventory --server --port 18080 --data /tmp/xt-data > /tmp/xt.log 2>&1 &
 TOKEN=$(grep -o '#t=[0-9a-f]*' /tmp/xt.log | head -1 | cut -d= -f2)
 curl -s -c /tmp/xt.cookies -H 'Content-Type: application/json' \
   -d "{\"token\":\"$TOKEN\"}" http://127.0.0.1:18080/api/session
@@ -148,6 +150,7 @@ xiaotu-inventory/
 ├── shell/                         # 唯一允许出现平台代码的地方
 │   ├── main.cpp                   # 参数、模式、启动顺序
 │   ├── common/platform_paths.*     # 数据目录（应用标识 com.simem.xiaotu）
+│   ├── mac/icon/                  # 图标源 SVG（候选）与 xiaotu.icns
 │   └── mac/webview.mm             # WKWebView 宿主
 ├── web/                           # 前端（无构建步骤）
 │   ├── index.html / app.js / styles.css

@@ -8,6 +8,12 @@
   <string>小兔进销存</string>
   <key>CFBundleIdentifier</key>
   <string>com.simem.xiaotu</string>
+  <key>CFBundleExecutable</key>
+  <string>xiaotu-inventory</string>
+  <key>CFBundleIconFile</key>
+  <string>xiaotu.icns</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
   <key>CFBundleShortVersionString</key>
   <string>0.1.0</string>
   <key>CFBundleVersion</key>
