@@ -25,6 +25,29 @@ nlohmann::json summary_to_json(const DocSummary& summary) {
   };
 }
 
+nlohmann::json detail_to_json(const DocDetail& detail) {
+  nlohmann::json lines = nlohmann::json::array();
+  for (const auto& line : detail.lines) {
+    lines.push_back(nlohmann::json{
+        {"item_id", line.item_id},
+        {"qty", line.qty},
+        {"price_cents", line.price_cents},
+    });
+  }
+  return nlohmann::json{
+      {"id", detail.id},
+      {"doc_no", detail.doc_no},
+      {"doc_type", detail.doc_type},
+      {"doc_date", detail.doc_date},
+      {"warehouse_id", detail.warehouse_id},
+      {"partner", detail.partner},
+      {"status", detail.status},
+      {"total_qty", detail.total_qty},
+      {"total_amount_cents", detail.total_amount_cents},
+      {"lines", lines},
+  };
+}
+
 DocInput input_from_json(const nlohmann::json& body) {
   DocInput input;
   input.doc_type = body.value("doc_type", std::string{});
@@ -59,15 +82,52 @@ void register_document_routes(httplib::Server& server, Services& services) {
                      json_ok(res, list);
                    }));
 
+  server.Get(R"(/api/documents/(\d+))",
+             guard("document.read",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     const auto id = std::stoll(req.matches[1].str());
+                     json_ok(res, detail_to_json(services.docs.detail(id)));
+                   }));
+
   server.Post("/api/documents",
               guard("document.write",
                     [&services](const httplib::Request& req, httplib::Response& res) {
-                      const DocInput input = input_from_json(json_body(req));
-                      const auto created = services.docs.save_and_approve(input);
-                      nlohmann::json body;
-                      body["id"] = created.id;
-                      body["doc_no"] = created.doc_no;
-                      json_ok(res, body);
+                      const nlohmann::json body = json_body(req);
+                      const DocInput input = input_from_json(body);
+                      const bool draft = body.value("save_as_draft", false);
+                      const auto created =
+                          draft ? services.docs.save_draft(input)
+                                : services.docs.save_and_approve(input);
+                      nlohmann::json result;
+                      result["id"] = created.id;
+                      result["doc_no"] = created.doc_no;
+                      json_ok(res, result);
+                    }));
+
+  server.Put(R"(/api/documents/(\d+))",
+             guard("document.write",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     const auto id = std::stoll(req.matches[1].str());
+                     services.docs.update_draft(id, input_from_json(json_body(req)));
+                     json_ok(res, detail_to_json(services.docs.detail(id)));
+                   }));
+
+  server.Delete(R"(/api/documents/(\d+))",
+                guard("document.write",
+                      [&services](const httplib::Request& req, httplib::Response& res) {
+                        const auto id = std::stoll(req.matches[1].str());
+                        services.docs.delete_draft(id);
+                        nlohmann::json body;
+                        body["ok"] = true;
+                        json_ok(res, body);
+                      }));
+
+  server.Post(R"(/api/documents/(\d+)/approve)",
+              guard("document.write",
+                    [&services](const httplib::Request& req, httplib::Response& res) {
+                      const auto id = std::stoll(req.matches[1].str());
+                      services.docs.approve(id);
+                      json_ok(res, detail_to_json(services.docs.detail(id)));
                     }));
 
   server.Post(R"(/api/documents/(\d+)/reverse)",

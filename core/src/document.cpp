@@ -151,6 +151,133 @@ void apply_stock_move(sqlite3* conn, const DocumentDefinition& definition, std::
       .run();
 }
 
+void ensure_warehouse(sqlite3* conn, std::int64_t warehouse_id) {
+  if (warehouse_id == 0) {
+    throw AppError("INVALID_INPUT", "请选择仓库");
+  }
+  Stmt warehouse(conn, "SELECT 1 FROM warehouse WHERE id = ? AND status = 1 AND is_deleted = 0;");
+  warehouse.bind(1, warehouse_id);
+  if (!warehouse.step()) {
+    throw AppError("NOT_FOUND", "仓库不存在或已停用");
+  }
+}
+
+struct ValidatedDoc {
+  std::string doc_date;
+  std::string biz_time;
+  std::int64_t total_qty = 0;
+  std::int64_t total_amount = 0;
+};
+
+ValidatedDoc validate_document(sqlite3* conn, const DocInput& input, bool require_lines) {
+  ensure_warehouse(conn, input.warehouse_id);
+  if (require_lines && input.lines.empty()) {
+    throw AppError("INVALID_INPUT", "请至少录入一行明细");
+  }
+
+  ValidatedDoc validated;
+  validated.doc_date = input.doc_date.empty() ? today_text() : input.doc_date;
+  if (validated.doc_date.size() != 10) {
+    throw AppError("INVALID_INPUT", "单据日期格式应为 YYYY-MM-DD");
+  }
+  validated.biz_time = validated.doc_date + " " + now_text().substr(11);
+
+  for (const DocLineInput& line : input.lines) {
+    if (line.item_id == 0) {
+      throw AppError("INVALID_INPUT", "明细行未选择商品");
+    }
+    if (line.qty <= 0) {
+      throw AppError("INVALID_INPUT", "数量必须大于 0");
+    }
+    if (line.price_cents < 0) {
+      throw AppError("INVALID_INPUT", "单价不能为负数");
+    }
+    Stmt item(conn, "SELECT 1 FROM item WHERE id = ? AND status = 1 AND is_deleted = 0;");
+    item.bind(1, line.item_id);
+    if (!item.step()) {
+      throw AppError("NOT_FOUND", "商品不存在或已停用");
+    }
+    validated.total_qty += line.qty;
+    validated.total_amount += line.qty * line.price_cents;
+  }
+  return validated;
+}
+
+std::vector<std::int64_t> insert_lines(sqlite3* conn, std::int64_t doc_id,
+                                       const std::vector<DocLineInput>& lines) {
+  std::vector<std::int64_t> line_ids;
+  line_ids.reserve(lines.size());
+  std::int64_t line_no = 1;
+  for (const DocLineInput& line : lines) {
+    const std::int64_t line_id = next_id();
+    Stmt insert_line(conn,
+                     "INSERT INTO doc_line (id, doc_id, line_no, item_id, qty, price_cents,"
+                     " amount_cents) VALUES (?, ?, ?, ?, ?, ?, ?);");
+    insert_line.bind(1, line_id)
+        .bind(2, doc_id)
+        .bind(3, line_no)
+        .bind(4, line.item_id)
+        .bind(5, line.qty)
+        .bind(6, line.price_cents)
+        .bind(7, line.qty * line.price_cents)
+        .run();
+    line_ids.push_back(line_id);
+    ++line_no;
+  }
+  return line_ids;
+}
+
+void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
+                   std::string_view doc_type, const DocInput& input,
+                   const ValidatedDoc& validated, bool approved) {
+  const AuditStamp stamp = audit_stamp();
+  if (approved) {
+    Stmt header(conn,
+                "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id, customer,"
+                " status, total_qty, total_amount_cents, created_at, created_by, approved_at,"
+                " approved_by) VALUES (?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?);");
+    header.bind(1, id)
+        .bind(2, doc_no)
+        .bind(3, doc_type)
+        .bind(4, validated.doc_date)
+        .bind(5, input.warehouse_id)
+        .bind(6, input.partner)
+        .bind(7, validated.total_qty)
+        .bind(8, validated.total_amount)
+        .bind(9, stamp.at)
+        .bind(10, stamp.by)
+        .bind(11, stamp.at)
+        .bind(12, stamp.by)
+        .run();
+    return;
+  }
+
+  Stmt header(conn,
+              "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id, customer,"
+              " status, total_qty, total_amount_cents, created_at, created_by, approved_at,"
+              " approved_by) VALUES (?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, NULL, NULL);");
+  header.bind(1, id)
+      .bind(2, doc_no)
+      .bind(3, doc_type)
+      .bind(4, validated.doc_date)
+      .bind(5, input.warehouse_id)
+      .bind(6, input.partner)
+      .bind(7, validated.total_qty)
+      .bind(8, validated.total_amount)
+      .bind(9, stamp.at)
+      .bind(10, stamp.by)
+      .run();
+}
+
+void apply_stock_moves(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
+                       std::int64_t warehouse_id, const std::string& biz_time,
+                       const std::vector<DocLineInput>& lines,
+                       const std::vector<std::int64_t>& line_ids) {
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    apply_stock_move(conn, definition, doc_id, line_ids.at(i), warehouse_id, biz_time, lines.at(i));
+  }
+}
+
 }  // namespace
 
 DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input) {
@@ -158,104 +285,198 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input) 
   if (definition == nullptr) {
     throw AppError("UNKNOWN_DOC_TYPE", "未知单据类型: " + input.doc_type);
   }
-  if (input.warehouse_id == 0) {
-    throw AppError("INVALID_INPUT", "请选择仓库");
-  }
-  if (input.lines.empty()) {
-    throw AppError("INVALID_INPUT", "请至少录入一行明细");
-  }
-
-  const std::string doc_date = input.doc_date.empty() ? today_text() : input.doc_date;
-  if (doc_date.size() != 10) {
-    throw AppError("INVALID_INPUT", "单据日期格式应为 YYYY-MM-DD");
-  }
-  const std::string biz_time = doc_date + " " + now_text().substr(11);
 
   Created created;
-  created.id = next_id();
-
   db_.write([&](sqlite3* conn) {
-    {
-      Stmt warehouse(conn,
-                     "SELECT 1 FROM warehouse WHERE id = ? AND status = 1 AND is_deleted = 0;");
-      warehouse.bind(1, input.warehouse_id);
-      if (!warehouse.step()) {
-        throw AppError("NOT_FOUND", "仓库不存在或已停用");
-      }
+    const ValidatedDoc validated = validate_document(conn, input, true);
+    created.id = next_id();
+    created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
+    insert_header(conn, created.id, created.doc_no, definition->doc_type, input, validated, true);
+    const std::vector<std::int64_t> line_ids = insert_lines(conn, created.id, input.lines);
+    if (definition->affects_stock) {
+      apply_stock_moves(conn, *definition, created.id, input.warehouse_id, validated.biz_time,
+                        input.lines, line_ids);
     }
-
-    std::int64_t total_qty = 0;
-    std::int64_t total_amount = 0;
-    for (const DocLineInput& line : input.lines) {
-      if (line.item_id == 0) {
-        throw AppError("INVALID_INPUT", "明细行未选择商品");
-      }
-      if (line.qty <= 0) {
-        throw AppError("INVALID_INPUT", "数量必须大于 0");
-      }
-      if (line.price_cents < 0) {
-        throw AppError("INVALID_INPUT", "单价不能为负数");
-      }
-      Stmt item(conn, "SELECT 1 FROM item WHERE id = ? AND status = 1 AND is_deleted = 0;");
-      item.bind(1, line.item_id);
-      if (!item.step()) {
-        throw AppError("NOT_FOUND", "商品不存在或已停用");
-      }
-      total_qty += line.qty;
-      total_amount += line.qty * line.price_cents;
-    }
-
-    created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, doc_date);
-    const AuditStamp stamp = audit_stamp();
-
-    {
-      Stmt header(conn,
-                  "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id, customer,"
-                  " status, total_qty, total_amount_cents, created_at, created_by, approved_at,"
-                  " approved_by)"
-                  " VALUES (?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?);");
-      header.bind(1, created.id)
-          .bind(2, created.doc_no)
-          .bind(3, definition->doc_type)
-          .bind(4, doc_date)
-          .bind(5, input.warehouse_id)
-          .bind(6, input.partner)
-          .bind(7, total_qty)
-          .bind(8, total_amount)
-          .bind(9, stamp.at)
-          .bind(10, stamp.by)
-          .bind(11, stamp.at)
-          .bind(12, stamp.by)
-          .run();
-    }
-
-    std::int64_t line_no = 1;
-    for (const DocLineInput& line : input.lines) {
-      const std::int64_t line_id = next_id();
-      Stmt insert_line(conn,
-                       "INSERT INTO doc_line (id, doc_id, line_no, item_id, qty, price_cents,"
-                       " amount_cents) VALUES (?, ?, ?, ?, ?, ?, ?);");
-      insert_line.bind(1, line_id)
-          .bind(2, created.id)
-          .bind(3, line_no)
-          .bind(4, line.item_id)
-          .bind(5, line.qty)
-          .bind(6, line.price_cents)
-          .bind(7, line.qty * line.price_cents)
-          .run();
-
-      if (definition->affects_stock) {
-        apply_stock_move(conn, *definition, created.id, line_id, input.warehouse_id, biz_time, line);
-      }
-      ++line_no;
-    }
-
     if (definition->on_approve) {
       definition->on_approve(conn, created.id);
     }
   });
-
   return created;
+}
+
+DocumentEngine::Created DocumentEngine::save_draft(const DocInput& input) {
+  const DocumentDefinition* definition = find_document_definition(input.doc_type);
+  if (definition == nullptr) {
+    throw AppError("UNKNOWN_DOC_TYPE", "未知单据类型: " + input.doc_type);
+  }
+
+  Created created;
+  db_.write([&](sqlite3* conn) {
+    const ValidatedDoc validated = validate_document(conn, input, false);
+    created.id = next_id();
+    created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
+    insert_header(conn, created.id, created.doc_no, definition->doc_type, input, validated, false);
+    insert_lines(conn, created.id, input.lines);
+  });
+  return created;
+}
+
+void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
+  const DocumentDefinition* definition = find_document_definition(input.doc_type);
+  if (definition == nullptr) {
+    throw AppError("UNKNOWN_DOC_TYPE", "未知单据类型: " + input.doc_type);
+  }
+
+  db_.write([&](sqlite3* conn) {
+    std::string status;
+    std::string doc_type;
+    {
+      Stmt header(conn, "SELECT status, doc_type FROM doc_header WHERE id = ?;");
+      header.bind(1, doc_id);
+      if (!header.step()) {
+        throw AppError("NOT_FOUND", "单据不存在");
+      }
+      status = header.text(0);
+      doc_type = header.text(1);
+    }
+    if (status != "DRAFT") {
+      throw AppError("INVALID_STATUS", "只有草稿可以编辑");
+    }
+    if (doc_type != definition->doc_type) {
+      throw AppError("INVALID_INPUT", "不能修改单据类型");
+    }
+
+    const ValidatedDoc validated = validate_document(conn, input, false);
+    Stmt update(conn,
+                "UPDATE doc_header SET doc_date = ?, warehouse_id = ?, customer = ?,"
+                " total_qty = ?, total_amount_cents = ? WHERE id = ?;");
+    update.bind(1, validated.doc_date)
+        .bind(2, input.warehouse_id)
+        .bind(3, input.partner)
+        .bind(4, validated.total_qty)
+        .bind(5, validated.total_amount)
+        .bind(6, doc_id)
+        .run();
+
+    Stmt clear(conn, "DELETE FROM doc_line WHERE doc_id = ?;");
+    clear.bind(1, doc_id).run();
+    insert_lines(conn, doc_id, input.lines);
+  });
+}
+
+void DocumentEngine::delete_draft(std::int64_t doc_id) {
+  db_.write([&](sqlite3* conn) {
+    std::string status;
+    {
+      Stmt header(conn, "SELECT status FROM doc_header WHERE id = ?;");
+      header.bind(1, doc_id);
+      if (!header.step()) {
+        throw AppError("NOT_FOUND", "单据不存在");
+      }
+      status = header.text(0);
+    }
+    if (status != "DRAFT") {
+      throw AppError("INVALID_STATUS", "只有草稿可以删除");
+    }
+    Stmt lines(conn, "DELETE FROM doc_line WHERE doc_id = ?;");
+    lines.bind(1, doc_id).run();
+    Stmt header(conn, "DELETE FROM doc_header WHERE id = ?;");
+    header.bind(1, doc_id).run();
+  });
+}
+
+void DocumentEngine::approve(std::int64_t doc_id) {
+  db_.write([&](sqlite3* conn) {
+    DocInput input;
+    std::string status;
+    {
+      Stmt header(conn,
+                  "SELECT doc_type, status, warehouse_id, doc_date, customer FROM doc_header"
+                  " WHERE id = ?;");
+      header.bind(1, doc_id);
+      if (!header.step()) {
+        throw AppError("NOT_FOUND", "单据不存在");
+      }
+      input.doc_type = header.text(0);
+      status = header.text(1);
+      input.warehouse_id = header.i64(2);
+      input.doc_date = header.text(3);
+      input.partner = header.text(4);
+    }
+    if (status != "DRAFT") {
+      throw AppError("INVALID_STATUS", "只有草稿可以审核");
+    }
+    const DocumentDefinition* definition = find_document_definition(input.doc_type);
+    if (definition == nullptr) {
+      throw AppError("UNKNOWN_DOC_TYPE", "未知单据类型: " + input.doc_type);
+    }
+
+    std::vector<std::int64_t> line_ids;
+    {
+      Stmt lines(conn,
+                 "SELECT id, item_id, qty, price_cents FROM doc_line WHERE doc_id = ?"
+                 " ORDER BY line_no;");
+      lines.bind(1, doc_id);
+      while (lines.step()) {
+        line_ids.push_back(lines.i64(0));
+        input.lines.push_back(DocLineInput{.item_id = lines.i64(1),
+                                           .qty = lines.i64(2),
+                                           .price_cents = lines.i64(3)});
+      }
+    }
+
+    const ValidatedDoc validated = validate_document(conn, input, true);
+    if (definition->affects_stock) {
+      apply_stock_moves(conn, *definition, doc_id, input.warehouse_id, validated.biz_time,
+                        input.lines, line_ids);
+    }
+    const AuditStamp stamp = audit_stamp();
+    Stmt update(conn,
+                "UPDATE doc_header SET status = 'APPROVED', total_qty = ?, total_amount_cents = ?,"
+                " approved_at = ?, approved_by = ? WHERE id = ?;");
+    update.bind(1, validated.total_qty)
+        .bind(2, validated.total_amount)
+        .bind(3, stamp.at)
+        .bind(4, stamp.by)
+        .bind(5, doc_id)
+        .run();
+    if (definition->on_approve) {
+      definition->on_approve(conn, doc_id);
+    }
+  });
+}
+
+DocDetail DocumentEngine::detail(std::int64_t doc_id) {
+  DocDetail detail;
+  db_.read([&](sqlite3* conn) {
+    {
+      Stmt header(conn,
+                  "SELECT id, doc_no, doc_type, doc_date, warehouse_id, customer, status,"
+                  " total_qty, total_amount_cents FROM doc_header WHERE id = ?;");
+      header.bind(1, doc_id);
+      if (!header.step()) {
+        throw AppError("NOT_FOUND", "单据不存在");
+      }
+      detail.id = header.i64(0);
+      detail.doc_no = header.text(1);
+      detail.doc_type = header.text(2);
+      detail.doc_date = header.text(3);
+      detail.warehouse_id = header.i64(4);
+      detail.partner = header.text(5);
+      detail.status = header.text(6);
+      detail.total_qty = header.i64(7);
+      detail.total_amount_cents = header.i64(8);
+    }
+    Stmt lines(conn,
+               "SELECT item_id, qty, price_cents FROM doc_line WHERE doc_id = ? ORDER BY line_no;");
+    lines.bind(1, doc_id);
+    while (lines.step()) {
+      detail.lines.push_back(DocLineInput{.item_id = lines.i64(0),
+                                          .qty = lines.i64(1),
+                                          .price_cents = lines.i64(2)});
+    }
+  });
+  return detail;
 }
 
 std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limit) {

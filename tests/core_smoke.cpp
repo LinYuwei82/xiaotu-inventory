@@ -185,6 +185,69 @@ int main() {
       check(sales_returned_balance.qty == 6 && sales_returned_balance.amount_cents == 6000,
             "反审核销售退货后应回到 6 件 / 6000 分");
 
+      // 草稿态：保存不写库存，审核时才在单事务内写流水。
+      auto draft_item = items.create(xiaotu::gen::ItemRow{.code = "D001", .name = "草稿商品"});
+      xiaotu::DocInput draft_input;
+      draft_input.doc_type = "PUR_IN";
+      draft_input.warehouse_id = warehouse_list.at(0).id;
+      draft_input.doc_date = "2026-11-12";
+      draft_input.partner = "草稿供应商";
+      draft_input.lines.push_back(
+          xiaotu::DocLineInput{.item_id = draft_item.id, .qty = 5, .price_cents = 900});
+
+      const auto draft = documents.save_draft(draft_input);
+      check(draft.doc_no.rfind("CGRK", 0) == 0, "草稿也应取到正式单据号");
+      check(stock.ledger(draft_item.id).empty(), "草稿不应写库存流水");
+      auto draft_detail = documents.detail(draft.id);
+      check(draft_detail.status == "DRAFT", "草稿状态应为 DRAFT");
+      check(draft_detail.lines.size() == 1 && draft_detail.lines.at(0).qty == 5,
+            "草稿明细应保存");
+
+      draft_input.lines.at(0).qty = 7;
+      draft_input.lines.at(0).price_cents = 1100;
+      documents.update_draft(draft.id, draft_input);
+      draft_detail = documents.detail(draft.id);
+      check(draft_detail.lines.at(0).qty == 7 && draft_detail.lines.at(0).price_cents == 1100,
+            "草稿明细应可编辑");
+      check(draft_detail.total_qty == 7 && draft_detail.total_amount_cents == 7700,
+            "草稿汇总金额应随明细更新");
+      check(stock.ledger(draft_item.id).empty(), "编辑草稿仍不应写库存流水");
+
+      documents.approve(draft.id);
+      draft_detail = documents.detail(draft.id);
+      check(draft_detail.status == "APPROVED", "审核后状态应为 APPROVED");
+      auto draft_balance = balance_of(draft_item.id);
+      check(draft_balance.qty == 7 && draft_balance.amount_cents == 7700,
+            "审核草稿后应入库 7 件 / 7700 分");
+      check(stock.ledger(draft_item.id).size() == 1, "审核草稿应写一条库存流水");
+
+      bool draft_locked = false;
+      try {
+        documents.update_draft(draft.id, draft_input);
+      } catch (const xiaotu::AppError& error) {
+        draft_locked = error.code() == "INVALID_STATUS";
+      }
+      check(draft_locked, "已审核单据不应再允许编辑");
+
+      bool draft_delete_locked = false;
+      try {
+        documents.delete_draft(draft.id);
+      } catch (const xiaotu::AppError& error) {
+        draft_delete_locked = error.code() == "INVALID_STATUS";
+      }
+      check(draft_delete_locked, "已审核单据不应允许按草稿删除");
+
+      const auto second_draft = documents.save_draft(draft_input);
+      documents.delete_draft(second_draft.id);
+      bool draft_deleted = false;
+      try {
+        documents.detail(second_draft.id);
+      } catch (const xiaotu::AppError& error) {
+        draft_deleted = error.code() == "NOT_FOUND";
+      }
+      check(draft_deleted, "删除草稿后应查不到该单据");
+
+      items.remove(draft_item.id);
       items.remove(sales_returned.id);
       items.remove(returned.id);
       items.remove(purchased.id);

@@ -225,6 +225,7 @@
     let warehouses = [];
     let items = [];
     let documents = [];
+    let editingId = 0;
 
     mount.innerHTML = `
       <div class="page-head">
@@ -252,7 +253,9 @@
           <table class="table lines" data-role="lines"></table>
           <div class="form-actions">
             <button class="btn" type="button" data-role="add-line">添加明细行</button>
+            <button class="btn" type="button" data-role="save-draft">存为草稿</button>
             <button class="btn primary" type="button" data-role="submit">保存并审核</button>
+            <button class="btn" type="button" data-role="cancel-edit" hidden>取消编辑</button>
           </div>
         </form>
       </div>
@@ -279,10 +282,10 @@
         .join("");
     }
 
-    function addLine() {
+    function addLine(line) {
       const row = document.createElement("tr");
       row.innerHTML = `
-        <td><select data-role="item">${itemOptions()}</select></td>
+        <td><select data-role="item">${itemOptions(line ? line.item_id : undefined)}</select></td>
         <td><input type="number" min="1" step="1" value="1" data-role="qty" /></td>
         <td><input type="number" min="0" step="0.01" value="0.00" data-role="price" /></td>
         <td><input type="text" class="readonly" value="—" data-role="amount" disabled /></td>
@@ -296,11 +299,34 @@
       };
       row.querySelector('[data-role="qty"]').addEventListener("input", recalc);
       row.querySelector('[data-role="price"]').addEventListener("input", recalc);
+      if (line) {
+        row.querySelector('[data-role="qty"]').value = line.qty;
+        row.querySelector('[data-role="price"]').value = (line.price_cents / 100).toFixed(2);
+        recalc();
+      }
     }
 
     function resetLines() {
       linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
       addLine();
+    }
+
+    function statusLabel(status) {
+      return { APPROVED: "已审核", DRAFT: "草稿", VOIDED: "已作废" }[status] || status;
+    }
+
+    function actionsFor(doc) {
+      if (doc.status === "DRAFT") {
+        return (
+          '<button class="link" data-role="approve">审核</button>' +
+          '<button class="link" data-role="edit">编辑</button>' +
+          '<button class="link danger" data-role="delete">删除</button>'
+        );
+      }
+      if (doc.status === "APPROVED") {
+        return '<button class="link danger" data-role="reverse">反审核</button>';
+      }
+      return "—";
     }
 
     function renderDocuments() {
@@ -322,12 +348,8 @@
               <td>${escapeHtml(doc.customer || "—")}</td>
               <td>${doc.total_qty}</td>
               <td>${money(doc.total_amount_cents)}</td>
-              <td>${doc.status === "APPROVED" ? "已审核" : "已作废"}</td>
-              <td class="actions">${
-                doc.status === "APPROVED"
-                  ? '<button class="link danger" data-role="reverse">反审核</button>'
-                  : "—"
-              }</td>
+              <td>${statusLabel(doc.status)}</td>
+              <td class="actions">${actionsFor(doc)}</td>
             </tr>`
           )
           .join("")}</tbody>`;
@@ -355,10 +377,15 @@
       }
     }
 
-    mount.querySelector('[data-role="add-line"]').addEventListener("click", addLine);
-    mount.querySelector('[data-role="refresh"]').addEventListener("click", () => reload());
+    function resetForm() {
+      editingId = 0;
+      mount.querySelector('[data-role="cancel-edit"]').hidden = true;
+      form.querySelector('[data-role="partner"]').value = "";
+      dateInput.value = new Date().toISOString().slice(0, 10);
+      resetLines();
+    }
 
-    mount.querySelector('[data-role="submit"]').addEventListener("click", async () => {
+    function collectLines() {
       const lines = [];
       for (const row of linesTable.querySelectorAll("tbody tr")) {
         const itemId = Number(row.querySelector('[data-role="item"]').value);
@@ -366,38 +393,91 @@
         const price = Math.round(Number(row.querySelector('[data-role="price"]').value || 0) * 100);
         if (!itemId || !qty || qty <= 0) {
           showNotice("请检查明细行的商品与数量", "error");
-          return;
+          return null;
         }
         lines.push({ item_id: itemId, qty, price_cents: price });
       }
       if (!lines.length) {
         showNotice("请至少添加一行明细", "error");
-        return;
+        return null;
       }
+      return lines;
+    }
+
+    async function save(draft) {
+      const lines = collectLines();
+      if (!lines) return;
+      const body = {
+        doc_type: docType,
+        warehouse_id: Number(warehouseSelect.value),
+        doc_date: dateInput.value,
+        partner: form.querySelector('[data-role="partner"]').value.trim(),
+        lines,
+      };
       try {
-        const result = await api("POST", "/api/documents", {
-          doc_type: docType,
-          warehouse_id: Number(warehouseSelect.value),
-          doc_date: dateInput.value,
-          partner: mount.querySelector('[data-role="partner"]').value.trim(),
-          lines,
-        });
-        showNotice("已保存并审核：" + result.doc_no, "ok");
-        resetLines();
+        if (editingId) {
+          await api("PUT", "/api/documents/" + editingId, body);
+          if (!draft) await api("POST", "/api/documents/" + editingId + "/approve");
+          showNotice(draft ? "草稿已保存" : "已保存并审核", "ok");
+        } else {
+          const result = await api("POST", "/api/documents", {
+            ...body,
+            save_as_draft: draft,
+          });
+          showNotice((draft ? "已存为草稿：" : "已保存并审核：") + result.doc_no, "ok");
+        }
+        resetForm();
         await reload();
       } catch (error) {
         showNotice(error.message, "error");
       }
-    });
+    }
+
+    async function startEdit(doc) {
+      try {
+        const detail = await api("GET", "/api/documents/" + doc.id);
+        editingId = doc.id;
+        warehouseSelect.value = String(detail.warehouse_id);
+        dateInput.value = detail.doc_date;
+        form.querySelector('[data-role="partner"]').value = detail.partner || "";
+        linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+        for (const line of detail.lines) addLine(line);
+        mount.querySelector('[data-role="cancel-edit"]').hidden = false;
+        form.scrollIntoView({ behavior: "smooth", block: "start" });
+        showNotice("正在编辑草稿 " + detail.doc_no, "ok");
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    }
+
+    mount.querySelector('[data-role="add-line"]').addEventListener("click", () => addLine());
+    mount.querySelector('[data-role="refresh"]').addEventListener("click", () => reload());
+    mount.querySelector('[data-role="cancel-edit"]').addEventListener("click", () => resetForm());
+    mount.querySelector('[data-role="save-draft"]').addEventListener("click", () => save(true));
+    mount.querySelector('[data-role="submit"]').addEventListener("click", () => save(false));
 
     documentsTable.addEventListener("click", async (event) => {
-      const button = event.target.closest('button[data-role="reverse"]');
+      const button = event.target.closest("button");
       if (!button) return;
       const id = Number(event.target.closest("tr").dataset.id);
-      if (!confirm("反审核会生成反向库存流水，确认继续？")) return;
       try {
-        await api("POST", "/api/documents/" + id + "/reverse");
-        showNotice("已反审核", "ok");
+        if (button.dataset.role === "reverse") {
+          if (!confirm("反审核会生成反向库存流水，确认继续？")) return;
+          await api("POST", "/api/documents/" + id + "/reverse");
+          showNotice("已反审核", "ok");
+        } else if (button.dataset.role === "approve") {
+          if (!confirm("审核后才会写库存流水，确认继续？")) return;
+          await api("POST", "/api/documents/" + id + "/approve");
+          showNotice("已审核", "ok");
+        } else if (button.dataset.role === "delete") {
+          if (!confirm("确认删除这张草稿？")) return;
+          await api("DELETE", "/api/documents/" + id);
+          if (editingId === id) resetForm();
+          showNotice("草稿已删除", "ok");
+        } else if (button.dataset.role === "edit") {
+          await startEdit(documents.find((doc) => doc.id === id));
+          return;
+        }
         await reload();
       } catch (error) {
         showNotice(error.message, "error");

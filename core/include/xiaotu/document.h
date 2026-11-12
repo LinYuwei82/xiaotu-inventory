@@ -44,6 +44,20 @@ struct DocInput {
   std::vector<DocLineInput> lines;
 };
 
+// 单据详情：草稿编辑与审核前读取。
+struct DocDetail {
+  std::int64_t id = 0;
+  std::string doc_no;
+  std::string doc_type;
+  std::string doc_date;
+  std::int64_t warehouse_id = 0;
+  std::string partner;
+  std::string status;
+  std::int64_t total_qty = 0;
+  std::int64_t total_amount_cents = 0;
+  std::vector<DocLineInput> lines;
+};
+
 // 单据通用引擎：保存即审核，在同一事务内完成单据、库存流水与余额。
 class DocumentEngine {
  public:
@@ -55,6 +69,13 @@ class DocumentEngine {
   explicit DocumentEngine(Db& db) : db_(db) {}
 
   Created save_and_approve(const DocInput& input);
+  // 草稿：只写单据与明细，不动库存流水。
+  Created save_draft(const DocInput& input);
+  void update_draft(std::int64_t doc_id, const DocInput& input);
+  void delete_draft(std::int64_t doc_id);
+  // 审核草稿：在写事务内校验并生成库存流水。
+  void approve(std::int64_t doc_id);
+  DocDetail detail(std::int64_t doc_id);
   std::vector<DocSummary> list(std::string_view doc_type, int limit = 100);
   void reverse(std::int64_t doc_id);
 

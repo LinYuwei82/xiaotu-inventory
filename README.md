@@ -267,7 +267,7 @@ struct DocumentDefinition {
 ## 9. M0 已知限制（对应方案待确认项）
 
 - 无用户/角色表，仅一次性 token 换取内置 `local-admin` 会话；网络版正式登录属于 M5。
-- 单据保存即审核，没有草稿态；反审核为整单反向。
+- 单据支持草稿态：存草稿只写单据与明细、不写库存流水，审核时才进单事务；反审核为整单反向。
 - 数量按整数件（精度策略见方案 Q4），无多单位、批次、序列号、价格体系。
 - 成本按移动加权平均，暂不支持其他计价方式。
 - 无打印、无 Excel 导出、无报表。
@@ -278,4 +278,4 @@ struct DocumentDefinition {
 
 - 技术方案：`docs/进销存技术方案.md`
 - 数据库结构：`core/src/migrations.cpp`（v1）
-- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/documents`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`
+- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`
