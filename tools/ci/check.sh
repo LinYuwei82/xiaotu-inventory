@@ -32,7 +32,7 @@ print_toolchain() {
   if command -v cmake >/dev/null 2>&1; then
     echo "    cmake: $(cmake --version | head -n 1)"
   else
-    echo "    cmake: 缺失（Gitee Go 侧需先安装，见 README CI 章节）"
+    echo "    cmake: 缺失（Gitee Go 侧会在缺失或低于 3.25 时安装固定版本，见 README CI 章节）"
     exit 1
   fi
   local tool
@@ -87,13 +87,14 @@ case "$(uname -s)" in
     ;;
   Linux)
     # Gitee Go 云端为 Linux 镜像，没有 macOS 壳与 MSVC；这里验证平台无关部分。
-    # Ninja 缺失时降级为 Unix Makefiles，避免把构建工具当成运行环境的前提。
+    # 构建参数统一来自 CMakePresets.json 的 linux-ci preset，不在本脚本里另写一套。
+    # Ninja 缺失时用 -G 覆盖 preset 的生成器，避免把构建工具当成运行环境的前提。
     echo "==> 构建 Linux（XIAOTU_BUILD_SHELL=OFF）"
     GENERATOR=()
-    GENERATOR_NAME="Unix Makefiles"
-    if command -v ninja >/dev/null 2>&1; then
-      GENERATOR=(-G Ninja)
-      GENERATOR_NAME="Ninja"
+    GENERATOR_NAME="Ninja"
+    if ! command -v ninja >/dev/null 2>&1; then
+      GENERATOR=(-G "Unix Makefiles")
+      GENERATOR_NAME="Unix Makefiles"
     fi
     echo "    生成器: $GENERATOR_NAME"
 
@@ -115,9 +116,8 @@ case "$(uname -s)" in
       echo "    ccache: 已启用（$CCACHE_DIR）"
     fi
 
-    cmake -S . -B build/ci-linux "${GENERATOR[@]}" "${LAUNCHER[@]}" \
-      -DXIAOTU_BUILD_SHELL=OFF -DCMAKE_BUILD_TYPE=Release
-    cmake --build build/ci-linux --parallel
+    cmake --preset linux-ci "${GENERATOR[@]}" "${LAUNCHER[@]}"
+    cmake --build --preset linux-ci --parallel
 
     echo "==> 运行 ctest"
     ctest --test-dir build/ci-linux --output-on-failure

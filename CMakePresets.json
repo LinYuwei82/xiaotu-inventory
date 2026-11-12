@@ -32,6 +32,16 @@
       }
     },
     {
+      "name": "linux-ci",
+      "displayName": "Linux CI（Ninja，无 WebView 壳）",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ci-linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "XIAOTU_BUILD_SHELL": "OFF"
+      }
+    },
+    {
       "name": "windows-release",
       "displayName": "Windows 服务端（Ninja，无 WebView 壳，浏览器访问）",
       "generator": "Ninja",
@@ -57,6 +67,7 @@
   "buildPresets": [
     { "name": "dev", "configurePreset": "macos-dev" },
     { "name": "release", "configurePreset": "macos-release" },
+    { "name": "linux-ci", "configurePreset": "linux-ci" },
     { "name": "windows-release", "configurePreset": "windows-release" },
     { "name": "windows-dev", "configurePreset": "windows-dev" }
   ],

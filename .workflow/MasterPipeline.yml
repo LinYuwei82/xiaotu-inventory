@@ -19,8 +19,10 @@ triggers:
         - main
 
 # 同一条流水线一次只跑一条构建，后来的排队等待，不并行消耗核分。
+# 任务超时 60 分钟：卡死的构建会被取消，避免一直堵住排队的后续构建。
 strategy:
   blocking: true
+  stepTimeout: 60
 
 stages:
   - stage:
@@ -41,9 +43,21 @@ stages:
           # 名为 ~ 的目录而永不命中；请填 $HOME/.cache/ccache 或绝对路径。
           # check.sh 每次都会打印 CCACHE_DIR 的解析结果，便于对照平台配置。
           commands:
-            # 镜像只保证 GCC 与常规工具；CMake 缺失时用 pip 安装到用户目录。
+            # 镜像只保证 GCC 与常规工具，且自带 CMake 可能是 3.16，低于项目要求的 3.25。
+            # 因此按版本判断：缺失或低于 3.25 时安装固定版本，不裸装最新版。
             - export PATH="$HOME/.local/bin:$PATH"
-            - command -v cmake >/dev/null 2>&1 || python3 -m pip install --user cmake
+            - |
+              set -e
+              cmake_ok=0
+              if command -v cmake >/dev/null 2>&1; then
+                cur="$(cmake --version | sed -n 's/^cmake version \([0-9][0-9.]*\).*/\1/p' | head -n 1)"
+                if [ -n "$cur" ] && [ "$(printf '%s\n%s\n' 3.25 "$cur" | sort -V | head -n 1)" = "3.25" ]; then
+                  cmake_ok=1
+                fi
+              fi
+              if [ "$cmake_ok" -ne 1 ]; then
+                python3 -m pip install --user "cmake==3.31.6"
+              fi
             # 检查逻辑只在本脚本里，Gitee Go 侧不复制步骤。
             # 脚本会打印系统、cmake/ninja/make/ccache 的实际版本与生成器选择。
             - bash tools/ci/check.sh
