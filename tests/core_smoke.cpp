@@ -1,5 +1,9 @@
 // M0 冒烟测试：迁移 → 建商品 → 销售出库 → 采购入库与加权平均 → 反审核 → 查库存。
+#if defined(_WIN32)
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 
 #include <atomic>
 #include <filesystem>
@@ -48,7 +52,13 @@ void check(bool condition, const std::string& message) {
 
 int main() {
   namespace fs = std::filesystem;
-  const fs::path dir = fs::temp_directory_path() / ("xiaotu-smoke-" + std::to_string(::getpid()));
+#if defined(_WIN32)
+  const long process_id = _getpid();
+#else
+  const long process_id = ::getpid();
+#endif
+  const fs::path dir =
+      fs::temp_directory_path() / ("xiaotu-smoke-" + std::to_string(process_id));
 
   try {
     fs::remove_all(dir);

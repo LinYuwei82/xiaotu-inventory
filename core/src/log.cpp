@@ -10,6 +10,8 @@
 #include <string>
 #include <thread>
 
+#include "xiaotu/platform.h"
+
 namespace xiaotu {
 namespace {
 
@@ -30,8 +32,7 @@ std::string timestamp_now() {
   const auto millis =
       std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() %
       1000;
-  std::tm local{};
-  localtime_r(&seconds, &local);
+  const std::tm local = local_time(seconds);
   char buffer[32] = {};
   std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &local);
   char suffix[8] = {};

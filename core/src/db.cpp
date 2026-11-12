@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "xiaotu/error.h"
+#include "xiaotu/platform.h"
 
 namespace xiaotu {
 namespace {
@@ -24,7 +25,7 @@ void check_ok(sqlite3* db, int rc, std::string_view what) {
 
 void open_connection(const std::filesystem::path& file, int flags, sqlite3** out) {
   sqlite3* db = nullptr;
-  const int rc = sqlite3_open_v2(file.string().c_str(), &db,
+  const int rc = sqlite3_open_v2(path_to_utf8(file).c_str(), &db,
                                  flags | SQLITE_OPEN_FULLMUTEX, nullptr);
   if (rc != SQLITE_OK) {
     const std::string message = sqlite_message(db);
@@ -211,8 +212,7 @@ void exec_sql(sqlite3* db, std::string_view sql) {
 
 std::string now_text() {
   std::time_t now = std::time(nullptr);
-  std::tm local{};
-  localtime_r(&now, &local);
+  const std::tm local = local_time(now);
   char buffer[32];
   std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &local);
   return std::string(buffer);
@@ -220,8 +220,7 @@ std::string now_text() {
 
 std::string today_text() {
   std::time_t now = std::time(nullptr);
-  std::tm local{};
-  localtime_r(&now, &local);
+  const std::tm local = local_time(now);
   char buffer[16];
   std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &local);
   return std::string(buffer);

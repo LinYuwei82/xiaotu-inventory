@@ -7,6 +7,7 @@
 #include <system_error>
 
 #include "xiaotu/error.h"
+#include "xiaotu/platform.h"
 
 namespace xiaotu {
 namespace {
@@ -14,8 +15,7 @@ namespace {
 std::string timestamp_tag() {
   const auto now = std::chrono::system_clock::now();
   const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
-  std::tm local{};
-  localtime_r(&seconds, &local);
+  const std::tm local = local_time(seconds);
   char buffer[32] = {};
   std::strftime(buffer, sizeof(buffer), "%Y%m%d-%H%M%S", &local);
   return buffer;
@@ -38,7 +38,8 @@ void verify_database(const std::filesystem::path& path) {
     throw AppError("BACKUP_NOT_FOUND", "备份文件不存在：" + path.string());
   }
   sqlite3* connection = nullptr;
-  if (sqlite3_open_v2(path.c_str(), &connection, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+  if (sqlite3_open_v2(path_to_utf8(path).c_str(), &connection, SQLITE_OPEN_READONLY, nullptr) !=
+      SQLITE_OK) {
     const std::string detail = connection == nullptr ? "无法打开" : sqlite3_errmsg(connection);
     if (connection != nullptr) sqlite3_close(connection);
     throw AppError("BACKUP_INVALID", "无法打开备份：" + detail);
@@ -97,7 +98,7 @@ BackupResult restore_database(const std::filesystem::path& source,
   if (std::filesystem::exists(database_path)) {
     // 先 checkpoint，让单文件安全备份包含 WAL 中已提交的内容。
     sqlite3* connection = nullptr;
-    if (sqlite3_open(database_path.c_str(), &connection) == SQLITE_OK) {
+    if (sqlite3_open(path_to_utf8(database_path).c_str(), &connection) == SQLITE_OK) {
       sqlite3_exec(connection, "PRAGMA wal_checkpoint(TRUNCATE);", nullptr, nullptr, nullptr);
       sqlite3_close(connection);
     }

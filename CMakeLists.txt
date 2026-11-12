@@ -6,6 +6,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# MSVC 默认按系统代码页（中文 Windows 为 936）解析源码，而仓库源码是无 BOM 的 UTF-8，
+# 会把中文字面量读坏并触发 C4819 / 语法错误。GCC 与 Clang 默认即 UTF-8，不需要该选项。
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
+
 if(APPLE)
   enable_language(OBJCXX)
   if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
