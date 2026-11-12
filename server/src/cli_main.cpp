@@ -7,17 +7,18 @@
 #include <string>
 #include <thread>
 
-#include "platform_paths.h"
 #include "xiaotu/db.h"
 #include "xiaotu/error.h"
 #include "xiaotu/http_server.h"
 #include "xiaotu/ids.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/permissions.h"
+#include "xiaotu/platform_paths.h"
 #include "xiaotu/services.h"
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) && defined(XIAOTU_WEBVIEW_SHELL)
 #include "webview.h"
+#define XIAOTU_HAS_WEBVIEW 1
 #endif
 
 namespace {
@@ -36,7 +37,7 @@ struct Options {
 void print_usage(const char* program) {
   std::cout << "小兔进销存 " << XIAOTU_VERSION << "\n\n"
             << "用法: " << program << " [选项]\n\n"
-            << "不带参数启动 = 单机版（仅监听 127.0.0.1 随机端口，用系统 WebView 打开）\n"
+            << "不带参数启动 = 单机模式（仅监听 127.0.0.1；有 WebView 壳时打开窗口，否则打印浏览器地址）\n"
             << "  --server        以网络版启动，监听 0.0.0.0\n"
             << "  --port <端口>   网络版监听端口，默认 8080\n"
             << "  --data <目录>   数据目录，默认为系统应用数据目录\n"
@@ -104,6 +105,9 @@ int main(int argc, char** argv) {
     };
     xiaotu::HttpServer http(services, info, token);
 
+    std::signal(SIGINT, on_signal);
+    std::signal(SIGTERM, on_signal);
+
     if (!options.server) {
       const int port = http.bind("127.0.0.1", 0);
       http.serve_async();
@@ -116,12 +120,12 @@ int main(int argc, char** argv) {
       std::cout << "开发态前端: " << dev_url << "（修改 web/ 后刷新即可，无需重新编译）" << std::endl;
 #endif
       std::cout << "服务地址: " << base << "\n访问地址: " << url << std::endl;
-#if defined(__APPLE__)
+#if defined(XIAOTU_HAS_WEBVIEW)
       const int code = xiaotu::platform::run_webview(url, "小兔进销存");
       http.stop();
       return code;
 #else
-      std::cout << "当前平台未内置 WebView 壳，请用浏览器打开上面的访问地址。" << std::endl;
+      std::cout << "当前构建未包含 WebView 壳，请用浏览器打开上面的访问地址。" << std::endl;
       while (!g_stop) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
       }
@@ -137,8 +141,6 @@ int main(int argc, char** argv) {
               << local_url("http://127.0.0.1:" + std::to_string(port), token) << "\n"
               << "局域网访问时，把 127.0.0.1 换成本机 IP。" << std::endl;
 
-    std::signal(SIGINT, on_signal);
-    std::signal(SIGTERM, on_signal);
     while (!g_stop) {
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }

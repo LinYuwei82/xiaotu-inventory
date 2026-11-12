@@ -30,16 +30,50 @@
       "environment": {
         "VCPKG_BINARY_SOURCES": "clear;files,${sourceDir}/.vcpkg-cache,readwrite"
       }
+    },
+    {
+      "name": "windows-release",
+      "displayName": "Windows 服务端（Ninja，无 WebView 壳，浏览器访问）",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/windows",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "XIAOTU_BUILD_SHELL": "OFF",
+        "XIAOTU_DEV_WEB": "OFF"
+      }
+    },
+    {
+      "name": "windows-dev",
+      "displayName": "Windows 开发态（Ninja，无 WebView 壳，前端走 dev server）",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/windows-dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "XIAOTU_BUILD_SHELL": "OFF",
+        "XIAOTU_DEV_WEB": "ON"
+      }
     }
   ],
   "buildPresets": [
     { "name": "dev", "configurePreset": "macos-dev" },
-    { "name": "release", "configurePreset": "macos-release" }
+    { "name": "release", "configurePreset": "macos-release" },
+    { "name": "windows-release", "configurePreset": "windows-release" },
+    { "name": "windows-dev", "configurePreset": "windows-dev" }
   ],
   "testPresets": [
     {
       "name": "dev",
       "configurePreset": "macos-dev",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "release",
+      "configurePreset": "macos-release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
       "output": { "outputOnFailure": true }
     }
   ]

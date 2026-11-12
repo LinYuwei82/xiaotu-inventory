@@ -25,6 +25,9 @@ macOS 优先的进销存软件骨架：**一套 C++20 代码，两种运行形�
 brew install cmake ninja ccache
 ```
 
+Windows 只构建服务端与测试时另需 CMake 3.25+、Ninja、Visual Studio 2022 Build Tools（MSVC，C++20）；
+不需要 Xcode、ccache 或 vcpkg，`cpp-httplib`、`nlohmann/json`、SQLite 均已内嵌在 `third_party/`。
+
 ## 2. 构建
 
 ```bash
@@ -49,6 +52,18 @@ build/dev/shell/xiaotu-inventory.app
 ```
 
 macOS 产物是 `.app` bundle（图标、Info.plist、前端资源都在 bundle 内），可执行文件位于 `Contents/MacOS/xiaotu-inventory`。
+另有一个不依赖 WebView 的命令行产物 `build/release/server/xiaotu-server`，用于网络版与浏览器开发。
+
+单机版壳默认构建。只做服务端 / 业务逻辑开发时，可在任意平台关闭：
+
+```bash
+cmake --preset macos-release -DXIAOTU_BUILD_SHELL=OFF
+cmake --build --preset release
+```
+
+关闭后不配置、不构建 `shell/` 目标，只保留 `core`、`server` 与测试；服务端入口为
+`build/release/server/xiaotu-server`。Windows 上请使用下面的 `windows-*` preset 或同样的
+`-DXIAOTU_BUILD_SHELL=OFF`。
 
 运行测试：
 
@@ -65,6 +80,39 @@ ctest --test-dir build/release --output-on-failure
   依赖二进制缓存在仓库内 `.vcpkg-cache/`（已 gitignore），换构建目录不再重编依赖。
 - **开发态不内嵌前端**：`-DXIAOTU_DEV_WEB=ON` 时跳过资源嵌入，缩短链接与启动前的编译时间。
 
+### Windows：只构建服务端与测试
+
+适用于在 Windows 上开发业务逻辑、跑测试、用浏览器访问页面，不需要 WKWebView 与 `.app` 打包。
+
+```powershell
+git clone git@gitee.com:lin-yuwei168/xiaotu-inventory.git
+cd xiaotu-inventory
+git switch -c macbook/<主题>
+
+cmake --preset windows-release
+cmake --build --preset windows-release
+ctest --preset windows-release
+```
+
+产物为 `build\windows\server\xiaotu-server.exe`。启动网络版：
+
+```powershell
+.\build\windows\server\xiaotu-server.exe --server --port 8080 --data D:\xt-data
+```
+
+浏览器打开启动日志里的「访问凭据」链接。前端开发态用 `windows-dev`：
+
+```powershell
+cmake --preset windows-dev
+cmake --build --preset windows-dev
+python -m http.server 5173 --directory web   # 终端 A
+.\build\windows-dev\server\xiaotu-server.exe  # 终端 B，无参数 = 浏览器单机模式
+```
+
+终端 B 会打印 `http://127.0.0.1:5173/?api=...#t=...`，直接打开即可；改 `web/` 后刷新页面。
+`windows-*` preset 已设置 `XIAOTU_BUILD_SHELL=OFF`；不用 preset 时手动加
+`-DXIAOTU_BUILD_SHELL=OFF` 即可。
+
 ## 3. 运行
 
 ### 单机版
@@ -78,8 +126,11 @@ open ./build/release/shell/xiaotu-inventory.app
 ### 网络版
 
 ```bash
-./build/release/shell/xiaotu-inventory.app/Contents/MacOS/xiaotu-inventory --server --port 8080
+./build/release/server/xiaotu-server --server --port 8080
 ```
+
+macOS 的 `.app` 可执行文件也支持同样参数：
+`./build/release/shell/xiaotu-inventory.app/Contents/MacOS/xiaotu-inventory --server --port 8080`。
 
 启动日志中的「访问凭据」链接即为一次性登录地址（10 分钟内有效、只能使用一次）。局域网其他机器访问时，把 URL 中的 `127.0.0.1` 换成本机 IP。
 
@@ -151,12 +202,11 @@ xiaotu-inventory/
 │   ├── include/xiaotu/
 │   │   ├── services.h             # 服务组合根
 │   │   ├── http_guard.h           # guard("权限码", handler)
+│   │   ├── platform_paths.h       # 数据目录（应用标识 com.simem.xiaotu）
 │   │   ├── http_json.h / session_store.h
 │   │   └── gen/                   # ← 生成物（路由声明）
-│   └── src/                       # 手写路由 + src/gen/（生成物）
-├── shell/                         # 唯一允许出现平台代码的地方
-│   ├── main.cpp                   # 参数、模式、启动顺序
-│   ├── common/platform_paths.*     # 数据目录（应用标识 com.simem.xiaotu）
+│   └── src/                       # 手写路由 + cli_main.cpp + src/gen/（生成物）
+├── shell/                         # 唯一允许出现平台代码的地方（可关闭）
 │   ├── mac/icon/                  # 图标源 SVG（候选）与 xiaotu.icns
 │   └── mac/webview.mm             # WKWebView 宿主
 ├── web/                           # 前端（无构建步骤）

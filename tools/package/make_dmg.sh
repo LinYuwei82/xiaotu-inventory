@@ -63,11 +63,13 @@ if [ -z "$VERSION" ]; then
 fi
 
 echo "===== 构建（macos-release，版本 ${VERSION}）"
-cmake --preset macos-release
+# 显式打开单机版壳，避免复用之前 -DXIAOTU_BUILD_SHELL=OFF 的构建目录。
+cmake --preset macos-release -DXIAOTU_BUILD_SHELL=ON
 cmake --build --preset release
 
 if [ ! -d "$BUILT_APP" ]; then
   echo "构建产物不存在：$BUILT_APP" >&2
+  echo "请确认配置时未关闭 -DXIAOTU_BUILD_SHELL（本脚本仅支持 macOS 单机版壳）。" >&2
   exit 1
 fi
 

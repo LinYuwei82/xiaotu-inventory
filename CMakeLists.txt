@@ -22,9 +22,20 @@ endif()
 set(XIAOTU_EDITION "full" CACHE STRING "版本：full（全功能版）或 community（社区版）")
 message(STATUS "版本：${XIAOTU_EDITION}")
 
+# 单机版壳（WKWebView + .app）默认构建；Windows / 无头开发服务器时关闭，
+# 只构建 core、server 与测试，用浏览器访问 --server。
+option(XIAOTU_BUILD_SHELL "构建 macOS 单机版 WebView 壳（.app）" ON)
+if(XIAOTU_BUILD_SHELL AND NOT APPLE)
+  message(WARNING "XIAOTU_BUILD_SHELL 仅支持 macOS，当前平台自动关闭")
+  set(XIAOTU_BUILD_SHELL OFF)
+endif()
+message(STATUS "单机版壳：${XIAOTU_BUILD_SHELL}")
+
 add_subdirectory(core)
 add_subdirectory(server)
-add_subdirectory(shell)
+if(XIAOTU_BUILD_SHELL)
+  add_subdirectory(shell)
+endif()
 
 enable_testing()
 add_subdirectory(tests)
