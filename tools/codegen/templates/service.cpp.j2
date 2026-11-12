@@ -42,6 +42,13 @@ void {{ t.Name }}Service::validate(const {{ t.Name }}Row& row) {
   }
 {% endif %}
 {% endfor %}
+{% for f in t.fields %}
+{% if f.type == 'int' and f.min is defined and f.max is defined %}
+  if (row.{{ f.name }} < {{ f.min }} || row.{{ f.name }} > {{ f.max }}) {
+    throw AppError("INVALID_INPUT", "{{ f.label }}应在 {{ f.min }}–{{ f.max }} 之间");
+  }
+{% endif %}
+{% endfor %}
 }
 
 {{ t.Name }}Row {{ t.Name }}Service::create({{ t.Name }}Row input) {

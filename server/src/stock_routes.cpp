@@ -6,6 +6,7 @@
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
 #include "xiaotu/models.h"
+#include "xiaotu/qty.h"
 #include "xiaotu/services.h"
 
 namespace xiaotu {
@@ -19,7 +20,7 @@ nlohmann::json balance_to_json(const StockBalanceRow& row) {
       {"unit", row.unit},
       {"warehouse_code", row.warehouse_code},
       {"warehouse_name", row.warehouse_name},
-      {"qty", row.qty},
+      {"qty", qty_text(row.qty)},
       {"amount_cents", row.amount_cents},
   };
 }
@@ -33,7 +34,7 @@ nlohmann::json ledger_to_json(const StockLedgerRow& row) {
       {"item_code", row.item_code},
       {"item_name", row.item_name},
       {"warehouse_name", row.warehouse_name},
-      {"qty", row.qty},
+      {"qty", qty_text(row.qty)},
       {"amount_cents", row.amount_cents},
   };
 }

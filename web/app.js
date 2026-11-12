@@ -31,6 +31,61 @@
     return (value / 100).toFixed(2);
   }
 
+  const QTY_SCALE = 10000n;
+
+  // 定点整数（×10000）→ 十进制文本，去掉末尾 0；全程 BigInt，不做浮点换算。
+  function qtyText(value) {
+    if (value === null || value === undefined || value === "") return "";
+    let scaled;
+    try {
+      scaled = BigInt(value);
+    } catch (error) {
+      return String(value);
+    }
+    const negative = scaled < 0n;
+    if (negative) scaled = -scaled;
+    const whole = scaled / QTY_SCALE;
+    const fraction = (scaled % QTY_SCALE)
+      .toString()
+      .padStart(4, "0")
+      .replace(/0+$/, "");
+    return (negative ? "-" : "") + whole.toString() + (fraction ? "." + fraction : "");
+  }
+
+  // 十进制文本 → 定点整数字符串；最多 4 位小数、不允许负数，非法返回 null。
+  // allowZero 为 false 时 0 也视为非法（单据数量必须大于 0，盘点实盘可以为 0）。
+  function parseQty(text, allowZero) {
+    const value = String(text === null || text === undefined ? "" : text).trim();
+    const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(value);
+    if (!match) return null;
+    const fraction = match[3] || "";
+    if (fraction.length > 4) return null;
+    const whole = match[2].replace(/^0+(?=\d)/, "");
+    if (whole.length > 9) return null;
+    let scaled = BigInt(whole) * QTY_SCALE + BigInt((fraction + "0000").slice(0, 4));
+    if (match[1]) scaled = -scaled;
+    if (scaled < 0n) return null;
+    if (!allowZero && scaled === 0n) return null;
+    return scaled.toString();
+  }
+
+  // 金额预览用 BigInt 计算，避免数量 × 单价超过 2^53。
+  function qtyAmountText(qtyScaled, priceCents) {
+    if (qtyScaled === null) return "—";
+    const numerator = BigInt(qtyScaled) * BigInt(priceCents || 0);
+    const scaled =
+      numerator >= 0n ? (numerator + QTY_SCALE / 2n) / QTY_SCALE
+                      : -((-numerator + QTY_SCALE / 2n) / QTY_SCALE);
+    const negative = scaled < 0n;
+    const absolute = negative ? -scaled : scaled;
+    const fraction = (absolute % 100n).toString().padStart(2, "0");
+    return (negative ? "-" : "") + (absolute / 100n).toString() + "." + fraction;
+  }
+
+  function qtyIsNegative(value) {
+    return String(value === null || value === undefined ? "" : value).startsWith("-");
+  }
+
   function showNotice(message, kind) {
     notice.textContent = message;
     notice.className = "notice" + (kind ? " " + kind : "");
@@ -351,6 +406,16 @@
             </select>
           </label>`;
       }
+      if (field.type === "int") {
+        const min = field.min === undefined ? "" : ` min="${Number(field.min)}"`;
+        const max = field.max === undefined ? "" : ` max="${Number(field.max)}"`;
+        return `<label class="field">
+          <span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>
+          <input type="number" step="1"${min}${max} data-field="${escapeHtml(field.key)}" value="${escapeHtml(
+          value === undefined || value === null ? "" : value
+        )}" ${field.required ? "required" : ""} />
+        </label>`;
+      }
       return `<label class="field">
           <span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>
           <input type="text" data-field="${escapeHtml(field.key)}" value="${escapeHtml(
@@ -384,6 +449,8 @@
         if (field.type === "bool") {
           payload[field.key] = input.checked;
         } else if (field.optionsApi) {
+          payload[field.key] = Number(input.value || 0);
+        } else if (field.type === "int") {
           payload[field.key] = Number(input.value || 0);
         } else {
           payload[field.key] = input.value.trim();
@@ -440,6 +507,19 @@
         if (field.required && !payload[field.key]) {
           showNotice(field.label + "不能为空", "error");
           return;
+        }
+        if (field.type === "int") {
+          const value = payload[field.key];
+          const tooSmall = field.min !== undefined && value < field.min;
+          const tooLarge = field.max !== undefined && value > field.max;
+          if (!Number.isInteger(value) || tooSmall || tooLarge) {
+            const range =
+              field.min !== undefined && field.max !== undefined
+                ? "应在 " + field.min + "–" + field.max + " 之间"
+                : "应为整数";
+            showNotice(field.label + range, "error");
+            return;
+          }
         }
       }
       try {
@@ -552,21 +632,21 @@
       const row = document.createElement("tr");
       row.innerHTML = `
         <td><select data-role="item">${itemOptions(line ? line.item_id : undefined)}</select></td>
-        <td><input type="number" min="1" step="1" value="1" data-role="qty" /></td>
+        <td><input type="text" inputmode="decimal" value="1" data-role="qty" /></td>
         <td><input type="number" min="0" step="0.01" value="0.00" data-role="price" /></td>
         <td><input type="text" class="readonly" value="—" data-role="amount" disabled /></td>
         <td class="actions"><button class="link danger" type="button" data-role="remove">移除</button></td>`;
       linesTable.querySelector("tbody").appendChild(row);
       row.querySelector('[data-role="remove"]').addEventListener("click", () => row.remove());
       const recalc = () => {
-        const qty = Number(row.querySelector('[data-role="qty"]').value || 0);
-        const price = Number(row.querySelector('[data-role="price"]').value || 0);
-        row.querySelector('[data-role="amount"]').value = (qty * price).toFixed(2);
+        const qty = parseQty(row.querySelector('[data-role="qty"]').value, true);
+        const price = Math.round(Number(row.querySelector('[data-role="price"]').value || 0) * 100);
+        row.querySelector('[data-role="amount"]').value = qtyAmountText(qty, price);
       };
       row.querySelector('[data-role="qty"]').addEventListener("input", recalc);
       row.querySelector('[data-role="price"]').addEventListener("input", recalc);
       if (line) {
-        row.querySelector('[data-role="qty"]').value = line.qty;
+        row.querySelector('[data-role="qty"]').value = qtyText(line.qty);
         row.querySelector('[data-role="price"]').value = (line.price_cents / 100).toFixed(2);
         recalc();
       }
@@ -614,7 +694,7 @@
               <td>${escapeHtml(doc.doc_date)}</td>
               <td>${escapeHtml(doc.warehouse_name)}</td>
               <td>${escapeHtml(doc.customer || "—")}</td>
-              <td>${doc.total_qty}</td>
+              <td>${qtyText(doc.total_qty)}</td>
               <td>${money(doc.total_amount_cents)}</td>
               <td>${statusLabel(doc.status)}</td>
               <td class="actions">${actionsFor(doc)}</td>
@@ -679,9 +759,12 @@
       const lines = [];
       for (const row of linesTable.querySelectorAll("tbody tr")) {
         const itemId = Number(row.querySelector('[data-role="item"]').value);
-        const qty = parseInt(row.querySelector('[data-role="qty"]').value, 10);
+        const qty = parseQty(
+          row.querySelector('[data-role="qty"]').value,
+          docType === "STK_CNT"
+        );
         const price = Math.round(Number(row.querySelector('[data-role="price"]').value || 0) * 100);
-        if (!itemId || !qty || qty <= 0) {
+        if (!itemId || qty === null) {
           showNotice("请检查明细行的商品与数量", "error");
           return null;
         }
@@ -900,21 +983,21 @@
       const row = document.createElement("tr");
       row.innerHTML = `
         <td><select data-role="item">${itemOptions(line ? line.item_id : undefined)}</select></td>
-        <td><input type="number" min="1" step="1" value="1" data-role="qty" /></td>
+        <td><input type="text" inputmode="decimal" value="1" data-role="qty" /></td>
         <td><input type="number" min="0" step="0.01" value="0.00" data-role="price" /></td>
         <td><input type="text" class="readonly" value="—" data-role="amount" disabled /></td>
         <td class="actions"><button class="link danger" type="button" data-role="remove">移除</button></td>`;
       linesTable.querySelector("tbody").appendChild(row);
       row.querySelector('[data-role="remove"]').addEventListener("click", () => row.remove());
       const recalc = () => {
-        const qty = Number(row.querySelector('[data-role="qty"]').value || 0);
-        const price = Number(row.querySelector('[data-role="price"]').value || 0);
-        row.querySelector('[data-role="amount"]').value = (qty * price).toFixed(2);
+        const qty = parseQty(row.querySelector('[data-role="qty"]').value, true);
+        const price = Math.round(Number(row.querySelector('[data-role="price"]').value || 0) * 100);
+        row.querySelector('[data-role="amount"]').value = qtyAmountText(qty, price);
       };
       row.querySelector('[data-role="qty"]').addEventListener("input", recalc);
       row.querySelector('[data-role="price"]').addEventListener("input", recalc);
       if (line) {
-        row.querySelector('[data-role="qty"]').value = line.qty;
+        row.querySelector('[data-role="qty"]').value = qtyText(line.qty);
         row.querySelector('[data-role="price"]').value = (line.price_cents / 100).toFixed(2);
         recalc();
       }
@@ -968,7 +1051,7 @@
               <td>${escapeHtml(doc.doc_date)}</td>
               <td>${escapeHtml(doc.warehouse_name)}</td>
               <td>${escapeHtml(doc.customer || "—")}</td>
-              <td>${doc.total_qty}</td>
+              <td>${qtyText(doc.total_qty)}</td>
               <td>${money(doc.total_amount_cents)}</td>
               <td>${orderStatusLabel(doc)}</td>
               <td class="actions">${actionsFor(doc)}</td>
@@ -1026,9 +1109,12 @@
       const lines = [];
       for (const row of linesTable.querySelectorAll("tbody tr")) {
         const itemId = Number(row.querySelector('[data-role="item"]').value);
-        const qty = parseInt(row.querySelector('[data-role="qty"]').value, 10);
+        const qty = parseQty(
+          row.querySelector('[data-role="qty"]').value,
+          docType === "STK_CNT"
+        );
         const price = Math.round(Number(row.querySelector('[data-role="price"]').value || 0) * 100);
-        if (!itemId || !qty || qty <= 0) {
+        if (!itemId || qty === null) {
           showNotice("请检查明细行的商品与数量", "error");
           return null;
         }
@@ -1096,14 +1182,14 @@
           <thead><tr><th>商品</th><th>订单数量</th><th>已转</th><th>剩余</th><th>本次转出</th></tr></thead>
           <tbody>${detail.lines
             .map((line) => {
-              const remaining = line.qty - line.converted_qty;
+              const remaining = BigInt(line.qty) - BigInt(line.converted_qty);
               return `<tr data-line-id="${line.id}">
                 <td>${escapeHtml(itemLabel(line.item_id))}</td>
-                <td>${line.qty}</td>
-                <td>${line.converted_qty}</td>
-                <td>${remaining}</td>
-                <td><input type="number" min="0" max="${remaining}" step="1"
-                  value="${remaining}" data-role="convert-qty" ${remaining <= 0 ? "disabled" : ""} /></td>
+                <td>${qtyText(line.qty)}</td>
+                <td>${qtyText(line.converted_qty)}</td>
+                <td>${qtyText(remaining)}</td>
+                <td><input type="text" inputmode="decimal"
+                  value="${qtyText(remaining)}" data-role="convert-qty" ${remaining <= 0n ? "disabled" : ""} /></td>
               </tr>`;
             })
             .join("")}</tbody>`;
@@ -1118,8 +1204,13 @@
       const lines = [];
       for (const row of convertLines.querySelectorAll("tbody tr")) {
         const input = row.querySelector('[data-role="convert-qty"]');
-        const qty = parseInt(input.value || 0, 10);
-        if (qty > 0) lines.push({ order_line_id: Number(row.dataset.lineId), qty });
+        if (input.disabled) continue;
+        const qty = parseQty(input.value, true);
+        if (qty === null) {
+          showNotice("转出数量格式不正确，最多 4 位小数", "error");
+          return;
+        }
+        if (qty !== "0") lines.push({ order_line_id: Number(row.dataset.lineId), qty });
       }
       if (!lines.length) {
         showNotice("请填写要转出的数量", "error");
@@ -1440,7 +1531,7 @@
                  <td>${escapeHtml(row.item_code)}</td>
                  <td>${escapeHtml(row.item_name)}</td>
                  <td>${escapeHtml(row.warehouse_name)}</td>
-                 <td class="${row.qty < 0 ? "negative" : ""}">${row.qty}</td>
+                 <td class="${qtyIsNegative(row.qty) ? "negative" : ""}">${qtyText(row.qty)}</td>
                  <td>${money(row.amount_cents)}</td>
                </tr>`
              )
@@ -1457,7 +1548,7 @@
                  <td>${escapeHtml(row.doc_no)}</td>
                  <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
                  <td>${escapeHtml(row.warehouse_name)}</td>
-                 <td class="${row.qty < 0 ? "negative" : ""}">${row.qty}</td>
+                 <td class="${qtyIsNegative(row.qty) ? "negative" : ""}">${qtyText(row.qty)}</td>
                  <td>${money(row.amount_cents)}</td>
                </tr>`
              )
@@ -1473,10 +1564,10 @@
                  <td>${escapeHtml(row.item_code)}</td>
                  <td>${escapeHtml(row.item_name)}</td>
                  <td>${escapeHtml(row.warehouse_name)}</td>
-                 <td>${row.opening_qty}</td>
-                 <td>${row.in_qty}</td>
-                 <td>${row.out_qty}</td>
-                 <td class="${row.closing_qty < 0 ? "negative" : ""}">${row.closing_qty}</td>
+                 <td>${qtyText(row.opening_qty)}</td>
+                 <td>${qtyText(row.in_qty)}</td>
+                 <td>${qtyText(row.out_qty)}</td>
+                 <td class="${qtyIsNegative(row.closing_qty) ? "negative" : ""}">${qtyText(row.closing_qty)}</td>
                  <td>${money(row.in_amount_cents)}</td>
                  <td>${money(row.out_amount_cents)}</td>
                </tr>`
@@ -1493,10 +1584,10 @@
                  <td>${escapeHtml(row.item_code)}</td>
                  <td>${escapeHtml(row.item_name)}</td>
                  <td>${escapeHtml(row.unit)}</td>
-                 <td>${row.opening_qty}</td>
-                 <td>${row.in_qty}</td>
-                 <td>${row.out_qty}</td>
-                 <td class="${row.closing_qty < 0 ? "negative" : ""}">${row.closing_qty}</td>
+                 <td>${qtyText(row.opening_qty)}</td>
+                 <td>${qtyText(row.in_qty)}</td>
+                 <td>${qtyText(row.out_qty)}</td>
+                 <td class="${qtyIsNegative(row.closing_qty) ? "negative" : ""}">${qtyText(row.closing_qty)}</td>
                  <td>${money(row.closing_amount_cents)}</td>
                </tr>`
              )
@@ -1511,7 +1602,7 @@
                (row) => `<tr>
                  <td>${escapeHtml(row.item_code)}</td>
                  <td>${escapeHtml(row.item_name)}</td>
-                 <td>${row.qty}</td>
+                 <td>${qtyText(row.qty)}</td>
                  <td>${money(row.revenue_cents)}</td>
                  <td>${money(row.cost_cents)}</td>
                  <td class="${row.profit_cents < 0 ? "negative" : ""}">${money(row.profit_cents)}</td>
@@ -2262,7 +2353,7 @@
                  <td>${escapeHtml(row.item_code)}</td>
                  <td>${escapeHtml(row.item_name)}</td>
                  <td>${escapeHtml(row.warehouse_name)}</td>
-                 <td class="${row.qty < 0 ? "negative" : ""}">${row.qty}</td>
+                 <td class="${qtyIsNegative(row.qty) ? "negative" : ""}">${qtyText(row.qty)}</td>
                  <td>${money(row.amount_cents)}</td>
                </tr>`
              )
@@ -2279,7 +2370,7 @@
                  <td>${escapeHtml(row.doc_no)}</td>
                  <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
                  <td>${escapeHtml(row.warehouse_name)}</td>
-                 <td class="${row.qty < 0 ? "negative" : ""}">${row.qty}</td>
+                 <td class="${qtyIsNegative(row.qty) ? "negative" : ""}">${qtyText(row.qty)}</td>
                  <td>${money(row.amount_cents)}</td>
                </tr>`
              )
@@ -2309,9 +2400,9 @@
               (row) => `<tr>
                 <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
                 <td>${escapeHtml(row.warehouse_name)}</td>
-                <td class="${row.book_qty < 0 ? "negative" : ""}">${row.book_qty}</td>
-                <td class="${row.replay_qty < 0 ? "negative" : ""}">${row.replay_qty}</td>
-                <td class="${row.qty_diff !== 0 ? "negative" : ""}">${row.qty_diff}</td>
+                <td class="${qtyIsNegative(row.book_qty) ? "negative" : ""}">${qtyText(row.book_qty)}</td>
+                <td class="${qtyIsNegative(row.replay_qty) ? "negative" : ""}">${qtyText(row.replay_qty)}</td>
+                <td class="${qtyText(row.qty_diff) !== "0" ? "negative" : ""}">${qtyText(row.qty_diff)}</td>
                 <td>${money(row.book_amount_cents)}</td>
                 <td>${money(row.replay_amount_cents)}</td>
                 <td class="${row.amount_diff_cents !== 0 ? "negative" : ""}">${money(

@@ -13,7 +13,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 ## 0. 数据库结构版本
 
-当前 schema 为 **v10**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
+当前 schema 为 **v11**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -27,6 +27,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v8 | 自定义打印模板主表与列配置子表，新增 `print.template.*` 权限 |
 | v9 | 销售订单：`order_status`、`converted_qty`、`source_order_line_id` 与索引 |
 | v10 | 会话表 `app_session`：令牌散列、用户、有效期与索引 |
+| v11 | 数量改为 4 位定点整数（×10000），`unit.qty_decimals` 控制单位精度，重建 `doc_line` 允许盘点实盘为 0 |
 
 ## 1. 环境要求
 
@@ -247,11 +248,11 @@ curl -s -b /tmp/xt.cookies -H "X-CSRF-Token: $CSRF" -H 'Content-Type: applicatio
   -d '{"code":"T001","name":"测试商品"}' http://127.0.0.1:18080/api/items
 curl -s -b /tmp/xt.cookies -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
   -d '{"doc_type":"PUR_IN","warehouse_id":1,"doc_date":"2026-11-12",
-       "lines":[{"item_id":<上一步返回的 id>,"qty":5,"price_cents":1000}]}' \
+       "lines":[{"item_id":<上一步返回的 id>,"qty":"5","price_cents":1000}]}' \
   http://127.0.0.1:18080/api/documents
 curl -s -b /tmp/xt.cookies -H 'Content-Type: application/json' \
   -d '{"doc_type":"SAL_OUT","warehouse_id":1,"doc_date":"2026-11-12",
-       "lines":[{"item_id":<商品 id>,"qty":2,"price_cents":1234}]}' \
+       "lines":[{"item_id":<商品 id>,"qty":"2","price_cents":1234}]}' \
   http://127.0.0.1:18080/api/documents
 curl -s -b /tmp/xt.cookies http://127.0.0.1:18080/api/stock/balances
 ```
@@ -510,7 +511,7 @@ struct DocumentDefinition {
 - 版本能力：`-DXIAOTU_EDITION=community` 构建社区版（当前已接 `max_users=1`），默认构建为全功能版；其余额度项随对应模块逐个接入。
 - 单据支持草稿态：存草稿只写单据与明细、不写库存流水，审核时才进单事务；反审核为整单反向。
 - 销售订单只做需求确认与转出库来源：确认不动库存、不写流水、不产生往来，只有转出的销售出库单才产生库存与应收。
-- 数量按整数件（精度策略见方案 Q4），无多单位、批次、序列号、价格体系。
+- 数量按 4 位定点整数存储（×10000），接口传十进制字符串、前端用字符串计算；`unit.qty_decimals` 决定录入精度（件 0 位、千克 3 位、米 2 位），展示时去掉末尾 0。金额仍为分，只有行金额按「数量 × 单价 ÷ 10000」四舍五入取整。
 - 成本按移动加权平均，暂不支持其他计价方式；成本重算已提供**只读核对**（`/api/stock/cost-recalc` 与库存页「成本重算核对」），写回尚未实现，需先满足数量一致、核对批次确认、只改 `stock_balance.amount_cents` 且不动历史单据金额等条件后另行确认。
 - 无内置 PDF 导出与针式打印模板：当前通过系统打印面板「另存为 PDF」，A4 / 针式两种尺寸的输出属于 M4。
 - Windows 只构建服务端与测试，没有 GUI 壳（`XIAOTU_BUILD_SHELL=OFF`），界面通过浏览器访问。
@@ -616,5 +617,5 @@ Linux 上该脚本等价于 CI：`XIAOTU_BUILD_SHELL=OFF` 配置构建、`ctest`
 
 - 用户手册（面向使用者）：`docs/用户手册.md`
 - 技术方案：`docs/进销存技术方案.md`
-- 数据库结构：`core/src/migrations.cpp`（v10）
+- 数据库结构：`core/src/migrations.cpp`（v11）
 - API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`、`/api/stock/cost-recalc`

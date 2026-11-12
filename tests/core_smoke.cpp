@@ -32,6 +32,7 @@
 #include "xiaotu/cost_recalc.h"
 #include "xiaotu/permissions.h"
 #include "xiaotu/print_template.h"
+#include "xiaotu/qty.h"
 #include "xiaotu/report_service.h"
 #include "xiaotu/settlement_service.h"
 #include "xiaotu/stock_service.h"
@@ -47,6 +48,9 @@ void check(bool condition, const std::string& message) {
     ++g_failures;
   }
 }
+
+// 数量按 4 位定点整数存储；测试里用 q(件数) 换算，便于阅读。
+std::int64_t q(std::int64_t units) { return units * 10000; }
 
 }  // namespace
 
@@ -65,7 +69,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 10, "迁移后 schema 版本应为 10");
+      check(db.schema_version() == 11, "迁移后 schema 版本应为 11");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -245,7 +249,7 @@ int main() {
       insufficient.doc_date = "2026-11-12";
       insufficient.partner = "测试客户";
       insufficient.lines.push_back(
-          xiaotu::DocLineInput{.item_id = item.id, .qty = 5, .price_cents = 1000});
+          xiaotu::DocLineInput{.item_id = item.id, .qty = q(5), .price_cents = 1000});
       bool insufficient_rejected = false;
       try {
         documents.save_and_approve(insufficient);
@@ -262,7 +266,7 @@ int main() {
       opening.warehouse_id = warehouse_list.at(0).id;
       opening.doc_date = "2026-11-12";
       opening.lines.push_back(
-          xiaotu::DocLineInput{.item_id = item.id, .qty = 5, .price_cents = 1000});
+          xiaotu::DocLineInput{.item_id = item.id, .qty = q(5), .price_cents = 1000});
       const auto opening_doc = documents.save_and_approve(opening);
 
       xiaotu::DocInput input;
@@ -270,25 +274,25 @@ int main() {
       input.warehouse_id = warehouse_list.at(0).id;
       input.doc_date = "2026-11-12";
       input.partner = "测试客户";
-      input.lines.push_back(xiaotu::DocLineInput{.item_id = item.id, .qty = 5, .price_cents = 1000});
+      input.lines.push_back(xiaotu::DocLineInput{.item_id = item.id, .qty = q(5), .price_cents = 1000});
 
       const auto created = documents.save_and_approve(input);
       check(!created.doc_no.empty(), "应生成单据号");
 
       const auto balances = stock.balances();
       check(balances.size() == 1, "应有一条库存余额");
-      check(balances.at(0).qty == 0, "出库 5 件后余额应为 0");
+      check(balances.at(0).qty == q(0), "出库 5 件后余额应为 0");
 
       const auto ledger = stock.ledger(item.id);
       check(ledger.size() == 2, "应有一条入库流水和一条出库流水");
-      check(ledger.at(0).qty == -5, "出库流水数量应为 -5");
+      check(ledger.at(0).qty == q(-5), "出库流水数量应为 -5");
 
       const auto listed = documents.list("SAL_OUT");
       check(listed.size() == 1 && listed.at(0).status == "APPROVED", "单据应为已审核状态");
 
       documents.reverse(created.id);
       const auto after_reverse = stock.balances();
-      check(after_reverse.at(0).qty == 5, "反审核后库存余额应回到 5");
+      check(after_reverse.at(0).qty == q(5), "反审核后库存余额应回到 5");
       check(stock.ledger(item.id).size() == 3, "反审核应追加一条反向流水，而不是删除原流水");
 
       bool double_reverse_rejected = false;
@@ -300,7 +304,7 @@ int main() {
       check(double_reverse_rejected, "重复反审核应被拒绝");
 
       documents.reverse(opening_doc.id);
-      check(stock.balances().at(0).qty == 0, "反审核期初入库后余额应回到 0");
+      check(stock.balances().at(0).qty == q(0), "反审核期初入库后余额应回到 0");
 
       // 采购入库：按单据金额入账，出库成本走移动加权平均。
       auto purchased = items.create(xiaotu::gen::ItemRow{.code = "P001", .name = "采购商品"});
@@ -322,15 +326,15 @@ int main() {
         return documents.save_and_approve(doc);
       };
 
-      const auto first_purchase = make_doc("PUR_IN", purchased.id, 10, 1000);
+      const auto first_purchase = make_doc("PUR_IN", purchased.id, q(10), 1000);
       check(first_purchase.doc_no.rfind("CGRK", 0) == 0, "采购入库单号应以 CGRK 开头");
       auto purchased_balance = balance_of(purchased.id);
-      check(purchased_balance.qty == 10, "采购入库后数量应为 10");
+      check(purchased_balance.qty == q(10), "采购入库后数量应为 10");
       check(purchased_balance.amount_cents == 10000, "采购入库后金额应为 10000 分");
 
-      make_doc("PUR_IN", purchased.id, 10, 1400);
+      make_doc("PUR_IN", purchased.id, q(10), 1400);
       purchased_balance = balance_of(purchased.id);
-      check(purchased_balance.qty == 20, "两笔入库后数量应为 20");
+      check(purchased_balance.qty == q(20), "两笔入库后数量应为 20");
       check(purchased_balance.amount_cents == 24000, "两笔入库后金额应为 24000 分");
 
       // 出库 5 件，成本 = 24000 * 5 / 20 = 6000 分，结存应为 15 件 / 18000 分。
@@ -338,21 +342,21 @@ int main() {
       sale.doc_type = "SAL_OUT";
       sale.warehouse_id = warehouse_list.at(0).id;
       sale.doc_date = "2026-11-12";
-      sale.lines.push_back(xiaotu::DocLineInput{.item_id = purchased.id, .qty = 5,
+      sale.lines.push_back(xiaotu::DocLineInput{.item_id = purchased.id, .qty = q(5),
                                                 .price_cents = 2000});
       const auto sale_doc = documents.save_and_approve(sale);
       purchased_balance = balance_of(purchased.id);
-      check(purchased_balance.qty == 15, "加权平均出库后数量应为 15");
+      check(purchased_balance.qty == q(15), "加权平均出库后数量应为 15");
       check(purchased_balance.amount_cents == 18000, "加权平均出库后金额应为 18000 分");
 
       documents.reverse(sale_doc.id);
       purchased_balance = balance_of(purchased.id);
-      check(purchased_balance.qty == 20 && purchased_balance.amount_cents == 24000,
+      check(purchased_balance.qty == q(20) && purchased_balance.amount_cents == 24000,
             "反审核出库后应回到 20 件 / 24000 分");
 
       documents.reverse(first_purchase.id);
       purchased_balance = balance_of(purchased.id);
-      check(purchased_balance.qty == 10, "反审核首笔入库后数量应为 10");
+      check(purchased_balance.qty == q(10), "反审核首笔入库后数量应为 10");
       check(purchased_balance.amount_cents == 14000, "反审核首笔入库后金额应为 14000 分");
       check(stock.ledger(purchased.id).size() == 5,
             "采购入库链路应保留原流水并追加 REVERSE（共 5 条）");
@@ -381,14 +385,14 @@ int main() {
       transfer.target_warehouse_id = aux.id;
       transfer.doc_date = "2026-11-12";
       transfer.lines.push_back(
-          xiaotu::DocLineInput{.item_id = purchased.id, .qty = 4, .price_cents = 0});
+          xiaotu::DocLineInput{.item_id = purchased.id, .qty = q(4), .price_cents = 0});
       const auto transfer_doc = documents.save_and_approve(transfer);
       check(transfer_doc.doc_no.rfind("DBD", 0) == 0, "调拨单号应以 DBD 开头");
       auto source_balance = balance_in("主仓库", purchased.id);
       auto target_balance = balance_in("分仓", purchased.id);
-      check(source_balance.qty == 6 && source_balance.amount_cents == 8400,
+      check(source_balance.qty == q(6) && source_balance.amount_cents == 8400,
             "调拨后源仓应为 6 件 / 8400 分");
-      check(target_balance.qty == 4 && target_balance.amount_cents == 5600,
+      check(target_balance.qty == q(4) && target_balance.amount_cents == 5600,
             "调拨后目标仓应为 4 件 / 5600 分");
 
       bool over_transfer_rejected = false;
@@ -396,7 +400,7 @@ int main() {
         xiaotu::DocInput too_much = transfer;
         too_much.lines.clear();
         too_much.lines.push_back(
-            xiaotu::DocLineInput{.item_id = purchased.id, .qty = 999, .price_cents = 0});
+            xiaotu::DocLineInput{.item_id = purchased.id, .qty = q(999), .price_cents = 0});
         documents.save_and_approve(too_much);
       } catch (const xiaotu::AppError& error) {
         over_transfer_rejected = error.code() == "STOCK_INSUFFICIENT";
@@ -406,9 +410,9 @@ int main() {
       documents.reverse(transfer_doc.id);
       source_balance = balance_in("主仓库", purchased.id);
       target_balance = balance_in("分仓", purchased.id);
-      check(source_balance.qty == 10 && source_balance.amount_cents == 14000,
+      check(source_balance.qty == q(10) && source_balance.amount_cents == 14000,
             "反审核调拨后源仓应回到 10 件 / 14000 分");
-      check(target_balance.qty == 0 && target_balance.amount_cents == 0,
+      check(target_balance.qty == q(0) && target_balance.amount_cents == 0,
             "反审核调拨后目标仓应清零");
 
       // 盘点：明细为实盘数，差额生成调整流水。
@@ -417,41 +421,89 @@ int main() {
       stocktake.warehouse_id = warehouse_list.at(0).id;
       stocktake.doc_date = "2026-11-12";
       stocktake.lines.push_back(
-          xiaotu::DocLineInput{.item_id = purchased.id, .qty = 7, .price_cents = 0});
+          xiaotu::DocLineInput{.item_id = purchased.id, .qty = q(7), .price_cents = 0});
       const auto stocktake_doc = documents.save_and_approve(stocktake);
       check(stocktake_doc.doc_no.rfind("PDD", 0) == 0, "盘点单号应以 PDD 开头");
       auto counted = balance_of(purchased.id);
-      check(counted.qty == 7 && counted.amount_cents == 9800,
+      check(counted.qty == q(7) && counted.amount_cents == 9800,
             "盘亏 3 件后应为 7 件 / 9800 分");
 
       documents.reverse(stocktake_doc.id);
       counted = balance_of(purchased.id);
-      check(counted.qty == 10 && counted.amount_cents == 14000, "反审核盘点后应回到 10 件 / 14000 分");
+      check(counted.qty == q(10) && counted.amount_cents == 14000, "反审核盘点后应回到 10 件 / 14000 分");
 
       xiaotu::DocInput surplus;
       surplus.doc_type = "STK_CNT";
       surplus.warehouse_id = warehouse_list.at(0).id;
       surplus.doc_date = "2026-11-12";
       surplus.lines.push_back(
-          xiaotu::DocLineInput{.item_id = purchased.id, .qty = 12, .price_cents = 0});
+          xiaotu::DocLineInput{.item_id = purchased.id, .qty = q(12), .price_cents = 0});
       const auto surplus_doc = documents.save_and_approve(surplus);
       counted = balance_of(purchased.id);
-      check(counted.qty == 12 && counted.amount_cents == 16800,
+      check(counted.qty == q(12) && counted.amount_cents == 16800,
             "盘盈 2 件后应为 12 件 / 16800 分");
       documents.reverse(surplus_doc.id);
-      check(balance_of(purchased.id).qty == 10, "反审核盘盈后应回到 10 件");
+      check(balance_of(purchased.id).qty == q(10), "反审核盘盈后应回到 10 件");
 
       bool negative_stocktake_rejected = false;
       try {
         xiaotu::DocInput negative = surplus;
         negative.lines.clear();
         negative.lines.push_back(
-            xiaotu::DocLineInput{.item_id = purchased.id, .qty = -1, .price_cents = 0});
+            xiaotu::DocLineInput{.item_id = purchased.id, .qty = q(-1), .price_cents = 0});
         documents.save_and_approve(negative);
       } catch (const xiaotu::AppError& error) {
         negative_stocktake_rejected = error.code() == "INVALID_INPUT";
       }
       check(negative_stocktake_rejected, "实盘数量为负数应被拒绝");
+
+      // 数量小数：千克 3 位；金额仍按行金额四舍五入到分。
+      check(xiaotu::qty_text(xiaotu::qty_from_int(5)) == "5", "整数数量展示不应带小数点");
+      check(xiaotu::qty_text(105000) == "10.5", "定点数量应去掉末尾 0");
+      check(xiaotu::mul_qty_price(15000, 2000) == 3000, "1.5 × ¥20.00 应为 30.00 元");
+      check(!xiaotu::parse_qty("1.2345", 3).has_value(), "千克不应接受 4 位小数");
+      check(xiaotu::qty_fits_decimals(105000, 3), "10.5 千克应满足 3 位精度");
+
+      const auto decimal_item = items.create(
+          xiaotu::gen::ItemRow{.code = "KG001", .name = "散装面粉", .unit_id = 7});
+      check(decimal_item.unit == "千克", "引用千克单位时应回填单位名称");
+
+      make_doc("PUR_IN", decimal_item.id, 105000, 1234);
+      auto decimal_balance = balance_of(decimal_item.id);
+      check(decimal_balance.qty == 105000 && decimal_balance.amount_cents == 12957,
+            "10.5 千克 × 12.34 元应入账 129.57 元");
+
+      make_doc("PUR_IN", decimal_item.id, 32500, 1200);
+      decimal_balance = balance_of(decimal_item.id);
+      check(decimal_balance.qty == 137500 && decimal_balance.amount_cents == 16857,
+            "两次入库后应为 13.75 千克 / 168.57 元");
+
+      make_doc("OTH_OUT", decimal_item.id, 40000, 2000);
+      decimal_balance = balance_of(decimal_item.id);
+      check(decimal_balance.qty == 97500 && decimal_balance.amount_cents == 11953,
+            "出库 4 千克应结转 49.04 元成本");
+
+      // 盘点实盘 0 必须允许：货卖光是正常业务。
+      xiaotu::DocInput empty_count;
+      empty_count.doc_type = "STK_CNT";
+      empty_count.warehouse_id = warehouse_list.at(0).id;
+      empty_count.doc_date = "2026-11-12";
+      empty_count.lines.push_back(
+          xiaotu::DocLineInput{.item_id = decimal_item.id, .qty = 0, .price_cents = 0});
+      const auto empty_count_doc = documents.save_and_approve(empty_count);
+      decimal_balance = balance_of(decimal_item.id);
+      check(decimal_balance.qty == 0 && decimal_balance.amount_cents == 0,
+            "实盘 0 应把账面数量与金额一起清零");
+      documents.reverse(empty_count_doc.id);
+      check(balance_of(decimal_item.id).qty == 97500, "反审核实盘 0 后应恢复 9.75 千克");
+
+      bool decimal_rejected = false;
+      try {
+        make_doc("PUR_IN", decimal_item.id, 12345, 1000);  // 1.2345 千克
+      } catch (const xiaotu::AppError& error) {
+        decimal_rejected = error.code() == "INVALID_INPUT";
+      }
+      check(decimal_rejected, "超过单位精度的数量应被拒绝");
 
       // 供应商档案：CRUD、编码唯一，并能被采购单据引用。
       const auto supplier = suppliers.create(
@@ -474,7 +526,7 @@ int main() {
       supplier_doc.partner_id = supplier.id;
       supplier_doc.partner = "手工填写的名称应被档案覆盖";
       supplier_doc.lines.push_back(
-          xiaotu::DocLineInput{.item_id = supplier_item.id, .qty = 2, .price_cents = 500});
+          xiaotu::DocLineInput{.item_id = supplier_item.id, .qty = q(2), .price_cents = 500});
       const auto supplier_doc_created = documents.save_and_approve(supplier_doc);
       const auto supplier_doc_detail = documents.detail(supplier_doc_created.id);
       check(supplier_doc_detail.partner_id == supplier.id, "采购单据应记录供应商 id");
@@ -488,7 +540,7 @@ int main() {
         bad.doc_date = "2026-11-12";
         bad.partner_id = 999999;
         bad.lines.push_back(
-            xiaotu::DocLineInput{.item_id = supplier_item.id, .qty = 1, .price_cents = 100});
+            xiaotu::DocLineInput{.item_id = supplier_item.id, .qty = q(1), .price_cents = 100});
         documents.save_and_approve(bad);
       } catch (const xiaotu::AppError& error) {
         missing_supplier_rejected = error.code() == "NOT_FOUND";
@@ -527,7 +579,7 @@ int main() {
         opening.warehouse_id = warehouse_list.at(0).id;
         opening.doc_date = "2026-11-12";
         opening.lines.push_back(
-            xiaotu::DocLineInput{.item_id = sales_item.id, .qty = 10, .price_cents = 1000});
+            xiaotu::DocLineInput{.item_id = sales_item.id, .qty = q(10), .price_cents = 1000});
         documents.save_and_approve(opening);
       }
 
@@ -538,7 +590,7 @@ int main() {
       customer_sale.partner_id = customer.id;
       customer_sale.partner = "手工名称应被档案覆盖";
       customer_sale.lines.push_back(
-          xiaotu::DocLineInput{.item_id = sales_item.id, .qty = 2, .price_cents = 2000});
+          xiaotu::DocLineInput{.item_id = sales_item.id, .qty = q(2), .price_cents = 2000});
       const auto customer_sale_doc = documents.save_and_approve(customer_sale);
       const std::string customer_key = "C:" + std::to_string(customer.id);
       const auto ar_rows = finance.entries(1, customer_key);
@@ -560,7 +612,7 @@ int main() {
       customer_return.doc_date = "2026-11-12";
       customer_return.partner_id = customer.id;
       customer_return.lines.push_back(
-          xiaotu::DocLineInput{.item_id = sales_item.id, .qty = 1, .price_cents = 2000});
+          xiaotu::DocLineInput{.item_id = sales_item.id, .qty = q(1), .price_cents = 2000});
       documents.save_and_approve(customer_return);
       check(finance.entries(1, customer_key).at(0).amount_cents == -2000,
             "销售退货应生成负数应收（红字）");
@@ -578,7 +630,7 @@ int main() {
         doc.doc_date = "2026-11-12";
         doc.partner_id = customer.id;
         doc.lines.push_back(
-            xiaotu::DocLineInput{.item_id = sales_item.id, .qty = 3, .price_cents = 1000});
+            xiaotu::DocLineInput{.item_id = sales_item.id, .qty = q(3), .price_cents = 1000});
         return documents.save_and_approve(doc);
       }();
       xiaotu::DocInput sale_b_input;
@@ -587,7 +639,7 @@ int main() {
       sale_b_input.doc_date = "2026-11-12";
       sale_b_input.partner_id = customer.id;
       sale_b_input.lines.push_back(
-          xiaotu::DocLineInput{.item_id = sales_item.id, .qty = 2, .price_cents = 1000});
+          xiaotu::DocLineInput{.item_id = sales_item.id, .qty = q(2), .price_cents = 1000});
       const auto sale_b = documents.save_and_approve(sale_b_input);
 
       const auto entry_of = [&](std::int64_t doc_id) {
@@ -673,12 +725,12 @@ int main() {
       const auto flows = reports.goods_flow(report_filter);
       check(flows.size() == 1 && flows.front().closing_qty == balance_of(sales_item.id).qty,
             "收发明细期末数应等于库存余额");
-      check(flows.front().opening_qty == 0, "11-01 起期初应为 0");
+      check(flows.front().opening_qty == q(0), "11-01 起期初应为 0");
 
       const auto inv_summary = reports.inventory_summary(report_filter);
       check(inv_summary.size() == 1 && inv_summary.front().item_id == sales_item.id,
             "进销存汇总应按商品返回一行");
-      check(inv_summary.front().opening_qty == 0 &&
+      check(inv_summary.front().opening_qty == q(0) &&
                 inv_summary.front().closing_qty == flows.front().closing_qty,
             "进销存汇总期末数量应等于收发明细期末");
       check(inv_summary.front().closing_amount_cents ==
@@ -690,7 +742,7 @@ int main() {
       check(profits.size() == 1 && profits.front().item_id == sales_item.id,
             "销售毛利应按商品返回一行");
       // 成本取审核写入的流水：退货 +2000、两笔出库 3273 + 2182；已反审核的销售单不计入。
-      check(profits.front().qty == 4 && profits.front().revenue_cents == 3000 &&
+      check(profits.front().qty == q(4) && profits.front().revenue_cents == 3000 &&
                 profits.front().cost_cents == 3455 && profits.front().profit_cents == -455,
             "销售毛利应为 4 件 / 收入 3000 / 成本 3455 / 毛利 -455 分");
 
@@ -730,36 +782,36 @@ int main() {
 
       // 采购退货：先入库再退货，以及入库后部分退货。
       auto returned = items.create(xiaotu::gen::ItemRow{.code = "R001", .name = "退货商品"});
-      make_doc("PUR_IN", returned.id, 10, 1000);
-      const auto purchase_return = make_doc("PUR_RET", returned.id, 4, 1000);
+      make_doc("PUR_IN", returned.id, q(10), 1000);
+      const auto purchase_return = make_doc("PUR_RET", returned.id, q(4), 1000);
       check(purchase_return.doc_no.rfind("CGTH", 0) == 0, "采购退货单号应以 CGTH 开头");
       auto returned_balance = balance_of(returned.id);
-      check(returned_balance.qty == 6 && returned_balance.amount_cents == 6000,
+      check(returned_balance.qty == q(6) && returned_balance.amount_cents == 6000,
             "采购退货 4 件后应为 6 件 / 6000 分");
 
-      const auto partial_return = make_doc("PUR_RET", returned.id, 3, 1000);
+      const auto partial_return = make_doc("PUR_RET", returned.id, q(3), 1000);
       returned_balance = balance_of(returned.id);
-      check(returned_balance.qty == 3 && returned_balance.amount_cents == 3000,
+      check(returned_balance.qty == q(3) && returned_balance.amount_cents == 3000,
             "部分退货再退 3 件后应为 3 件 / 3000 分");
       documents.reverse(partial_return.id);
       returned_balance = balance_of(returned.id);
-      check(returned_balance.qty == 6 && returned_balance.amount_cents == 6000,
+      check(returned_balance.qty == q(6) && returned_balance.amount_cents == 6000,
             "反审核部分退货后应回到 6 件 / 6000 分");
       check(stock.ledger(returned.id).size() == 4,
             "采购退货链路应为入库 + 两次退货 + REVERSE 共 4 条流水");
 
       // 销售退货：先出库再退回，按成本单价入库。
       auto sales_returned = items.create(xiaotu::gen::ItemRow{.code = "S001", .name = "销退商品"});
-      make_doc("PUR_IN", sales_returned.id, 10, 1000);
-      make_doc("SAL_OUT", sales_returned.id, 4, 1500);
-      const auto sales_return = make_doc("SAL_RET", sales_returned.id, 2, 1000);
+      make_doc("PUR_IN", sales_returned.id, q(10), 1000);
+      make_doc("SAL_OUT", sales_returned.id, q(4), 1500);
+      const auto sales_return = make_doc("SAL_RET", sales_returned.id, q(2), 1000);
       check(sales_return.doc_no.rfind("XSTH", 0) == 0, "销售退货单号应以 XSTH 开头");
       auto sales_returned_balance = balance_of(sales_returned.id);
-      check(sales_returned_balance.qty == 8 && sales_returned_balance.amount_cents == 8000,
+      check(sales_returned_balance.qty == q(8) && sales_returned_balance.amount_cents == 8000,
             "销售退货 2 件后应为 8 件 / 8000 分");
       documents.reverse(sales_return.id);
       sales_returned_balance = balance_of(sales_returned.id);
-      check(sales_returned_balance.qty == 6 && sales_returned_balance.amount_cents == 6000,
+      check(sales_returned_balance.qty == q(6) && sales_returned_balance.amount_cents == 6000,
             "反审核销售退货后应回到 6 件 / 6000 分");
 
       // 草稿态：保存不写库存，审核时才在单事务内写流水。
@@ -770,23 +822,23 @@ int main() {
       draft_input.doc_date = "2026-11-12";
       draft_input.partner = "草稿供应商";
       draft_input.lines.push_back(
-          xiaotu::DocLineInput{.item_id = draft_item.id, .qty = 5, .price_cents = 900});
+          xiaotu::DocLineInput{.item_id = draft_item.id, .qty = q(5), .price_cents = 900});
 
       const auto draft = documents.save_draft(draft_input);
       check(draft.doc_no.rfind("CGRK", 0) == 0, "草稿也应取到正式单据号");
       check(stock.ledger(draft_item.id).empty(), "草稿不应写库存流水");
       auto draft_detail = documents.detail(draft.id);
       check(draft_detail.status == "DRAFT", "草稿状态应为 DRAFT");
-      check(draft_detail.lines.size() == 1 && draft_detail.lines.at(0).qty == 5,
+      check(draft_detail.lines.size() == 1 && draft_detail.lines.at(0).qty == q(5),
             "草稿明细应保存");
 
-      draft_input.lines.at(0).qty = 7;
+      draft_input.lines.at(0).qty = q(7);
       draft_input.lines.at(0).price_cents = 1100;
       documents.update_draft(draft.id, draft_input);
       draft_detail = documents.detail(draft.id);
-      check(draft_detail.lines.at(0).qty == 7 && draft_detail.lines.at(0).price_cents == 1100,
+      check(draft_detail.lines.at(0).qty == q(7) && draft_detail.lines.at(0).price_cents == 1100,
             "草稿明细应可编辑");
-      check(draft_detail.total_qty == 7 && draft_detail.total_amount_cents == 7700,
+      check(draft_detail.total_qty == q(7) && draft_detail.total_amount_cents == 7700,
             "草稿汇总金额应随明细更新");
       check(stock.ledger(draft_item.id).empty(), "编辑草稿仍不应写库存流水");
 
@@ -794,7 +846,7 @@ int main() {
       draft_detail = documents.detail(draft.id);
       check(draft_detail.status == "APPROVED", "审核后状态应为 APPROVED");
       auto draft_balance = balance_of(draft_item.id);
-      check(draft_balance.qty == 7 && draft_balance.amount_cents == 7700,
+      check(draft_balance.qty == q(7) && draft_balance.amount_cents == 7700,
             "审核草稿后应入库 7 件 / 7700 分");
       check(stock.ledger(draft_item.id).size() == 1, "审核草稿应写一条库存流水");
 
@@ -832,6 +884,7 @@ int main() {
       items.remove(supplier_item.id);
       items.remove(bottled.id);
       items.remove(sales_item.id);
+      items.remove(decimal_item.id);
       suppliers.remove(supplier.id);
       customers.remove(customer.id);
       check(items.list().empty(), "软删除后列表中不应再出现该商品");
@@ -1009,7 +1062,7 @@ int main() {
 
       // 销售订单：确认不动库存/流水，转出库受累计数量约束。
       auto ordered = items.create(xiaotu::gen::ItemRow{.code = "SO001", .name = "订单商品"});
-      make_doc("PUR_IN", ordered.id, 10, 500);
+      make_doc("PUR_IN", ordered.id, q(10), 500);
       const auto ordered_before = balance_of(ordered.id);
       const auto ordered_ledger_before = stock.ledger(ordered.id).size();
 
@@ -1019,7 +1072,7 @@ int main() {
       order_input.doc_date = "2026-11-12";
       order_input.partner = "订单客户";
       order_input.lines.push_back(
-          {.item_id = ordered.id, .qty = 6, .price_cents = 1500});
+          {.item_id = ordered.id, .qty = q(6), .price_cents = 1500});
       const auto order = documents.save_and_approve(order_input);
       check(order.doc_no.rfind("XSDD", 0) == 0, "销售订单单号应以 XSDD 开头");
       auto order_detail = documents.detail(order.id);
@@ -1033,21 +1086,21 @@ int main() {
       check(documents.list("SAL_ORDER").at(0).order_status == "CONFIRMED",
             "订单列表应返回 order_status");
       const std::int64_t order_line_id = order_detail.lines.at(0).id;
-      check(order_detail.lines.at(0).qty - order_detail.lines.at(0).converted_qty == 6,
+      check(order_detail.lines.at(0).qty - order_detail.lines.at(0).converted_qty == q(6),
             "订单行剩余数量应为 6");
 
       xiaotu::OrderConvertInput convert;
-      convert.lines.push_back({.order_line_id = order_line_id, .qty = 4});
+      convert.lines.push_back({.order_line_id = order_line_id, .qty = q(4)});
       const auto partial = documents.convert_order(order.id, convert);
       check(partial.doc_no.rfind("XSCK", 0) == 0, "转出库应生成销售出库单");
       order_detail = documents.detail(order.id);
       check(order_detail.order_status == "CONFIRMED" &&
-                order_detail.lines.at(0).converted_qty == 4,
+                order_detail.lines.at(0).converted_qty == q(4),
             "部分转出后订单应保持 CONFIRMED 且累计 4 件");
-      check(balance_of(ordered.id).qty == ordered_before.qty - 4,
+      check(balance_of(ordered.id).qty == ordered_before.qty - q(4),
             "转出库应实际扣减库存");
 
-      convert.lines.at(0).qty = 3;
+      convert.lines.at(0).qty = q(3);
       bool exceeded = false;
       try {
         documents.convert_order(order.id, convert);
@@ -1056,7 +1109,7 @@ int main() {
       }
       check(exceeded, "累计转出超过订单数量应拒绝");
 
-      convert.lines.at(0).qty = 2;
+      convert.lines.at(0).qty = q(2);
       const auto full = documents.convert_order(order.id, convert);
       check(full.order_status == "CONVERTED", "全部转出后订单应为 CONVERTED");
       bool no_more = false;
@@ -1070,13 +1123,13 @@ int main() {
       documents.reverse(partial.doc_id);
       order_detail = documents.detail(order.id);
       check(order_detail.order_status == "CONFIRMED" &&
-                order_detail.lines.at(0).converted_qty == 2,
+                order_detail.lines.at(0).converted_qty == q(2),
             "反审核出库单应释放对应订单数量");
 
       documents.close_order(order.id);
       check(documents.detail(order.id).order_status == "CLOSED", "订单应可关闭");
       bool closed_rejected = false;
-      convert.lines.at(0).qty = 1;
+      convert.lines.at(0).qty = q(1);
       try {
         documents.convert_order(order.id, convert);
       } catch (const xiaotu::AppError& error) {
@@ -1092,11 +1145,11 @@ int main() {
       other_in.doc_date = "2026-11-12";
       other_in.partner = "备注：受赠样品";
       other_in.lines.push_back(
-          xiaotu::DocLineInput{.item_id = other.id, .qty = 4, .price_cents = 250});
+          xiaotu::DocLineInput{.item_id = other.id, .qty = q(4), .price_cents = 250});
       const auto other_in_doc = documents.save_and_approve(other_in);
       check(other_in_doc.doc_no.rfind("QTRK", 0) == 0, "其他入库单号应以 QTRK 开头");
       auto other_balance = balance_of(other.id);
-      check(other_balance.qty == 4 && other_balance.amount_cents == 1000,
+      check(other_balance.qty == q(4) && other_balance.amount_cents == 1000,
             "其他入库应按录入单价入账");
 
       xiaotu::DocInput other_out;
@@ -1105,11 +1158,11 @@ int main() {
       other_out.doc_date = "2026-11-12";
       other_out.partner = "备注：领用";
       other_out.lines.push_back(
-          xiaotu::DocLineInput{.item_id = other.id, .qty = 1, .price_cents = 9999});
+          xiaotu::DocLineInput{.item_id = other.id, .qty = q(1), .price_cents = 9999});
       const auto other_out_doc = documents.save_and_approve(other_out);
       check(other_out_doc.doc_no.rfind("QTCK", 0) == 0, "其他出库单号应以 QTCK 开头");
       other_balance = balance_of(other.id);
-      check(other_balance.qty == 3 && other_balance.amount_cents == 750,
+      check(other_balance.qty == q(3) && other_balance.amount_cents == 750,
             "其他出库应按移动加权平均结转成本，忽略录入单价");
       check(stock.ledger(other.id).size() == 2, "其他出入库应各写一条库存流水");
 
@@ -1129,18 +1182,18 @@ int main() {
         overdraw.warehouse_id = warehouse_list.at(0).id;
         overdraw.doc_date = "2026-11-12";
         overdraw.lines.push_back(
-            xiaotu::DocLineInput{.item_id = other.id, .qty = 4, .price_cents = 0});
+            xiaotu::DocLineInput{.item_id = other.id, .qty = q(4), .price_cents = 0});
         documents.save_and_approve(overdraw);
       } catch (const xiaotu::AppError& error) {
         other_out_rejected = error.code() == "STOCK_INSUFFICIENT";
       }
       check(other_out_rejected, "其他出库库存不足应整单拒绝");
-      check(balance_of(other.id).qty == 3, "被拒绝的其他出库不应改变库存");
+      check(balance_of(other.id).qty == q(3), "被拒绝的其他出库不应改变库存");
 
       // 并发验收：8 张草稿同时审核、库存只够 3 张，必须恰好成功 3 张且不超卖。
       auto concurrent =
           items.create(xiaotu::gen::ItemRow{.code = "CC1", .name = "并发商品"});
-      make_doc("PUR_IN", concurrent.id, 10, 100);
+      make_doc("PUR_IN", concurrent.id, q(10), 100);
 
       std::vector<std::int64_t> draft_ids;
       for (int index = 0; index < 8; ++index) {
@@ -1149,7 +1202,7 @@ int main() {
         draft.warehouse_id = warehouse_list.at(0).id;
         draft.doc_date = "2026-11-12";
         draft.lines.push_back(
-            xiaotu::DocLineInput{.item_id = concurrent.id, .qty = 3, .price_cents = 500});
+            xiaotu::DocLineInput{.item_id = concurrent.id, .qty = q(3), .price_cents = 500});
         draft_ids.push_back(documents.save_draft(draft).id);
       }
 
@@ -1183,7 +1236,7 @@ int main() {
       check(insufficient_count.load() == 5, "其余 5 张应因库存不足被拒绝");
       check(unexpected.load() == 0, "并发审核不应出现其他错误");
       const auto concurrent_balance = balance_of(concurrent.id);
-      check(concurrent_balance.qty == 1, "并发审核后库存应为 1，不能为负");
+      check(concurrent_balance.qty == q(1), "并发审核后库存应为 1，不能为负");
       check(concurrent_balance.amount_cents == 100, "并发审核后结存金额应为 100 分");
       check(stock.ledger(concurrent.id).size() == 4,
             "并发审核后应只有 1 条入库与 3 条出库流水");
@@ -1211,15 +1264,15 @@ int main() {
       // 并发验收：同一张已审核出库单被 8 个线程同时反审核，只能回滚一次。
       auto reverse_item =
           items.create(xiaotu::gen::ItemRow{.code = "CC2", .name = "并发反审核商品"});
-      make_doc("PUR_IN", reverse_item.id, 10, 100);
+      make_doc("PUR_IN", reverse_item.id, q(10), 100);
       xiaotu::DocInput reverse_sale;
       reverse_sale.doc_type = "SAL_OUT";
       reverse_sale.warehouse_id = warehouse_list.at(0).id;
       reverse_sale.doc_date = "2026-11-12";
       reverse_sale.lines.push_back(
-          xiaotu::DocLineInput{.item_id = reverse_item.id, .qty = 4, .price_cents = 500});
+          xiaotu::DocLineInput{.item_id = reverse_item.id, .qty = q(4), .price_cents = 500});
       const auto reverse_doc = documents.save_and_approve(reverse_sale);
-      check(balance_of(reverse_item.id).qty == 6, "反审核前库存应为 6");
+      check(balance_of(reverse_item.id).qty == q(6), "反审核前库存应为 6");
 
       std::latch reverse_start(1);
       std::atomic<int> reversed{0};
@@ -1251,7 +1304,7 @@ int main() {
       check(reverse_rejected.load() == 7, "其余 7 次应因单据已作废被拒绝");
       check(reverse_unexpected.load() == 0, "并发反审核不应出现其他错误");
       const auto reverse_balance = balance_of(reverse_item.id);
-      check(reverse_balance.qty == 10 && reverse_balance.amount_cents == 1000,
+      check(reverse_balance.qty == q(10) && reverse_balance.amount_cents == 1000,
             "并发反审核后库存应只回滚一次");
       check(stock.ledger(reverse_item.id).size() == 3,
             "并发反审核后应只有 1 条入库、1 条出库与 1 条 REVERSE");

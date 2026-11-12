@@ -14,6 +14,7 @@
 #include "xiaotu/http_json.h"
 #include "xiaotu/permissions.h"
 #include "xiaotu/print_template.h"
+#include "xiaotu/qty.h"
 #include "xiaotu/report_service.h"
 #include "xiaotu/services.h"
 
@@ -141,11 +142,15 @@ std::string money_text(std::int64_t cents) {
 
 std::string margin_text(std::int64_t revenue_cents, std::int64_t profit_cents) {
   if (revenue_cents == 0) return "—";
-  const double rate =
-      100.0 * static_cast<double>(profit_cents) / static_cast<double>(revenue_cents);
-  char buffer[32];
-  std::snprintf(buffer, sizeof(buffer), "%.1f%%", rate);
-  return buffer;
+  // 毛利率保留一位小数，用整数千分比换算，展示层也不引入浮点。
+  const std::int64_t direction = revenue_cents < 0 ? -1 : 1;
+  const std::int64_t revenue = revenue_cents < 0 ? -revenue_cents : revenue_cents;
+  const std::int64_t profit = profit_cents * direction;
+  const bool negative = profit < 0;
+  const std::int64_t absolute = negative ? -profit : profit;
+  const std::int64_t tenths = (absolute * 1000 + revenue / 2) / revenue;
+  return (negative ? "-" : "") + std::to_string(tenths / 10) + "." +
+         std::to_string(tenths % 10) + "%";
 }
 
 std::string doc_type_label(const std::string& doc_type) {
@@ -220,7 +225,7 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"unit", row.unit},
                              {"warehouse_code", row.warehouse_code},
                              {"warehouse_name", row.warehouse_name},
-                             {"qty", row.qty},
+                             {"qty", qty_text(row.qty)},
                              {"amount_cents", row.amount_cents}});
     }
     return;
@@ -237,7 +242,7 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"item_code", row.item_code},
                              {"item_name", row.item_name},
                              {"warehouse_name", row.warehouse_name},
-                             {"qty", row.qty},
+                             {"qty", qty_text(row.qty)},
                              {"amount_cents", row.amount_cents}});
     }
     return;
@@ -252,10 +257,10 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"unit", row.unit},
                              {"warehouse_code", row.warehouse_code},
                              {"warehouse_name", row.warehouse_name},
-                             {"opening_qty", row.opening_qty},
-                             {"in_qty", row.in_qty},
-                             {"out_qty", row.out_qty},
-                             {"closing_qty", row.closing_qty},
+                             {"opening_qty", qty_text(row.opening_qty)},
+                             {"in_qty", qty_text(row.in_qty)},
+                             {"out_qty", qty_text(row.out_qty)},
+                             {"closing_qty", qty_text(row.closing_qty)},
                              {"in_amount_cents", row.in_amount_cents},
                              {"out_amount_cents", row.out_amount_cents}});
     }
@@ -270,13 +275,13 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
       render.rows.push_back({{"item_code", row.item_code},
                              {"item_name", row.item_name},
                              {"unit", row.unit},
-                             {"opening_qty", row.opening_qty},
+                             {"opening_qty", qty_text(row.opening_qty)},
                              {"opening_amount_cents", row.opening_amount_cents},
-                             {"in_qty", row.in_qty},
+                             {"in_qty", qty_text(row.in_qty)},
                              {"in_amount_cents", row.in_amount_cents},
-                             {"out_qty", row.out_qty},
+                             {"out_qty", qty_text(row.out_qty)},
                              {"out_amount_cents", row.out_amount_cents},
-                             {"closing_qty", row.closing_qty},
+                             {"closing_qty", qty_text(row.closing_qty)},
                              {"closing_amount_cents", row.closing_amount_cents}});
     }
     return;
@@ -291,7 +296,7 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
       render.rows.push_back({{"item_code", row.item_code},
                              {"item_name", row.item_name},
                              {"unit", row.unit},
-                             {"qty", row.qty},
+                             {"qty", qty_text(row.qty)},
                              {"revenue_cents", row.revenue_cents},
                              {"cost_cents", row.cost_cents},
                              {"profit_cents", row.profit_cents},
@@ -390,9 +395,9 @@ void render_document(Services& services, const PrintTargetDef& target, const htt
                            {"item_name", name},
                            {"spec", spec},
                            {"unit", unit},
-                           {"qty", line.qty},
+                           {"qty", qty_text(line.qty)},
                            {"price_cents", line.price_cents},
-                           {"amount_cents", line.qty * line.price_cents}});
+                           {"amount_cents", mul_qty_price(line.qty, line.price_cents)}});
   }
 
   render.subtitle = "单号 " + detail.doc_no + "；日期 " + detail.doc_date + "；仓库 " +
@@ -405,7 +410,7 @@ void render_document(Services& services, const PrintTargetDef& target, const htt
       {{"label", "往来单位"}, {"value", detail.partner}},
       {{"label", "状态"}, {"value", doc_status_label(detail.status)}},
   });
-  render.totals = {{"total_qty", detail.total_qty},
+  render.totals = {{"total_qty", qty_text(detail.total_qty)},
                    {"total_amount_cents", detail.total_amount_cents},
                    {"total_amount_text", money_text(detail.total_amount_cents)}};
   render.placeholders["doc_no"] = detail.doc_no;

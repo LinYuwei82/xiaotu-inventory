@@ -21,6 +21,9 @@ void UnitService::validate(const UnitRow& row) {
   if (row.name.empty()) {
     throw AppError("INVALID_INPUT", "名称不能为空");
   }
+  if (row.qty_decimals < 0 || row.qty_decimals > 4) {
+    throw AppError("INVALID_INPUT", "数量小数位应在 0–4 之间");
+  }
 }
 
 UnitRow UnitService::create(UnitRow input) {

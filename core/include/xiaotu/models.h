@@ -25,10 +25,10 @@ struct Warehouse {
 
 struct DocLineInput {
   std::int64_t item_id = 0;
-  std::int64_t qty = 0;          // 数量（M0 骨架按整数件，精度策略见方案 Q4）
+  std::int64_t qty = 0;          // 数量：4 位小数定点整数（×10000），见 qty.h
   std::int64_t price_cents = 0;  // 单价（分）
   std::int64_t id = 0;           // doc_line 主键，详情返回时使用
-  std::int64_t converted_qty = 0;        // 订单行累计已转出数量
+  std::int64_t converted_qty = 0;        // 订单行累计已转出数量（定点整数）
   std::int64_t source_order_line_id = 0;  // 出库行来源订单行
 };
 

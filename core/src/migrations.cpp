@@ -455,6 +455,48 @@ CREATE INDEX idx_app_session_user ON app_session(user_id);
 CREATE INDEX idx_app_session_expires ON app_session(expires_at);
 )SQL";
 
+// v11：数量改为 4 位定点整数（×10000），金额仍为分。
+// 盘点实盘数可能为 0，原 doc_line 的 CHECK (qty > 0) 会挡住，因此重建该表放宽为 qty >= 0；
+// 重建时保留 v9 的 converted_qty / source_order_line_id 与全部索引。
+constexpr const char* kV11 = R"SQL(
+ALTER TABLE unit ADD COLUMN qty_decimals INTEGER NOT NULL DEFAULT 0
+  CHECK (qty_decimals BETWEEN 0 AND 4);
+
+UPDATE unit SET qty_decimals = 2 WHERE code = 'MI';
+UPDATE unit SET qty_decimals = 3 WHERE code = 'KG';
+
+UPDATE doc_header    SET total_qty = total_qty * 10000;
+UPDATE doc_line      SET qty = qty * 10000,
+                         converted_qty = converted_qty * 10000;
+UPDATE stock_balance SET qty = qty * 10000;
+UPDATE stock_ledger  SET qty = qty * 10000;
+
+CREATE TABLE doc_line_v11 (
+  id                   INTEGER PRIMARY KEY,
+  doc_id               INTEGER NOT NULL REFERENCES doc_header(id),
+  line_no              INTEGER NOT NULL,
+  item_id              INTEGER NOT NULL REFERENCES item(id),
+  qty                  INTEGER NOT NULL,
+  price_cents          INTEGER NOT NULL,
+  amount_cents         INTEGER NOT NULL,
+  converted_qty        INTEGER NOT NULL DEFAULT 0,
+  source_order_line_id INTEGER NOT NULL DEFAULT 0,
+  CHECK (qty >= 0),
+  CHECK (price_cents >= 0),
+  CHECK (amount_cents >= 0)
+);
+INSERT INTO doc_line_v11 (id, doc_id, line_no, item_id, qty, price_cents, amount_cents,
+                          converted_qty, source_order_line_id)
+SELECT id, doc_id, line_no, item_id, qty, price_cents, amount_cents,
+       converted_qty, source_order_line_id
+FROM doc_line;
+DROP TABLE doc_line;
+ALTER TABLE doc_line_v11 RENAME TO doc_line;
+CREATE UNIQUE INDEX uk_doc_line_no ON doc_line(doc_id, line_no);
+CREATE INDEX idx_doc_line_item ON doc_line(item_id);
+CREATE INDEX idx_doc_line_source_order ON doc_line(source_order_line_id);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -480,6 +522,7 @@ const std::vector<Migration>& all_migrations() {
       {8, "v8_print_template", kV8},
       {9, "v9_sales_order", kV9},
       {10, "v10_session", kV10},
+      {11, "v11_decimal_qty", kV11},
   };
   return migrations;
 }

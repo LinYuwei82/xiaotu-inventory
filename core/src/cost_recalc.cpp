@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "xiaotu/document.h"
+#include "xiaotu/qty.h"
 
 namespace xiaotu {
 namespace {
@@ -110,12 +111,12 @@ CostRecalcResult CostRecalcService::recalculate(std::int64_t item_id,
             line.in_leg = amount;
             line.has_in_leg = true;
           } else if (biz_type == "PUR_IN" || biz_type == "SAL_RET") {
-            amount = qty * price;
+            amount = mul_qty_price(qty, price);
             line.regular = amount;
             line.has_regular = true;
           } else if (biz_type == "STK_CNT") {
             amount = state.qty > 0 ? moving_average_cost(qty, price, state.qty, state.amount)
-                                   : qty * price;
+                                   : mul_qty_price(qty, price);
             line.regular = amount;
             line.has_regular = true;
           }
@@ -125,7 +126,7 @@ CostRecalcResult CostRecalcService::recalculate(std::int64_t item_id,
           } else if (ends_with(biz_type, "REVERSE")) {
             amount = line.has_regular ? -line.regular : stored_amount;
           } else if (biz_type == "PUR_RET") {
-            amount = qty * price;
+            amount = mul_qty_price(qty, price);
             line.regular = amount;
             line.has_regular = true;
           } else {

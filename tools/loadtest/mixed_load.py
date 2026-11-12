@@ -30,8 +30,28 @@ from datetime import date
 from urllib.parse import urlsplit
 
 ITEMS = 4
-SEED_QTY = 200000
+SEED_QTY = "2000.5"  # 数量按十进制字符串传，定点 4 位
+ONE = 12500  # 压测每笔 1.25 个单位，内部按定点整数比较
 SEQ_OPS = ["in", "out", "in", "out", "draft", "report", "list"]
+
+
+def qty_scaled(value):
+    """接口/数据库返回的数量统一为 ×10000 的字符串或整数，转成定点整数。"""
+    text = str(value).strip()
+    sign = -1 if text.startswith("-") else 1
+    text = text.lstrip("+-")
+    whole, _, fraction = text.partition(".")
+    fraction = (fraction + "0000")[:4]
+    return sign * (int(whole or 0) * 10000 + int(fraction or 0))
+
+
+def qty_text(value):
+    scaled = qty_scaled(value)
+    sign = "-" if scaled < 0 else ""
+    scaled = abs(scaled)
+    whole, fraction = divmod(scaled, 10000)
+    tail = f"{fraction:04d}".rstrip("0")
+    return f"{sign}{whole}" + (f".{tail}" if tail else "")
 
 
 class ApiError(RuntimeError):
@@ -139,7 +159,7 @@ def balance_by_item(client):
     totals = {}
     for row in client.json("GET", "/api/reports/stock-balance"):
         item_id = row["item_id"]
-        totals[item_id] = totals.get(item_id, 0) + row["qty"]
+        totals[item_id] = totals.get(item_id, 0) + qty_scaled(row["qty"])
     return totals
 
 
@@ -179,7 +199,7 @@ def ensure_master_data(admin, collector):
             created = admin.json(
                 "POST",
                 "/api/items",
-                {"code": code, "name": f"压测商品 {index}", "unit_id": 1, "unit": "件"},
+                {"code": code, "name": f"压测商品 {index}", "unit_id": 7, "unit": "千克"},
             )
             items[code] = created["id"]
 
@@ -271,12 +291,12 @@ def worker(
                         "doc_type": "PUR_IN",
                         "warehouse_id": warehouse_id,
                         "partner_id": supplier_id,
-                        "lines": [{"item_id": item_id, "qty": 1, "price_cents": 100}],
+                        "lines": [{"item_id": item_id, "qty": "1.25", "price_cents": 100}],
                     },
                 ),
             )
             if result:
-                collector.record_doc("PUR_IN", item_id, 1)
+                collector.record_doc("PUR_IN", item_id, ONE)
         elif op == "out":
             result = timed(
                 collector,
@@ -288,12 +308,12 @@ def worker(
                         "doc_type": "SAL_OUT",
                         "warehouse_id": warehouse_id,
                         "partner_id": customer_id,
-                        "lines": [{"item_id": item_id, "qty": 1, "price_cents": 150}],
+                        "lines": [{"item_id": item_id, "qty": "1.25", "price_cents": 150}],
                     },
                 ),
             )
             if result:
-                collector.record_doc("SAL_OUT", item_id, -1)
+                collector.record_doc("SAL_OUT", item_id, -ONE)
         elif op == "draft":
             draft = timed(
                 collector,
@@ -306,7 +326,7 @@ def worker(
                         "warehouse_id": warehouse_id,
                         "partner_id": supplier_id,
                         "save_as_draft": True,
-                        "lines": [{"item_id": item_id, "qty": 1, "price_cents": 100}],
+                        "lines": [{"item_id": item_id, "qty": "1.25", "price_cents": 100}],
                     },
                 ),
             )
@@ -317,7 +337,7 @@ def worker(
                     lambda: client.json("POST", f"/api/documents/{draft['id']}/approve"),
                 )
                 if approved is not None:
-                    collector.record_doc("PUR_IN", item_id, 1)
+                    collector.record_doc("PUR_IN", item_id, ONE)
         elif op == "report":
             timed(collector, "report", lambda: client.json("GET", "/api/reports/stock-balance"))
         else:
@@ -348,9 +368,9 @@ def verify_api_stock(client, baseline, item_ids, delta):
     for item_id in item_ids:
         expected = baseline.get(item_id, 0) + delta.get(item_id, 0)
         got = actual.get(item_id, 0)
-        print(f"商品 {item_id}: 期望 {expected}，实际 {got}")
+        print(f"商品 {item_id}: 期望 {qty_text(expected)}，实际 {qty_text(got)}")
         if got != expected:
-            failures.append(f"商品 {item_id} 库存数量不符（期望 {expected}，实际 {got}）")
+            failures.append(f"商品 {item_id} 库存数量不符（期望 {qty_text(expected)}，实际 {qty_text(got)}）")
     return failures
 
 
@@ -399,9 +419,11 @@ def verify_database(path, warehouse_id, item_ids, baseline, delta):
             ).fetchone()
             actual_qty = actual[0] if actual else 0
             expected = baseline.get(item_id, 0) + delta.get(item_id, 0)
-            print(f"商品 {item_id}: 期望 {expected}，实际 {actual_qty}")
+            print(f"商品 {item_id}: 期望 {qty_text(expected)}，实际 {qty_text(actual_qty)}")
             if actual_qty != expected:
-                failures.append(f"商品 {item_id} 库存数量不符（期望 {expected}，实际 {actual_qty}）")
+                failures.append(
+                    f"商品 {item_id} 库存数量不符（期望 {qty_text(expected)}，实际 {qty_text(actual_qty)}）"
+                )
     finally:
         conn.close()
     return failures

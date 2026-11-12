@@ -12,6 +12,7 @@
 #include "xiaotu/doc_number.h"
 #include "xiaotu/error.h"
 #include "xiaotu/ids.h"
+#include "xiaotu/qty.h"
 
 namespace xiaotu {
 namespace {
@@ -20,7 +21,7 @@ namespace {
 std::int64_t amount_by_unit_price(std::int64_t qty, std::int64_t price,
                                   std::int64_t /*balance_qty*/,
                                   std::int64_t /*balance_amount*/) {
-  return qty * price;
+  return mul_qty_price(qty, price);
 }
 
 }  // namespace
@@ -240,8 +241,8 @@ void ensure_available(sqlite3* conn, std::int64_t warehouse_id, std::int64_t ite
     name = item.text(1);
   }
   throw AppError("STOCK_INSUFFICIENT", "库存不足：" + code + " " + name + " 可用 " +
-                                          std::to_string(balance.qty) + "，需出库 " +
-                                          std::to_string(need));
+                                          qty_text(balance.qty) + "，需出库 " +
+                                          qty_text(need));
 }
 
 void apply_in_or_out(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
@@ -290,7 +291,7 @@ void apply_stocktake(sqlite3* conn, const DocumentDefinition& definition, std::i
   if (diff > 0) {
     amount = balance.qty > 0 ? moving_average_cost(diff, line.price_cents, balance.qty,
                                                    balance.amount)
-                             : diff * line.price_cents;
+                             : mul_qty_price(diff, line.price_cents);
   } else {
     amount = -moving_average_cost(-diff, line.price_cents, balance.qty, balance.amount);
   }
@@ -389,13 +390,22 @@ ValidatedDoc validate_document(sqlite3* conn, const DocInput& input,
     if (line.price_cents < 0) {
       throw AppError("INVALID_INPUT", "单价不能为负数");
     }
-    Stmt item(conn, "SELECT 1 FROM item WHERE id = ? AND status = 1 AND is_deleted = 0;");
+    Stmt item(conn,
+              "SELECT i.unit, COALESCE(u.qty_decimals, 0) FROM item i"
+              " LEFT JOIN unit u ON u.id = i.unit_id"
+              " WHERE i.id = ? AND i.status = 1 AND i.is_deleted = 0;");
     item.bind(1, line.item_id);
     if (!item.step()) {
       throw AppError("NOT_FOUND", "商品不存在或已停用");
     }
+    const std::string unit = item.text(0);
+    const int decimals = static_cast<int>(item.i64(1));
+    if (!qty_fits_decimals(line.qty, decimals)) {
+      throw AppError("INVALID_INPUT", "数量小数位超过单位「" + unit + "」的精度（" +
+                                          std::to_string(decimals) + " 位）");
+    }
     validated.total_qty += line.qty;
-    validated.total_amount += line.qty * line.price_cents;
+    validated.total_amount += mul_qty_price(line.qty, line.price_cents);
   }
   return validated;
 }
@@ -417,7 +427,7 @@ std::vector<std::int64_t> insert_lines(sqlite3* conn, std::int64_t doc_id,
         .bind(4, line.item_id)
         .bind(5, line.qty)
         .bind(6, line.price_cents)
-        .bind(7, line.qty * line.price_cents)
+        .bind(7, mul_qty_price(line.qty, line.price_cents))
         .bind(8, line.source_order_line_id)
         .run();
     line_ids.push_back(line_id);
@@ -492,8 +502,8 @@ void apply_stock_moves(sqlite3* conn, const DocumentDefinition& definition, std:
 }
 
 std::string doc_detail(const std::string& doc_type, const ValidatedDoc& validated) {
-  return "{\"doc_type\":\"" + doc_type + "\",\"qty\":" + std::to_string(validated.total_qty) +
-         ",\"amount_cents\":" + std::to_string(validated.total_amount) + "}";
+  return "{\"doc_type\":\"" + doc_type + "\",\"qty\":\"" + qty_text(validated.total_qty) +
+         "\",\"amount_cents\":" + std::to_string(validated.total_amount) + "}";
 }
 
 std::string partner_key_of(PartnerKind kind, std::int64_t partner_id, const std::string& name) {
@@ -1092,8 +1102,8 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
       }
       if (found->converted_qty + allocation.qty > found->qty) {
         throw AppError("ORDER_QTY_EXCEEDED",
-                       "转出数量超过订单剩余数量：" + std::to_string(allocation.qty) + " > " +
-                           std::to_string(found->qty - found->converted_qty));
+                       "转出数量超过订单剩余数量：" + qty_text(allocation.qty) + " > " +
+                           qty_text(found->qty - found->converted_qty));
       }
       outbound.lines.push_back(DocLineInput{.item_id = found->item_id,
                                             .qty = allocation.qty,
@@ -1137,7 +1147,7 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
 
     audit_write(conn, "convert_order", "document", order_id, order_no,
                 "{\"out_doc_id\":" + std::to_string(result.doc_id) + ",\"out_doc_no\":\"" +
-                    result.doc_no + "\",\"qty\":" + std::to_string(converted_total) + "}");
+                    result.doc_no + "\",\"qty\":\"" + qty_text(converted_total) + "\"}");
   });
   return result;
 }

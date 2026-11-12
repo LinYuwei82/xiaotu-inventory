@@ -12,11 +12,13 @@
     columns: [
       { key: "code", label: "编码", type: "string" },
       { key: "name", label: "名称", type: "string" },
+      { key: "qty_decimals", label: "数量小数位", type: "int" },
       { key: "status", label: "启用", type: "bool" },
     ],
     fields: [
       { key: "code", label: "编码", type: "string", required: true, default: "" },
       { key: "name", label: "名称", type: "string", required: true, default: "" },
+      { key: "qty_decimals", label: "数量小数位", type: "int", required: false, default: 0, min: 0, max: 4 },
       { key: "status", label: "启用", type: "bool", required: false, default: true },
     ],
     render: function (mount, ui) {

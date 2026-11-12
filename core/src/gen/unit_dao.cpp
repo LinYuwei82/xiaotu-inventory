@@ -19,7 +19,8 @@ UnitRow read_row(Stmt& stmt) {
   row.id = stmt.i64(0);
   row.code = stmt.text(1);
   row.name = stmt.text(2);
-  row.status = stmt.i64(3) != 0;
+  row.qty_decimals = stmt.i64(3);
+  row.status = stmt.i64(4) != 0;
   return row;
 }
 
@@ -29,7 +30,7 @@ std::vector<UnitRow> UnitDao::list() {
   std::vector<UnitRow> rows;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
-              "SELECT id, code, name, status FROM unit WHERE is_deleted = 0"
+              "SELECT id, code, name, qty_decimals, status FROM unit WHERE is_deleted = 0"
               " ORDER BY code;");
     while (stmt.step()) {
       rows.push_back(read_row(stmt));
@@ -42,7 +43,7 @@ std::optional<UnitRow> UnitDao::find(std::int64_t id) {
   std::optional<UnitRow> result;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
-              "SELECT id, code, name, status FROM unit"
+              "SELECT id, code, name, qty_decimals, status FROM unit"
               " WHERE id = ? AND is_deleted = 0;");
     stmt.bind(1, id);
     if (stmt.step()) {
@@ -56,13 +57,14 @@ void UnitDao::insert(sqlite3* conn, UnitRow& row) {
   row.id = next_id();
   const AuditStamp stamp = audit_stamp();
   Stmt stmt(conn,
-            "INSERT INTO unit (id, code, name, status, "
+            "INSERT INTO unit (id, code, name, qty_decimals, status, "
             " is_deleted, created_at, created_by, updated_at, updated_by)"
-            " VALUES (?, ?, ?, ?,  0, ?, ?, ?, ?);");
+            " VALUES (?, ?, ?, ?, ?,  0, ?, ?, ?, ?);");
   int index = 1;
   stmt.bind(index++, row.id);
   stmt.bind(index++, row.code);
   stmt.bind(index++, row.name);
+  stmt.bind(index++, row.qty_decimals);
   stmt.bind(index++, static_cast<std::int64_t>(row.status ? 1 : 0));
   stmt.bind(index++, stamp.at);
   stmt.bind(index++, stamp.by);
@@ -74,12 +76,13 @@ void UnitDao::insert(sqlite3* conn, UnitRow& row) {
 void UnitDao::update(sqlite3* conn, const UnitRow& row) {
   const AuditStamp stamp = audit_stamp();
   Stmt stmt(conn,
-            "UPDATE unit SET code = ?, name = ?, status = ?, "
+            "UPDATE unit SET code = ?, name = ?, qty_decimals = ?, status = ?, "
             " updated_at = ?, updated_by = ?"
             " WHERE id = ? AND is_deleted = 0;");
   int index = 1;
   stmt.bind(index++, row.code);
   stmt.bind(index++, row.name);
+  stmt.bind(index++, row.qty_decimals);
   stmt.bind(index++, static_cast<std::int64_t>(row.status ? 1 : 0));
   stmt.bind(index++, stamp.at);
   stmt.bind(index++, stamp.by);

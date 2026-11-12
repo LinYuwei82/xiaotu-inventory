@@ -14,6 +14,7 @@ struct UnitRow {
   std::int64_t id = 0;
   std::string code = "";
   std::string name = "";
+  std::int64_t qty_decimals = 0;
   bool status = true;
 };
 

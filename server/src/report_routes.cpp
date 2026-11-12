@@ -10,6 +10,7 @@
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
 #include "xiaotu/models.h"
+#include "xiaotu/qty.h"
 #include "xiaotu/report_service.h"
 #include "xiaotu/services.h"
 #include "xiaotu/xlsx.h"
@@ -130,7 +131,7 @@ nlohmann::json balance_to_json(const StockBalanceRow& row) {
       {"unit", row.unit},
       {"warehouse_code", row.warehouse_code},
       {"warehouse_name", row.warehouse_name},
-      {"qty", row.qty},
+      {"qty", qty_text(row.qty)},
       {"amount_cents", row.amount_cents},
   };
 }
@@ -144,7 +145,7 @@ nlohmann::json ledger_to_json(const LedgerDetailRow& row) {
       {"item_code", row.item_code},
       {"item_name", row.item_name},
       {"warehouse_name", row.warehouse_name},
-      {"qty", row.qty},
+      {"qty", qty_text(row.qty)},
       {"amount_cents", row.amount_cents},
   };
 }
@@ -157,10 +158,10 @@ nlohmann::json flow_to_json(const GoodsFlowRow& row) {
       {"unit", row.unit},
       {"warehouse_code", row.warehouse_code},
       {"warehouse_name", row.warehouse_name},
-      {"opening_qty", row.opening_qty},
-      {"in_qty", row.in_qty},
-      {"out_qty", row.out_qty},
-      {"closing_qty", row.closing_qty},
+      {"opening_qty", qty_text(row.opening_qty)},
+      {"in_qty", qty_text(row.in_qty)},
+      {"out_qty", qty_text(row.out_qty)},
+      {"closing_qty", qty_text(row.closing_qty)},
       {"in_amount_cents", row.in_amount_cents},
       {"out_amount_cents", row.out_amount_cents},
   };
@@ -172,10 +173,10 @@ nlohmann::json summary_to_json(const InventorySummaryRow& row) {
       {"item_code", row.item_code},
       {"item_name", row.item_name},
       {"unit", row.unit},
-      {"opening_qty", row.opening_qty},
-      {"in_qty", row.in_qty},
-      {"out_qty", row.out_qty},
-      {"closing_qty", row.closing_qty},
+      {"opening_qty", qty_text(row.opening_qty)},
+      {"in_qty", qty_text(row.in_qty)},
+      {"out_qty", qty_text(row.out_qty)},
+      {"closing_qty", qty_text(row.closing_qty)},
       {"opening_amount_cents", row.opening_amount_cents},
       {"in_amount_cents", row.in_amount_cents},
       {"out_amount_cents", row.out_amount_cents},
@@ -199,11 +200,15 @@ nlohmann::json aging_to_json(const AgingRow& row) {
 
 std::string margin_text(std::int64_t revenue_cents, std::int64_t profit_cents) {
   if (revenue_cents == 0) return "—";
-  const double rate =
-      100.0 * static_cast<double>(profit_cents) / static_cast<double>(revenue_cents);
-  char buffer[32];
-  std::snprintf(buffer, sizeof(buffer), "%.1f%%", rate);
-  return buffer;
+  // 毛利率保留一位小数，用整数千分比换算，展示层也不引入浮点。
+  const std::int64_t direction = revenue_cents < 0 ? -1 : 1;
+  const std::int64_t revenue = revenue_cents < 0 ? -revenue_cents : revenue_cents;
+  const std::int64_t profit = profit_cents * direction;
+  const std::int64_t negative = profit < 0 ? -1 : 1;
+  const std::int64_t absolute = profit < 0 ? -profit : profit;
+  const std::int64_t tenths = (absolute * 1000 + revenue / 2) / revenue;
+  return (negative < 0 ? "-" : "") + std::to_string(tenths / 10) + "." +
+         std::to_string(tenths % 10) + "%";
 }
 
 nlohmann::json profit_to_json(const SalesProfitRow& row) {
@@ -212,7 +217,7 @@ nlohmann::json profit_to_json(const SalesProfitRow& row) {
       {"item_code", row.item_code},
       {"item_name", row.item_name},
       {"unit", row.unit},
-      {"qty", row.qty},
+      {"qty", qty_text(row.qty)},
       {"revenue_cents", row.revenue_cents},
       {"cost_cents", row.cost_cents},
       {"profit_cents", row.profit_cents},
@@ -281,7 +286,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        for (const auto& row : rows) {
                          csv_row(csv, {row.item_code, row.item_name, row.unit,
                                        row.warehouse_code, row.warehouse_name,
-                                       std::to_string(row.qty), yuan(row.amount_cents)});
+                                       qty_text(row.qty), yuan(row.amount_cents)});
                        }
                        send_csv(res, "stock-balance-" + date_stamp() + ".csv", csv);
                        return;
@@ -297,7 +302,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                         XlsxCell::text(row.unit),
                                         XlsxCell::text(row.warehouse_code),
                                         XlsxCell::text(row.warehouse_name),
-                                        XlsxCell::integer(row.qty),
+                                        XlsxCell::text(qty_text(row.qty)),
                                         XlsxCell::money(row.amount_cents)});
                        }
                        send_xlsx(res, "stock-balance-" + date_stamp() + ".xlsx", sheet.build());
@@ -328,11 +333,11 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                      "期末金额（元）"});
                        for (const auto& row : rows) {
                          csv_row(csv, {row.item_code, row.item_name, row.unit,
-                                       std::to_string(row.opening_qty),
+                                       qty_text(row.opening_qty),
                                        yuan(row.opening_amount_cents),
-                                       std::to_string(row.in_qty), yuan(row.in_amount_cents),
-                                       std::to_string(row.out_qty), yuan(row.out_amount_cents),
-                                       std::to_string(row.closing_qty),
+                                       qty_text(row.in_qty), yuan(row.in_amount_cents),
+                                       qty_text(row.out_qty), yuan(row.out_amount_cents),
+                                       qty_text(row.closing_qty),
                                        yuan(row.closing_amount_cents)});
                        }
                        send_csv(res, "inventory-summary-" + date_stamp() + ".csv", csv);
@@ -353,13 +358,13 @@ void register_report_routes(httplib::Server& server, Services& services) {
                          sheet.add_row({XlsxCell::text(row.item_code),
                                         XlsxCell::text(row.item_name),
                                         XlsxCell::text(row.unit),
-                                        XlsxCell::integer(row.opening_qty),
+                                        XlsxCell::text(qty_text(row.opening_qty)),
                                         XlsxCell::money(row.opening_amount_cents),
-                                        XlsxCell::integer(row.in_qty),
+                                        XlsxCell::text(qty_text(row.in_qty)),
                                         XlsxCell::money(row.in_amount_cents),
-                                        XlsxCell::integer(row.out_qty),
+                                        XlsxCell::text(qty_text(row.out_qty)),
                                         XlsxCell::money(row.out_amount_cents),
-                                        XlsxCell::integer(row.closing_qty),
+                                        XlsxCell::text(qty_text(row.closing_qty)),
                                         XlsxCell::money(row.closing_amount_cents)});
                        }
                        send_xlsx(res, "inventory-summary-" + date_stamp() + ".xlsx",
@@ -390,7 +395,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        for (const auto& row : rows) {
                          csv_row(csv, {row.biz_time, row.biz_type, row.doc_no, row.item_code,
                                        row.item_name, row.warehouse_name,
-                                       std::to_string(row.qty), yuan(row.amount_cents)});
+                                       qty_text(row.qty), yuan(row.amount_cents)});
                        }
                        send_csv(res, "stock-ledger-" + date_stamp() + ".csv", csv);
                        return;
@@ -410,7 +415,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                         XlsxCell::text(row.item_code),
                                         XlsxCell::text(row.item_name),
                                         XlsxCell::text(row.warehouse_name),
-                                        XlsxCell::integer(row.qty),
+                                        XlsxCell::text(qty_text(row.qty)),
                                         XlsxCell::money(row.amount_cents)});
                        }
                        send_xlsx(res, "stock-ledger-" + date_stamp() + ".xlsx", sheet.build());
@@ -439,9 +444,9 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        for (const auto& row : rows) {
                          csv_row(csv, {row.item_code, row.item_name, row.unit,
                                        row.warehouse_code, row.warehouse_name,
-                                       std::to_string(row.opening_qty),
-                                       std::to_string(row.in_qty), std::to_string(row.out_qty),
-                                       std::to_string(row.closing_qty),
+                                       qty_text(row.opening_qty),
+                                       qty_text(row.in_qty), qty_text(row.out_qty),
+                                       qty_text(row.closing_qty),
                                        yuan(row.in_amount_cents), yuan(row.out_amount_cents)});
                        }
                        send_csv(res, "goods-flow-" + date_stamp() + ".csv", csv);
@@ -461,10 +466,10 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                         XlsxCell::text(row.unit),
                                         XlsxCell::text(row.warehouse_code),
                                         XlsxCell::text(row.warehouse_name),
-                                        XlsxCell::integer(row.opening_qty),
-                                        XlsxCell::integer(row.in_qty),
-                                        XlsxCell::integer(row.out_qty),
-                                        XlsxCell::integer(row.closing_qty),
+                                        XlsxCell::text(qty_text(row.opening_qty)),
+                                        XlsxCell::text(qty_text(row.in_qty)),
+                                        XlsxCell::text(qty_text(row.out_qty)),
+                                        XlsxCell::text(qty_text(row.closing_qty)),
                                         XlsxCell::money(row.in_amount_cents),
                                         XlsxCell::money(row.out_amount_cents)});
                        }
@@ -498,7 +503,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                      "销售收入（元）", "销售成本（元）", "毛利（元）", "毛利率"});
                        for (const auto& row : rows) {
                          csv_row(csv, {row.item_code, row.item_name, row.unit,
-                                       std::to_string(row.qty), yuan(row.revenue_cents),
+                                       qty_text(row.qty), yuan(row.revenue_cents),
                                        yuan(row.cost_cents), yuan(row.profit_cents),
                                        margin_text(row.revenue_cents, row.profit_cents)});
                        }
@@ -522,7 +527,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                          sheet.add_row({XlsxCell::text(row.item_code),
                                         XlsxCell::text(row.item_name),
                                         XlsxCell::text(row.unit),
-                                        XlsxCell::integer(row.qty),
+                                        XlsxCell::text(qty_text(row.qty)),
                                         XlsxCell::money(row.revenue_cents),
                                         XlsxCell::money(row.cost_cents),
                                         XlsxCell::money(row.profit_cents),
@@ -720,11 +725,11 @@ void register_report_routes(httplib::Server& server, Services& services) {
                             {"item_name", row.item_name},
                             {"warehouse_id", row.warehouse_id},
                             {"warehouse_name", row.warehouse_name},
-                            {"book_qty", row.book_qty},
+                            {"book_qty", qty_text(row.book_qty)},
                             {"book_amount_cents", row.book_amount_cents},
-                            {"replay_qty", row.replay_qty},
+                            {"replay_qty", qty_text(row.replay_qty)},
                             {"replay_amount_cents", row.replay_amount_cents},
-                            {"qty_diff", row.qty_diff},
+                            {"qty_diff", qty_text(row.qty_diff)},
                             {"amount_diff_cents", row.amount_diff_cents}});
                      }
                      json_ok(res, nlohmann::json{

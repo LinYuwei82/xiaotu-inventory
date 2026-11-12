@@ -18,6 +18,7 @@ nlohmann::json to_json(const UnitRow& row) {
       {"id", row.id},
       {"code", row.code},
       {"name", row.name},
+      {"qty_decimals", row.qty_decimals},
       {"status", row.status},
   };
 }
@@ -26,6 +27,7 @@ UnitRow from_json(const nlohmann::json& body) {
   UnitRow row;
   row.code = body.value("code", "");
   row.name = body.value("name", "");
+  row.qty_decimals = body.value("qty_decimals", 0);
   row.status = body.value("status", true);
   return row;
 }

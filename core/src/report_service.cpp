@@ -218,10 +218,10 @@ std::vector<SalesProfitRow> ReportService::sales_profit(const ReportFilter& filt
   std::vector<SalesProfitRow> rows;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
-              "SELECT i.id, i.code, i.name, i.unit,"
+              " SELECT i.id, i.code, i.name, i.unit,"
               " SUM(CASE WHEN h.doc_type = 'SAL_RET' THEN -l.qty ELSE l.qty END) AS qty,"
-              " SUM(CASE WHEN h.doc_type = 'SAL_RET' THEN -l.qty * l.price_cents"
-              "          ELSE l.qty * l.price_cents END) AS revenue_cents,"
+              " SUM(CASE WHEN h.doc_type = 'SAL_RET' THEN -l.amount_cents"
+              "          ELSE l.amount_cents END) AS revenue_cents,"
               " -SUM(COALESCE(s.amount_cents, 0)) AS cost_cents"
               " FROM doc_header h"
               " JOIN doc_line l ON l.doc_id = h.id"
