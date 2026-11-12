@@ -111,7 +111,7 @@ inline constexpr auto kCommunityFeatures = std::to_array<EditionFeature>({
     {"report.dashboard", "hidden"},
     {"report.custom", "hidden"},
     {"print.template", "limited"},
-    {"print.custom_template", "hidden"},
+    {"print.custom_template", "limited"},
     {"system.user", "limited"},
     {"system.rbac", "hidden"},
     {"system.audit", "full"},

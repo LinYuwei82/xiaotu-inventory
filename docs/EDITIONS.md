@@ -115,7 +115,7 @@
 | `report.dashboard` | 经营看板 | 否 | — | — |
 | `report.custom` | 自定义报表 | 否 | — | — |
 | `print.template` | 内置打印模板与 PDF 输出 | 是 | 每种单据 1 套内置模板 | `max_print_templates` |
-| `print.custom_template` | 自定义打印模板 | 否 | — | — |
+| `print.custom_template` | 自定义打印模板 | 是 | 1 套自定义模板，内置模板只读 | `max_print_templates` |
 | `system.user` | 用户与登录 | 是 | 1 个账号 | `max_users` |
 | `system.rbac` | 角色、权限点与数据权限 | 否 | — | — |
 | `system.audit` | 审计日志 | 是 | — | — |
