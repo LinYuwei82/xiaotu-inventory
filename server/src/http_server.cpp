@@ -147,11 +147,21 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
           return httplib::Server::HandlerResponse::Unhandled;
         }
         // 导入走原始二进制，其余 API 的请求体仍限制在 1MB。
+        // pre-routing 阶段请求体尚未读取，只能按 Content-Length 预检。
         const bool is_import =
             path.size() > 7 && path.compare(path.size() - 7, 7, "/import") == 0;
-        if (!is_import && req.body.size() > (1U << 20U)) {
-          json_error(res, 413, "PAYLOAD_TOO_LARGE", "请求体超过 1MB 上限");
-          return httplib::Server::HandlerResponse::Handled;
+        if (!is_import) {
+          const std::string declared = req.get_header_value("Content-Length");
+          std::size_t length = 0;
+          try {
+            length = declared.empty() ? 0 : static_cast<std::size_t>(std::stoull(declared));
+          } catch (const std::exception&) {
+            length = 0;
+          }
+          if (length > (1U << 20U)) {
+            json_error(res, 413, "PAYLOAD_TOO_LARGE", "请求体超过 1MB 上限");
+            return httplib::Server::HandlerResponse::Handled;
+          }
         }
         if (path == "/api/health") {
           return httplib::Server::HandlerResponse::Unhandled;
