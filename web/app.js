@@ -1,0 +1,553 @@
+/* 小兔进销存 M0 骨架前端：无构建步骤，直接由内嵌资源或本地 dev server 提供。
+ * 表结构驱动的列表页 / 表单页由 tools/codegen 生成到 web/gen/。
+ */
+(function () {
+  "use strict";
+
+  const params = new URLSearchParams(location.search);
+  // 开发态：WebView 指向 dev server 时，用 ?api=http://127.0.0.1:<port> 指定后端地址。
+  const API_BASE = params.get("api") || "";
+
+  const state = {
+    current: null,
+    pages: [],
+  };
+
+  const main = document.getElementById("main");
+  const nav = document.getElementById("nav");
+  const notice = document.getElementById("notice");
+
+  function escapeHtml(value) {
+    return String(value === null || value === undefined ? "" : value).replace(
+      /[&<>"']/g,
+      (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]
+    );
+  }
+
+  function money(cents) {
+    const value = Number(cents || 0);
+    return (value / 100).toFixed(2);
+  }
+
+  function showNotice(message, kind) {
+    notice.textContent = message;
+    notice.className = "notice" + (kind ? " " + kind : "");
+    notice.hidden = !message;
+  }
+
+  async function api(method, path, body) {
+    const options = { method, credentials: "include", headers: {} };
+    if (body !== undefined) {
+      options.headers["Content-Type"] = "application/json";
+      options.body = JSON.stringify(body);
+    }
+    const response = await fetch(API_BASE + path, options);
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+    if (!response.ok) {
+      const message = payload && payload.message ? payload.message : "HTTP " + response.status;
+      const error = new Error(message);
+      error.status = response.status;
+      error.code = payload && payload.code;
+      throw error;
+    }
+    return payload;
+  }
+
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = src;
+      script.onload = resolve;
+      script.onerror = () => reject(new Error("加载脚本失败: " + src));
+      document.body.appendChild(script);
+    });
+  }
+
+  // ---------- 通用 CRUD 页面（供 codegen 生成的页面调用） ----------
+
+  async function crudPage(mount, def) {
+    let rows = [];
+    let editingId = 0;
+
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>${escapeHtml(def.title)}</h2>
+          <p class="page-sub">${escapeHtml(def.api)}</p>
+        </div>
+        <button class="btn primary" data-role="new">新增</button>
+      </div>
+      <div class="card" data-role="form-card" hidden>
+        <form class="grid-form" data-role="form"></form>
+        <div class="form-actions">
+          <button class="btn primary" type="button" data-role="save">保存</button>
+          <button class="btn" type="button" data-role="cancel">取消</button>
+        </div>
+      </div>
+      <div class="card">
+        <table class="table" data-role="table"></table>
+      </div>`;
+
+    const formCard = mount.querySelector('[data-role="form-card"]');
+    const form = mount.querySelector('[data-role="form"]');
+    const table = mount.querySelector('[data-role="table"]');
+
+    function fieldInput(field, value) {
+      if (field.type === "bool") {
+        return `<label class="checkbox">
+            <input type="checkbox" data-field="${escapeHtml(field.key)}" ${
+              value ? "checked" : ""
+            } /> ${escapeHtml(field.label)}
+          </label>`;
+      }
+      return `<label class="field">
+          <span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>
+          <input type="text" data-field="${escapeHtml(field.key)}" value="${escapeHtml(
+        value === undefined || value === null ? "" : value
+      )}" ${field.required ? "required" : ""} />
+        </label>`;
+    }
+
+    function openForm(row) {
+      editingId = row ? row.id : 0;
+      form.innerHTML = def.fields
+        .map((field) =>
+          fieldInput(field, row ? row[field.key] : field.default)
+        )
+        .join("");
+      formCard.hidden = false;
+    }
+
+    function readForm() {
+      const payload = {};
+      for (const field of def.fields) {
+        const input = form.querySelector('[data-field="' + field.key + '"]');
+        if (field.type === "bool") {
+          payload[field.key] = input.checked;
+        } else {
+          payload[field.key] = input.value.trim();
+        }
+      }
+      return payload;
+    }
+
+    function renderTable() {
+      if (!rows.length) {
+        table.innerHTML = '<tbody><tr><td class="empty">暂无数据，点击「新增」开始</td></tr></tbody>';
+        return;
+      }
+      const head = def.columns
+        .map((column) => `<th>${escapeHtml(column.label)}</th>`)
+        .join("");
+      const body = rows
+        .map((row) => {
+          const cells = def.columns
+            .map((column) => {
+              const value = row[column.key];
+              if (column.type === "bool") {
+                return `<td>${value ? "是" : "否"}</td>`;
+              }
+              return `<td>${escapeHtml(value)}</td>`;
+            })
+            .join("");
+          return `<tr data-id="${row.id}">${cells}
+              <td class="actions">
+                <button class="link" data-role="edit">编辑</button>
+                <button class="link danger" data-role="delete">删除</button>
+              </td>
+            </tr>`;
+        })
+        .join("");
+      table.innerHTML = `<thead><tr>${head}<th class="actions">操作</th></tr></thead><tbody>${body}</tbody>`;
+    }
+
+    async function reload() {
+      rows = await api("GET", def.api);
+      renderTable();
+    }
+
+    mount.querySelector('[data-role="new"]').addEventListener("click", () => openForm(null));
+    mount.querySelector('[data-role="cancel"]').addEventListener("click", () => {
+      formCard.hidden = true;
+    });
+    mount.querySelector('[data-role="save"]').addEventListener("click", async () => {
+      const payload = readForm();
+      for (const field of def.fields) {
+        if (field.required && !payload[field.key]) {
+          showNotice(field.label + "不能为空", "error");
+          return;
+        }
+      }
+      try {
+        if (editingId) {
+          await api("PUT", def.api + "/" + editingId, payload);
+        } else {
+          await api("POST", def.api, payload);
+        }
+        formCard.hidden = true;
+        showNotice("");
+        await reload();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+
+    table.addEventListener("click", async (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      const row = event.target.closest("tr");
+      const id = Number(row.dataset.id);
+      if (button.dataset.role === "edit") {
+        openForm(rows.find((item) => item.id === id));
+      } else if (button.dataset.role === "delete") {
+        if (!confirm("确认删除这条记录？")) return;
+        try {
+          await api("DELETE", def.api + "/" + id);
+          await reload();
+        } catch (error) {
+          showNotice(error.message, "error");
+        }
+      }
+    });
+
+    await reload();
+  }
+
+  // ---------- 单据（销售出库）页面 ----------
+
+  async function documentPage(mount) {
+    let warehouses = [];
+    let items = [];
+    let documents = [];
+
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>销售出库</h2>
+          <p class="page-sub">保存即审核：同一事务内扣减库存并写入库存流水</p>
+        </div>
+        <button class="btn" data-role="refresh">刷新</button>
+      </div>
+      <div class="card">
+        <form class="doc-form" data-role="form">
+          <div class="doc-head">
+            <label class="field"><span>仓库</span>
+              <select data-role="warehouse" required></select>
+            </label>
+            <label class="field"><span>单据日期</span>
+              <input type="date" data-role="date" required />
+            </label>
+            <label class="field"><span>客户</span>
+              <input type="text" data-role="partner" placeholder="可选" />
+            </label>
+          </div>
+          <table class="table lines" data-role="lines"></table>
+          <div class="form-actions">
+            <button class="btn" type="button" data-role="add-line">添加明细行</button>
+            <button class="btn primary" type="button" data-role="submit">保存并审核</button>
+          </div>
+        </form>
+      </div>
+      <div class="card">
+        <table class="table" data-role="documents"></table>
+      </div>`;
+
+    const form = mount.querySelector('[data-role="form"]');
+    const warehouseSelect = mount.querySelector('[data-role="warehouse"]');
+    const dateInput = mount.querySelector('[data-role="date"]');
+    const linesTable = mount.querySelector('[data-role="lines"]');
+    const documentsTable = mount.querySelector('[data-role="documents"]');
+
+    dateInput.value = new Date().toISOString().slice(0, 10);
+
+    function itemOptions(selected) {
+      return items
+        .map(
+          (item) =>
+            `<option value="${item.id}" ${String(item.id) === String(selected) ? "selected" : ""}>${escapeHtml(
+              item.code + " " + item.name
+            )}</option>`
+        )
+        .join("");
+    }
+
+    function addLine() {
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td><select data-role="item">${itemOptions()}</select></td>
+        <td><input type="number" min="1" step="1" value="1" data-role="qty" /></td>
+        <td><input type="number" min="0" step="0.01" value="0.00" data-role="price" /></td>
+        <td><input type="text" class="readonly" value="—" data-role="amount" disabled /></td>
+        <td class="actions"><button class="link danger" type="button" data-role="remove">移除</button></td>`;
+      linesTable.querySelector("tbody").appendChild(row);
+      row.querySelector('[data-role="remove"]').addEventListener("click", () => row.remove());
+      const recalc = () => {
+        const qty = Number(row.querySelector('[data-role="qty"]').value || 0);
+        const price = Number(row.querySelector('[data-role="price"]').value || 0);
+        row.querySelector('[data-role="amount"]').value = (qty * price).toFixed(2);
+      };
+      row.querySelector('[data-role="qty"]').addEventListener("input", recalc);
+      row.querySelector('[data-role="price"]').addEventListener("input", recalc);
+    }
+
+    function resetLines() {
+      linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+      addLine();
+    }
+
+    function renderDocuments() {
+      if (!documents.length) {
+        documentsTable.innerHTML =
+          '<tbody><tr><td class="empty">还没有出库单</td></tr></tbody>';
+        return;
+      }
+      documentsTable.innerHTML = `
+        <thead><tr><th>单据号</th><th>日期</th><th>仓库</th><th>客户</th><th>数量</th><th>金额（元）</th><th>状态</th><th class="actions">操作</th></tr></thead>
+        <tbody>${documents
+          .map(
+            (doc) => `<tr data-id="${doc.id}">
+              <td>${escapeHtml(doc.doc_no)}</td>
+              <td>${escapeHtml(doc.doc_date)}</td>
+              <td>${escapeHtml(doc.warehouse_name)}</td>
+              <td>${escapeHtml(doc.customer || "—")}</td>
+              <td>${doc.total_qty}</td>
+              <td>${money(doc.total_amount_cents)}</td>
+              <td>${doc.status === "APPROVED" ? "已审核" : "已作废"}</td>
+              <td class="actions">${
+                doc.status === "APPROVED"
+                  ? '<button class="link danger" data-role="reverse">反审核</button>'
+                  : "—"
+              }</td>
+            </tr>`
+          )
+          .join("")}</tbody>`;
+    }
+
+    async function reload() {
+      const [warehouseList, itemList, docList] = await Promise.all([
+        api("GET", "/api/warehouses"),
+        api("GET", "/api/items"),
+        api("GET", "/api/documents?doc_type=SAL_OUT"),
+      ]);
+      warehouses = warehouseList;
+      items = itemList;
+      documents = docList;
+      warehouseSelect.innerHTML = warehouses
+        .filter((warehouse) => warehouse.status)
+        .map(
+          (warehouse) =>
+            `<option value="${warehouse.id}">${escapeHtml(warehouse.code + " " + warehouse.name)}</option>`
+        )
+        .join("");
+      renderDocuments();
+      if (!linesTable.querySelector("tbody") || !linesTable.querySelector("tbody").children.length) {
+        resetLines();
+      }
+    }
+
+    mount.querySelector('[data-role="add-line"]').addEventListener("click", addLine);
+    mount.querySelector('[data-role="refresh"]').addEventListener("click", () => reload());
+
+    mount.querySelector('[data-role="submit"]').addEventListener("click", async () => {
+      const lines = [];
+      for (const row of linesTable.querySelectorAll("tbody tr")) {
+        const itemId = Number(row.querySelector('[data-role="item"]').value);
+        const qty = parseInt(row.querySelector('[data-role="qty"]').value, 10);
+        const price = Math.round(Number(row.querySelector('[data-role="price"]').value || 0) * 100);
+        if (!itemId || !qty || qty <= 0) {
+          showNotice("请检查明细行的商品与数量", "error");
+          return;
+        }
+        lines.push({ item_id: itemId, qty, price_cents: price });
+      }
+      if (!lines.length) {
+        showNotice("请至少添加一行明细", "error");
+        return;
+      }
+      try {
+        const result = await api("POST", "/api/documents", {
+          doc_type: "SAL_OUT",
+          warehouse_id: Number(warehouseSelect.value),
+          doc_date: dateInput.value,
+          partner: mount.querySelector('[data-role="partner"]').value.trim(),
+          lines,
+        });
+        showNotice("已保存并审核：" + result.doc_no, "ok");
+        resetLines();
+        await reload();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+
+    documentsTable.addEventListener("click", async (event) => {
+      const button = event.target.closest('button[data-role="reverse"]');
+      if (!button) return;
+      const id = Number(event.target.closest("tr").dataset.id);
+      if (!confirm("反审核会生成反向库存流水，确认继续？")) return;
+      try {
+        await api("POST", "/api/documents/" + id + "/reverse");
+        showNotice("已反审核", "ok");
+        await reload();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+
+    await reload();
+  }
+
+  // ---------- 库存页面 ----------
+
+  async function stockPage(mount) {
+    let itemFilter = 0;
+
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>库存</h2>
+          <p class="page-sub">余额由库存流水派生；流水只增不改</p>
+        </div>
+        <button class="btn" data-role="refresh">刷新</button>
+      </div>
+      <div class="card">
+        <h3>库存余额</h3>
+        <table class="table" data-role="balances"></table>
+      </div>
+      <div class="card">
+        <h3>库存流水</h3>
+        <table class="table" data-role="ledger"></table>
+      </div>`;
+
+    const balancesTable = mount.querySelector('[data-role="balances"]');
+    const ledgerTable = mount.querySelector('[data-role="ledger"]');
+
+    async function reload() {
+      const [balances, ledger] = await Promise.all([
+        api("GET", "/api/stock/balances"),
+        api("GET", "/api/stock/ledger" + (itemFilter ? "?item_id=" + itemFilter : "")),
+      ]);
+      balancesTable.innerHTML = !balances.length
+        ? '<tbody><tr><td class="empty">暂无库存</td></tr></tbody>'
+        : `<thead><tr><th>商品编码</th><th>商品名称</th><th>仓库</th><th>数量</th><th>金额（元）</th></tr></thead>
+           <tbody>${balances
+             .map(
+               (row) => `<tr>
+                 <td>${escapeHtml(row.item_code)}</td>
+                 <td>${escapeHtml(row.item_name)}</td>
+                 <td>${escapeHtml(row.warehouse_name)}</td>
+                 <td class="${row.qty < 0 ? "negative" : ""}">${row.qty}</td>
+                 <td>${money(row.amount_cents)}</td>
+               </tr>`
+             )
+             .join("")}</tbody>`;
+
+      ledgerTable.innerHTML = !ledger.length
+        ? '<tbody><tr><td class="empty">暂无流水</td></tr></tbody>'
+        : `<thead><tr><th>时间</th><th>类型</th><th>单据号</th><th>商品</th><th>仓库</th><th>数量</th><th>金额（元）</th></tr></thead>
+           <tbody>${ledger
+             .map(
+               (row) => `<tr>
+                 <td>${escapeHtml(row.biz_time)}</td>
+                 <td>${escapeHtml(row.biz_type)}</td>
+                 <td>${escapeHtml(row.doc_no)}</td>
+                 <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
+                 <td>${escapeHtml(row.warehouse_name)}</td>
+                 <td class="${row.qty < 0 ? "negative" : ""}">${row.qty}</td>
+                 <td>${money(row.amount_cents)}</td>
+               </tr>`
+             )
+             .join("")}</tbody>`;
+    }
+
+    mount.querySelector('[data-role="refresh"]').addEventListener("click", () => reload());
+    await reload();
+  }
+
+  // ---------- 导航与启动 ----------
+
+  const FIXED_PAGES = [
+    { key: "sales", title: "销售出库", render: documentPage },
+    { key: "stock", title: "库存", render: stockPage },
+  ];
+
+  function mountPage(page) {
+    state.current = page.key;
+    for (const link of nav.querySelectorAll("button")) {
+      link.classList.toggle("active", link.dataset.key === page.key);
+    }
+    main.querySelectorAll(":scope > *").forEach((node) => {
+      if (node !== notice) node.remove();
+    });
+    showNotice("");
+    const container = document.createElement("section");
+    container.className = "page";
+    main.appendChild(container);
+    Promise.resolve(page.render(container, { crudPage, money, escapeHtml })).catch((error) => {
+      showNotice(error.message, "error");
+    });
+  }
+
+  async function bootstrap() {
+    try {
+      const hash = location.hash || "";
+      const match = /(?:^#|&)t=([0-9a-f]+)/.exec(hash);
+      if (match) {
+        await api("POST", "/api/session", { token: match[1] });
+        history.replaceState(null, "", location.pathname + location.search);
+      }
+
+      const health = await api("GET", "/api/health");
+      document.getElementById("mode-label").textContent =
+        health.mode === "local" ? "单机版" : "网络版";
+      document.getElementById("health").textContent =
+        "v" + health.version + " · schema v" + health.schema_version;
+
+      const pages = await (await fetch(API_BASE + "/gen/pages.json")).json();
+      state.pages = pages;
+      for (const page of pages) {
+        await loadScript(page.script);
+      }
+
+      const all = [
+        ...pages.map((page) => ({
+          key: page.key,
+          title: page.title,
+          render: (mount, ui) => window.XiaotuPages[page.key].render(mount, ui),
+        })),
+        ...FIXED_PAGES,
+      ];
+
+      nav.innerHTML = all
+        .map(
+          (page) =>
+            `<button type="button" data-key="${page.key}">${escapeHtml(page.title)}</button>`
+        )
+        .join("");
+      nav.addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        const page = all.find((item) => item.key === button.dataset.key);
+        if (page) mountPage(page);
+      });
+
+      mountPage(all[0]);
+    } catch (error) {
+      if (error.status === 401) {
+        showNotice(
+          "未获得访问凭据。请通过启动程序时输出的带 #t= 的链接打开，或在网络版中使用该链接登录。",
+          "error"
+        );
+      } else {
+        showNotice("加载失败: " + error.message, "error");
+      }
+    }
+  }
+
+  bootstrap();
+})();

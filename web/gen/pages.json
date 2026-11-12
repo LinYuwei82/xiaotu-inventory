@@ -1,0 +1,12 @@
+[
+  {
+    "key": "item",
+    "title": "商品",
+    "script": "/gen/item_page.js"
+  },
+  {
+    "key": "warehouse",
+    "title": "仓库",
+    "script": "/gen/warehouse_page.js"
+  }
+]

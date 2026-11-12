@@ -1,0 +1,21 @@
+#include "xiaotu/routes.h"
+
+#include <httplib.h>
+
+#include "xiaotu/gen/item_routes.h"
+#include "xiaotu/gen/warehouse_routes.h"
+#include "xiaotu/services.h"
+
+namespace xiaotu {
+
+void register_document_routes(httplib::Server& server, Services& services);
+void register_stock_routes(httplib::Server& server, Services& services);
+
+void register_all_routes(httplib::Server& server, Services& services) {
+  gen::register_item_routes(server, services);
+  gen::register_warehouse_routes(server, services);
+  register_document_routes(server, services);
+  register_stock_routes(server, services);
+}
+
+}  // namespace xiaotu

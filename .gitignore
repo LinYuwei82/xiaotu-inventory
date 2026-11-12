@@ -1,0 +1,17 @@
+build/
+vcpkg_installed/
+.vcpkg-cache/
+.ccache/
+tools/codegen/.venv/
+.local/
+.DS_Store
+
+# Python / 代码生成缓存
+__pycache__/
+*.pyc
+
+# 本地数据与构建产物，绝不入库
+*.db
+*.db-wal
+*.db-shm
+backups/

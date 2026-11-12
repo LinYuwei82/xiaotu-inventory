@@ -1,0 +1,41 @@
+{
+  "name": "masterdata",
+  "targets": {
+    "core_include": "core/include/xiaotu/gen",
+    "core_src": "core/src/gen",
+    "server_include": "server/include/xiaotu/gen",
+    "server_src": "server/src/gen",
+    "web": "web/gen"
+  },
+  "tables": [
+    {
+      "table": "item",
+      "key": "item",
+      "entity": "商品",
+      "api": "/api/items",
+      "permissions": { "read": "item.read", "write": "item.write" },
+      "order_by": "code",
+      "fields": [
+        { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
+        { "name": "name", "label": "名称", "type": "string", "required": true, "unique": false, "in_list": true, "in_form": true },
+        { "name": "spec", "label": "规格", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true },
+        { "name": "unit", "label": "单位", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true, "default": "件" },
+        { "name": "status", "label": "启用", "type": "bool", "required": false, "unique": false, "in_list": true, "in_form": true, "default": true }
+      ]
+    },
+    {
+      "table": "warehouse",
+      "key": "warehouse",
+      "entity": "仓库",
+      "api": "/api/warehouses",
+      "permissions": { "read": "warehouse.read", "write": "warehouse.write" },
+      "order_by": "code",
+      "fields": [
+        { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
+        { "name": "name", "label": "名称", "type": "string", "required": true, "unique": false, "in_list": true, "in_form": true },
+        { "name": "is_default", "label": "默认仓", "type": "bool", "required": false, "unique": false, "in_list": true, "in_form": true, "default": false },
+        { "name": "status", "label": "启用", "type": "bool", "required": false, "unique": false, "in_list": true, "in_form": true, "default": true }
+      ]
+    }
+  ]
+}

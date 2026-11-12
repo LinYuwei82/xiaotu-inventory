@@ -1,0 +1,46 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "macos-dev",
+      "displayName": "macOS 开发态（Ninja + ccache，前端走 dev server）",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "XIAOTU_DEV_WEB": "ON"
+      },
+      "environment": {
+        "VCPKG_BINARY_SOURCES": "clear;files,${sourceDir}/.vcpkg-cache,readwrite"
+      }
+    },
+    {
+      "name": "macos-release",
+      "displayName": "macOS 发布态（Ninja + ccache，前端内嵌进二进制）",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "XIAOTU_DEV_WEB": "OFF"
+      },
+      "environment": {
+        "VCPKG_BINARY_SOURCES": "clear;files,${sourceDir}/.vcpkg-cache,readwrite"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "macos-dev" },
+    { "name": "release", "configurePreset": "macos-release" }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "macos-dev",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

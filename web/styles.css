@@ -1,0 +1,288 @@
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --line: #e3e6ea;
+  --text: #1f2328;
+  --muted: #6b7280;
+  --accent: #2563eb;
+  --danger: #c0392b;
+  --ok: #15803d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+}
+
+.layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 200px;
+  flex: 0 0 200px;
+  background: #1f2937;
+  color: #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 12px;
+}
+
+.brand {
+  font-size: 16px;
+  font-weight: 600;
+  padding: 0 8px;
+}
+
+.brand-sub {
+  color: #9ca3af;
+  font-size: 12px;
+  padding: 2px 8px 16px;
+}
+
+.sidebar nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar nav button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #d1d5db;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.sidebar nav button:hover {
+  background: #374151;
+}
+
+.sidebar nav button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  color: #6b7280;
+  font-size: 12px;
+  padding: 8px;
+}
+
+main {
+  flex: 1;
+  padding: 20px 24px 40px;
+  overflow: auto;
+}
+
+.notice {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.notice.error {
+  background: #fdecea;
+  color: var(--danger);
+}
+
+.notice.ok {
+  background: #e8f5ec;
+  color: var(--ok);
+}
+
+.page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.page-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.page-sub {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.card h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.btn:hover {
+  border-color: #c7ccd3;
+}
+
+.btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.btn.primary:hover {
+  background: #1d4ed8;
+}
+
+.link {
+  appearance: none;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0 6px 0 0;
+  font-size: 13px;
+}
+
+.link.danger {
+  color: var(--danger);
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table th,
+.table td {
+  border-bottom: 1px solid var(--line);
+  padding: 7px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.table th {
+  color: var(--muted);
+  font-weight: 500;
+  background: #fafbfc;
+}
+
+.table td.empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 24px 0;
+}
+
+.table .actions {
+  width: 1%;
+  text-align: right;
+}
+
+.table td.negative {
+  color: var(--danger);
+}
+
+.grid-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px 14px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.field input,
+.field select,
+.lines input,
+.lines select {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  color: var(--text);
+  background: #fff;
+}
+
+.field input:focus,
+.field select:focus,
+.lines input:focus,
+.lines select:focus {
+  outline: 2px solid #bfdbfe;
+  border-color: var(--accent);
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+  padding-top: 18px;
+}
+
+.form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.doc-head {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px 14px;
+  margin-bottom: 12px;
+}
+
+.lines td {
+  white-space: nowrap;
+}
+
+.lines input[type="number"],
+.lines input.readonly {
+  width: 110px;
+}
+
+.lines input.readonly {
+  background: #f9fafb;
+  color: var(--muted);
+}
