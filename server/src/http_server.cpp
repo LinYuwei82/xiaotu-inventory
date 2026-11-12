@@ -7,6 +7,7 @@
 #include <string>
 #include <utility>
 
+#include "xiaotu/audit.h"
 #include "xiaotu/context.h"
 #include "xiaotu/edition.h"
 #include "xiaotu/error.h"
@@ -50,6 +51,37 @@ bool state_changing(const std::string& method) {
   return method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH";
 }
 
+// 导出入口：报表/主子表的 format=csv|xlsx，以及主数据 /export。
+bool is_export_request(const httplib::Request& req) {
+  if (req.method != "GET") {
+    return false;
+  }
+  if (req.path.size() >= 7 && req.path.compare(req.path.size() - 7, 7, "/export") == 0) {
+    return true;
+  }
+  if (!req.has_param("format")) {
+    return false;
+  }
+  const std::string format = req.get_param_value("format");
+  return format == "csv" || format == "xlsx";
+}
+
+// 审计里保留筛选条件，便于回答「导出了哪个期间、哪个仓库」；过长的查询串截断。
+std::string query_text(const httplib::Request& req) {
+  std::string text;
+  for (const auto& [key, value] : req.params) {
+    if (!text.empty()) {
+      text += "&";
+    }
+    text += key + "=" + value;
+  }
+  if (text.size() > 400) {
+    text.resize(400);
+    text += "…";
+  }
+  return text;
+}
+
 // 反向代理终结 TLS 时按 X-Forwarded-Proto 决定是否加 Secure。
 std::string cookie_attributes(const httplib::Request& req) {
   std::string attributes = "; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800";
@@ -80,13 +112,25 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
   server_->set_keep_alive_max_count(1);
 
   // 访问日志只记录方法、路径、状态与请求标识；查询串、Cookie 与请求体不落盘。
-  server_->set_logger([](const httplib::Request& req, const httplib::Response& res) {
+  server_->set_logger([this](const httplib::Request& req, const httplib::Response& res) {
     const auto& context = current_context();
     std::string line = req.method + " " + req.path + " " + std::to_string(res.status);
     if (!context.request_id.empty()) {
       line += " req=" + context.request_id;
     }
     log_message(LogLevel::Info, line);
+    // 导出成功的请求写入审计（format=csv|xlsx 与 /export 两类入口），
+    // 失败或被权限拦下的请求不记，避免审计里出现未真正导出的噪声。
+    if (res.status == 200 && is_export_request(req)) {
+      try {
+        const std::string detail = query_text(req);
+        services_.db.write([&](sqlite3* conn) {
+          audit_write(conn, "export", "report", 0, req.path, detail);
+        });
+      } catch (const std::exception& error) {
+        log_warn(std::string("导出审计写入失败: ") + error.what());
+      }
+    }
   });
 
   server_->set_exception_handler([](const httplib::Request&, httplib::Response& res,
@@ -227,6 +271,10 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
       return;
     }
     const CreatedSession session = sessions_.create(admin.id);
+    services_.db.write([&](sqlite3* conn) {
+      audit_write_as(conn, admin.username, "login", "auth", admin.id, admin.username,
+                     "单机令牌");
+    });
     res.set_header("Set-Cookie", "sid=" + session.id + cookie_attributes(req));
     nlohmann::json result;
     result["ok"] = true;
@@ -242,6 +290,9 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     const std::string username = body.value("username", std::string{});
     const std::string password = body.value("password", std::string{});
     const std::string key = req.remote_addr + "|" + username;
+    // 登录时还没有会话，审计里的操作人就是本次尝试的用户名；长度截断防止脏数据。
+    const std::string audit_actor =
+        username.empty() ? std::string("（空用户名）") : username.substr(0, 64);
     if (login_limiter_.blocked(key)) {
       res.set_header("Retry-After", "300");
       json_error(res, 429, "TOO_MANY_ATTEMPTS", "登录失败次数过多，请 5 分钟后再试");
@@ -255,10 +306,18 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         throw;
       }
       login_limiter_.record_failure(key);
+      services_.db.write([&](sqlite3* conn) {
+        audit_write_as(conn, audit_actor, "login_failed", "auth", 0, audit_actor,
+                       req.remote_addr);
+      });
       json_error(res, 401, "INVALID_CREDENTIALS", "用户名或口令错误");
       return;
     }
     login_limiter_.reset(key);
+    services_.db.write([&](sqlite3* conn) {
+      audit_write_as(conn, user.username, "login", "auth", user.id, user.username,
+                     req.remote_addr);
+    });
     // 登录成功后顺手清掉过期会话，不需要额外的定时任务。
     sessions_.purge_expired();
     const CreatedSession session = sessions_.create(user.id);

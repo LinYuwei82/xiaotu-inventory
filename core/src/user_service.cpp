@@ -172,6 +172,16 @@ UserRow UserService::update(std::int64_t id, const UserInput& input) {
     }
     ensure_username_free(conn, input.username, id);
     const std::int64_t role_id = role_id_of(conn, input.role);
+    std::string previous_role;
+    {
+      Stmt stmt(conn,
+                "SELECT r.code FROM app_user u JOIN app_role r ON r.id = u.role_id"
+                " WHERE u.id = ? AND u.is_deleted = 0 LIMIT 1;");
+      stmt.bind(1, id);
+      if (stmt.step()) {
+        previous_role = stmt.text(0);
+      }
+    }
     const AuditStamp stamp = audit_stamp();
     if (new_hash.empty()) {
       Stmt stmt(conn,
@@ -207,6 +217,10 @@ UserRow UserService::update(std::int64_t id, const UserInput& input) {
     audit_write(conn, "update", "user", id, input.username,
                 "{\"role\":\"" + input.role + "\",\"active\":" +
                     std::string(input.active ? "true" : "false") + "}");
+    if (!previous_role.empty() && previous_role != input.role) {
+      audit_write(conn, "role_change", "user", id, input.username,
+                  "{\"from\":\"" + previous_role + "\",\"to\":\"" + input.role + "\"}");
+    }
   });
   return get(id);
 }

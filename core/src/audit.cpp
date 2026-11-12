@@ -10,11 +10,17 @@ namespace xiaotu {
 
 void audit_write(sqlite3* conn, std::string_view action, std::string_view entity,
                  std::int64_t entity_id, std::string_view entity_no, std::string_view detail) {
+  audit_write_as(conn, current_user(), action, entity, entity_id, entity_no, detail);
+}
+
+void audit_write_as(sqlite3* conn, std::string_view actor, std::string_view action,
+                    std::string_view entity, std::int64_t entity_id,
+                    std::string_view entity_no, std::string_view detail) {
   Stmt stmt(conn,
             "INSERT INTO audit_log (at, actor, action, entity, entity_id, entity_no, detail)"
             " VALUES (?, ?, ?, ?, ?, ?, ?);");
   stmt.bind(1, now_text())
-      .bind(2, current_user())
+      .bind(2, actor)
       .bind(3, action)
       .bind(4, entity)
       .bind(5, entity_id)

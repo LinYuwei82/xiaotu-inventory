@@ -26,6 +26,11 @@ void audit_write(sqlite3* conn, std::string_view action, std::string_view entity
                  std::int64_t entity_id, std::string_view entity_no,
                  std::string_view detail = {});
 
+// 登录等尚无会话的场景：actor 由调用方显式给出，不走当前请求上下文。
+void audit_write_as(sqlite3* conn, std::string_view actor, std::string_view action,
+                    std::string_view entity, std::int64_t entity_id,
+                    std::string_view entity_no, std::string_view detail = {});
+
 std::vector<AuditRow> audit_recent(Db& db, int limit = 100);
 
 // 查询条件：日期用 YYYY-MM-DD，空串表示不限；entity_id 为 0 表示不限。

@@ -8,6 +8,7 @@
 #include <string>
 #include <thread>
 
+#include "xiaotu/audit.h"
 #include "xiaotu/backup.h"
 #include "xiaotu/config.h"
 #include "xiaotu/db.h"
@@ -236,11 +237,22 @@ int main(int argc, char** argv) {
       if (options.backup) {
         throw xiaotu::AppError("BAD_ARGUMENT", "--backup 与 --restore 不能同时使用");
       }
-      const auto restored = xiaotu::restore_database(options.restore_from, database_path);
-      std::cout << "恢复完成: " << restored.path.string() << " (" << restored.bytes
+      const auto snapshot = xiaotu::restore_database(options.restore_from, database_path);
+      std::cout << "恢复完成: " << snapshot.path.string() << " (" << snapshot.bytes
                 << " 字节)" << std::endl;
-      xiaotu::log_info("恢复数据库 " + restored.path.string() +
-                       " 字节=" + std::to_string(restored.bytes));
+      xiaotu::log_info("恢复数据库 " + snapshot.path.string() +
+                       " 字节=" + std::to_string(snapshot.bytes));
+      // 恢复后往「恢复出来的库」写一条审计；v5 之前的老库没有 audit_log，只留日志。
+      {
+        xiaotu::Db restored_db(database_path, 1);
+        if (restored_db.schema_version() >= 5) {
+          restored_db.write([&](sqlite3* conn) {
+            xiaotu::audit_write(conn, "restore", "database", 0,
+                                options.restore_from.filename().string(),
+                                snapshot.path.string());
+          });
+        }
+      }
       xiaotu::shutdown_logging();
       return 0;
     }
@@ -256,6 +268,11 @@ int main(int argc, char** argv) {
                 << " 字节)" << std::endl;
       xiaotu::log_info("手动备份 " + snapshot.path.string() +
                        " 字节=" + std::to_string(snapshot.bytes));
+      db.write([&](sqlite3* conn) {
+        xiaotu::audit_write(conn, "backup", "database", 0,
+                            snapshot.path.filename().string(),
+                            std::to_string(snapshot.bytes) + " 字节");
+      });
       xiaotu::shutdown_logging();
       return 0;
     }
