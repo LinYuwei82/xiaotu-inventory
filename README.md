@@ -1,11 +1,27 @@
-# 小兔进销存（M0 骨架）
+# 小兔进销存（M2）
 
-macOS 优先的进销存软件骨架：**一套 C++20 代码，两种运行形态**。
+macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 - 不带参数启动 = **单机版**：内嵌服务只监听 `127.0.0.1` 的随机端口，生成一次性 token，用系统 WKWebView 打开本地页面。
 - `--server` 启动 = **网络版**：监听 `0.0.0.0`，用浏览器访问（启动日志会输出带 token 的一次性访问链接）。
 
-当前为 M0 骨架，已打通：**新建商品 → 采购入库 / 销售出库 / 退货 / 调拨 / 盘点（含草稿与反审核）→ 查看库存与流水**，并具备内置 `admin` 用户、最小角色权限、审计日志、供应商/客户档案、应收应付台账与核销、往来对账单、四张只读报表。
+当前 M2 收口中，已打通：**商品 / 单位 / 仓库 / 客户 / 供应商档案 → 采购入库、销售出库、采购退货、销售退货、调拨、盘点（草稿与反审核）→ 销售订单确认与转出库 → 库存余额与流水 → 应收应付台账与核销 → 往来对账单 → 七类报表导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志与 macOS `.dmg` 打包。成本重算任务尚在方案确认阶段，尚未落地。
+
+## 0. 数据库结构版本
+
+当前 schema 为 **v9**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
+
+| 版本 | 内容 |
+| --- | --- |
+| v1 | 初始表：商品、仓库、单据主子表、库存流水与余额 |
+| v2 | 用户与角色、角色权限表，内置 admin / operator / viewer |
+| v3 | 供应商档案 |
+| v4 | 计量单位 |
+| v5 | 审计日志 |
+| v6 | 库存调拨与盘点单据 |
+| v7 | 客户档案、应收应付台账与核销，历史销售单回填 `customer_id` |
+| v8 | 自定义打印模板主表与列配置子表，新增 `print.template.*` 权限 |
+| v9 | 销售订单：`order_status`、`converted_qty`、`source_order_line_id` 与索引 |
 
 ## 1. 环境要求
 
@@ -54,6 +70,11 @@ build/dev/shell/xiaotu-inventory.app
 macOS 产物是 `.app` bundle（图标、Info.plist、前端资源都在 bundle 内），可执行文件位于 `Contents/MacOS/xiaotu-inventory`。
 另有一个不依赖 WebView 的命令行产物 `build/release/server/xiaotu-server`，用于网络版与浏览器开发。
 
+构建目标共三个：`xiaotu_core`（纯业务）、`xiaotu_server`（HTTP 服务与内嵌静态资源）、`xiaotu-inventory`（macOS WKWebView 壳）。
+Preset 对应关系：`macos-release` / `macos-dev`（构建名 `release` / `dev`）用于 macOS 全量构建；
+`windows-release` / `windows-dev` 用于 Windows，二者已设置 `XIAOTU_BUILD_SHELL=OFF`。
+依赖全部内嵌在 `third_party/`（SQLite amalgamation、cpp-httplib、nlohmann/json），构建不依赖网络；安装 vcpkg 后自动优先使用 vcpkg 版本。
+
 单机版壳默认构建。只做服务端 / 业务逻辑开发时，可在任意平台关闭：
 
 ```bash
@@ -87,7 +108,7 @@ ctest --test-dir build/release --output-on-failure
 ```powershell
 git clone git@gitee.com:lin-yuwei168/xiaotu-inventory.git
 cd xiaotu-inventory
-git switch -c macbook/<主题>
+git switch -c <机器名>/<主题>   # 例如 macmini/报表 或 macbook/打印模板
 
 cmake --preset windows-release
 cmake --build --preset windows-release
@@ -158,8 +179,9 @@ WebView 会打开 `http://127.0.0.1:5173/?api=http://127.0.0.1:<port>#t=<token>`
 界面操作：
 
 1. 「商品」→ 新增：编码 `T001`，名称 `测试商品`，单位 `件`。
-2. 「销售出库」→ 选择仓库（内置「主仓库」）→ 添加明细行：选商品、数量 `5`、单价 `12.34` → 保存并审核。
-3. 「库存」→ 看到该商品数量 `-5`、流水一条 `SAL_OUT`；点「反审核」后数量回到 `0`，流水追加一条 `REVERSE`（原流水不被删除）。
+2. 「采购入库」→ 选择仓库（内置「主仓库」）→ 添加明细行：选商品、数量 `5`、单价 `10.00` → 保存并审核，库存变为 `5`，流水一条 `PUR_IN`。
+3. 「销售出库」→ 添加明细行：数量 `2`、单价 `12.34` → 保存并审核，库存变为 `3`，流水追加 `SAL_OUT`，应收台账同步生成。
+4. 「库存」看到数量 `3`；对该销售出库点「反审核」后数量回到 `5`，流水追加一条 `REVERSE`（原流水不被删除）。
 
 等价的命令行验证（网络版）：
 
@@ -171,8 +193,12 @@ curl -s -c /tmp/xt.cookies -H 'Content-Type: application/json' \
 curl -s -b /tmp/xt.cookies -H 'Content-Type: application/json' \
   -d '{"code":"T001","name":"测试商品"}' http://127.0.0.1:18080/api/items
 curl -s -b /tmp/xt.cookies -H 'Content-Type: application/json' \
+  -d '{"doc_type":"PUR_IN","warehouse_id":1,"doc_date":"2026-11-12",
+       "lines":[{"item_id":<上一步返回的 id>,"qty":5,"price_cents":1000}]}' \
+  http://127.0.0.1:18080/api/documents
+curl -s -b /tmp/xt.cookies -H 'Content-Type: application/json' \
   -d '{"doc_type":"SAL_OUT","warehouse_id":1,"doc_date":"2026-11-12",
-       "lines":[{"item_id":<上一步返回的 id>,"qty":5,"price_cents":1234}]}' \
+       "lines":[{"item_id":<商品 id>,"qty":2,"price_cents":1234}]}' \
   http://127.0.0.1:18080/api/documents
 curl -s -b /tmp/xt.cookies http://127.0.0.1:18080/api/stock/balances
 ```
@@ -189,6 +215,7 @@ xiaotu-inventory/
 │   ├── include/xiaotu/
 │   │   ├── db.h                   # 单写连接 + 读连接池 + 事务
 │   │   ├── document.h             # 单据定义与通用引擎
+│   │   ├── print_template.h       # 打印目标注册表、内置默认模板与模板服务
 │   │   ├── doc_number.h           # 单据号生成器
 │   │   ├── crud.h                 # 软删除、审计字段、唯一性校验
 │   │   ├── context.h              # 请求上下文（操作人）
@@ -205,7 +232,7 @@ xiaotu-inventory/
 │   │   ├── platform_paths.h       # 数据目录（应用标识 com.simem.xiaotu）
 │   │   ├── http_json.h / session_store.h
 │   │   └── gen/                   # ← 生成物（路由声明）
-│   └── src/                       # 手写路由 + cli_main.cpp + src/gen/（生成物）
+│   └── src/                       # 手写路由（含 print_routes.cpp）+ cli_main.cpp + src/gen/（生成物）
 ├── shell/                         # 唯一允许出现平台代码的地方（可关闭）
 │   ├── mac/icon/                  # 图标源 SVG（候选）与 xiaotu.icns
 │   └── mac/webview.mm             # WKWebView 宿主
@@ -301,20 +328,36 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 struct DocumentDefinition {
   std::string doc_type;           // SAL_OUT
   std::string doc_no_prefix;      // XSCK
-  StockDirection stock_direction; // In / Out / None
+  StockMode stock_mode;           // None / In / Out / Transfer / Stocktake
   bool affects_stock;             // 是否动库存
-  PriceSource price_source;       // Manual（M0）
+  DocumentRole role;              // Transaction / Order（订单只确认与转出库）
+  PartnerKind partner_kind;       // None / Supplier / Customer
+  int finance_direction;          // 1 应收，-1 应付，0 不生成往来
+  bool finance_red;               // 退货红字
+  PriceSource price_source;       // Manual
   CostHook cost_hook;             // 成本钩子：qty、price、结存数量/金额 → 结转金额
-  std::function<void(sqlite3*, int64_t)> on_approve;  // 审核附加动作（往来账等）
+  std::function<void(sqlite3*, int64_t)> on_approve;  // 审核附加动作
   std::function<void(sqlite3*, int64_t)> on_reverse;  // 反审核附加动作
 };
 ```
 
-`DocumentEngine::save_and_approve` 在一个写事务内完成：校验 → 取单据号 → 写主子表 → 按定义生成库存流水与余额 → 执行 `on_approve`。`reverse` 反向写流水、回滚余额、置为 `VOIDED`，**不删除原流水**。
+`DocumentEngine::save_and_approve` 在一个写事务内完成：校验 → 取单据号 → 写主子表 → 按定义生成库存流水与余额 → 执行 `on_approve`。`reverse` 反向写流水、回滚余额、置为 `VOIDED`，**不删除原流水**。库存与往来都按定义条件执行，`affects_stock=false` / `finance_direction=0` 的单据天然不产生副作用。
 
-已内置定义：`SAL_OUT`（销售出库，移动加权平均成本）、`PUR_IN`（采购入库，按单据金额入账）、`PUR_RET`（采购退货，按退货单价冲减库存）、`SAL_RET`（销售退货，按成本单价增加库存）。新增退货/调拨/盘点同理，只需补定义与前端入口，无需写流程代码。
+已内置七种单据：
 
-当前库存策略：出库类单据（销售出库、采购退货）审核前校验可用库存，不足则整单拒绝（`STOCK_INSUFFICIENT`）并回滚事务，不产生负数结存或半途写入。
+| 单据 | 类型 | 影响库存 | 产生往来 |
+| --- | --- | --- | --- |
+| 采购入库 | `PUR_IN` | 入库 | 应付（蓝字） |
+| 采购退货 | `PUR_RET` | 出库 | 应付（红字） |
+| 销售出库 | `SAL_OUT` | 出库 | 应收（蓝字） |
+| 销售退货 | `SAL_RET` | 入库 | 应收（红字） |
+| 库存调拨 | `STK_TRF` | 源仓出、目标仓入 | 否 |
+| 库存盘点 | `STK_CNT` | 按实盘差额调整 | 否 |
+| 销售订单 | `SAL_ORDER` | 否（确认不占库存） | 否（转出库时才由 `SAL_OUT` 产生应收） |
+
+销售订单状态：`DRAFT` 草稿 → `APPROVED + CONFIRMED` 已确认 → `APPROVED + CONVERTED` 已转出库 / `APPROVED + CLOSED` 已关闭。转出库在单事务内校验「已转 + 本次 ≤ 订单数量」，超量拒绝（`ORDER_QTY_EXCEEDED`），并生成正式销售出库单；反审核出库单会释放对应订单数量。
+
+当前库存策略：出库类单据（销售出库、采购退货、销售订单转出库）审核 / 转出前校验可用库存，不足则整单拒绝（`STOCK_INSUFFICIENT`）并回滚事务，不产生负数结存或半途写入。
 
 ## 8. 横切逻辑
 
@@ -327,6 +370,16 @@ struct DocumentDefinition {
 | 软删除 | `core/src/crud.cpp` | `soft_delete()` 置 `is_deleted=1` 并刷新修改人；查询统一过滤 |
 | 请求上下文 | `core/include/xiaotu/context.h` | 中间件按请求填充 `current_context()`（用户、角色、request id） |
 
+### 角色与权限点
+
+| 角色 | 权限 |
+| --- | --- |
+| admin（1） | `*` 通配 |
+| operator（2） | 主数据读写（`item/unit/warehouse/supplier/customer` 的 `.read` + `.write`）、`document.read/write`、`stock.read`、`finance.read/write`、`print.template.read/write` |
+| viewer（3） | 上述所有 `.read`（含 `document.read`、`stock.read`、`finance.read`、`print.template.read`），无任何写权限 |
+
+权限点按九组登记：`item`、`unit`、`warehouse`、`supplier`、`customer`、`document`、`stock`、`finance`、`print.template`。未在 `app_role_permission` 声明的权限码默认拒绝；模板管理权限与出数数据权限相互独立。
+
 ### 应收应付统计口径
 
 `ar_ap_entry` 只在单据审核时写入。v7 迁移为历史销售单按名称回填了 `customer_id`，但**不会为升级前已审核的单据补建往来记录**。因此：
@@ -336,20 +389,36 @@ struct DocumentDefinition {
 - 库存余额、库存流水、收发明细直接基于 `stock_ledger`，**不受影响**。
 - 需要全量历史往来时，目前只能通过单据反审核后重新审核来生成台账，或后续单独做期初往来录入。
 
-### 报表导出与打印
+### 报表与对账单
 
-- 六张报表（库存余额、库存流水、收发明细、进销存汇总、销售毛利、应收应付账龄）都支持导出 CSV：
-  在接口后加 `?format=csv`，或直接点报表卡片右上角的「导出 CSV」。导出跟随页面当前筛选条件。
-- 进销存汇总按商品跨仓库汇总期初 + 入库 − 出库 = 期末，数量与金额双口径（`/api/reports/inventory-summary`）。
-- 销售毛利按商品汇总销售收入、销售成本与毛利（`/api/reports/sales-profit`）：收入取单据金额（退货红字），
-  成本取审核写入的库存流水，已反审核单据不计入。
-- 六张报表同样支持 `?format=xlsx` 导出 Excel（卡片右上角「导出 Excel」）：服务端直接生成最小 OOXML 工作簿，
-  不引入三方库；表头加粗，金额写为两位小数的数值单元格，可直接求和。对账单也支持 `?format=xlsx`。
-- CSV 为带 BOM 的 UTF-8，Excel 直接打开不乱码；金额以元为单位、两位小数，由整数分按
-  `1 元 = 100 分` 换算，文件头部附金额说明，不使用浮点。
-- 报表页「打印」使用浏览器打印（`window.print()`）；单机版 WKWebView 通过原生桥接打开系统打印面板。
-  打印视图含单位名称、报表名、筛选区间与打印时间，表头在跨页时重复（`thead` 重复）。
-- 导出与查看同权限（`stock.read` / `finance.read`），不额外开放写权限。
+共七类输出：
+
+| 输出 | 接口 | 用途 |
+| --- | --- | --- |
+| 库存余额表 | `/api/reports/stock-balance` | 仓库 × 商品的当前数量与金额 |
+| 库存流水明细 | `/api/reports/stock-ledger` | 按时间列出每笔出入库与成本金额 |
+| 收发明细 | `/api/reports/goods-flow` | 商品 × 仓库的期初、本期收入 / 发出、期末 |
+| 进销存汇总 | `/api/reports/inventory-summary` | 按商品跨仓库汇总，数量与金额双口径 |
+| 销售毛利 | `/api/reports/sales-profit` | 收入取单据金额（退货红字），成本取库存流水，已反审核不计入 |
+| 应收应付余额与账龄 | `/api/reports/ar-ap-aging` | 按往来单位与账龄区间汇总，受 v7 统计口径限制 |
+| 对账单 | `/api/reports/statement` | 往来单位期初 + 期间单据 − 期间核销 = 期末 |
+
+每类都支持：
+
+- **CSV**：接口加 `?format=csv` 或卡片「导出 CSV」，跟随当前筛选条件；带 BOM 的 UTF-8，Excel 直接打开不乱码；金额按 `1 元 = 100 分` 由整数分换算，两位小数，不使用浮点。
+- **XLSX**：接口加 `?format=xlsx` 或卡片「导出 Excel」；服务端直接生成最小 OOXML 工作簿，不引入三方库，金额写为两位小数的数值单元格。
+- **打印**：卡片「打印」，经 `/api/print/render` 按当前模板输出；单机版 WKWebView 通过原生桥接打开系统打印面板，可另存为 PDF。
+- **权限**：导出与打印和查看同权限（`stock.read` / `finance.read`），不额外开放写权限。
+
+### 自定义打印模板
+
+- 存储：v8 新增 `print_template`（纸张、方向、页边距、字号、页眉页脚、页码、默认标记、`version` 乐观锁、软删除与审计）和 `print_template_column`（列顺序、可见、宽度、对齐、字号、加粗）两张表。
+- 服务：`PrintTemplateService` 提供列表、详情、新建、更新、软删除、设为默认与解析；保存时校验目标与列白名单，同一目标默认模板唯一，所有写操作写审计。
+- 默认回退：显式 `template_id`（有效且目标匹配）→ 该目标数据库默认模板 → 代码内置默认模板 → 无列通用兜底；模板删除、停用或目标失效都不影响出数。
+- 权限：模板管理看 `print.template.read` / `print.template.write`；实际取数仍校验单据、库存或财务各自的数据权限，两层分离。
+- 页面：「打印模板」支持新建、从内置默认复制列、调整列显示与顺序、设置默认、编辑与删除；报表、对账单与单据打印应用模板。
+- 边界：模板只保存展示配置，不保存 SQL、脚本、HTML 或查询条件；页眉页脚为纯文本，仅做占位符字符串替换。
+- 状态：迁移、服务、API、前端与测试均已完成。
 
 ### 往来对账单
 
@@ -361,15 +430,18 @@ struct DocumentDefinition {
 - 支持 `?format=csv` 导出（带 BOM 的 UTF-8、金额按元两位小数）与打印视图（含单位名称、报表名、
   往来单位、筛选区间与打印时间，表头跨页重复）。
 
-## 9. M0 已知限制（对应方案待确认项）
+## 9. 已知限制与口径
 
-- 用户与角色：一次性 token 换取内置 `admin` 会话；已有 `admin` / `operator` / `viewer` 三角色与最小用户 CRUD（`/api/users`），口令登录与 `password_hash` 属于 M5。
+- 用户与角色：一次性 token 换取内置 `admin` 会话；已有 `admin` / `operator` / `viewer` 三角色与最小用户 CRUD（`/api/users`），口令登录、会话持久化、CSRF 与幂等键属于 M5，尚未实现。
 - 版本能力：`-DXIAOTU_EDITION=community` 构建社区版（当前已接 `max_users=1`），默认构建为全功能版；其余额度项随对应模块逐个接入。
 - 单据支持草稿态：存草稿只写单据与明细、不写库存流水，审核时才进单事务；反审核为整单反向。
+- 销售订单只做需求确认与转出库来源：确认不动库存、不写流水、不产生往来，只有转出的销售出库单才产生库存与应收。
 - 数量按整数件（精度策略见方案 Q4），无多单位、批次、序列号、价格体系。
-- 成本按移动加权平均，暂不支持其他计价方式。
-- 无 PDF 输出与自定义打印模板（打印走系统打印面板，可另存为 PDF）。
-- 无请求幂等键（`request_id`）与 CSRF token；当前依赖一次性 token + HttpOnly Cookie + `SameSite=Lax`。
+- 成本按移动加权平均，暂不支持其他计价方式；成本重算任务仍在方案确认阶段，尚未提供页面或接口。
+- 无内置 PDF 导出与针式打印模板：当前通过系统打印面板「另存为 PDF」，A4 / 针式两种尺寸的输出属于 M4。
+- Windows 只构建服务端与测试，没有 GUI 壳（`XIAOTU_BUILD_SHELL=OFF`），界面通过浏览器访问。
+- 无 Developer ID 证书，`.dmg` 为 ad-hoc 签名且未公证，Gatekeeper 会拦截首次打开，处理方式见第 10 节。
+- 应收应付与账龄只统计 v7 迁移之后审核的单据，升级前已审核单据不计入，详见「应收应付统计口径」。
 - 未接入 vcpkg 时依赖 `third_party/` 内嵌头文件；接入 vcpkg 后 `vcpkg.json` 会自动生效。
 
 ## 10. 打包（macOS .dmg）
@@ -393,8 +465,27 @@ tools/package/make_dmg.sh
 
 拿到 Developer ID 证书后可设置 `XIAOTU_SIGN_IDENTITY` 重新打包；要免拦截仍需额外公证与 staple，当前不在仓库范围内。
 
-## 11. 参考
+## 11. 开发流程与并行约定
+
+多台机器同时开发时：
+
+- `main` 是可运行的主干，双方都向 `main` 提交；个人主题分支命名为 `macmini/<主题>` 或 `macbook/<主题>`，完成后合回 `main`。
+- 每次动手前先 `git fetch && git pull --ff-only`；提交前再确认远端没有新提交，避免长驻未提交改动。
+- 冲突当场本地解决，不使用 `--force`，不 rebase 改写别人已经推上去的提交。
+- 热点文件（`README.md`、`web/app.js`、`core/src/migrations.cpp`、`core/src/document.cpp`）的改动尽量集中在一笔提交内，缩短并行窗口。
+
+每次提交前至少通过：
+
+```bash
+cmake --build --preset release
+ctest --test-dir build/release --output-on-failure
+tools/codegen/.venv/bin/python tools/codegen/generate.py --check
+```
+
+涉及接口的改动另做一次接口冒烟；涉及迁移的改动必须纯增量、先发表结构设计，已发布迁移不得修改。一笔提交只做一件事，提交信息说明「为什么」。
+
+## 12. 参考
 
 - 技术方案：`docs/进销存技术方案.md`
-- 数据库结构：`core/src/migrations.cpp`（v7）
-- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`
+- 数据库结构：`core/src/migrations.cpp`（v9）
+- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`
