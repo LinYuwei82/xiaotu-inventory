@@ -32,8 +32,13 @@ case "$(uname -s)" in
     ;;
   Linux)
     # Gitee Go 云端为 Linux 镜像，没有 macOS 壳与 MSVC；这里验证平台无关部分。
+    # Ninja 缺失时降级为 Unix Makefiles，避免把构建工具当成运行环境的前提。
     echo "==> 构建 Linux（XIAOTU_BUILD_SHELL=OFF）"
-    cmake -S . -B build/ci-linux -G Ninja \
+    GENERATOR=()
+    if command -v ninja >/dev/null 2>&1; then
+      GENERATOR=(-G Ninja)
+    fi
+    cmake -S . -B build/ci-linux "${GENERATOR[@]}" \
       -DXIAOTU_BUILD_SHELL=OFF -DCMAKE_BUILD_TYPE=Release
     cmake --build build/ci-linux
 

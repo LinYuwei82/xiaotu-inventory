@@ -507,13 +507,12 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 
 ### CI
 
-- 执行平台为 **Gitee Go**，配置在 `.workflow/ci.yml`，向 `main` 推送时触发。
-- 唯一检查入口是 `tools/ci/check.sh`，Gitee Go 只负责准备 CMake/Ninja 并调用它，不复制检查逻辑。
-- Linux 任务（`build@gcc` 10.3，Ubuntu 基础镜像）：以 `XIAOTU_BUILD_SHELL=OFF` 配置构建、跑 `ctest`、`generate.py --check`、平台代码泄漏检查。
-- Gitee Go 云端只提供 Linux 构建镜像，**没有 macOS 与 Windows 运行器**：
-  - macOS 全量构建（含 WKWebView 壳）与 Windows MSVC 构建需在本地执行，命令见上文；
-  - 需要自动门禁时，可在 Gitee Go 用自建主机组接入 Mac/Windows 机器，再调用同一脚本；这不属于免费云端额度。
-- 免费额度：单个仓库 200 分钟、单个企业/组织每月 1000 分钟构建时长，超出需按平台规则购买。
+- 执行平台为 **Gitee Go**。流水线文件是仓库根目录的 `.workflow/MasterPipeline.yml`，监听 `main` 推送；检查逻辑仍只来自 `tools/ci/check.sh`。
+- **首次必须在 Gitee 网页「新建流水线 → 选择模板/自定义 → 保存」**：平台会自行向仓库提交 `.workflow/MasterPipeline.yml`、`BranchPipeline.yml`、`PRPipeline.yml`。仓库里已放好 `MasterPipeline.yml` 的内容，创建后若被平台覆盖，用仓库版本替换即可；不要把「提交了 yml」当成已开通。
+- Linux 任务（`build@gcc` 10.3，Ubuntu 20.04 基础镜像）：`XIAOTU_BUILD_SHELL=OFF` 构建、`ctest`、`generate.py --check`、平台代码泄漏检查。
+- 镜像工具不保证齐全：`check.sh` 在缺少 Ninja 时自动降级为 Unix Makefiles；CMake 缺失时流水线先用 `pip install --user cmake`，若镜像不允许联网安装，需要在平台命令里改用 `apt-get`/自备镜像，或放回本地执行。
+- Gitee Go 云端只有 Linux 运行器，没有 macOS/Windows：macOS 全量构建（含 WKWebView 壳）与 Windows MSVC 构建在本地执行；需要自动门禁时用 Gitee Go 自建主机组接入对应机器。
+- 免费额度：单个仓库 200 分钟（永久有效），个人/组织每月 1000 核分（2C4G 约折 500 分钟）。超出按平台计费规则购买，不在文档里估算本项目的分钟数。
 - 平台泄漏检查（`tools/ci/check_platform_leaks.sh`）：`core/` 禁止出现 Apple 条件编译、框架或 WebView 引用；`server/` 只允许 `cli_main.cpp` 在 `#if defined(__APPLE__)` 内引用 WebView 壳。
 - 原 GitHub Actions 工作流已删除，避免两套流水线重复维护。
 

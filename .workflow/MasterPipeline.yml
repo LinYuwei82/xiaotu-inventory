@@ -22,6 +22,8 @@ stages:
           displayName: Linux 构建、测试与校验
           gccVersion: '10.3'
           commands:
-            - python3 -m pip install --user --upgrade pip cmake ninja
+            # 镜像只保证 GCC 与常规工具；CMake 缺失时用 pip 安装到用户目录。
             - export PATH="$HOME/.local/bin:$PATH"
+            - command -v cmake >/dev/null 2>&1 || python3 -m pip install --user cmake
+            # Ninja 不是硬依赖，check.sh 会自行降级为 Unix Makefiles。
             - bash tools/ci/check.sh
