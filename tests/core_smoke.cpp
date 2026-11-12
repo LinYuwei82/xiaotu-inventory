@@ -166,6 +166,33 @@ int main() {
       }
       check(duplicate_rejected, "重复编码应被拒绝");
 
+      // 库存不足：审核前整单校验，拒绝后不留下单据与流水。
+      xiaotu::DocInput insufficient;
+      insufficient.doc_type = "SAL_OUT";
+      insufficient.warehouse_id = warehouse_list.at(0).id;
+      insufficient.doc_date = "2026-11-12";
+      insufficient.partner = "测试客户";
+      insufficient.lines.push_back(
+          xiaotu::DocLineInput{.item_id = item.id, .qty = 5, .price_cents = 1000});
+      bool insufficient_rejected = false;
+      try {
+        documents.save_and_approve(insufficient);
+      } catch (const xiaotu::AppError& error) {
+        insufficient_rejected = error.code() == "STOCK_INSUFFICIENT";
+      }
+      check(insufficient_rejected, "库存不足的出库应被拒绝");
+      check(stock.balances().empty() && stock.ledger(item.id).empty() &&
+                documents.list("SAL_OUT").empty(),
+            "库存不足时不应写入任何单据或流水");
+
+      xiaotu::DocInput opening;
+      opening.doc_type = "PUR_IN";
+      opening.warehouse_id = warehouse_list.at(0).id;
+      opening.doc_date = "2026-11-12";
+      opening.lines.push_back(
+          xiaotu::DocLineInput{.item_id = item.id, .qty = 5, .price_cents = 1000});
+      const auto opening_doc = documents.save_and_approve(opening);
+
       xiaotu::DocInput input;
       input.doc_type = "SAL_OUT";
       input.warehouse_id = warehouse_list.at(0).id;
@@ -178,19 +205,19 @@ int main() {
 
       const auto balances = stock.balances();
       check(balances.size() == 1, "应有一条库存余额");
-      check(balances.at(0).qty == -5, "无期初库存时出库后余额应为 -5（M0 允许负库存）");
+      check(balances.at(0).qty == 0, "出库 5 件后余额应为 0");
 
       const auto ledger = stock.ledger(item.id);
-      check(ledger.size() == 1, "应有一条库存流水");
-      check(ledger.at(0).qty == -5, "流水数量应为 -5");
+      check(ledger.size() == 2, "应有一条入库流水和一条出库流水");
+      check(ledger.at(0).qty == -5, "出库流水数量应为 -5");
 
       const auto listed = documents.list("SAL_OUT");
       check(listed.size() == 1 && listed.at(0).status == "APPROVED", "单据应为已审核状态");
 
       documents.reverse(created.id);
       const auto after_reverse = stock.balances();
-      check(after_reverse.at(0).qty == 0, "反审核后库存余额应回到 0");
-      check(stock.ledger(item.id).size() == 2, "反审核应追加一条反向流水，而不是删除原流水");
+      check(after_reverse.at(0).qty == 5, "反审核后库存余额应回到 5");
+      check(stock.ledger(item.id).size() == 3, "反审核应追加一条反向流水，而不是删除原流水");
 
       bool double_reverse_rejected = false;
       try {
@@ -199,6 +226,9 @@ int main() {
         double_reverse_rejected = error.code() == "INVALID_STATUS";
       }
       check(double_reverse_rejected, "重复反审核应被拒绝");
+
+      documents.reverse(opening_doc.id);
+      check(stock.balances().at(0).qty == 0, "反审核期初入库后余额应回到 0");
 
       // 采购入库：按单据金额入账，出库成本走移动加权平均。
       auto purchased = items.create(xiaotu::gen::ItemRow{.code = "P001", .name = "采购商品"});
@@ -256,9 +286,12 @@ int main() {
             "采购入库链路应保留原流水并追加 REVERSE（共 5 条）");
 
       const auto purchase_docs = documents.list("PUR_IN");
-      check(purchase_docs.size() == 2, "应有两张采购入库单");
-      check(purchase_docs.at(0).status == "APPROVED" && purchase_docs.at(1).status == "VOIDED",
-            "反审核的入库单应标记为 VOIDED");
+      int voided_purchases = 0;
+      for (const auto& doc : purchase_docs) {
+        if (doc.status == "VOIDED") ++voided_purchases;
+      }
+      check(purchase_docs.size() == 3 && voided_purchases == 2,
+            "应有三张采购入库单，期初与首笔采购被反审核为 VOIDED");
 
       // 供应商档案：CRUD、编码唯一，并能被采购单据引用。
       const auto supplier = suppliers.create(

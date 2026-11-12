@@ -111,6 +111,21 @@ void apply_stock_move(sqlite3* conn, const DocumentDefinition& definition, std::
     }
   }
 
+  // 出库前校验可用数量：不足则整单事务回滚，不会出现半途扣减或负数结存。
+  if (definition.stock_direction == StockDirection::Out && balance_qty < line.qty) {
+    std::string code;
+    std::string name;
+    Stmt item(conn, "SELECT code, name FROM item WHERE id = ?;");
+    item.bind(1, line.item_id);
+    if (item.step()) {
+      code = item.text(0);
+      name = item.text(1);
+    }
+    throw AppError("STOCK_INSUFFICIENT", "库存不足：" + code + " " + name + " 可用 " +
+                                            std::to_string(balance_qty) + "，需出库 " +
+                                            std::to_string(line.qty));
+  }
+
   const std::int64_t cost =
       definition.cost_hook ? definition.cost_hook(line.qty, line.price_cents, balance_qty,
                                                   balance_amount)
