@@ -68,6 +68,12 @@ int main() {
       check(xiaotu::role_has_permission("viewer", "item.read"), "只读角色应能查询商品");
       check(!xiaotu::role_has_permission("viewer", "item.write"), "只读角色不应能修改商品");
       check(!xiaotu::role_has_permission("ghost", "item.read"), "未登记角色应一律拒绝");
+      check(xiaotu::role_has_permission("operator", "print.template.write"),
+            "操作员应能维护打印模板");
+      check(xiaotu::role_has_permission("viewer", "print.template.read"),
+            "只读角色应能查看打印模板");
+      check(!xiaotu::role_has_permission("viewer", "print.template.write"),
+            "只读角色不应能修改打印模板");
 
       xiaotu::UserService users(db);
       const auto seeded_users = users.list();
@@ -885,6 +891,55 @@ int main() {
             "删除默认模板后应回退到内置默认");
       templates.remove(created_tmpl2.id);
       check(templates.list("REPORT", "stock-ledger").empty(), "软删除后列表应为空");
+
+      // 显式模板失效（不存在或目标不匹配）时同样回退到目标的内置默认。
+      check(templates.resolve("REPORT", "stock-ledger", 99999999).id == 0,
+            "显式模板不存在时应回退内置默认");
+      auto cross = tmpl;
+      cross.code = "PT-CROSS";
+      cross.name = "跨目标模板";
+      cross.is_default = false;
+      const auto cross_created = templates.create(cross);
+      const auto mismatched =
+          templates.resolve("REPORT", "stock-balance", cross_created.id);
+      check(mismatched.id == 0 && mismatched.target_key == "stock-balance",
+            "显式模板与目标不匹配时应回退该目标的内置默认");
+      templates.remove(cross_created.id);
+
+      // 字段范围校验：越界值在保存阶段就被拒绝，不依赖数据库 CHECK 报 500。
+      const auto rejects = [&](const xiaotu::PrintTemplate& candidate) {
+        try {
+          templates.create(candidate);
+        } catch (const xiaotu::AppError& error) {
+          return error.code() == "INVALID_INPUT";
+        }
+        return false;
+      };
+      auto candidate = tmpl;
+      candidate.code = "PT-RANGE-MARGIN";
+      candidate.margin_mm = 51;
+      check(rejects(candidate), "页边距超过 50mm 应拒绝");
+      candidate = tmpl;
+      candidate.code = "PT-RANGE-FONT";
+      candidate.font_size_pt = 5;
+      check(rejects(candidate), "字号小于 6pt 应拒绝");
+      candidate = tmpl;
+      candidate.code = "PT-RANGE-PAPER";
+      candidate.page_size = "CUSTOM";
+      check(rejects(candidate), "自定义纸张未填宽高应拒绝");
+      candidate = tmpl;
+      candidate.code = "PT-RANGE-HEADER";
+      candidate.header_text = std::string(501, 'x');
+      check(rejects(candidate), "页眉超过 500 字符应拒绝");
+      candidate = tmpl;
+      candidate.code = "PT-RANGE-WIDTH";
+      candidate.columns.at(0).width_mm = 501;
+      check(rejects(candidate), "列宽超过 500mm 应拒绝");
+      candidate = tmpl;
+      candidate.code = "PT-RANGE-DUP";
+      candidate.columns.push_back(
+          {.column_key = "biz_time", .position = 3, .visible = true});
+      check(rejects(candidate), "同一模板重复列应拒绝");
 
     }
   } catch (const std::exception& error) {
