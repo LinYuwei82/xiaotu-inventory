@@ -602,6 +602,7 @@ Linux 上该脚本等价于 CI：`XIAOTU_BUILD_SHELL=OFF` 配置构建、`ctest`
 
 ## 12. 参考
 
+- 用户手册（面向使用者）：`docs/用户手册.md`
 - 技术方案：`docs/进销存技术方案.md`
 - 数据库结构：`core/src/migrations.cpp`（v9）
 - API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`、`/api/stock/cost-recalc`
