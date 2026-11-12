@@ -6,7 +6,8 @@
 
 namespace xiaotu {
 
-std::vector<StockBalanceRow> StockService::balances() {
+std::vector<StockBalanceRow> StockService::balances(std::int64_t warehouse_id,
+                                                    std::int64_t item_id, bool hide_zero) {
   std::vector<StockBalanceRow> rows;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
@@ -15,7 +16,15 @@ std::vector<StockBalanceRow> StockService::balances() {
               " JOIN item i ON i.id = b.item_id"
               " JOIN warehouse w ON w.id = b.warehouse_id"
               " WHERE i.is_deleted = 0 AND w.is_deleted = 0"
+              "   AND (? = 0 OR b.warehouse_id = ?)"
+              "   AND (? = 0 OR b.item_id = ?)"
+              "   AND (? = 0 OR b.qty <> 0)"
               " ORDER BY i.code, w.code;");
+    stmt.bind(1, warehouse_id)
+        .bind(2, warehouse_id)
+        .bind(3, item_id)
+        .bind(4, item_id)
+        .bind(5, static_cast<std::int64_t>(hide_zero ? 1 : 0));
     while (stmt.step()) {
       StockBalanceRow row;
       row.item_id = stmt.i64(0);

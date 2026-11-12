@@ -419,10 +419,28 @@ void register_report_routes(httplib::Server& server, Services& services) {
   server.Get("/api/reports/stock-balance",
              guard("stock.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const auto rows = services.stock.balances();
+                     const std::int64_t warehouse_id =
+                         req.has_param("warehouse_id")
+                             ? std::stoll(req.get_param_value("warehouse_id"))
+                             : 0;
+                     const std::int64_t item_id =
+                         req.has_param("item_id") ? std::stoll(req.get_param_value("item_id")) : 0;
+                     const bool hide_zero = req.has_param("hide_zero") &&
+                                            req.get_param_value("hide_zero") != "0";
+                     const auto rows = services.stock.balances(warehouse_id, item_id, hide_zero);
+                     // 数量跨单位不可加总，合计行只汇总金额并标注行数。
+                     std::int64_t balance_amount = 0;
+                     for (const auto& row : rows) balance_amount += row.amount_cents;
+                     const std::string balance_total_label =
+                         "合计 " + std::to_string(rows.size()) + " 行";
+                     const std::string scope =
+                         dimension_label(warehouse_id, "仓库") + "；" +
+                         dimension_label(item_id, "商品") +
+                         (hide_zero ? "；隐藏零库存" : "；包含零库存") +
+                         "；数量跨单位不可加总，合计只汇总金额";
                      if (csv_requested(req)) {
                        std::string csv;
-                       csv_preamble(csv, "库存余额表", "全部仓库 / 全部商品");
+                       csv_preamble(csv, "库存余额表", scope);
                        csv_row(csv, {"商品编码", "商品名称", "单位", "仓库编码", "仓库名称",
                                      "数量", "金额（元）"});
                        for (const auto& row : rows) {
@@ -430,12 +448,14 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                        row.warehouse_code, row.warehouse_name,
                                        qty_text(row.qty), yuan(row.amount_cents)});
                        }
+                       csv_row(csv, {balance_total_label, "", "", "", "", "",
+                                     yuan(balance_amount)});
                        send_csv(res, "stock-balance-" + date_stamp() + ".csv", csv);
                        return;
                      }
                      if (xlsx_requested(req)) {
                        XlsxSheet sheet("库存余额表");
-                       xlsx_preamble(sheet, "库存余额表", "全部仓库 / 全部商品");
+                       xlsx_preamble(sheet, "库存余额表", scope);
                        sheet.add_header_row({"商品编码", "商品名称", "单位", "仓库编码",
                                              "仓库名称", "数量", "金额（元）"});
                        for (const auto& row : rows) {
@@ -447,6 +467,11 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                         XlsxCell::text(qty_text(row.qty)),
                                         XlsxCell::money(row.amount_cents)});
                        }
+                       sheet.add_row({XlsxCell::text(balance_total_label),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::money(balance_amount)});
                        send_xlsx(res, "stock-balance-" + date_stamp() + ".xlsx", sheet.build());
                        return;
                      }
@@ -462,13 +487,24 @@ void register_report_routes(httplib::Server& server, Services& services) {
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      const ReportFilter filter = parse_filter(req);
                      const auto rows = services.reports.inventory_summary(filter);
+                     // 数量跨单位不可加总，合计行只汇总四个金额列。
+                     std::int64_t sum_opening = 0;
+                     std::int64_t sum_in = 0;
+                     std::int64_t sum_out = 0;
+                     std::int64_t sum_closing = 0;
+                     for (const auto& row : rows) {
+                       sum_opening += row.opening_amount_cents;
+                       sum_in += row.in_amount_cents;
+                       sum_out += row.out_amount_cents;
+                       sum_closing += row.closing_amount_cents;
+                     }
                      if (csv_requested(req)) {
                        std::string csv;
                        csv_preamble(csv, "进销存汇总",
                                     period_label(filter) + "；" +
                                         dimension_label(filter.item_id, "商品") + "；" +
                                         dimension_label(filter.warehouse_id, "仓库") +
-                                        "；按商品跨仓库汇总");
+                                        "；按商品跨仓库汇总；数量跨单位不可加总，合计只汇总金额");
                        csv_row(csv, {"商品编码", "商品名称", "单位", "期初数量",
                                      "期初金额（元）", "入库数量", "入库金额（元）",
                                      "出库数量", "出库金额（元）", "期末数量",
@@ -482,6 +518,9 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                        qty_text(row.closing_qty),
                                        yuan(row.closing_amount_cents)});
                        }
+                       csv_row(csv, {"合计", "", "", "", yuan(sum_opening), "",
+                                     yuan(sum_in), "", yuan(sum_out), "",
+                                     yuan(sum_closing)});
                        send_csv(res, "inventory-summary-" + date_stamp() + ".csv", csv);
                        return;
                      }
@@ -491,7 +530,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                      period_label(filter) + "；" +
                                          dimension_label(filter.item_id, "商品") + "；" +
                                          dimension_label(filter.warehouse_id, "仓库") +
-                                         "；按商品跨仓库汇总");
+                                         "；按商品跨仓库汇总；数量跨单位不可加总，合计只汇总金额");
                        sheet.add_header_row({"商品编码", "商品名称", "单位", "期初数量",
                                              "期初金额（元）", "入库数量", "入库金额（元）",
                                              "出库数量", "出库金额（元）", "期末数量",
@@ -509,6 +548,12 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                         XlsxCell::text(qty_text(row.closing_qty)),
                                         XlsxCell::money(row.closing_amount_cents)});
                        }
+                       sheet.add_row({XlsxCell::text("合计"), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::money(sum_opening), XlsxCell::text(""),
+                                      XlsxCell::money(sum_in), XlsxCell::text(""),
+                                      XlsxCell::money(sum_out), XlsxCell::text(""),
+                                      XlsxCell::money(sum_closing)});
                        send_xlsx(res, "inventory-summary-" + date_stamp() + ".xlsx",
                                  sheet.build());
                        return;
@@ -608,11 +653,19 @@ void register_report_routes(httplib::Server& server, Services& services) {
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      const ReportFilter filter = parse_filter(req);
                      const auto rows = services.reports.goods_flow(filter);
+                     // 数量跨单位不可加总，合计行只汇总收入 / 发出金额。
+                     std::int64_t flow_in_amount = 0;
+                     std::int64_t flow_out_amount = 0;
+                     for (const auto& row : rows) {
+                       flow_in_amount += row.in_amount_cents;
+                       flow_out_amount += row.out_amount_cents;
+                     }
                      if (csv_requested(req)) {
                        std::string csv;
                        csv_preamble(csv, "收发明细",
                                     period_label(filter) + "；" +
-                                        dimension_label(filter.warehouse_id, "仓库"));
+                                        dimension_label(filter.warehouse_id, "仓库") +
+                                        "；数量跨单位不可加总，合计只汇总金额");
                        csv_row(csv, {"商品编码", "商品名称", "单位", "仓库编码", "仓库名称",
                                      "期初数量", "收入数量", "发出数量", "期末数量",
                                      "收入金额（元）", "发出金额（元）"});
@@ -624,6 +677,8 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                        qty_text(row.closing_qty),
                                        yuan(row.in_amount_cents), yuan(row.out_amount_cents)});
                        }
+                       csv_row(csv, {"合计", "", "", "", "", "", "", "", "",
+                                     yuan(flow_in_amount), yuan(flow_out_amount)});
                        send_csv(res, "goods-flow-" + date_stamp() + ".csv", csv);
                        return;
                      }
@@ -631,7 +686,8 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        XlsxSheet sheet("收发明细");
                        xlsx_preamble(sheet, "收发明细",
                                      period_label(filter) + "；" +
-                                         dimension_label(filter.warehouse_id, "仓库"));
+                                         dimension_label(filter.warehouse_id, "仓库") +
+                                         "；数量跨单位不可加总，合计只汇总金额");
                        sheet.add_header_row({"商品编码", "商品名称", "单位", "仓库编码",
                                              "仓库名称", "期初数量", "收入数量", "发出数量",
                                              "期末数量", "收入金额（元）", "发出金额（元）"});
@@ -648,6 +704,13 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                         XlsxCell::money(row.in_amount_cents),
                                         XlsxCell::money(row.out_amount_cents)});
                        }
+                       sheet.add_row({XlsxCell::text("合计"),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::money(flow_in_amount),
+                                      XlsxCell::money(flow_out_amount)});
                        send_xlsx(res, "goods-flow-" + date_stamp() + ".xlsx", sheet.build());
                        return;
                      }
@@ -663,6 +726,15 @@ void register_report_routes(httplib::Server& server, Services& services) {
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      const ReportFilter filter = parse_filter(req);
                      const auto rows = services.reports.sales_profit(filter);
+                     // 数量跨单位不可加总；合计行汇总收入、成本、毛利并重算毛利率。
+                     std::int64_t profit_revenue = 0;
+                     std::int64_t profit_cost = 0;
+                     std::int64_t profit_total = 0;
+                     for (const auto& row : rows) {
+                       profit_revenue += row.revenue_cents;
+                       profit_cost += row.cost_cents;
+                       profit_total += row.profit_cents;
+                     }
                      if (csv_requested(req)) {
                        std::string csv;
                        csv_preamble(csv, "销售毛利",
@@ -682,6 +754,9 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                        yuan(row.cost_cents), yuan(row.profit_cents),
                                        margin_text(row.revenue_cents, row.profit_cents)});
                        }
+                       csv_row(csv, {"合计", "", "", "", yuan(profit_revenue),
+                                     yuan(profit_cost), yuan(profit_total),
+                                     margin_text(profit_revenue, profit_total)});
                        send_csv(res, "sales-profit-" + date_stamp() + ".csv", csv);
                        return;
                      }
@@ -709,6 +784,12 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                         XlsxCell::text(
                                             margin_text(row.revenue_cents, row.profit_cents))});
                        }
+                       sheet.add_row({XlsxCell::text("合计"), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::money(profit_revenue),
+                                      XlsxCell::money(profit_cost),
+                                      XlsxCell::money(profit_total),
+                                      XlsxCell::text(margin_text(profit_revenue, profit_total))});
                        send_xlsx(res, "sales-profit-" + date_stamp() + ".xlsx", sheet.build());
                        return;
                      }
@@ -1090,6 +1171,21 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                                    ? req.get_param_value("as_of")
                                                    : today_text();
                      const auto rows = services.reports.ar_ap_aging(direction, as_of);
+                     // 合计行按当前截止日的全量分组求和。
+                     std::int64_t aging_total = 0;
+                     std::int64_t aging_not_due = 0;
+                     std::int64_t aging_d1_30 = 0;
+                     std::int64_t aging_d31_60 = 0;
+                     std::int64_t aging_d61_90 = 0;
+                     std::int64_t aging_d90_plus = 0;
+                     for (const auto& row : rows) {
+                       aging_total += row.total_cents;
+                       aging_not_due += row.not_due_cents;
+                       aging_d1_30 += row.d1_30_cents;
+                       aging_d31_60 += row.d31_60_cents;
+                       aging_d61_90 += row.d61_90_cents;
+                       aging_d90_plus += row.d90_plus_cents;
+                     }
                      res.set_header(kArApScopeHeader, kArApScope);
                      if (csv_requested(req)) {
                        std::string csv;
@@ -1109,6 +1205,9 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                        yuan(row.d1_30_cents), yuan(row.d31_60_cents),
                                        yuan(row.d61_90_cents), yuan(row.d90_plus_cents)});
                        }
+                       csv_row(csv, {"合计", "", yuan(aging_total), yuan(aging_not_due),
+                                     yuan(aging_d1_30), yuan(aging_d31_60),
+                                     yuan(aging_d61_90), yuan(aging_d90_plus)});
                        send_csv(res, "ar-ap-aging-" + date_stamp() + ".csv", csv);
                        return;
                      }
@@ -1135,6 +1234,13 @@ void register_report_routes(httplib::Server& server, Services& services) {
                               XlsxCell::money(row.d61_90_cents),
                               XlsxCell::money(row.d90_plus_cents)});
                        }
+                       sheet.add_row({XlsxCell::text("合计"), XlsxCell::text(""),
+                                      XlsxCell::money(aging_total),
+                                      XlsxCell::money(aging_not_due),
+                                      XlsxCell::money(aging_d1_30),
+                                      XlsxCell::money(aging_d31_60),
+                                      XlsxCell::money(aging_d61_90),
+                                      XlsxCell::money(aging_d90_plus)});
                        send_xlsx(res, "ar-ap-aging-" + date_stamp() + ".xlsx", sheet.build());
                        return;
                      }
@@ -1149,9 +1255,12 @@ void register_report_routes(httplib::Server& server, Services& services) {
   server.Get("/api/reports/fund-ledger",
              guard("finance.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const std::int64_t account_id =
-                         req.has_param("account_id") ? std::stoll(req.get_param_value("account_id"))
-                                                     : 0;
+                     // account_id：数字为指定账户，0 为历史「未指定账户」，all 为全部账户。
+                     std::int64_t account_id = 0;
+                     if (req.has_param("account_id")) {
+                       const std::string value = req.get_param_value("account_id");
+                       account_id = value == "all" ? -1 : std::stoll(value);
+                     }
                      const std::string from =
                          req.has_param("from") ? req.get_param_value("from") : "";
                      const std::string to =
@@ -1233,8 +1342,41 @@ void register_report_routes(httplib::Server& server, Services& services) {
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      const std::string as_of =
                          req.has_param("as_of") ? req.get_param_value("as_of") : "";
+                     const auto rows = services.settlements.account_balances(as_of);
+                     const std::string scope =
+                         "截至 " + (as_of.empty() ? std::string("今天") : as_of) +
+                         "；期初 + 累计收入 − 累计支出";
+                     if (csv_requested(req)) {
+                       std::string csv;
+                       csv_preamble(csv, "账户余额一览", scope);
+                       csv_row(csv, {"账户编码", "账户名称", "类型", "期初（元）",
+                                     "累计收入（元）", "累计支出（元）", "余额（元）"});
+                       for (const auto& row : rows) {
+                         csv_row(csv, {row.code, row.name, method_label(row.kind),
+                                       yuan(row.opening_cents), yuan(row.inflow_cents),
+                                       yuan(row.outflow_cents), yuan(row.balance_cents)});
+                       }
+                       send_csv(res, "fund-balances-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
+                     if (xlsx_requested(req)) {
+                       XlsxSheet sheet("账户余额一览");
+                       xlsx_preamble(sheet, "账户余额一览", scope);
+                       sheet.add_header_row({"账户编码", "账户名称", "类型", "期初（元）",
+                                             "累计收入（元）", "累计支出（元）", "余额（元）"});
+                       for (const auto& row : rows) {
+                         sheet.add_row({XlsxCell::text(row.code), XlsxCell::text(row.name),
+                                        XlsxCell::text(method_label(row.kind)),
+                                        XlsxCell::money(row.opening_cents),
+                                        XlsxCell::money(row.inflow_cents),
+                                        XlsxCell::money(row.outflow_cents),
+                                        XlsxCell::money(row.balance_cents)});
+                       }
+                       send_xlsx(res, "fund-balances-" + date_stamp() + ".xlsx", sheet.build());
+                       return;
+                     }
                      nlohmann::json list = nlohmann::json::array();
-                     for (const auto& row : services.settlements.account_balances(as_of)) {
+                     for (const auto& row : rows) {
                        list.push_back({
                            {"id", row.id},
                            {"code", row.code},

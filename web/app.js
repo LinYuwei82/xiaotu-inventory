@@ -346,6 +346,7 @@
 
   function printTotalsText(totals) {
     if (!totals) return "";
+    if (totals.text !== undefined) return String(totals.text);
     if (totals.total_amount_text !== undefined) {
       return "合计数量 " + totals.total_qty + "，合计金额 " + totals.total_amount_text + " 元";
     }
@@ -2283,6 +2284,8 @@
       <div class="card">
         <div class="card-head">
           <h3>账户余额一览</h3>
+          <button class="btn small" data-role="export-fund-balances">导出 CSV</button>
+          <button class="btn small" data-role="excel-fund-balances">导出 Excel</button>
         </div>
         <p class="page-sub">期初 + 累计收入 − 累计支出，截至查询结束日期</p>
         <table class="table" data-role="fund-balances"></table>
@@ -2294,6 +2297,11 @@
           <button class="btn small" data-role="excel-balance">导出 Excel</button>
           <button class="btn small" data-role="print-balance">打印</button>
           <button class="btn small" data-role="pdf-balance">导出 PDF</button>
+        </div>
+        <div class="toolbar">
+          <select data-role="balance-warehouse"></select>
+          <select data-role="balance-item"></select>
+          <label class="checkbox"><input type="checkbox" data-role="balance-hide-zero" />隐藏零库存</label>
         </div>
         <table class="table" data-role="balances"></table>
       </div>
@@ -2429,6 +2437,9 @@
     const toInput = mount.querySelector('[data-role="to"]');
     const directionSelect = mount.querySelector('[data-role="direction"]');
     const balancesTable = mount.querySelector('[data-role="balances"]');
+    const balanceWarehouseSelect = mount.querySelector('[data-role="balance-warehouse"]');
+    const balanceItemSelect = mount.querySelector('[data-role="balance-item"]');
+    const balanceHideZero = mount.querySelector('[data-role="balance-hide-zero"]');
     const ledgerTable = mount.querySelector('[data-role="ledger"]');
     const ledgerFlowSelect = mount.querySelector('[data-role="ledger-flow"]');
     const ledgerCategorySelect = mount.querySelector('[data-role="ledger-category"]');
@@ -2474,6 +2485,15 @@
         query += "&biz_category=" + encodeURIComponent(ledgerCategorySelect.value);
       }
       return query;
+    }
+
+    // 库存余额按仓库 / 商品筛选，可选隐藏零库存；导出与打印共用。
+    function balanceQuery() {
+      return (
+        "?warehouse_id=" + encodeURIComponent(balanceWarehouseSelect.value || "0") +
+        "&item_id=" + encodeURIComponent(balanceItemSelect.value || "0") +
+        "&hide_zero=" + (balanceHideZero.checked ? "1" : "0")
+      );
     }
 
     // 采购明细与采购汇总共用期间与供应商 / 商品 / 仓库筛选。
@@ -2522,6 +2542,7 @@
       ]);
       const previous = fundAccountSelect.value;
       fundAccountSelect.innerHTML =
+        '<option value="all">全部账户（含未指定）</option>' +
         accounts
           .map(
             (row) =>
@@ -2530,12 +2551,17 @@
               }</option>`
           )
           .join("") + '<option value="0">未指定账户（历史）</option>';
-      if (previous && accounts.some((row) => String(row.id) === previous)) {
-        fundAccountSelect.value = previous;
-      }
+      // 页面默认「全部账户」，其余情况保留上一次选择。
+      fundAccountSelect.value =
+        previous && (previous === "all" || previous === "0" ||
+                     accounts.some((row) => String(row.id) === previous))
+          ? previous
+          : "all";
       fillSelect(purchaseSupplierSelect, suppliers, "全部供应商", (row) => row.code + " " + row.name);
       fillSelect(purchaseItemSelect, items, "全部商品", (row) => row.code + " " + row.name);
       fillSelect(purchaseWarehouseSelect, warehouses, "全部仓库", (row) => row.code + " " + row.name);
+      fillSelect(balanceWarehouseSelect, warehouses, "全部仓库", (row) => row.code + " " + row.name);
+      fillSelect(balanceItemSelect, items, "全部商品", (row) => row.code + " " + row.name);
       fillSelect(otherFlowWarehouseSelect, warehouses, "全部仓库", (row) => row.code + " " + row.name);
       const fundQuery =
         period + "&account_id=" + encodeURIComponent(fundAccountSelect.value || "0");
@@ -2553,7 +2579,7 @@
         purchaseSummary,
         otherFlow,
       ] = await Promise.all([
-        api("GET", "/api/reports/stock-balance"),
+        api("GET", "/api/reports/stock-balance" + balanceQuery()),
         api("GET", "/api/reports/stock-ledger" + ledgerQuery() + "&limit=500"),
         api("GET", "/api/reports/goods-flow" + period),
         api("GET", "/api/reports/inventory-summary" + period),
@@ -2611,6 +2637,8 @@
              )
              .join("")}</tbody>`;
 
+      // 数量跨单位不可加总，页面合计只汇总金额，与 CSV / Excel 一致。
+      const balanceAmount = balances.reduce((sum, row) => sum + row.amount_cents, 0);
       balancesTable.innerHTML = !balances.length
         ? emptyRow("暂无库存", 5)
         : `<thead><tr><th>商品编码</th><th>商品名称</th><th>仓库</th><th>数量</th><th>金额（元）</th></tr></thead>
@@ -2624,7 +2652,9 @@
                  <td>${money(row.amount_cents)}</td>
                </tr>`
              )
-             .join("")}</tbody>`;
+             .join("")}</tbody>
+           <tfoot><tr><td>合计 ${balances.length} 行</td><td colspan="3"></td>
+             <td>${money(balanceAmount)}</td></tr></tfoot>`;
 
       const ledgerRows = ledger.rows || [];
       ledgerTotal = ledger.total || 0;
@@ -2653,6 +2683,9 @@
              <td>${qtyText(ledger.totals ? ledger.totals.qty : 0)}</td>
              <td>${money(ledger.totals ? ledger.totals.amount_cents : 0)}</td></tr></tfoot>`;
 
+      // 数量跨单位不可加总，合计只汇总收入 / 发出金额。
+      const flowInAmount = flows.reduce((sum, row) => sum + row.in_amount_cents, 0);
+      const flowOutAmount = flows.reduce((sum, row) => sum + row.out_amount_cents, 0);
       flowsTable.innerHTML = !flows.length
         ? emptyRow("该期间无收发", 9)
         : `<thead><tr><th>商品编码</th><th>商品名称</th><th>仓库</th><th>期初</th><th>收入</th>
@@ -2671,12 +2704,23 @@
                  <td>${money(row.out_amount_cents)}</td>
                </tr>`
              )
-             .join("")}</tbody>`;
+             .join("")}</tbody>
+           <tfoot><tr><td>合计</td><td colspan="5"></td>
+             <td></td>
+             <td>${money(flowInAmount)}</td>
+             <td>${money(flowOutAmount)}</td></tr></tfoot>`;
 
+      // 与 CSV / Excel 列保持一致：四个数量列 + 四个金额列；数量跨单位不可加总。
+      const sumOpeningAmount = summary.reduce((sum, row) => sum + row.opening_amount_cents, 0);
+      const sumInAmount = summary.reduce((sum, row) => sum + row.in_amount_cents, 0);
+      const sumOutAmount = summary.reduce((sum, row) => sum + row.out_amount_cents, 0);
+      const sumClosingAmount = summary.reduce((sum, row) => sum + row.closing_amount_cents, 0);
       summaryTable.innerHTML = !summary.length
-        ? emptyRow("该期间无进销存发生", 8)
+        ? emptyRow("该期间无进销存发生", 11)
         : `<thead><tr><th>商品编码</th><th>商品名称</th><th>单位</th><th>期初数量</th>
-             <th>入库数量</th><th>出库数量</th><th>期末数量</th><th>期末金额（元）</th></tr></thead>
+             <th>期初金额（元）</th><th>入库数量</th><th>入库金额（元）</th>
+             <th>出库数量</th><th>出库金额（元）</th><th>期末数量</th>
+             <th>期末金额（元）</th></tr></thead>
            <tbody>${summary
              .map(
                (row) => `<tr>
@@ -2684,14 +2728,26 @@
                  <td>${escapeHtml(row.item_name)}</td>
                  <td>${escapeHtml(row.unit)}</td>
                  <td>${qtyText(row.opening_qty)}</td>
+                 <td>${money(row.opening_amount_cents)}</td>
                  <td>${qtyText(row.in_qty)}</td>
+                 <td>${money(row.in_amount_cents)}</td>
                  <td>${qtyText(row.out_qty)}</td>
+                 <td>${money(row.out_amount_cents)}</td>
                  <td class="${qtyIsNegative(row.closing_qty) ? "negative" : ""}">${qtyText(row.closing_qty)}</td>
                  <td>${money(row.closing_amount_cents)}</td>
                </tr>`
              )
-             .join("")}</tbody>`;
+             .join("")}</tbody>
+           <tfoot><tr><td>合计</td><td colspan="2"></td>
+             <td></td><td>${money(sumOpeningAmount)}</td>
+             <td></td><td>${money(sumInAmount)}</td>
+             <td></td><td>${money(sumOutAmount)}</td>
+             <td></td><td>${money(sumClosingAmount)}</td></tr></tfoot>`;
 
+      // 合计行：收入、成本、毛利汇总后重算毛利率；数量跨单位不加总。
+      const profitRevenue = profit.reduce((sum, row) => sum + row.revenue_cents, 0);
+      const profitCost = profit.reduce((sum, row) => sum + row.cost_cents, 0);
+      const profitValue = profit.reduce((sum, row) => sum + row.profit_cents, 0);
       profitTable.innerHTML = !profit.length
         ? emptyRow("该期间无销售", 7)
         : `<thead><tr><th>商品编码</th><th>商品名称</th><th>数量</th><th>销售收入（元）</th>
@@ -2712,8 +2768,20 @@
                  }</td>
                </tr>`
              )
-             .join("")}</tbody>`;
+             .join("")}</tbody>
+           <tfoot><tr><td>合计</td><td></td><td></td>
+             <td>${money(profitRevenue)}</td>
+             <td>${money(profitCost)}</td>
+             <td class="${profitValue < 0 ? "negative" : ""}">${money(profitValue)}</td>
+             <td>${profitRevenue === 0 ? "—" : ((profitValue / profitRevenue) * 100).toFixed(1) + "%"}</td>
+           </tr></tfoot>`;
 
+      const agingTotal = aging.reduce((sum, row) => sum + row.total_cents, 0);
+      const agingNotDue = aging.reduce((sum, row) => sum + row.not_due_cents, 0);
+      const agingD1 = aging.reduce((sum, row) => sum + row.d1_30_cents, 0);
+      const agingD31 = aging.reduce((sum, row) => sum + row.d31_60_cents, 0);
+      const agingD61 = aging.reduce((sum, row) => sum + row.d61_90_cents, 0);
+      const agingD90 = aging.reduce((sum, row) => sum + row.d90_plus_cents, 0);
       agingTable.innerHTML = !aging.length
         ? emptyRow("暂无未核销余额", 7)
         : `<thead><tr><th>往来单位</th><th>合计（元）</th><th>未到期</th><th>1-30 天</th>
@@ -2730,7 +2798,15 @@
                  <td>${money(row.d90_plus_cents)}</td>
                </tr>`
              )
-             .join("")}</tbody>`;
+             .join("")}</tbody>
+           <tfoot><tr><td>合计</td>
+             <td>${money(agingTotal)}</td>
+             <td>${money(agingNotDue)}</td>
+             <td>${money(agingD1)}</td>
+             <td>${money(agingD31)}</td>
+             <td>${money(agingD61)}</td>
+             <td>${money(agingD90)}</td>
+           </tr></tfoot>`;
 
       const purchaseRows = purchaseDetail.rows || [];
       purchaseDetailTotal = purchaseDetail.total || 0;
@@ -2866,7 +2942,7 @@
       });
     }
 
-    wireExport("export-balance", () => "/api/reports/stock-balance?format=csv");
+    wireExport("export-balance", () => "/api/reports/stock-balance" + balanceQuery() + "&format=csv");
     wireExport(
       "export-ledger",
       () => "/api/reports/stock-ledger" + ledgerQuery() + "&format=csv",
@@ -2909,6 +2985,10 @@
         encodeURIComponent(fundAccountSelect.value || "0") +
         "&format=csv"
     );
+    wireExport(
+      "export-fund-balances",
+      () => "/api/reports/fund-balances?as_of=" + encodeURIComponent(toInput.value) + "&format=csv"
+    );
 
     function wireExcel(role, pathFn, totalFn) {
       mount.querySelector(`[data-role="${role}"]`).addEventListener("click", async () => {
@@ -2929,7 +3009,7 @@
       });
     }
 
-    wireExcel("excel-balance", () => "/api/reports/stock-balance?format=xlsx");
+    wireExcel("excel-balance", () => "/api/reports/stock-balance" + balanceQuery() + "&format=xlsx");
     wireExcel(
       "excel-ledger",
       () => "/api/reports/stock-ledger" + ledgerQuery() + "&format=xlsx",
@@ -2972,6 +3052,11 @@
         encodeURIComponent(fundAccountSelect.value || "0") +
         "&format=xlsx"
     );
+    wireExcel(
+      "excel-fund-balances",
+      () =>
+        "/api/reports/fund-balances?as_of=" + encodeURIComponent(toInput.value) + "&format=xlsx"
+    );
 
     function wirePrint(role, pathFn) {
       mount.querySelector(`[data-role="${role}"]`).addEventListener("click", () => printTarget(pathFn()));
@@ -2979,7 +3064,10 @@
       if (pdf) pdf.addEventListener("click", () => exportPdfTarget(pathFn(), null));
     }
 
-    wirePrint("print-balance", () => "/api/print/render?target_type=REPORT&target_key=stock-balance");
+    wirePrint(
+      "print-balance",
+      () => "/api/print/render?target_type=REPORT&target_key=stock-balance" + balanceQuery()
+    );
     wirePrint(
       "print-ledger",
       () =>
@@ -3036,6 +3124,9 @@
     mount.querySelector('[data-role="refresh"]').addEventListener("click", reload);
     directionSelect.addEventListener("change", reload);
     fundAccountSelect.addEventListener("change", reload);
+    balanceWarehouseSelect.addEventListener("change", reload);
+    balanceItemSelect.addEventListener("change", reload);
+    balanceHideZero.addEventListener("change", reload);
     ledgerFlowSelect.addEventListener("change", reload);
     ledgerCategorySelect.addEventListener("change", reload);
     purchaseBySelect.addEventListener("change", reload);

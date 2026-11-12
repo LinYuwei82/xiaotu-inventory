@@ -263,8 +263,16 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
   const ReportFilter filter = report_filter(req);
 
   if (target.key == "stock-balance") {
-    render.subtitle = "全部仓库 / 全部商品";
-    for (const auto& row : services.stock.balances()) {
+    const bool hide_zero = req.has_param("hide_zero") && req.get_param_value("hide_zero") != "0";
+    render.subtitle = dimension_label(filter.warehouse_id, "仓库") + "；" +
+                      dimension_label(filter.item_id, "商品") +
+                      (hide_zero ? "；隐藏零库存" : "；包含零库存") +
+                      "；数量跨单位不可加总，合计只汇总金额";
+    std::int64_t balance_total = 0;
+    std::int64_t balance_rows = 0;
+    for (const auto& row : services.stock.balances(filter.warehouse_id, filter.item_id, hide_zero)) {
+      balance_total += row.amount_cents;
+      ++balance_rows;
       render.rows.push_back({{"item_code", row.item_code},
                              {"item_name", row.item_name},
                              {"unit", row.unit},
@@ -273,6 +281,8 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"qty", qty_text(row.qty)},
                              {"amount_cents", row.amount_cents}});
     }
+    render.totals = {{"text", "合计 " + std::to_string(balance_rows) + " 行，金额 " +
+                                  money_text(balance_total) + " 元"}};
     return;
   }
 
@@ -307,8 +317,13 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
 
   if (target.key == "goods-flow") {
     render.subtitle = period_label(filter.from, filter.to) + "；" +
-                      dimension_label(filter.warehouse_id, "仓库");
+                      dimension_label(filter.warehouse_id, "仓库") +
+                      "；数量跨单位不可加总，合计只汇总金额";
+    std::int64_t flow_in = 0;
+    std::int64_t flow_out = 0;
     for (const auto& row : services.reports.goods_flow(filter)) {
+      flow_in += row.in_amount_cents;
+      flow_out += row.out_amount_cents;
       render.rows.push_back({{"item_code", row.item_code},
                              {"item_name", row.item_name},
                              {"unit", row.unit},
@@ -321,14 +336,25 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"in_amount_cents", row.in_amount_cents},
                              {"out_amount_cents", row.out_amount_cents}});
     }
+    render.totals = {{"text", "合计：收入金额 " + money_text(flow_in) + " 元，发出金额 " +
+                                  money_text(flow_out) + " 元"}};
     return;
   }
 
   if (target.key == "inventory-summary") {
     render.subtitle = period_label(filter.from, filter.to) + "；" +
                       dimension_label(filter.item_id, "商品") + "；" +
-                      dimension_label(filter.warehouse_id, "仓库") + "；按商品跨仓库汇总";
+                      dimension_label(filter.warehouse_id, "仓库") +
+                      "；按商品跨仓库汇总；数量跨单位不可加总，合计只汇总金额";
+    std::int64_t sum_opening = 0;
+    std::int64_t sum_in = 0;
+    std::int64_t sum_out = 0;
+    std::int64_t sum_closing = 0;
     for (const auto& row : services.reports.inventory_summary(filter)) {
+      sum_opening += row.opening_amount_cents;
+      sum_in += row.in_amount_cents;
+      sum_out += row.out_amount_cents;
+      sum_closing += row.closing_amount_cents;
       render.rows.push_back({{"item_code", row.item_code},
                              {"item_name", row.item_name},
                              {"unit", row.unit},
@@ -341,6 +367,9 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"closing_qty", qty_text(row.closing_qty)},
                              {"closing_amount_cents", row.closing_amount_cents}});
     }
+    render.totals = {{"text", "合计：期初 " + money_text(sum_opening) + " 元，入库 " +
+                                  money_text(sum_in) + " 元，出库 " + money_text(sum_out) +
+                                  " 元，期末 " + money_text(sum_closing) + " 元"}};
     return;
   }
 
@@ -349,7 +378,13 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                       dimension_label(filter.item_id, "商品") + "；客户 " +
                       (filter.customer_id == 0 ? std::string("全部")
                                                : "ID " + std::to_string(filter.customer_id));
+    std::int64_t revenue = 0;
+    std::int64_t cost = 0;
+    std::int64_t profit = 0;
     for (const auto& row : services.reports.sales_profit(filter)) {
+      revenue += row.revenue_cents;
+      cost += row.cost_cents;
+      profit += row.profit_cents;
       render.rows.push_back({{"item_code", row.item_code},
                              {"item_name", row.item_name},
                              {"unit", row.unit},
@@ -359,6 +394,9 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"profit_cents", row.profit_cents},
                              {"margin", margin_text(row.revenue_cents, row.profit_cents)}});
     }
+    render.totals = {{"text", "合计：收入 " + money_text(revenue) + " 元，成本 " +
+                                  money_text(cost) + " 元，毛利 " + money_text(profit) +
+                                  " 元，毛利率 " + margin_text(revenue, profit)}};
     return;
   }
 
@@ -456,12 +494,15 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
   }
 
   if (target.key == "fund-ledger") {
-    const std::int64_t account_id = param_i64(req, "account_id", 0);
+    const std::string account_param = param_text(req, "account_id");
+    const std::int64_t account_id =
+        account_param == "all" ? -1 : (account_param.empty() ? 0 : std::stoll(account_param));
     const std::string from = param_text(req, "from");
     const std::string to = param_text(req, "to");
     render.subtitle = period_label(from, to) + "；账户 " +
-                      (account_id == 0 ? std::string("未指定账户")
-                                       : "ID " + std::to_string(account_id));
+                      (account_id < 0 ? std::string("全部账户")
+                                      : (account_id == 0 ? std::string("未指定账户")
+                                                         : "ID " + std::to_string(account_id)));
     const auto fund_method = [](const std::string& method) -> std::string {
       if (method == "CASH") return "现金";
       if (method == "BANK") return "银行";
@@ -500,7 +541,19 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
     render.subtitle = std::string("方向 ") + (direction == -1 ? "应付" : "应收") + "；截止日 " +
                       as_of + "；按截止日时点还原（业务日期晚于截止日不计入，核销按核销日期还原）";
     render.placeholders["as_of"] = as_of;
+    std::int64_t aging_total = 0;
+    std::int64_t aging_not_due = 0;
+    std::int64_t aging_d1 = 0;
+    std::int64_t aging_d31 = 0;
+    std::int64_t aging_d61 = 0;
+    std::int64_t aging_d90 = 0;
     for (const auto& row : services.reports.ar_ap_aging(direction, as_of)) {
+      aging_total += row.total_cents;
+      aging_not_due += row.not_due_cents;
+      aging_d1 += row.d1_30_cents;
+      aging_d31 += row.d31_60_cents;
+      aging_d61 += row.d61_90_cents;
+      aging_d90 += row.d90_plus_cents;
       render.rows.push_back({{"partner_name", row.partner_name.empty() ? row.partner_key
                                                                       : row.partner_name},
                              {"direction", row.direction == -1 ? "应付" : "应收"},
@@ -511,6 +564,10 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"d61_90_cents", row.d61_90_cents},
                              {"d90_plus_cents", row.d90_plus_cents}});
     }
+    render.totals = {{"text", "合计 " + money_text(aging_total) + " 元；未到期 " +
+                                  money_text(aging_not_due) + "；1-30 天 " + money_text(aging_d1) +
+                                  "；31-60 天 " + money_text(aging_d31) + "；61-90 天 " +
+                                  money_text(aging_d61) + "；90 天以上 " + money_text(aging_d90)}};
     return;
   }
 

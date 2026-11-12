@@ -391,8 +391,14 @@ std::vector<FundLedgerRow> SettlementService::ledger(std::int64_t account_id,
                                                      std::string_view to) const {
   std::vector<FundLedgerRow> rows;
   db_.read([&](sqlite3* conn) {
+    // account_id > 0：指定账户；0：历史「未指定账户」；-1：全部账户（含未指定）。
+    const bool all_accounts = account_id < 0;
     std::int64_t opening = 0;
-    if (account_id != 0) {
+    if (all_accounts) {
+      Stmt accounts(conn, "SELECT COALESCE(SUM(opening_cents), 0) FROM fund_account"
+                          " WHERE is_deleted = 0;");
+      if (accounts.step()) opening = accounts.i64(0);
+    } else if (account_id > 0) {
       Stmt account(conn, "SELECT opening_cents FROM fund_account WHERE id = ?;");
       account.bind(1, account_id);
       if (!account.step()) {
@@ -408,8 +414,8 @@ std::vector<FundLedgerRow> SettlementService::ledger(std::int64_t account_id,
       Stmt prior(conn,
                  "SELECT COALESCE(SUM(CASE WHEN direction = 1 THEN amount_cents"
                  "                         ELSE -amount_cents END), 0)"
-                 " FROM settlement WHERE account_id = ? AND settled_on < ?;");
-      prior.bind(1, account_id).bind(2, start);
+                 " FROM settlement WHERE (? = -1 OR account_id = ?) AND settled_on < ?;");
+      prior.bind(1, account_id).bind(2, account_id).bind(3, start);
       if (prior.step()) {
         opening += prior.i64(0);
       }
@@ -425,9 +431,10 @@ std::vector<FundLedgerRow> SettlementService::ledger(std::int64_t account_id,
     Stmt stmt(conn,
               "SELECT settled_on, settle_no, partner_name, method, operator, note, direction,"
               " amount_cents FROM settlement"
-              " WHERE account_id = ? AND settled_on >= ? AND settled_on <= ?"
+              " WHERE (? = -1 OR account_id = ?)"
+              "   AND settled_on >= ? AND settled_on <= ?"
               " ORDER BY settled_on, id;");
-    stmt.bind(1, account_id).bind(2, start).bind(3, end);
+    stmt.bind(1, account_id).bind(2, account_id).bind(3, start).bind(4, end);
     while (stmt.step()) {
       FundLedgerRow row;
       row.settled_on = stmt.text(0);

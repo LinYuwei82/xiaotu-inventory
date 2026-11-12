@@ -13,7 +13,10 @@ class StockService {
  public:
   explicit StockService(Db& db) : db_(db) {}
 
-  std::vector<StockBalanceRow> balances();
+  // warehouse_id / item_id 为 0 表示不限；hide_zero 用于隐藏数量为零的结存行。
+  std::vector<StockBalanceRow> balances(std::int64_t warehouse_id = 0,
+                                        std::int64_t item_id = 0,
+                                        bool hide_zero = false);
   std::vector<StockLedgerRow> ledger(std::int64_t item_id, int limit = 200);
 
  private:

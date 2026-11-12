@@ -470,7 +470,7 @@ struct DocumentDefinition {
 
 `ar_ap_entry` 只在单据审核时写入。v7 迁移为历史销售单按名称回填了 `customer_id`，但**不会为升级前已审核的单据补建往来记录**。因此：
 
-- 应收应付台账（`/api/ar-ap`）、收付款（`/api/settlements`）、账龄（`/api/reports/ar-ap-aging`）与对账单（`/api/reports/statement`）仅统计 **v7 迁移之后审核的单据**；升级前已审核单据不计入往来余额与账龄。收付款单可以为空分摊（预收/预付），资金流水见 `/api/reports/fund-ledger`，账户余额见 `/api/reports/fund-balances`；升级前的收付款记录 `account_id=0`，在流水中归入「未指定账户」。
+- 应收应付台账（`/api/ar-ap`）、收付款（`/api/settlements`）、账龄（`/api/reports/ar-ap-aging`）与对账单（`/api/reports/statement`）仅统计 **v7 迁移之后审核的单据**；升级前已审核单据不计入往来余额与账龄。台账列表默认排除已作废（`VOIDED`）记录，显式传 `status=VOIDED` 可回看历史。账龄按 `as_of` 做时点快照：业务日期晚于截止日的单据不计入，已核销金额按 `settlement_allocation` 与核销日期还原，不再使用当前的 `settled_cents`。收付款单可以为空分摊（预收/预付），资金流水见 `/api/reports/fund-ledger`，账户余额见 `/api/reports/fund-balances`；升级前的收付款记录 `account_id=0`，在流水中归入「未指定账户」，`account_id=all` 表示全部账户（期初为各账户期初合计），页面默认选「全部账户」。
 - 上述接口在响应头返回 `X-Xiaotu-Data-Scope: ar_ap_since_v7`，返回体结构不变。
 - 库存余额、库存流水、收发明细直接基于 `stock_ledger`，**不受影响**。
 - 需要全量历史往来时，目前只能通过单据反审核后重新审核来生成台账，或后续单独做期初往来录入。
@@ -496,6 +496,8 @@ struct DocumentDefinition {
 采购汇总的「入库均价」= 入库行金额合计 ÷ 入库行数量合计，只计采购入库，退货不参与；某分组只有退货时均价显示「—」，净数量为负时标注「净退货」。合计行同样按全量入库行计算，不对分组均价再平均。
 
 采购明细与库存流水页面默认只取 500 行，页面会显示「共 N 行，当前显示前 500 行」并提示导出查看全部；合计与导出（上限 100000 行）一律按全量计算，超过导出上限时导出文件头会写明实际范围。
+
+库存余额表支持 `warehouse_id` / `item_id` / `hide_zero` 筛选，页面、CSV、XLSX 与打印共用同一条件。库存余额、收发明细、进销存汇总、销售毛利、应收应付账龄五张报表都带合计行，页面、CSV、XLSX 与打印四处口径一致：金额列直接汇总，毛利率按汇总后的收入与毛利重算；数量列因跨单位不可加总，合计行留空并在表头说明。账户余额一览也支持 `format=csv|xlsx` 导出。
 
 账户余额一览走 `/api/reports/fund-balances`，汇总每个账户的期初、累计收入、累计支出与余额，并单列历史「未指定账户」。
 
