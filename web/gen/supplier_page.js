@@ -8,6 +8,8 @@
     key: "supplier",
     title: "供应商",
     api: "/api/suppliers",
+    permissions: { read: "supplier.read", write: "supplier.write" },
+    importable: true,
     idField: "id",
     columns: [
       { key: "code", label: "编码", type: "string" },

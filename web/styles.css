@@ -191,12 +191,15 @@ main {
   background: var(--panel);
   border-radius: 10px;
   padding: 18px 20px;
-  width: min(360px, calc(100vw - 48px));
+  width: min(460px, calc(100vw - 48px));
   box-shadow: 0 12px 32px rgba(15, 23, 42, 0.25);
 }
 
 .confirm-text {
   margin: 0 0 16px;
+  max-height: 50vh;
+  overflow: auto;
+  white-space: pre-line;
 }
 
 .confirm-input {
@@ -241,6 +244,13 @@ main {
   margin: 2px 0 0;
   color: var(--muted);
   font-size: 12px;
+}
+
+.page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .card {

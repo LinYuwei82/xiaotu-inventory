@@ -8,6 +8,7 @@
     key: "unit",
     title: "计量单位",
     api: "/api/units",
+    permissions: { read: "unit.read", write: "unit.write" },
     idField: "id",
     columns: [
       { key: "code", label: "编码", type: "string" },

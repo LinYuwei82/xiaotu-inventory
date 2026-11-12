@@ -8,6 +8,10 @@
     key: "{{ t.key }}",
     title: "{{ t.entity }}",
     api: "{{ t.api }}",
+    permissions: { read: "{{ t.permissions.read }}", write: "{{ t.permissions.write }}" },
+{% if t.get("import") %}
+    importable: true,
+{% endif %}
     idField: "id",
     columns: [
 {% for f in t.fields %}

@@ -8,6 +8,7 @@
     key: "fund_account",
     title: "资金账户",
     api: "/api/fund-accounts",
+    permissions: { read: "finance.read", write: "finance.write" },
     idField: "id",
     columns: [
       { key: "code", label: "编码", type: "string" },

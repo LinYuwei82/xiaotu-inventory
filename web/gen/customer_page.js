@@ -8,6 +8,8 @@
     key: "customer",
     title: "客户",
     api: "/api/customers",
+    permissions: { read: "customer.read", write: "customer.write" },
+    importable: true,
     idField: "id",
     columns: [
       { key: "code", label: "编码", type: "string" },

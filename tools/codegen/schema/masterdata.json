@@ -15,6 +15,7 @@
       "api": "/api/items",
       "permissions": { "read": "item.read", "write": "item.write" },
       "nav_group": "master",
+      "import": true,
       "order_by": "code",
       "fields": [
         { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
@@ -63,6 +64,7 @@
       "api": "/api/customers",
       "permissions": { "read": "customer.read", "write": "customer.write" },
       "nav_group": "master",
+      "import": true,
       "order_by": "code",
       "fields": [
         { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
@@ -80,6 +82,7 @@
       "api": "/api/suppliers",
       "permissions": { "read": "supplier.read", "write": "supplier.write" },
       "nav_group": "master",
+      "import": true,
       "order_by": "code",
       "fields": [
         { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },

@@ -8,6 +8,7 @@
     key: "warehouse",
     title: "仓库",
     api: "/api/warehouses",
+    permissions: { read: "warehouse.read", write: "warehouse.write" },
     idField: "id",
     columns: [
       { key: "code", label: "编码", type: "string" },

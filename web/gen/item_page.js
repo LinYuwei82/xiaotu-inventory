@@ -8,6 +8,8 @@
     key: "item",
     title: "商品",
     api: "/api/items",
+    permissions: { read: "item.read", write: "item.write" },
+    importable: true,
     idField: "id",
     columns: [
       { key: "code", label: "编码", type: "string" },
