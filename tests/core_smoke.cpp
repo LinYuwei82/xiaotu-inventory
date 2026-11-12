@@ -808,7 +808,13 @@ int main() {
 
       // 打印模板：列白名单、默认唯一、软删除回退与乐观锁。
       xiaotu::PrintTemplateService templates(db);
-      check(xiaotu::print_targets().size() == 13, "打印目标应包含 6 种单据与 7 张报表");
+      check(xiaotu::print_targets().size() == 16, "打印目标应包含 9 种单据与 7 张报表");
+      check(xiaotu::find_print_target("DOC", "OTH_IN") != nullptr,
+            "其他入库应登记为打印目标");
+      check(xiaotu::find_print_target("DOC", "OTH_OUT") != nullptr,
+            "其他出库应登记为打印目标");
+      check(xiaotu::find_print_target("DOC", "SAL_ORDER") != nullptr,
+            "销售订单应登记为打印目标");
       const auto* ledger_target = xiaotu::find_print_target("REPORT", "stock-ledger");
       check(ledger_target != nullptr && !ledger_target->columns.empty(),
             "库存流水明细应登记列白名单");

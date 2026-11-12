@@ -31,7 +31,7 @@ PrintColumnDef column_def(std::string key, std::string label, std::string type,
 }
 
 std::vector<PrintTargetDef> make_targets() {
-  // 六种单据的明细列一致，模板只决定显示哪些、顺序与宽度。
+  // 九种单据的明细列一致，模板只决定显示哪些、顺序与宽度。
   const std::vector<PrintColumnDef> doc_columns = {
       column_def("line_no", "序号", "INTEGER", "LEFT", 10),
       column_def("item_code", "商品编码", "TEXT", "LEFT", 26),
@@ -124,6 +124,9 @@ std::vector<PrintTargetDef> make_targets() {
       {"DOC", "SAL_RET", "销售退货单", doc_columns},
       {"DOC", "STK_TRF", "库存调拨单", doc_columns},
       {"DOC", "STK_CNT", "库存盘点单", doc_columns},
+      {"DOC", "OTH_IN", "其他入库单", doc_columns},
+      {"DOC", "OTH_OUT", "其他出库单", doc_columns},
+      {"DOC", "SAL_ORDER", "销售订单", doc_columns},
       {"REPORT", "stock-balance", "库存余额表", balance_columns},
       {"REPORT", "stock-ledger", "库存流水明细", ledger_columns},
       {"REPORT", "goods-flow", "收发明细", flow_columns},

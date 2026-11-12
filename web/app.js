@@ -921,8 +921,10 @@
     }
 
     function actionsFor(doc) {
+      const print = '<button class="link" data-role="print">打印</button>';
       if (doc.status === "DRAFT") {
         return (
+          print +
           '<button class="link" data-role="approve">确认</button>' +
           '<button class="link" data-role="edit">编辑</button>' +
           '<button class="link danger" data-role="delete">删除</button>'
@@ -930,11 +932,12 @@
       }
       if (doc.order_status === "CONFIRMED") {
         return (
+          print +
           '<button class="link" data-role="convert">转出库</button>' +
           '<button class="link danger" data-role="close">关闭</button>'
         );
       }
-      return "—";
+      return print;
     }
 
     function renderDocuments() {
@@ -1141,6 +1144,15 @@
       if (!button) return;
       const id = Number(event.target.closest("tr").dataset.id);
       try {
+        if (button.dataset.role === "print") {
+          await printTarget(
+            "/api/print/render?target_type=DOC&target_key=" +
+              docType +
+              "&doc_id=" +
+              id
+          );
+          return;
+        }
         if (button.dataset.role === "approve") {
           if (!confirm("确认订单后不可再改单，只能转出库或关闭。继续？")) return;
           await api("POST", "/api/documents/" + id + "/approve");
