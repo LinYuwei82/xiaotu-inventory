@@ -26,6 +26,9 @@ nlohmann::json settlement_json(const SettlementRow& row) {
       {"settled_on", row.settled_on},
       {"reverses_id", row.reverses_id},
       {"note", row.note},
+      {"account_id", row.account_id},
+      {"method", row.method},
+      {"operator", row.operator_name},
   };
 }
 
@@ -88,20 +91,24 @@ void register_finance_routes(httplib::Server& server, Services& services) {
               guard("finance.write",
                     [&services](const httplib::Request& req, httplib::Response& res) {
                       const auto body = json_body(req);
-                      std::vector<AllocationInput> allocations;
+                      SettlementCreateInput input;
+                      input.direction = body.value("direction", 1);
+                      input.partner_key = body.value("partner_key", std::string{});
+                      input.partner_name = body.value("partner_name", std::string{});
+                      input.amount_cents = body.value("amount_cents", std::int64_t{0});
+                      input.account_id = body.value("account_id", std::int64_t{0});
+                      input.method = body.value("method", std::string{});
+                      input.operator_name = body.value("operator", std::string{});
+                      input.settled_on = body.value("settled_on", std::string{});
+                      input.note = body.value("note", std::string{});
                       if (body.contains("allocations")) {
                         for (const auto& item : body.at("allocations")) {
-                          allocations.push_back(AllocationInput{
+                          input.allocations.push_back(AllocationInput{
                               item.value("entry_id", std::int64_t{0}),
                               item.value("amount_cents", std::int64_t{0})});
                         }
                       }
-                      const auto created = services.settlements.create(
-                          body.value("direction", 1),
-                          body.value("partner_key", std::string{}),
-                          body.value("amount_cents", std::int64_t{0}), allocations,
-                          body.value("settled_on", std::string{}),
-                          body.value("note", std::string{}));
+                      const auto created = services.settlements.create(input);
                       json_ok(res, settlement_json(created));
                     }));
 

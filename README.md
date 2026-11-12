@@ -13,7 +13,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 ## 0. 数据库结构版本
 
-当前 schema 为 **v11**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
+当前 schema 为 **v12**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -28,6 +28,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v9 | 销售订单：`order_status`、`converted_qty`、`source_order_line_id` 与索引 |
 | v10 | 会话表 `app_session`：令牌散列、用户、有效期与索引 |
 | v11 | 数量改为 4 位定点整数（×10000），`unit.qty_decimals` 控制单位精度，重建 `doc_line` 允许盘点实盘为 0 |
+| v12 | 资金账户 `fund_account`；`settlement` 增加账户、结算方式与经办人，老记录 `account_id=0` 表示未指定 |
 
 ## 1. 环境要求
 
@@ -444,7 +445,7 @@ struct DocumentDefinition {
 | operator（2） | 主数据读写（`item/unit/warehouse/supplier/customer` 的 `.read` + `.write`）、`document.read/write`、`stock.read`、`finance.read/write`、`print.template.read/write` |
 | viewer（3） | 上述所有 `.read`（含 `document.read`、`stock.read`、`finance.read`、`print.template.read`），无任何写权限 |
 
-权限点按十一组登记：`item`、`unit`、`warehouse`、`supplier`、`customer`、`document`、`stock`、`finance`、`print.template`、`user`、`audit`。其中 `user.read/write` 与 `audit.read` 没有 `app_role_permission` 种子行，实际只有 admin 的 `*` 通配覆盖，operator 与 viewer 都无法访问用户管理与审计日志。未在 `app_role_permission` 声明的权限码默认拒绝；模板管理权限与出数数据权限相互独立。
+权限点按十一组登记：`item`、`unit`、`warehouse`、`supplier`、`customer`、`document`、`stock`、`finance`、`print.template`、`user`、`audit`。其中 `user.read/write` 与 `audit.read` 没有 `app_role_permission` 种子行，实际只有 admin 的 `*` 通配覆盖，operator 与 viewer 都无法访问用户管理与审计日志。未在 `app_role_permission` 声明的权限码默认拒绝；模板管理权限与出数数据权限相互独立。资金账户（`/api/fund-accounts`）与资金流水报表复用 `finance.read/write`，不新增 `fund.*` 权限组。
 
 ### 运行日志
 
@@ -458,14 +459,14 @@ struct DocumentDefinition {
 
 `ar_ap_entry` 只在单据审核时写入。v7 迁移为历史销售单按名称回填了 `customer_id`，但**不会为升级前已审核的单据补建往来记录**。因此：
 
-- 应收应付台账（`/api/ar-ap`）、核销（`/api/settlements`）、账龄（`/api/reports/ar-ap-aging`）与对账单（`/api/reports/statement`）仅统计 **v7 迁移之后审核的单据**；升级前已审核单据不计入往来余额与账龄。
+- 应收应付台账（`/api/ar-ap`）、收付款（`/api/settlements`）、账龄（`/api/reports/ar-ap-aging`）与对账单（`/api/reports/statement`）仅统计 **v7 迁移之后审核的单据**；升级前已审核单据不计入往来余额与账龄。收付款单可以为空分摊（预收/预付），资金流水见 `/api/reports/fund-ledger`，账户余额见 `/api/reports/fund-balances`；升级前的收付款记录 `account_id=0`，在流水中归入「未指定账户」。
 - 上述接口在响应头返回 `X-Xiaotu-Data-Scope: ar_ap_since_v7`，返回体结构不变。
 - 库存余额、库存流水、收发明细直接基于 `stock_ledger`，**不受影响**。
 - 需要全量历史往来时，目前只能通过单据反审核后重新审核来生成台账，或后续单独做期初往来录入。
 
 ### 报表与对账单
 
-共七类输出：
+共八类输出：
 
 | 输出 | 接口 | 用途 |
 | --- | --- | --- |
@@ -474,8 +475,11 @@ struct DocumentDefinition {
 | 收发明细 | `/api/reports/goods-flow` | 商品 × 仓库的期初、本期收入 / 发出、期末 |
 | 进销存汇总 | `/api/reports/inventory-summary` | 按商品跨仓库汇总，数量与金额双口径 |
 | 销售毛利 | `/api/reports/sales-profit` | 收入取单据金额（退货红字），成本取库存流水，已反审核不计入 |
+| 资金流水 | `/api/reports/fund-ledger` | 按账户列出期初、逐笔收款/付款与余额，可导出与打印 |
 | 应收应付余额与账龄 | `/api/reports/ar-ap-aging` | 按往来单位与账龄区间汇总，受 v7 统计口径限制 |
 | 对账单 | `/api/reports/statement` | 往来单位期初 + 期间单据 − 期间核销 = 期末 |
+
+账户余额一览走 `/api/reports/fund-balances`，汇总每个账户的期初、累计收入、累计支出与余额，并单列历史「未指定账户」。
 
 每类都支持：
 
@@ -617,5 +621,5 @@ Linux 上该脚本等价于 CI：`XIAOTU_BUILD_SHELL=OFF` 配置构建、`ctest`
 
 - 用户手册（面向使用者）：`docs/用户手册.md`
 - 技术方案：`docs/进销存技术方案.md`
-- 数据库结构：`core/src/migrations.cpp`（v11）
+- 数据库结构：`core/src/migrations.cpp`（v12）
 - API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`、`/api/stock/cost-recalc`

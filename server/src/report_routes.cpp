@@ -198,6 +198,15 @@ nlohmann::json aging_to_json(const AgingRow& row) {
   };
 }
 
+std::string method_label(const std::string& method) {
+  if (method == "CASH") return "现金";
+  if (method == "BANK") return "银行";
+  if (method == "WECHAT") return "微信";
+  if (method == "ALIPAY") return "支付宝";
+  if (method == "OTHER") return "其他";
+  return method.empty() ? "未记录" : method;
+}
+
 std::string margin_text(std::int64_t revenue_cents, std::int64_t profit_cents) {
   if (revenue_cents == 0) return "—";
   // 毛利率保留一位小数，用整数千分比换算，展示层也不引入浮点。
@@ -701,6 +710,108 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      nlohmann::json list = nlohmann::json::array();
                      for (const auto& row : rows) {
                        list.push_back(aging_to_json(row));
+                     }
+                     json_ok(res, list);
+                   }));
+
+  // 资金流水（现金日记账）：包含期初行与逐行余额，按账户 + 日期筛选。
+  server.Get("/api/reports/fund-ledger",
+             guard("finance.read",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     const std::int64_t account_id =
+                         req.has_param("account_id") ? std::stoll(req.get_param_value("account_id"))
+                                                     : 0;
+                     const std::string from =
+                         req.has_param("from") ? req.get_param_value("from") : "";
+                     const std::string to =
+                         req.has_param("to") ? req.get_param_value("to") : "";
+                     const std::string format =
+                         req.has_param("format") ? req.get_param_value("format") : "json";
+                     const auto rows = services.settlements.ledger(account_id, from, to);
+                     const auto direction_text = [](const FundLedgerRow& row) -> std::string {
+                       if (row.opening) return "期初";
+                       return row.direction == 1 ? "收款" : "付款";
+                     };
+
+                     if (format == "csv") {
+                       std::string csv = "\xEF\xBB\xBF";
+                       csv_row(csv, {"日期", "单号", "类型", "往来单位", "结算方式", "经办人",
+                                     "摘要", "收入（元）", "支出（元）", "余额（元）"});
+                       for (const auto& row : rows) {
+                         csv_row(csv, {row.settled_on, row.settle_no, direction_text(row),
+                                       row.partner_name, method_label(row.method),
+                                       row.operator_name, row.note,
+                                       row.opening ? std::string{}
+                                                   : yuan(row.income_cents),
+                                       row.opening ? std::string{}
+                                                   : yuan(row.expense_cents),
+                                       yuan(row.balance_cents)});
+                       }
+                       send_csv(res, "fund-ledger-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
+
+                     if (format == "xlsx") {
+                       XlsxSheet sheet("资金流水");
+                       sheet.add_header_row({"日期", "单号", "类型", "往来单位", "结算方式", "经办人",
+                                             "摘要", "收入（元）", "支出（元）", "余额（元）"});
+                       for (const auto& row : rows) {
+                         sheet.add_row(
+                             {XlsxCell::text(row.settled_on),
+                              XlsxCell::text(row.settle_no),
+                              XlsxCell::text(direction_text(row)),
+                              XlsxCell::text(row.partner_name),
+                              XlsxCell::text(method_label(row.method)),
+                              XlsxCell::text(row.operator_name),
+                              XlsxCell::text(row.note),
+                              row.opening ? XlsxCell::text("") : XlsxCell::money(row.income_cents),
+                              row.opening ? XlsxCell::text("") : XlsxCell::money(row.expense_cents),
+                              XlsxCell::money(row.balance_cents)});
+                       }
+                       send_xlsx(res, "fund-ledger-" + date_stamp() + ".xlsx", sheet.build());
+                       return;
+                     }
+
+                     nlohmann::json list = nlohmann::json::array();
+                     for (const auto& row : rows) {
+                       list.push_back({
+                           {"opening", row.opening},
+                           {"settled_on", row.settled_on},
+                           {"settle_no", row.settle_no},
+                           {"direction", row.opening ? 0 : row.direction},
+                           {"direction_text", direction_text(row)},
+                           {"partner_name", row.partner_name},
+                           {"method", row.method},
+                           {"method_text", method_label(row.method)},
+                           {"operator", row.operator_name},
+                           {"note", row.note},
+                           {"income_cents", row.income_cents},
+                           {"expense_cents", row.expense_cents},
+                           {"balance_cents", row.balance_cents},
+                       });
+                     }
+                     json_ok(res, list);
+                   }));
+
+  // 账户余额一览：期初 + 累计收入 − 累计支出。
+  server.Get("/api/reports/fund-balances",
+             guard("finance.read",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     const std::string as_of =
+                         req.has_param("as_of") ? req.get_param_value("as_of") : "";
+                     nlohmann::json list = nlohmann::json::array();
+                     for (const auto& row : services.settlements.account_balances(as_of)) {
+                       list.push_back({
+                           {"id", row.id},
+                           {"code", row.code},
+                           {"name", row.name},
+                           {"kind", row.kind},
+                           {"kind_text", method_label(row.kind)},
+                           {"opening_cents", row.opening_cents},
+                           {"inflow_cents", row.inflow_cents},
+                           {"outflow_cents", row.outflow_cents},
+                           {"balance_cents", row.balance_cents},
+                       });
                      }
                      json_ok(res, list);
                    }));

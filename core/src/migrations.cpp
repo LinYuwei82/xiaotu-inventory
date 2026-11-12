@@ -497,6 +497,47 @@ CREATE INDEX idx_doc_line_item ON doc_line(item_id);
 CREATE INDEX idx_doc_line_source_order ON doc_line(source_order_line_id);
 )SQL";
 
+// v12：资金账户与收付款单。纯增量：新增账户表、给 settlement 加列，
+// 不修改任何历史金额、单号与核销分摊；老记录 account_id=0 表示「未指定账户」。
+constexpr const char* kV12 = R"SQL(
+CREATE TABLE fund_account (
+  id            INTEGER PRIMARY KEY,
+  code          TEXT    NOT NULL,
+  name          TEXT    NOT NULL,
+  kind          TEXT    NOT NULL,
+  account_no    TEXT    NOT NULL DEFAULT '',
+  bank_name     TEXT    NOT NULL DEFAULT '',
+  opening_cents INTEGER NOT NULL DEFAULT 0,
+  sort_order    INTEGER NOT NULL DEFAULT 0,
+  status        INTEGER NOT NULL DEFAULT 1,
+  is_deleted    INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT    NOT NULL,
+  created_by    TEXT    NOT NULL DEFAULT 'system',
+  updated_at    TEXT    NOT NULL,
+  updated_by    TEXT    NOT NULL DEFAULT 'system',
+  CHECK (kind IN ('CASH', 'BANK', 'WECHAT', 'ALIPAY', 'OTHER')),
+  CHECK (status IN (0, 1)),
+  CHECK (is_deleted IN (0, 1))
+);
+CREATE UNIQUE INDEX uk_fund_account_code ON fund_account(code);
+CREATE UNIQUE INDEX uk_fund_account_name ON fund_account(name);
+CREATE INDEX idx_fund_account_sort ON fund_account(sort_order, id);
+
+-- 已被收付款单引用的账户只能停用，不能删除，避免历史资金流水失去归属。
+CREATE TRIGGER trg_fund_account_delete_guard
+BEFORE UPDATE OF is_deleted ON fund_account
+WHEN NEW.is_deleted = 1 AND OLD.is_deleted = 0
+ AND EXISTS (SELECT 1 FROM settlement WHERE account_id = OLD.id)
+BEGIN
+  SELECT RAISE(ABORT, '账户已被收付款单引用，只能停用');
+END;
+
+ALTER TABLE settlement ADD COLUMN account_id INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE settlement ADD COLUMN method     TEXT    NOT NULL DEFAULT '';
+ALTER TABLE settlement ADD COLUMN operator   TEXT    NOT NULL DEFAULT '';
+CREATE INDEX idx_settlement_account_date ON settlement(account_id, settled_on, id);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -523,6 +564,7 @@ const std::vector<Migration>& all_migrations() {
       {9, "v9_sales_order", kV9},
       {10, "v10_session", kV10},
       {11, "v11_decimal_qty", kV11},
+      {12, "v12_fund_account", kV12},
   };
   return migrations;
 }
@@ -579,6 +621,21 @@ void migrate(Db& db) {
         }
         throw;
       }
+    });
+  }
+
+  // 只有全新数据库才预置「现金」账户；升级库保持账户为空，由用户按实际情况建档，
+  // 历史 settlement 一律 account_id=0，不把旧数据强行挂到现金上。
+  if (applied.empty()) {
+    db.write_raw([&](sqlite3* conn) {
+      exec_sql(conn,
+               "INSERT OR IGNORE INTO fund_account"
+               " (id, code, name, kind, account_no, bank_name, opening_cents,"
+               "  sort_order, status, is_deleted, created_at, created_by,"
+               "  updated_at, updated_by)"
+               " VALUES (1, 'CASH', '现金', 'CASH', '', '', 0, 10, 1, 0,"
+               "         datetime('now', 'localtime'), 'system',"
+               "         datetime('now', 'localtime'), 'system');");
     });
   }
 }

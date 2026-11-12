@@ -116,6 +116,18 @@ std::vector<PrintTargetDef> make_targets() {
       column_def("decrease_cents", "减少（元）", "MONEY", "RIGHT", 18),
       column_def("balance_cents", "余额（元）", "MONEY", "RIGHT", 18),
   };
+  const std::vector<PrintColumnDef> fund_ledger_columns = {
+      column_def("date", "日期", "TEXT", "LEFT", 22),
+      column_def("kind", "类型", "TEXT", "CENTER", 12),
+      column_def("doc_no", "单号", "TEXT", "LEFT", 30),
+      column_def("partner_name", "往来单位", "TEXT", "LEFT", 30),
+      column_def("method", "结算方式", "TEXT", "CENTER", 14),
+      column_def("operator", "经办人", "TEXT", "LEFT", 16),
+      column_def("summary", "摘要", "TEXT", "LEFT", 36),
+      column_def("income_cents", "收入（元）", "MONEY", "RIGHT", 18),
+      column_def("expense_cents", "支出（元）", "MONEY", "RIGHT", 18),
+      column_def("balance_cents", "余额（元）", "MONEY", "RIGHT", 18),
+  };
 
   return {
       {"DOC", "SAL_OUT", "销售出库单", doc_columns},
@@ -134,6 +146,7 @@ std::vector<PrintTargetDef> make_targets() {
       {"REPORT", "sales-profit", "销售毛利", profit_columns},
       {"REPORT", "ar-ap-aging", "应收应付余额与账龄", aging_columns},
       {"REPORT", "statement", "对账单", statement_columns},
+      {"REPORT", "fund-ledger", "资金流水", fund_ledger_columns},
   };
 }
 

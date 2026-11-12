@@ -69,7 +69,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 11, "迁移后 schema 版本应为 11");
+      check(db.schema_version() == 12, "迁移后 schema 版本应为 12");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -652,9 +652,24 @@ int main() {
       const auto entry_b = entry_of(sale_b.id);
       check(entry_a.amount_cents == 3000 && entry_b.amount_cents == 2000, "两笔应收金额应正确");
 
-      const auto first_settlement = settlements.create(
-          1, customer_key, 1000, {{entry_a.id, 1000}}, "2026-11-12", "部分收款");
-      check(first_settlement.settle_no.rfind("HX20261112-", 0) == 0, "核销单号应按日期生成");
+      const auto make_settlement = [&](int direction, const std::string& key,
+                                       std::int64_t amount,
+                                       std::vector<xiaotu::AllocationInput> allocations,
+                                       const std::string& note) {
+        xiaotu::SettlementCreateInput input;
+        input.direction = direction;
+        input.partner_key = key;
+        input.amount_cents = amount;
+        input.account_id = 1;
+        input.method = "CASH";
+        input.settled_on = "2026-11-12";
+        input.note = note;
+        input.allocations = std::move(allocations);
+        return settlements.create(input);
+      };
+      const auto first_settlement =
+          make_settlement(1, customer_key, 1000, {{entry_a.id, 1000}}, "部分收款");
+      check(first_settlement.settle_no.rfind("SK20261112-", 0) == 0, "收款单号应以 SK 开头");
       auto after_partial = entry_of(sale_a.id);
       check(after_partial.settled_cents == 1000 && after_partial.outstanding_cents == 2000 &&
                 after_partial.status == "PARTIAL",
@@ -662,7 +677,7 @@ int main() {
 
       bool over_settle_rejected = false;
       try {
-        settlements.create(1, customer_key, 3000, {{entry_a.id, 3000}}, "2026-11-12", "");
+        make_settlement(1, customer_key, 3000, {{entry_a.id, 3000}}, "");
       } catch (const xiaotu::AppError& error) {
         over_settle_rejected = error.code() == "SETTLE_OVER";
       }
@@ -670,8 +685,8 @@ int main() {
 
       bool duplicate_allocation_rejected = false;
       try {
-        settlements.create(1, customer_key, 200,
-                           {{entry_a.id, 100}, {entry_a.id, 100}}, "2026-11-12", "");
+        make_settlement(1, customer_key, 200,
+                        {{entry_a.id, 100}, {entry_a.id, 100}}, "");
       } catch (const xiaotu::AppError& error) {
         duplicate_allocation_rejected = error.code() == "INVALID_INPUT";
       }
@@ -679,15 +694,15 @@ int main() {
 
       bool cross_partner_rejected = false;
       try {
-        settlements.create(1, "C:999999", 100, {{entry_a.id, 100}}, "2026-11-12", "");
+        make_settlement(1, "C:999999", 100, {{entry_a.id, 100}}, "");
       } catch (const xiaotu::AppError& error) {
         cross_partner_rejected = error.code() == "INVALID_INPUT";
       }
       check(cross_partner_rejected, "跨往来单位核销应被拒绝");
 
-      const auto merged = settlements.create(1, customer_key, 3500,
-                                             {{entry_a.id, 2000}, {entry_b.id, 1500}},
-                                             "2026-11-12", "合并收款");
+      const auto merged = make_settlement(1, customer_key, 3500,
+                                          {{entry_a.id, 2000}, {entry_b.id, 1500}},
+                                          "合并收款");
       check(merged.amount_cents == 3500, "一次核销多张单应成功");
       check(entry_of(sale_a.id).status == "SETTLED", "第一张单应核销完毕");
       check(entry_of(sale_b.id).settled_cents == 1500 && entry_of(sale_b.id).status == "PARTIAL",
@@ -709,6 +724,8 @@ int main() {
 
       const auto settlement_rows = settlements.list(1, customer_key);
       check(settlement_rows.size() == 3, "应有核销、合并核销与撤销三条记录");
+      check(settlement_rows.front().account_id == 1 && settlement_rows.front().method == "CASH",
+            "收付款记录应带资金账户与结算方式");
 
       // 报表：流水明细、收发明细与账龄都从同一份流水/台账聚合，结果需自洽。
       xiaotu::ReportService reports(db);
@@ -876,6 +893,23 @@ int main() {
       }
       check(draft_deleted, "删除草稿后应查不到该单据");
 
+      // 预收：不填分摊也应保存，资金流水与余额要跟着变动。
+      const auto prepayment = make_settlement(1, customer_key, 500, {}, "预收");
+      check(prepayment.settle_no.rfind("SK", 0) == 0, "预收也应使用收款单号");
+      const auto fund_ledger = settlements.ledger(1, "2026-11-01", "2026-11-12");
+      check(!fund_ledger.empty() && fund_ledger.front().opening, "资金流水应包含期初行");
+      check(fund_ledger.back().balance_cents == 4000, "资金流水期末余额应为 40.00 元");
+
+      const auto fund_balances = settlements.account_balances("2026-11-12");
+      check(fund_balances.size() == 1 && fund_balances.front().inflow_cents == 4000 &&
+                fund_balances.front().outflow_cents == 0 &&
+                fund_balances.front().balance_cents == 4000,
+            "账户余额应为累计收款减累计付款");
+
+      settlements.reverse(prepayment.id);
+      check(settlements.ledger(1, "2026-11-01", "2026-11-12").back().balance_cents == 3500,
+            "撤销预收后资金余额应回退");
+
       items.remove(draft_item.id);
       items.remove(sales_returned.id);
       items.remove(returned.id);
@@ -913,7 +947,8 @@ int main() {
 
       // 打印模板：列白名单、默认唯一、软删除回退与乐观锁。
       xiaotu::PrintTemplateService templates(db);
-      check(xiaotu::print_targets().size() == 16, "打印目标应包含 9 种单据与 7 张报表");
+      check(xiaotu::print_targets().size() == 17, "打印目标应包含 9 种单据与 8 张报表");
+
       check(xiaotu::find_print_target("DOC", "OTH_IN") != nullptr,
             "其他入库应登记为打印目标");
       check(xiaotu::find_print_target("DOC", "OTH_OUT") != nullptr,

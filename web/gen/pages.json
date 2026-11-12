@@ -23,5 +23,10 @@
     "key": "supplier",
     "title": "供应商",
     "script": "/gen/supplier_page.js"
+  },
+  {
+    "key": "fund_account",
+    "title": "资金账户",
+    "script": "/gen/fund_account_page.js"
   }
 ]

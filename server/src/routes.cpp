@@ -3,6 +3,7 @@
 #include <httplib.h>
 
 #include "xiaotu/gen/customer_routes.h"
+#include "xiaotu/gen/fund_account_routes.h"
 #include "xiaotu/gen/item_routes.h"
 #include "xiaotu/gen/supplier_routes.h"
 #include "xiaotu/gen/unit_routes.h"
@@ -25,6 +26,7 @@ void register_all_routes(httplib::Server& server, Services& services) {
   gen::register_supplier_routes(server, services);
   gen::register_customer_routes(server, services);
   gen::register_unit_routes(server, services);
+  gen::register_fund_account_routes(server, services);
   register_document_routes(server, services);
   register_stock_routes(server, services);
   register_user_routes(server, services);

@@ -187,7 +187,7 @@ std::string apply_placeholders(std::string text,
 const char* data_permission(const PrintTargetDef& target) {
   if (target.type == "DOC") return "document.read";
   if (target.key == "sales-profit" || target.key == "ar-ap-aging" ||
-      target.key == "statement") {
+      target.key == "statement" || target.key == "fund-ledger") {
     return "finance.read";
   }
   return "stock.read";
@@ -301,6 +301,37 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"cost_cents", row.cost_cents},
                              {"profit_cents", row.profit_cents},
                              {"margin", margin_text(row.revenue_cents, row.profit_cents)}});
+    }
+    return;
+  }
+
+  if (target.key == "fund-ledger") {
+    const std::int64_t account_id = param_i64(req, "account_id", 0);
+    const std::string from = param_text(req, "from");
+    const std::string to = param_text(req, "to");
+    render.subtitle = period_label(from, to) + "；账户 " +
+                      (account_id == 0 ? std::string("未指定账户")
+                                       : "ID " + std::to_string(account_id));
+    const auto fund_method = [](const std::string& method) -> std::string {
+      if (method == "CASH") return "现金";
+      if (method == "BANK") return "银行";
+      if (method == "WECHAT") return "微信";
+      if (method == "ALIPAY") return "支付宝";
+      if (method == "OTHER") return "其他";
+      return method.empty() ? "未记录" : method;
+    };
+    for (const auto& row : services.settlements.ledger(account_id, from, to)) {
+      render.rows.push_back(
+          {{"date", row.settled_on},
+           {"kind", row.opening ? "期初" : (row.direction == 1 ? "收款" : "付款")},
+           {"doc_no", row.settle_no},
+           {"partner_name", row.partner_name},
+           {"method", fund_method(row.method)},
+           {"operator", row.operator_name},
+           {"summary", row.note},
+           {"income_cents", row.income_cents},
+           {"expense_cents", row.expense_cents},
+           {"balance_cents", row.balance_cents}});
     }
     return;
   }

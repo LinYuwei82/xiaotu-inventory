@@ -84,6 +84,24 @@
         { "name": "address", "label": "地址", "type": "string", "required": false, "unique": false, "in_list": false, "in_form": true },
         { "name": "status", "label": "启用", "type": "bool", "required": false, "unique": false, "in_list": true, "in_form": true, "default": true }
       ]
+    },
+    {
+      "table": "fund_account",
+      "key": "fund_account",
+      "entity": "资金账户",
+      "api": "/api/fund-accounts",
+      "permissions": { "read": "finance.read", "write": "finance.write" },
+      "order_by": "sort_order, id",
+      "fields": [
+        { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
+        { "name": "name", "label": "名称", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
+        { "name": "kind", "label": "类型（CASH/BANK/WECHAT/ALIPAY/OTHER）", "type": "string", "required": true, "unique": false, "in_list": true, "in_form": true, "default": "CASH" },
+        { "name": "account_no", "label": "账号", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true },
+        { "name": "bank_name", "label": "开户行", "type": "string", "required": false, "unique": false, "in_list": false, "in_form": true },
+        { "name": "opening_cents", "label": "期初余额（分）", "type": "int", "required": false, "unique": false, "in_list": true, "in_form": true, "default": 0 },
+        { "name": "sort_order", "label": "排序", "type": "int", "required": false, "unique": false, "in_list": true, "in_form": true, "default": 0 },
+        { "name": "status", "label": "启用", "type": "bool", "required": false, "unique": false, "in_list": true, "in_form": true, "default": true }
+      ]
     }
   ]
 }
