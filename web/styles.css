@@ -349,6 +349,11 @@ main {
   color: var(--muted);
 }
 
+/* .field 的 display:flex 会压过浏览器对 hidden 的隐藏，这里按作用域补回。 */
+.field[hidden] {
+  display: none;
+}
+
 /* 输入框与下拉共用同一套字段尺寸，避免原生 select 在 WKWebView 里偏矮。 */
 .field input,
 .field select,
