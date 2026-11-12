@@ -119,18 +119,28 @@ int main() {
     const auto drink = categories.create(food.id, "饮料", 0, true);
     report = xiaotu::import_master(
         db, xiaotu::MasterKind::Item,
-        item_xlsx({{"SP010", "可乐", "330ml", "瓶", "食品/饮料", "6901234567890", "13.5", "是"}}),
+        item_xlsx({{"SP010", "可乐", "330ml", "瓶", "食品/饮料",
+                    "6901234567890|6901234567891", "13.5", "是"}}),
         "items.xlsx");
-    check(report.ok(), "带分类路径/条码/税率的商品应导入成功");
+    check(report.ok(), "带分类路径/多码/税率的商品应导入成功");
     {
       const auto items = xiaotu::export_master(db, xiaotu::MasterKind::Item);
       const auto* row = find_row(items, "SP010");
       check(row != nullptr, "应能导出 SP010");
       if (row != nullptr) {
         check((*row)[4] == "食品/饮料", "导出应带完整分类路径");
-        check((*row)[5] == "6901234567890", "导出应带条码");
+        check((*row)[5] == "6901234567890|6901234567891",
+              "导出应按 | 回写全部条码且主码在前");
         check((*row)[6] == "13.50", "13.5% 应导出为 13.50");
       }
+      std::int64_t code_rows = 0;
+      db.read([&](sqlite3* conn) {
+        xiaotu::Stmt stmt(conn,
+                          "SELECT COUNT(*) FROM item_barcode b JOIN item i ON i.id = b.item_id"
+                          " WHERE i.code = 'SP010';");
+        if (stmt.step()) code_rows = stmt.i64(0);
+      });
+      check(code_rows == 2, "导入多码应写入两行 item_barcode");
     }
     report = xiaotu::import_master(
         db, xiaotu::MasterKind::Item,
@@ -140,9 +150,16 @@ int main() {
           "不存在的分类路径应整批拒绝");
     report = xiaotu::import_master(
         db, xiaotu::MasterKind::Item,
-        item_xlsx({{"SP012", "重复条码", "", "瓶", "", "6901234567890", "", "是"}}), "items.xlsx");
+        item_xlsx({{"SP012", "重复条码", "", "瓶", "", "6901234567891", "", "是"}}), "items.xlsx");
     check(!report.ok() && report.issues.size() == 1 && report.issues[0].column == "条码",
-          "与已有商品重复的条码应整批拒绝");
+          "与已有商品备用码重复应整批拒绝");
+    report = xiaotu::import_master(
+        db, xiaotu::MasterKind::Item,
+        item_xlsx({{"SP014", "同行重复", "", "瓶", "", "6901234567892|6901234567892", "", "是"}}),
+        "items.xlsx");
+    check(!report.ok() && report.issues.size() == 1 && report.issues[0].column == "条码" &&
+              report.issues[0].reason.find("同一行条码重复") != std::string::npos,
+          "同一行内条码重复应整批拒绝");
     report = xiaotu::import_master(
         db, xiaotu::MasterKind::Item,
         item_xlsx({{"SP013", "坏税率", "", "瓶", "", "", "101", "是"}}), "items.xlsx");
