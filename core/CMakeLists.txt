@@ -81,6 +81,7 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/report_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/settlement_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/stock_service.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/token_hash.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/user_service.cpp"
   ${XIAOTU_GENERATED_CORE_SOURCES}
   "${SQLITE_SOURCE}"
@@ -90,7 +91,8 @@ add_library(xiaotu_core STATIC
 target_include_directories(xiaotu_core
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PUBLIC "${THIRD_PARTY}/sqlite"
-  PRIVATE "${ARGON2_DIR}/include")
+  PRIVATE "${ARGON2_DIR}/include"
+  PRIVATE "${ARGON2_DIR}/src")
 
 find_package(Threads REQUIRED)
 target_link_libraries(xiaotu_core PRIVATE Threads::Threads)

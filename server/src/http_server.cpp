@@ -64,6 +64,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
       info_(std::move(info)),
       bootstrap_token_(std::move(bootstrap_token)),
       bootstrap_expire_(std::chrono::steady_clock::now() + std::chrono::minutes(10)),
+      sessions_(services.db),
       server_(std::make_unique<httplib::Server>()) {
   server_->set_payload_max_length(1U << 20U);
   server_->set_read_timeout(15, 0);
@@ -100,7 +101,12 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
   server_->set_pre_routing_handler(
       [this](const httplib::Request& req, httplib::Response& res) {
         const std::string sid = cookie_value(req, "sid");
-        const auto session = sessions_.get(sid);
+        bool renewed = false;
+        const auto session = sessions_.get(sid, &renewed);
+        if (renewed) {
+          // 服务端滑动续期后同步延长浏览器 Cookie，否则 Cookie 会比会话先过期。
+          res.set_header("Set-Cookie", "sid=" + sid + cookie_attributes(req));
+        }
         current_context() = RequestContext{session ? session->user : std::string{},
                                            session ? session->role : std::string{},
                                            random_hex(8),
@@ -196,8 +202,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
       json_error(res, 403, "USER_DISABLED", "内置管理员已停用");
       return;
     }
-    const CreatedSession session =
-        sessions_.create(admin.id, admin.username, admin.role);
+    const CreatedSession session = sessions_.create(admin.id);
     res.set_header("Set-Cookie", "sid=" + session.id + cookie_attributes(req));
     nlohmann::json result;
     result["ok"] = true;
@@ -230,7 +235,9 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
       return;
     }
     login_limiter_.reset(key);
-    const CreatedSession session = sessions_.create(user.id, user.username, user.role);
+    // 登录成功后顺手清掉过期会话，不需要额外的定时任务。
+    sessions_.purge_expired();
+    const CreatedSession session = sessions_.create(user.id);
     res.set_header("Set-Cookie", "sid=" + session.id + cookie_attributes(req));
     nlohmann::json result;
     result["ok"] = true;

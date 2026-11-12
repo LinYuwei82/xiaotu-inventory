@@ -440,6 +440,21 @@ ALTER TABLE doc_line ADD COLUMN source_order_line_id INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX idx_doc_line_source_order ON doc_line(source_order_line_id);
 )SQL";
 
+// v10：会话持久化。只新增表，不改既有表；表中只存令牌散列，不存明文令牌，
+// 数据库文件泄露也不等于登录态泄露。csrf 需要回传给页面，按原样保存。
+constexpr const char* kV10 = R"SQL(
+CREATE TABLE app_session (
+  token_hash   TEXT    PRIMARY KEY,
+  user_id      INTEGER NOT NULL REFERENCES app_user(id),
+  csrf         TEXT    NOT NULL,
+  created_at   TEXT    NOT NULL,
+  last_seen_at TEXT    NOT NULL,
+  expires_at   TEXT    NOT NULL
+);
+CREATE INDEX idx_app_session_user ON app_session(user_id);
+CREATE INDEX idx_app_session_expires ON app_session(expires_at);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -464,6 +479,7 @@ const std::vector<Migration>& all_migrations() {
       {7, "v7_customer_finance", kV7},
       {8, "v8_print_template", kV8},
       {9, "v9_sales_order", kV9},
+      {10, "v10_session", kV10},
   };
   return migrations;
 }

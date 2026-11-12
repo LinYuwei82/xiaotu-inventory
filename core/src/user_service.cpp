@@ -72,6 +72,13 @@ void ensure_user_exists(sqlite3* conn, std::int64_t id) {
   }
 }
 
+// 改密、停用、删除都让该用户已登录的会话立即失效。直接删会话表而不是
+// 依赖查询时的状态判断，是为了与用户变更落在同一个事务里，不留时间窗。
+void revoke_sessions(sqlite3* conn, std::int64_t user_id) {
+  Stmt stmt(conn, "DELETE FROM app_session WHERE user_id = ?;");
+  stmt.bind(1, user_id).run();
+}
+
 }  // namespace
 
 std::vector<UserRow> UserService::list() const {
@@ -192,6 +199,10 @@ UserRow UserService::update(std::int64_t id, const UserInput& input) {
           .bind(8, id)
           .run();
     }
+    // 口令变更或停用后，旧会话不能再继续使用。
+    if (!new_hash.empty() || !input.active) {
+      revoke_sessions(conn, id);
+    }
     audit_write(conn, "update", "user", id, input.username,
                 "{\"role\":\"" + input.role + "\",\"active\":" +
                     std::string(input.active ? "true" : "false") + "}");
@@ -243,6 +254,7 @@ void UserService::set_password(std::int64_t id, std::string_view password) {
               " WHERE id = ? AND is_deleted = 0;");
     const AuditStamp stamp = audit_stamp();
     stmt.bind(1, hash).bind(2, stamp.at).bind(3, stamp.by).bind(4, id).run();
+    revoke_sessions(conn, id);
     audit_write(conn, "set_password", "user", id, std::to_string(id));
   });
 }
@@ -261,6 +273,7 @@ void UserService::remove(std::int64_t id) {
       }
     }
     soft_delete(conn, "app_user", id);
+    revoke_sessions(conn, id);
     audit_write(conn, "delete", "user", id, username);
   });
 }

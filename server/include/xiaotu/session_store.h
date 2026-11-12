@@ -1,10 +1,10 @@
 #pragma once
 
 #include <cstdint>
-#include <mutex>
 #include <optional>
 #include <string>
-#include <unordered_map>
+
+#include "xiaotu/db.h"
 
 namespace xiaotu {
 
@@ -20,17 +20,24 @@ struct CreatedSession {
   std::string csrf;
 };
 
-// 内存会话表。M0 骨架不落库，进程重启即失效；
-// 网络版接入用户体系后替换为持久化实现即可（接口保持不变）。
+// 会话落库：进程重启后登录态仍然有效，令牌只以散列形式存储。
+// 有效期 8 小时，访问时滑动续期；同一会话 60 秒内最多写一次库，
+// 避免每个请求都去抢写连接。登出删除单条记录，改密、停用、删除用户
+// 由 UserService 在同一事务里清空该用户的全部会话。
 class SessionStore {
  public:
-  CreatedSession create(std::int64_t user_id, std::string user, std::string role);
-  std::optional<Session> get(const std::string& id) const;
+  explicit SessionStore(Db& db);
+
+  CreatedSession create(std::int64_t user_id);
+  // renewed 非空时回写这次访问是否触发了续期，调用方据此刷新 Cookie。
+  std::optional<Session> get(const std::string& id, bool* renewed = nullptr);
+
   void erase(const std::string& id);
+  // 清理已过期的会话；启动时与每次登录成功后各调一次，不另设定时任务。
+  void purge_expired();
 
  private:
-  mutable std::mutex mutex_;
-  std::unordered_map<std::string, Session> sessions_;
+  Db& db_;
 };
 
 }  // namespace xiaotu
