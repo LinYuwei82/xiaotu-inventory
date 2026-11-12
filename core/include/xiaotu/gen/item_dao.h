@@ -16,6 +16,7 @@ struct ItemRow {
   std::string name = "";
   std::string spec = "";
   std::string unit = "件";
+  std::int64_t unit_id = 1;
   bool status = true;
 };
 

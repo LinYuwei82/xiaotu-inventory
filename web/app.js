@@ -73,6 +73,7 @@
   async function crudPage(mount, def) {
     let rows = [];
     let editingId = 0;
+    const optionCache = {};
 
     mount.innerHTML = `
       <div class="page-head">
@@ -105,12 +106,38 @@
             } /> ${escapeHtml(field.label)}
           </label>`;
       }
+      if (field.optionsApi) {
+        const options = optionCache[field.optionsApi] || [];
+        return `<label class="field">
+            <span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>
+            <select data-field="${escapeHtml(field.key)}" ${field.required ? "required" : ""}>
+              <option value="0">（未指定）</option>
+              ${options
+                .filter((option) => option.status !== false)
+                .map(
+                  (option) =>
+                    `<option value="${option.id}" ${
+                      String(option.id) === String(value) ? "selected" : ""
+                    }>${escapeHtml(option.code + " " + option.name)}</option>`
+                )
+                .join("")}
+            </select>
+          </label>`;
+      }
       return `<label class="field">
           <span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>
           <input type="text" data-field="${escapeHtml(field.key)}" value="${escapeHtml(
         value === undefined || value === null ? "" : value
       )}" ${field.required ? "required" : ""} />
         </label>`;
+    }
+
+    async function loadOptions() {
+      for (const field of def.fields) {
+        if (field.optionsApi && !optionCache[field.optionsApi]) {
+          optionCache[field.optionsApi] = await api("GET", field.optionsApi);
+        }
+      }
     }
 
     function openForm(row) {
@@ -129,6 +156,8 @@
         const input = form.querySelector('[data-field="' + field.key + '"]');
         if (field.type === "bool") {
           payload[field.key] = input.checked;
+        } else if (field.optionsApi) {
+          payload[field.key] = Number(input.value || 0);
         } else {
           payload[field.key] = input.value.trim();
         }
@@ -171,7 +200,10 @@
       renderTable();
     }
 
-    mount.querySelector('[data-role="new"]').addEventListener("click", () => openForm(null));
+    mount.querySelector('[data-role="new"]').addEventListener("click", async () => {
+      await loadOptions();
+      openForm(null);
+    });
     mount.querySelector('[data-role="cancel"]').addEventListener("click", () => {
       formCard.hidden = true;
     });
@@ -203,6 +235,7 @@
       const row = event.target.closest("tr");
       const id = Number(row.dataset.id);
       if (button.dataset.role === "edit") {
+        await loadOptions();
         openForm(rows.find((item) => item.id === id));
       } else if (button.dataset.role === "delete") {
         if (!confirm("确认删除这条记录？")) return;

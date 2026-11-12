@@ -5,6 +5,11 @@
     "script": "/gen/item_page.js"
   },
   {
+    "key": "unit",
+    "title": "计量单位",
+    "script": "/gen/unit_page.js"
+  },
+  {
     "key": "warehouse",
     "title": "仓库",
     "script": "/gen/warehouse_page.js"

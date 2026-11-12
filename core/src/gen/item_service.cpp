@@ -10,6 +10,24 @@
 #include "xiaotu/error.h"
 
 namespace xiaotu::gen {
+namespace {
+
+// 引用档案字段：校验存在并回填展示值（例如 unit_id → unit 名称快照）。
+void sync_reference(sqlite3* conn, std::int64_t id, const char* table, const char* column,
+                    std::string& target, const char* label) {
+  if (id == 0) {
+    return;
+  }
+  Stmt stmt(conn, "SELECT " + std::string(column) + " FROM " + std::string(table) +
+                      " WHERE id = ? AND is_deleted = 0;");
+  stmt.bind(1, id);
+  if (!stmt.step()) {
+    throw AppError("NOT_FOUND", std::string(label) + "不存在");
+  }
+  target = stmt.text(0);
+}
+
+}  // namespace
 
 std::vector<ItemRow> ItemService::list() { return dao_.list(); }
 
@@ -25,6 +43,8 @@ void ItemService::validate(const ItemRow& row) {
 ItemRow ItemService::create(ItemRow input) {
   validate(input);
   db_.write([&](sqlite3* conn) {
+    sync_reference(conn, input.unit_id, "unit", "name",
+                   input.unit, "计量单位");
     ensure_unique(conn, "item", "code", input.code, 0, "编码");
     ItemDao::insert(conn, input);
   });
@@ -35,6 +55,8 @@ ItemRow ItemService::update(std::int64_t id, ItemRow input) {
   validate(input);
   input.id = id;
   db_.write([&](sqlite3* conn) {
+    sync_reference(conn, input.unit_id, "unit", "name",
+                   input.unit, "计量单位");
     ensure_unique(conn, "item", "code", input.code, id, "编码");
     ItemDao::update(conn, input);
   });

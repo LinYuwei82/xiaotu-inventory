@@ -4,6 +4,7 @@
 #include "xiaotu/document.h"
 #include "xiaotu/gen/item_service.h"
 #include "xiaotu/gen/supplier_service.h"
+#include "xiaotu/gen/unit_service.h"
 #include "xiaotu/gen/warehouse_service.h"
 #include "xiaotu/stock_service.h"
 #include "xiaotu/user_service.h"
@@ -17,6 +18,7 @@ struct Services {
         item(database),
         warehouse(database),
         supplier(database),
+        unit(database),
         docs(database),
         stock(database),
         users(database) {}
@@ -25,6 +27,7 @@ struct Services {
   gen::ItemService item;
   gen::WarehouseService warehouse;
   gen::SupplierService supplier;
+  gen::UnitService unit;
   DocumentEngine docs;
   StockService stock;
   UserService users;

@@ -20,6 +20,7 @@ nlohmann::json to_json(const ItemRow& row) {
       {"name", row.name},
       {"spec", row.spec},
       {"unit", row.unit},
+      {"unit_id", row.unit_id},
       {"status", row.status},
   };
 }
@@ -30,6 +31,7 @@ ItemRow from_json(const nlohmann::json& body) {
   row.name = body.value("name", "");
   row.spec = body.value("spec", "");
   row.unit = body.value("unit", "件");
+  row.unit_id = body.value("unit_id", 1);
   row.status = body.value("status", true);
   return row;
 }

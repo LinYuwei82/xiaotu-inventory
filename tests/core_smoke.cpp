@@ -11,6 +11,7 @@
 #include "xiaotu/error.h"
 #include "xiaotu/gen/item_service.h"
 #include "xiaotu/gen/supplier_service.h"
+#include "xiaotu/gen/unit_service.h"
 #include "xiaotu/gen/warehouse_service.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/permissions.h"
@@ -39,11 +40,12 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 3, "迁移后 schema 版本应为 3");
+      check(db.schema_version() == 4, "迁移后 schema 版本应为 4");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
       xiaotu::gen::SupplierService suppliers(db);
+      xiaotu::gen::UnitService units(db);
       xiaotu::DocumentEngine documents(db);
       xiaotu::StockService stock(db);
 
@@ -299,6 +301,19 @@ int main() {
       }
       check(missing_supplier_rejected, "引用不存在的供应商应被拒绝");
 
+      // 计量单位档案：商品引用档案时回填名称快照，老数据 unit_id=0 继续按文本读取。
+      check(units.list().size() == 7, "迁移应内置 7 个计量单位");
+      const auto bottled =
+          items.create(xiaotu::gen::ItemRow{.code = "U001", .name = "瓶装商品", .unit_id = 2});
+      check(bottled.unit == "瓶", "商品应引用单位档案并回填单位名称");
+      bool bad_unit_rejected = false;
+      try {
+        items.create(xiaotu::gen::ItemRow{.code = "U002", .name = "错误单位商品", .unit_id = 999999});
+      } catch (const xiaotu::AppError& error) {
+        bad_unit_rejected = error.code() == "NOT_FOUND";
+      }
+      check(bad_unit_rejected, "引用不存在的计量单位应被拒绝");
+
       // 采购退货：先入库再退货，以及入库后部分退货。
       auto returned = items.create(xiaotu::gen::ItemRow{.code = "R001", .name = "退货商品"});
       make_doc("PUR_IN", returned.id, 10, 1000);
@@ -401,6 +416,7 @@ int main() {
       items.remove(purchased.id);
       items.remove(item.id);
       items.remove(supplier_item.id);
+      items.remove(bottled.id);
       suppliers.remove(supplier.id);
       check(items.list().empty(), "软删除后列表中不应再出现该商品");
     }

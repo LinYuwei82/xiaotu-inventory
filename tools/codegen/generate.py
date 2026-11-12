@@ -64,6 +64,9 @@ def prepare_table(table: dict) -> dict:
                 "default": default,
                 "default_cpp": struct_default(field_type, default),
                 "json_default": json_default(field_type, default),
+                "reference": raw.get("reference"),
+                "sync_to": raw.get("sync_to", ""),
+                "options_api": raw.get("options_api", ""),
                 "bind_expr": (
                     f"static_cast<std::int64_t>(row.{raw['name']} ? 1 : 0)"
                     if field_type == "bool"

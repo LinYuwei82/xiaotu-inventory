@@ -20,7 +20,7 @@
       { key: "code", label: "编码", type: "string", required: true, default: "" },
       { key: "name", label: "名称", type: "string", required: true, default: "" },
       { key: "spec", label: "规格", type: "string", required: false, default: "" },
-      { key: "unit", label: "单位", type: "string", required: false, default: "\u4ef6" },
+      { key: "unit_id", label: "计量单位", type: "int", required: false, default: 1, optionsApi: "/api/units" },
       { key: "status", label: "启用", type: "bool", required: false, default: true },
     ],
     render: function (mount, ui) {

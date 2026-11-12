@@ -19,7 +19,7 @@
     fields: [
 {% for f in t.fields %}
 {% if f.in_form %}
-      { key: "{{ f.name }}", label: "{{ f.label }}", type: "{{ f.type }}", required: {{ 'true' if f.required else 'false' }}{% if f.default is defined %}, default: {{ f.default | tojson }}{% endif %} },
+      { key: "{{ f.name }}", label: "{{ f.label }}", type: "{{ f.type }}", required: {{ 'true' if f.required else 'false' }}{% if f.default is defined %}, default: {{ f.default | tojson }}{% endif %}{% if f.options_api %}, optionsApi: "{{ f.options_api }}"{% endif %} },
 {% endif %}
 {% endfor %}
     ],

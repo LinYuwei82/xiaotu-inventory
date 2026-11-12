@@ -207,6 +207,39 @@ INSERT INTO app_role_permission (role_id, permission) VALUES
   (3, 'supplier.read');
 )SQL";
 
+// v4：计量单位档案。商品保留 unit 文本快照，新增 unit_id 指向档案，老数据 unit_id=0 继续按文本读取。
+constexpr const char* kV4 = R"SQL(
+CREATE TABLE unit (
+  id         INTEGER PRIMARY KEY,
+  code       TEXT    NOT NULL,
+  name       TEXT    NOT NULL,
+  status     INTEGER NOT NULL DEFAULT 1,
+  is_deleted INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT    NOT NULL,
+  created_by TEXT    NOT NULL DEFAULT 'system',
+  updated_at TEXT    NOT NULL,
+  updated_by TEXT    NOT NULL DEFAULT 'system',
+  CHECK (status IN (0, 1)),
+  CHECK (is_deleted IN (0, 1))
+);
+CREATE UNIQUE INDEX uk_unit_code ON unit(code);
+
+ALTER TABLE item ADD COLUMN unit_id INTEGER NOT NULL DEFAULT 0;
+
+INSERT INTO unit (id, code, name, status, is_deleted, created_at, created_by, updated_at, updated_by) VALUES
+  (1, 'JIAN',  '件',   1, 0, datetime('now', 'localtime'), 'system', datetime('now', 'localtime'), 'system'),
+  (2, 'PING',  '瓶',   1, 0, datetime('now', 'localtime'), 'system', datetime('now', 'localtime'), 'system'),
+  (3, 'GE',    '个',   1, 0, datetime('now', 'localtime'), 'system', datetime('now', 'localtime'), 'system'),
+  (4, 'XIANG', '箱',   1, 0, datetime('now', 'localtime'), 'system', datetime('now', 'localtime'), 'system'),
+  (5, 'BAO',   '包',   1, 0, datetime('now', 'localtime'), 'system', datetime('now', 'localtime'), 'system'),
+  (6, 'MI',    '米',   1, 0, datetime('now', 'localtime'), 'system', datetime('now', 'localtime'), 'system'),
+  (7, 'KG',    '千克', 1, 0, datetime('now', 'localtime'), 'system', datetime('now', 'localtime'), 'system');
+
+INSERT INTO app_role_permission (role_id, permission) VALUES
+  (2, 'unit.read'), (2, 'unit.write'),
+  (3, 'unit.read');
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -225,6 +258,7 @@ const std::vector<Migration>& all_migrations() {
       {1, "v1_initial_schema", kV1},
       {2, "v2_user_and_role", kV2},
       {3, "v3_supplier", kV3},
+      {4, "v4_unit", kV4},
   };
   return migrations;
 }

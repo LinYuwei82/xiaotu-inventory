@@ -10,6 +10,26 @@
 #include "xiaotu/error.h"
 
 namespace xiaotu::gen {
+{% if t.fields | selectattr("reference") | list %}
+namespace {
+
+// 引用档案字段：校验存在并回填展示值（例如 unit_id → unit 名称快照）。
+void sync_reference(sqlite3* conn, std::int64_t id, const char* table, const char* column,
+                    std::string& target, const char* label) {
+  if (id == 0) {
+    return;
+  }
+  Stmt stmt(conn, "SELECT " + std::string(column) + " FROM " + std::string(table) +
+                      " WHERE id = ? AND is_deleted = 0;");
+  stmt.bind(1, id);
+  if (!stmt.step()) {
+    throw AppError("NOT_FOUND", std::string(label) + "不存在");
+  }
+  target = stmt.text(0);
+}
+
+}  // namespace
+{% endif %}
 
 std::vector<{{ t.Name }}Row> {{ t.Name }}Service::list() { return dao_.list(); }
 
@@ -26,6 +46,12 @@ void {{ t.Name }}Service::validate(const {{ t.Name }}Row& row) {
 {{ t.Name }}Row {{ t.Name }}Service::create({{ t.Name }}Row input) {
   validate(input);
   db_.write([&](sqlite3* conn) {
+{% for f in t.fields %}
+{% if f.reference %}
+    sync_reference(conn, input.{{ f.name }}, "{{ f.reference.table }}", "{{ f.reference.display }}",
+                   input.{{ f.sync_to }}, "{{ f.label }}");
+{% endif %}
+{% endfor %}
 {% for f in t.unique_fields %}
     ensure_unique(conn, "{{ t.table }}", "{{ f.name }}", input.{{ f.name }}, 0, "{{ f.label }}");
 {% endfor %}
@@ -38,6 +64,12 @@ void {{ t.Name }}Service::validate(const {{ t.Name }}Row& row) {
   validate(input);
   input.id = id;
   db_.write([&](sqlite3* conn) {
+{% for f in t.fields %}
+{% if f.reference %}
+    sync_reference(conn, input.{{ f.name }}, "{{ f.reference.table }}", "{{ f.reference.display }}",
+                   input.{{ f.sync_to }}, "{{ f.label }}");
+{% endif %}
+{% endfor %}
 {% for f in t.unique_fields %}
     ensure_unique(conn, "{{ t.table }}", "{{ f.name }}", input.{{ f.name }}, id, "{{ f.label }}");
 {% endfor %}
