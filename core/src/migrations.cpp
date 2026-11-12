@@ -524,4 +524,9 @@ void migrate(Db& db) {
   }
 }
 
+int target_schema_version() {
+  const auto& migrations = all_migrations();
+  return migrations.empty() ? 0 : migrations.back().version;
+}
+
 }  // namespace xiaotu

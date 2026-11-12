@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 
+#include "xiaotu/backup.h"
 #include "xiaotu/db.h"
 #include "xiaotu/error.h"
 #include "xiaotu/http_server.h"
@@ -32,6 +33,8 @@ struct Options {
   bool server = false;
   int port = 8080;
   std::filesystem::path data_dir;
+  bool backup = false;
+  std::filesystem::path restore_from;
   bool show_help = false;
 };
 
@@ -42,6 +45,8 @@ void print_usage(const char* program) {
             << "  --server        以网络版启动，监听 0.0.0.0\n"
             << "  --port <端口>   网络版监听端口，默认 8080\n"
             << "  --data <目录>   数据目录，默认为系统应用数据目录\n"
+            << "  --backup        立即生成一次数据库备份并退出\n"
+            << "  --restore <文件> 用指定备份覆盖当前数据库并退出（先自动留安全备份）\n"
             << "  --version       输出版本号\n"
             << "  --help          输出本帮助\n";
 }
@@ -56,6 +61,10 @@ Options parse_args(int argc, char** argv) {
       options.port = std::stoi(argv[++i]);
     } else if (arg == "--data" && i + 1 < argc) {
       options.data_dir = argv[++i];
+    } else if (arg == "--backup") {
+      options.backup = true;
+    } else if (arg == "--restore" && i + 1 < argc) {
+      options.restore_from = argv[++i];
     } else if (arg == "--version") {
       std::cout << XIAOTU_VERSION << std::endl;
       std::exit(0);
@@ -104,7 +113,43 @@ int main(int argc, char** argv) {
               << "数据目录: " << data_dir.string() << "\n"
               << "数据库:   " << database_path.string() << std::endl;
 
+    if (!options.restore_from.empty()) {
+      if (options.backup) {
+        throw xiaotu::AppError("BAD_ARGUMENT", "--backup 与 --restore 不能同时使用");
+      }
+      const auto restored = xiaotu::restore_database(options.restore_from, database_path);
+      std::cout << "恢复完成: " << restored.path.string() << " (" << restored.bytes
+                << " 字节)" << std::endl;
+      xiaotu::log_info("恢复数据库 " + restored.path.string() +
+                       " 字节=" + std::to_string(restored.bytes));
+      xiaotu::shutdown_logging();
+      return 0;
+    }
+
+    const bool database_existed = std::filesystem::exists(database_path);
+    if (options.backup && !database_existed) {
+      throw xiaotu::AppError("NOT_FOUND", "数据库不存在，无法备份：" + database_path.string());
+    }
     xiaotu::Db db(database_path, 4);
+    if (options.backup) {
+      const auto snapshot = xiaotu::backup_database(db, data_dir / "backups", "manual");
+      std::cout << "备份完成: " << snapshot.path.string() << " (" << snapshot.bytes
+                << " 字节)" << std::endl;
+      xiaotu::log_info("手动备份 " + snapshot.path.string() +
+                       " 字节=" + std::to_string(snapshot.bytes));
+      xiaotu::shutdown_logging();
+      return 0;
+    }
+
+    const int previous_version = db.schema_version();
+    if (database_existed && previous_version > 0 &&
+        previous_version < xiaotu::target_schema_version()) {
+      const auto snapshot = xiaotu::backup_database(
+          db, data_dir / "backups", "pre-v" + std::to_string(previous_version));
+      std::cout << "迁移前备份: " << snapshot.path.string() << std::endl;
+      xiaotu::log_info("迁移前备份 " + snapshot.path.string() +
+                       " 字节=" + std::to_string(snapshot.bytes));
+    }
     xiaotu::migrate(db);
     xiaotu::load_role_permissions(db);
     std::cout << "数据库结构版本: v" << db.schema_version() << std::endl;

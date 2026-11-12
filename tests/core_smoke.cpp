@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "xiaotu/audit.h"
-#include "xiaotu/db.h"
+#include "xiaotu/backup.h"
 #include "xiaotu/document.h"
 #include "xiaotu/edition.h"
 #include "xiaotu/error.h"
@@ -1270,6 +1270,33 @@ int main() {
       xiaotu::shutdown_logging();
       check(std::filesystem::exists(log_dir / "app.log.1"), "日志超限应滚动出 app.log.1");
       std::filesystem::remove_all(log_dir);
+
+      // 备份与恢复：快照可校验，恢复后 schema 一致，覆盖前留安全备份。
+      const auto backup_root =
+          std::filesystem::temp_directory_path() / "xiaotu-backup-smoke";
+      std::filesystem::remove_all(backup_root);
+      const auto snapshot = xiaotu::backup_database(db, backup_root / "backups", "smoke");
+      check(std::filesystem::exists(snapshot.path) && snapshot.bytes > 0,
+            "备份应生成非空快照");
+      xiaotu::verify_database(snapshot.path);
+
+      const auto restored_path = backup_root / "restored.db";
+      xiaotu::restore_database(snapshot.path, restored_path);
+      {
+        xiaotu::Db restored(restored_path);
+        check(restored.schema_version() == db.schema_version(),
+              "恢复后 schema 版本应与备份一致");
+      }
+      xiaotu::restore_database(snapshot.path, restored_path);
+      bool has_safety = false;
+      for (const auto& entry :
+           std::filesystem::directory_iterator(backup_root / "backups")) {
+        if (entry.path().filename().string().rfind("pre-restore-", 0) == 0) {
+          has_safety = true;
+        }
+      }
+      check(has_safety, "覆盖恢复前应留下 pre-restore 安全备份");
+      std::filesystem::remove_all(backup_root);
 
 
     }
