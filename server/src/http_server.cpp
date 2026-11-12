@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "xiaotu/context.h"
+#include "xiaotu/edition.h"
 #include "xiaotu/error.h"
 #include "xiaotu/http_json.h"
 #include "xiaotu/ids.h"
@@ -125,6 +126,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     body["app"] = info_.app_name;
     body["version"] = info_.version;
     body["mode"] = info_.mode;
+    body["edition"] = std::string(EditionPolicy::instance().code());
     body["schema_version"] = services_.db.schema_version();
     body["embedded_resources"] = resources::count();
     json_ok(res, body);
@@ -138,12 +140,18 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
       json_error(res, 401, "UNAUTHORIZED", "访问凭据无效或已过期");
       return;
     }
-    const std::string sid = sessions_.create("local-admin", "admin");
+    // 一次性 token 直接绑定内置管理员；口令登录在 M5 接入。
+    const UserRow admin = services_.users.find_by_username("admin");
+    if (!admin.active) {
+      json_error(res, 403, "USER_DISABLED", "内置管理员已停用");
+      return;
+    }
+    const std::string sid = sessions_.create(admin.id, admin.username, admin.role);
     res.set_header("Set-Cookie", "sid=" + sid + "; Path=/; HttpOnly; SameSite=Lax");
     nlohmann::json result;
     result["ok"] = true;
-    result["user"] = "local-admin";
-    result["role"] = "admin";
+    result["user"] = admin.username;
+    result["role"] = admin.role;
     json_ok(res, result);
   });
 

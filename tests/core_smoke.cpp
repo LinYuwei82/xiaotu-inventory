@@ -7,11 +7,14 @@
 
 #include "xiaotu/db.h"
 #include "xiaotu/document.h"
+#include "xiaotu/edition.h"
 #include "xiaotu/error.h"
 #include "xiaotu/gen/item_service.h"
 #include "xiaotu/gen/warehouse_service.h"
 #include "xiaotu/migrations.h"
+#include "xiaotu/permissions.h"
 #include "xiaotu/stock_service.h"
+#include "xiaotu/user_service.h"
 
 namespace {
 
@@ -35,7 +38,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 1, "迁移后 schema 版本应为 1");
+      check(db.schema_version() == 2, "迁移后 schema 版本应为 2");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -45,6 +48,107 @@ int main() {
       const auto warehouse_list = warehouses.list();
       check(warehouse_list.size() == 1, "应内置一个默认仓库");
       check(warehouse_list.at(0).code == "MAIN", "默认仓库编码应为 MAIN");
+
+      // 用户与角色：权限从表载入，内置 admin 不允许被删改到不可用。
+      xiaotu::load_role_permissions(db);
+      check(xiaotu::role_has_permission("admin", "user.write"), "管理员应拥有通配权限");
+      check(xiaotu::role_has_permission("operator", "item.write"), "操作员应能维护商品");
+      check(!xiaotu::role_has_permission("operator", "user.write"), "操作员不应能管理用户");
+      check(xiaotu::role_has_permission("viewer", "item.read"), "只读角色应能查询商品");
+      check(!xiaotu::role_has_permission("viewer", "item.write"), "只读角色不应能修改商品");
+      check(!xiaotu::role_has_permission("ghost", "item.read"), "未登记角色应一律拒绝");
+
+      xiaotu::UserService users(db);
+      const auto seeded_users = users.list();
+      check(seeded_users.size() == 1 && seeded_users.at(0).username == "admin",
+            "迁移应内置 admin 用户");
+      check(seeded_users.at(0).role == "admin", "内置用户角色应为 admin");
+      check(users.count_active() == 1, "内置用户应计入活跃用户");
+
+      const auto operator_user = users.create(
+          xiaotu::UserInput{.username = "op1", .display_name = "操作员一", .role = "operator"});
+      check(operator_user.id > 0 && operator_user.role == "operator", "应能创建操作员");
+
+      bool duplicate_user_rejected = false;
+      try {
+        users.create(xiaotu::UserInput{.username = "op1", .display_name = "重复", .role = "viewer"});
+      } catch (const xiaotu::AppError& error) {
+        duplicate_user_rejected = error.code() == "DUPLICATE_CODE";
+      }
+      check(duplicate_user_rejected, "重复用户名应被拒绝");
+
+      bool bad_role_rejected = false;
+      try {
+        users.create(xiaotu::UserInput{.username = "ghost1", .role = "ghost"});
+      } catch (const xiaotu::AppError& error) {
+        bad_role_rejected = error.code() == "INVALID_ROLE";
+      }
+      check(bad_role_rejected, "未登记角色应被拒绝");
+
+      users.update(operator_user.id, xiaotu::UserInput{.username = "op1",
+                                                      .display_name = "只读一",
+                                                      .role = "viewer",
+                                                      .active = true});
+      check(users.get(operator_user.id).role == "viewer", "用户角色应可调整");
+
+      users.update(operator_user.id, xiaotu::UserInput{.username = "op1",
+                                                      .display_name = "只读一",
+                                                      .role = "viewer",
+                                                      .active = false});
+      check(users.count_active() == 1, "停用用户后活跃数应回到 1");
+
+      users.remove(operator_user.id);
+      check(users.list().size() == 1, "删除用户后列表只剩内置 admin");
+
+      bool admin_delete_rejected = false;
+      try {
+        users.remove(1);
+      } catch (const xiaotu::AppError& error) {
+        admin_delete_rejected = error.code() == "USER_PROTECTED";
+      }
+      check(admin_delete_rejected, "内置管理员不应被删除");
+
+      bool admin_demote_rejected = false;
+      try {
+        users.update(1, xiaotu::UserInput{.username = "admin", .display_name = "管理员",
+                                          .role = "viewer"});
+      } catch (const xiaotu::AppError& error) {
+        admin_demote_rejected = error.code() == "USER_PROTECTED";
+      }
+      check(admin_demote_rejected, "内置管理员不应被降级");
+
+      // 版本能力：代码与构建参数一致，未登记能力默认不开放。
+      const auto& edition = xiaotu::EditionPolicy::instance();
+#ifdef XIAOTU_EDITION_CODE
+      const std::string expected_edition = XIAOTU_EDITION_CODE;
+#else
+      const std::string expected_edition = "full";
+#endif
+      check(std::string(edition.code()) == expected_edition, "版本代码应与构建参数一致");
+      check(edition.state("system.user") != "hidden", "两个版本都应开放用户管理");
+      check(!edition.available("edition.not-exist"), "未登记能力应按不开放处理");
+
+      if (expected_edition == "community") {
+        check(edition.limit("max_users") == 1, "社区版用户额度应为 1");
+        check(!edition.available("deployment.network"), "社区版不开放网络部署");
+        bool community_quota_full = false;
+        try {
+          edition.check_quota("max_users", 1, 1);
+        } catch (const xiaotu::AppError& error) {
+          community_quota_full = error.code() == "QUOTA_EXCEEDED";
+        }
+        check(community_quota_full, "社区版超出 1 个用户应被拒绝");
+      } else {
+        check(edition.limit("max_users") == 30, "全功能版用户额度应为 30");
+        edition.check_quota("max_users", 29, 1);
+        bool full_quota_full = false;
+        try {
+          edition.check_quota("max_users", 30, 1);
+        } catch (const xiaotu::AppError& error) {
+          full_quota_full = error.code() == "QUOTA_EXCEEDED";
+        }
+        check(full_quota_full, "全功能版超出 30 个用户应被拒绝");
+      }
 
       auto item = items.create(xiaotu::gen::ItemRow{.code = "T001", .name = "测试商品"});
       check(!item.code.empty(), "商品应创建成功");

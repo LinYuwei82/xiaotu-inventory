@@ -6,10 +6,10 @@
 
 namespace xiaotu {
 
-std::string SessionStore::create(std::string user, std::string role) {
+std::string SessionStore::create(std::int64_t user_id, std::string user, std::string role) {
   const std::string id = random_hex(32);
   std::lock_guard<std::mutex> lock(mutex_);
-  sessions_[id] = Session{std::move(user), std::move(role)};
+  sessions_[id] = Session{user_id, std::move(user), std::move(role)};
   return id;
 }
 

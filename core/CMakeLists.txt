@@ -55,10 +55,13 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/db.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/doc_number.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/document.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/edition.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/ids.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/migrations.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/money.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/permissions.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/stock_service.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/user_service.cpp"
   ${XIAOTU_GENERATED_CORE_SOURCES}
   "${SQLITE_SOURCE}"
   "${EMBEDDED_SOURCE}")
@@ -66,6 +69,10 @@ add_library(xiaotu_core STATIC
 target_include_directories(xiaotu_core
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PUBLIC "${THIRD_PARTY}/sqlite")
+
+# 生成的能力表按这个宏选择生效版本，见 core/include/xiaotu/gen/edition_caps.h。
+target_compile_definitions(xiaotu_core PUBLIC
+  XIAOTU_EDITION_CODE="${XIAOTU_EDITION}")
 
 target_compile_definitions(xiaotu_core PRIVATE
   SQLITE_THREADSAFE=1

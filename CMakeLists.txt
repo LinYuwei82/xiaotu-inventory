@@ -17,6 +17,11 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "构建类型" FORCE)
 endif()
 
+# 版本：full（全功能版，默认）或 community（社区版）。
+# 能力与额度取自 tools/codegen/schema/editions.json，这里只做选择，不写死数值。
+set(XIAOTU_EDITION "full" CACHE STRING "版本：full（全功能版）或 community（社区版）")
+message(STATUS "版本：${XIAOTU_EDITION}")
+
 add_subdirectory(core)
 add_subdirectory(server)
 add_subdirectory(shell)

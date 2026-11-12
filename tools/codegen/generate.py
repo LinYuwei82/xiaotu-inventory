@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""表结构驱动的代码生成器（M0：商品、仓库）。
+"""表结构与版本能力驱动的代码生成器。
 
 输入：schema/*.json
-输出：DAO、服务层、HTTP 路由、前端列表/表单页、CMake 源文件清单
+输出：DAO、服务层、HTTP 路由、前端列表/表单页、CMake 源文件清单、版本能力头文件
 
 生成物带固定标记头，集中在 *_gen 目录，重新生成会整体覆盖；
 需要自定义逻辑时写在 core/src/handwritten/ 等手写目录，通过组合方式扩展。
 
 用法：
+    python3 tools/codegen/generate.py                    # 生成 schema/ 下全部定义
     python3 tools/codegen/generate.py --schema masterdata
-    python3 tools/codegen/generate.py --schema masterdata --check   # 只校验不写盘
+    python3 tools/codegen/generate.py --check            # 只校验不写盘
 """
 from __future__ import annotations
 
@@ -110,40 +111,64 @@ def write(path: Path, content: str, check: bool) -> None:
         print(f"生成 {path.relative_to(ROOT)}")
 
 
-def clean_stale(directory: Path, keep: set[Path], check: bool) -> None:
+def clean_stale(directory: Path, keep: set[Path], suffixes: tuple[str, ...], check: bool) -> None:
     if not directory.exists() or check:
         return
     for path in directory.iterdir():
-        if path.is_file() and path not in keep:
+        if path.is_file() and path not in keep and path.name.endswith(suffixes):
             head = path.read_text(encoding="utf-8", errors="ignore")[:120]
             if MARKER in head:
                 path.unlink()
                 print(f"清理 {path.relative_to(ROOT)}")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--schema", default="masterdata")
-    parser.add_argument("--check", action="store_true", help="只检查生成物是否与 schema 一致")
-    args = parser.parse_args()
+STATE_VALUES = {"full", "limited", "hidden"}
 
-    schema_path = HERE / "schema" / f"{args.schema}.json"
-    if not schema_path.exists():
-        print(f"找不到 schema: {schema_path}", file=sys.stderr)
-        return 1
+TABLE_SUFFIXES = (
+    "_dao.h",
+    "_dao.cpp",
+    "_service.h",
+    "_service.cpp",
+    "_routes.h",
+    "_routes.cpp",
+    "_page.js",
+)
 
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    schema["name"] = schema.get("name", args.schema)
+
+def prepare_edition(edition: dict) -> dict:
+    code = edition["code"]
+    name = "".join(part.capitalize() for part in code.replace("-", "_").split("_"))
+    feature_rows = []
+    for key, state in edition.get("features", {}).items():
+        if state not in STATE_VALUES:
+            raise SystemExit(f"版本 {code} 的能力 {key} 状态不受支持: {state}")
+        feature_rows.append({"key": key, "state": state})
+    quota_rows = [{"key": key, "limit": int(limit)} for key, limit in edition.get("quotas", {}).items()]
+    return {**edition, "Name": name, "feature_rows": feature_rows, "quota_rows": quota_rows}
+
+
+def generate_editions(path: Path, schema: dict, env: Environment, check: bool) -> int:
+    editions = [prepare_edition(item) for item in schema["editions"]]
+    codes = [item["code"] for item in editions]
+    default_code = schema.get("default", codes[0])
+    if default_code not in codes:
+        raise SystemExit(f"默认版本不在能力表中: {default_code}")
+
+    context = {
+        "schema": {**schema, "default": default_code},
+        "editions": editions,
+        "default_index": codes.index(default_code),
+        "source": path.name,
+    }
+    content = render(env, schema.get("template", "edition_caps.h.j2"), context)
+    output = ROOT / schema["targets"]["core_include"] / schema.get("output", "edition_caps.h")
+    write(output, content, check)
+    print(f"完成：{len(editions)} 个版本")
+    return 0
+
+
+def generate_tables(schema: dict, env: Environment, check: bool) -> int:
     targets = schema["targets"]
-
-    env = Environment(
-        loader=FileSystemLoader(str(TEMPLATE_DIR)),
-        undefined=StrictUndefined,
-        trim_blocks=True,
-        lstrip_blocks=True,
-        keep_trailing_newline=True,
-    )
-
     generated: dict[str, list[Path]] = {name: [] for name in targets}
     pages = []
 
@@ -166,7 +191,7 @@ def main() -> int:
             target_key = target.replace("_service", "")
             directory = ROOT / targets[target_key]
             content = render(env, template, context)
-            write(directory / filename, content, args.check)
+            write(directory / filename, content, check)
             generated[target_key].append(directory / filename)
 
         pages.append(
@@ -178,7 +203,7 @@ def main() -> int:
         )
 
     manifest = json.dumps(pages, ensure_ascii=False, indent=2) + "\n"
-    write(ROOT / targets["web"] / "pages.json", manifest, args.check)
+    write(ROOT / targets["web"] / "pages.json", manifest, check)
     generated["web"].append(ROOT / targets["web"] / "pages.json")
 
     core_sources = sorted(generated["core_src"])
@@ -193,14 +218,53 @@ def main() -> int:
         ")",
         "",
     ]
-    write(ROOT / "cmake" / "generated_sources.cmake", "\n".join(cmake_lines), args.check)
+    write(ROOT / "cmake" / "generated_sources.cmake", "\n".join(cmake_lines), check)
 
-    if not args.check:
+    if not check:
+        # 只清理本 schema 可能产出的文件，避免误删其他 schema 的生成物。
         for name, keep in generated.items():
-            clean_stale(ROOT / targets[name], set(keep), args.check)
+            clean_stale(ROOT / targets[name], set(keep), TABLE_SUFFIXES, check)
 
     print(f"完成：{len(schema['tables'])} 张表")
     return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--schema", default="all", help="schema 名称，或 all（默认，处理 schema/ 下全部定义）")
+    parser.add_argument("--check", action="store_true", help="只检查生成物是否与 schema 一致")
+    args = parser.parse_args()
+
+    if args.schema == "all":
+        schema_paths = sorted((HERE / "schema").glob("*.json"))
+    else:
+        schema_paths = [HERE / "schema" / f"{args.schema}.json"]
+
+    if not schema_paths:
+        print("找不到任何 schema", file=sys.stderr)
+        return 1
+    for schema_path in schema_paths:
+        if not schema_path.exists():
+            print(f"找不到 schema: {schema_path}", file=sys.stderr)
+            return 1
+
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATE_DIR)),
+        undefined=StrictUndefined,
+        trim_blocks=True,
+        lstrip_blocks=True,
+        keep_trailing_newline=True,
+    )
+
+    for schema_path in schema_paths:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        schema["name"] = schema.get("name", schema_path.stem)
+        if "editions" in schema:
+            generate_editions(schema_path, schema, env, args.check)
+        else:
+            generate_tables(schema, env, args.check)
+    return 0
+
 
 
 if __name__ == "__main__":

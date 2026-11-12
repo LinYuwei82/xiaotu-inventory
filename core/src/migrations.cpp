@@ -121,6 +121,64 @@ INSERT INTO warehouse (id, code, name, is_default, status, is_deleted, created_a
 VALUES (1, 'MAIN', '主仓库', 1, 1, 0, datetime('now', 'localtime'), 'system', datetime('now', 'localtime'), 'system');
 )SQL";
 
+// v2：用户与角色。v1 的表结构保持原样，这里只新增表与内置数据。
+constexpr const char* kV2 = R"SQL(
+CREATE TABLE app_role (
+  id         INTEGER PRIMARY KEY,
+  code       TEXT    NOT NULL,
+  name       TEXT    NOT NULL,
+  is_builtin INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT    NOT NULL,
+  updated_at TEXT    NOT NULL,
+  CHECK (is_builtin IN (0, 1))
+);
+CREATE UNIQUE INDEX uk_app_role_code ON app_role(code);
+
+-- 角色与权限点：只在启动时整体载入内存缓存，运行期不写。
+CREATE TABLE app_role_permission (
+  role_id    INTEGER NOT NULL REFERENCES app_role(id),
+  permission TEXT    NOT NULL,
+  PRIMARY KEY (role_id, permission)
+);
+
+CREATE TABLE app_user (
+  id            INTEGER PRIMARY KEY,
+  username      TEXT    NOT NULL,
+  display_name  TEXT    NOT NULL DEFAULT '',
+  role_id       INTEGER NOT NULL REFERENCES app_role(id),
+  password_hash TEXT    NOT NULL DEFAULT '',
+  status        INTEGER NOT NULL DEFAULT 1,
+  is_deleted    INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT    NOT NULL,
+  created_by    TEXT    NOT NULL DEFAULT 'system',
+  updated_at    TEXT    NOT NULL,
+  updated_by    TEXT    NOT NULL DEFAULT 'system',
+  CHECK (status IN (0, 1)),
+  CHECK (is_deleted IN (0, 1))
+);
+CREATE UNIQUE INDEX uk_app_user_username ON app_user(username);
+
+INSERT INTO app_role (id, code, name, is_builtin, created_at, updated_at) VALUES
+  (1, 'admin',    '管理员', 1, datetime('now', 'localtime'), datetime('now', 'localtime')),
+  (2, 'operator', '操作员', 1, datetime('now', 'localtime'), datetime('now', 'localtime')),
+  (3, 'viewer',   '只读',   1, datetime('now', 'localtime'), datetime('now', 'localtime'));
+
+-- admin 保留通配权限，新增权限点无需再补行；其余角色按最小集合授予。
+INSERT INTO app_role_permission (role_id, permission) VALUES
+  (1, '*'),
+  (2, 'item.read'), (2, 'item.write'),
+  (2, 'warehouse.read'), (2, 'warehouse.write'),
+  (2, 'document.read'), (2, 'document.write'),
+  (2, 'stock.read'),
+  (3, 'item.read'), (3, 'warehouse.read'), (3, 'document.read'), (3, 'stock.read');
+
+-- 内置管理员：一次性 token 换取会话时使用；口令登录在 M5 接入。
+INSERT INTO app_user (id, username, display_name, role_id, password_hash, status, is_deleted,
+                      created_at, created_by, updated_at, updated_by)
+VALUES (1, 'admin', '管理员', 1, '', 1, 0,
+        datetime('now', 'localtime'), 'system', datetime('now', 'localtime'), 'system');
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -137,6 +195,7 @@ std::string checksum_of(std::string_view sql) {
 const std::vector<Migration>& all_migrations() {
   static const std::vector<Migration> migrations = {
       {1, "v1_initial_schema", kV1},
+      {2, "v2_user_and_role", kV2},
   };
   return migrations;
 }

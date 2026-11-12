@@ -13,6 +13,7 @@
 #include "xiaotu/http_server.h"
 #include "xiaotu/ids.h"
 #include "xiaotu/migrations.h"
+#include "xiaotu/permissions.h"
 #include "xiaotu/services.h"
 
 #if defined(__APPLE__)
@@ -91,6 +92,7 @@ int main(int argc, char** argv) {
 
     xiaotu::Db db(database_path, 4);
     xiaotu::migrate(db);
+    xiaotu::load_role_permissions(db);
     std::cout << "数据库结构版本: v" << db.schema_version() << std::endl;
 
     xiaotu::Services services(db);
