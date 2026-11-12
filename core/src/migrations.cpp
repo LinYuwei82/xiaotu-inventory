@@ -358,6 +358,79 @@ INSERT INTO app_role_permission (role_id, permission) VALUES
   (3, 'customer.read'), (3, 'finance.read');
 )SQL";
 
+// v8：自定义打印模板。模板只保存展示配置（纸张、页边距、字号、页眉页脚、列显示），
+// 不保存 SQL、脚本或查询条件；列配置用子表，删除模板时一并软删除。
+constexpr const char* kV8 = R"SQL(
+CREATE TABLE print_template (
+  id              INTEGER PRIMARY KEY,
+  code            TEXT    NOT NULL,
+  name            TEXT    NOT NULL,
+  target_type     TEXT    NOT NULL,
+  target_key      TEXT    NOT NULL,
+  page_size       TEXT    NOT NULL DEFAULT 'A4',
+  orientation     TEXT    NOT NULL DEFAULT 'PORTRAIT',
+  paper_width_mm  INTEGER NOT NULL DEFAULT 0,
+  paper_height_mm INTEGER NOT NULL DEFAULT 0,
+  margin_mm       INTEGER NOT NULL DEFAULT 12,
+  font_size_pt    INTEGER NOT NULL DEFAULT 10,
+  header_text     TEXT    NOT NULL DEFAULT '',
+  footer_text     TEXT    NOT NULL DEFAULT '',
+  show_page_no    INTEGER NOT NULL DEFAULT 1,
+  is_default      INTEGER NOT NULL DEFAULT 0,
+  status          INTEGER NOT NULL DEFAULT 1,
+  version         INTEGER NOT NULL DEFAULT 1,
+  is_deleted      INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT    NOT NULL,
+  created_by      TEXT    NOT NULL DEFAULT 'system',
+  updated_at      TEXT    NOT NULL,
+  updated_by      TEXT    NOT NULL DEFAULT 'system',
+  CHECK (target_type IN ('DOC', 'REPORT')),
+  CHECK (page_size IN ('A4', 'A5', 'CUSTOM')),
+  CHECK (orientation IN ('PORTRAIT', 'LANDSCAPE')),
+  CHECK (paper_width_mm BETWEEN 0 AND 1000),
+  CHECK (paper_height_mm BETWEEN 0 AND 1000),
+  CHECK (page_size <> 'CUSTOM' OR (paper_width_mm > 0 AND paper_height_mm > 0)),
+  CHECK (margin_mm BETWEEN 0 AND 50),
+  CHECK (font_size_pt BETWEEN 6 AND 24),
+  CHECK (length(header_text) <= 500),
+  CHECK (length(footer_text) <= 500),
+  CHECK (show_page_no IN (0, 1)),
+  CHECK (is_default IN (0, 1)),
+  CHECK (status IN (0, 1)),
+  CHECK (version >= 1),
+  CHECK (is_deleted IN (0, 1))
+);
+CREATE UNIQUE INDEX uk_print_template_code ON print_template(code);
+CREATE INDEX idx_print_template_target ON print_template(target_type, target_key);
+-- 每个目标最多一个默认模板；软删除后让位，允许重新指定默认。
+CREATE UNIQUE INDEX uk_print_template_default ON print_template(target_type, target_key)
+  WHERE is_default = 1 AND is_deleted = 0;
+
+CREATE TABLE print_template_column (
+  id           INTEGER PRIMARY KEY,
+  template_id  INTEGER NOT NULL REFERENCES print_template(id),
+  column_key   TEXT    NOT NULL,
+  position     INTEGER NOT NULL,
+  visible      INTEGER NOT NULL DEFAULT 1,
+  width_mm     INTEGER NOT NULL DEFAULT 0,
+  align        TEXT    NOT NULL DEFAULT 'LEFT',
+  font_size_pt INTEGER NOT NULL DEFAULT 0,
+  bold         INTEGER NOT NULL DEFAULT 0,
+  CHECK (position > 0),
+  CHECK (visible IN (0, 1)),
+  CHECK (width_mm BETWEEN 0 AND 500),
+  CHECK (align IN ('LEFT', 'CENTER', 'RIGHT')),
+  CHECK (font_size_pt = 0 OR font_size_pt BETWEEN 6 AND 24),
+  CHECK (bold IN (0, 1))
+);
+CREATE UNIQUE INDEX uk_print_template_column_key ON print_template_column(template_id, column_key);
+CREATE UNIQUE INDEX uk_print_template_column_pos ON print_template_column(template_id, position);
+
+INSERT INTO app_role_permission (role_id, permission) VALUES
+  (2, 'print.template.read'), (2, 'print.template.write'),
+  (3, 'print.template.read');
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -380,6 +453,7 @@ const std::vector<Migration>& all_migrations() {
       {5, "v5_audit_log", kV5},
       {6, "v6_transfer_stocktake", kV6},
       {7, "v7_customer_finance", kV7},
+      {8, "v8_print_template", kV8},
   };
   return migrations;
 }
