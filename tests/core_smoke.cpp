@@ -52,6 +52,12 @@ void check(bool condition, const std::string& message) {
 // 数量按 4 位定点整数存储；测试里用 q(件数) 换算，便于阅读。
 std::int64_t q(std::int64_t units) { return units * 10000; }
 
+// 测试日期跟随当天，避免跨零点后固定日期与 now_text() 产生跨期偏差。
+const std::string kToday = xiaotu::today_text();
+const std::string kMonthStart = kToday.substr(0, 8) + "01";
+const std::string kFarFuture = "2099-12-31";
+const std::string kTodayYmd = kToday.substr(0, 4) + kToday.substr(5, 2) + kToday.substr(8, 2);
+
 }  // namespace
 
 int main() {
@@ -252,7 +258,7 @@ int main() {
       xiaotu::DocInput insufficient;
       insufficient.doc_type = "SAL_OUT";
       insufficient.warehouse_id = warehouse_list.at(0).id;
-      insufficient.doc_date = "2026-11-12";
+      insufficient.doc_date = kToday;
       insufficient.partner = "测试客户";
       insufficient.lines.push_back(
           xiaotu::DocLineInput{.item_id = item.id, .qty = q(5), .price_cents = 1000});
@@ -270,7 +276,7 @@ int main() {
       xiaotu::DocInput opening;
       opening.doc_type = "PUR_IN";
       opening.warehouse_id = warehouse_list.at(0).id;
-      opening.doc_date = "2026-11-12";
+      opening.doc_date = kToday;
       opening.lines.push_back(
           xiaotu::DocLineInput{.item_id = item.id, .qty = q(5), .price_cents = 1000});
       const auto opening_doc = documents.save_and_approve(opening);
@@ -278,7 +284,7 @@ int main() {
       xiaotu::DocInput input;
       input.doc_type = "SAL_OUT";
       input.warehouse_id = warehouse_list.at(0).id;
-      input.doc_date = "2026-11-12";
+      input.doc_date = kToday;
       input.partner = "测试客户";
       input.lines.push_back(xiaotu::DocLineInput{.item_id = item.id, .qty = q(5), .price_cents = 1000});
 
@@ -325,7 +331,7 @@ int main() {
         xiaotu::DocInput doc;
         doc.doc_type = doc_type;
         doc.warehouse_id = warehouse_list.at(0).id;
-        doc.doc_date = "2026-11-12";
+        doc.doc_date = kToday;
         doc.partner = "测试往来单位";
         doc.lines.push_back(xiaotu::DocLineInput{.item_id = item_id, .qty = qty,
                                                  .price_cents = price_cents});
@@ -347,7 +353,7 @@ int main() {
       xiaotu::DocInput sale;
       sale.doc_type = "SAL_OUT";
       sale.warehouse_id = warehouse_list.at(0).id;
-      sale.doc_date = "2026-11-12";
+      sale.doc_date = kToday;
       sale.lines.push_back(xiaotu::DocLineInput{.item_id = purchased.id, .qty = q(5),
                                                 .price_cents = 2000});
       const auto sale_doc = documents.save_and_approve(sale);
@@ -389,7 +395,7 @@ int main() {
       transfer.doc_type = "STK_TRF";
       transfer.warehouse_id = warehouse_list.at(0).id;
       transfer.target_warehouse_id = aux.id;
-      transfer.doc_date = "2026-11-12";
+      transfer.doc_date = kToday;
       transfer.lines.push_back(
           xiaotu::DocLineInput{.item_id = purchased.id, .qty = q(4), .price_cents = 0});
       const auto transfer_doc = documents.save_and_approve(transfer);
@@ -425,7 +431,7 @@ int main() {
       xiaotu::DocInput stocktake;
       stocktake.doc_type = "STK_CNT";
       stocktake.warehouse_id = warehouse_list.at(0).id;
-      stocktake.doc_date = "2026-11-12";
+      stocktake.doc_date = kToday;
       stocktake.lines.push_back(
           xiaotu::DocLineInput{.item_id = purchased.id, .qty = q(7), .price_cents = 0});
       const auto stocktake_doc = documents.save_and_approve(stocktake);
@@ -441,7 +447,7 @@ int main() {
       xiaotu::DocInput surplus;
       surplus.doc_type = "STK_CNT";
       surplus.warehouse_id = warehouse_list.at(0).id;
-      surplus.doc_date = "2026-11-12";
+      surplus.doc_date = kToday;
       surplus.lines.push_back(
           xiaotu::DocLineInput{.item_id = purchased.id, .qty = q(12), .price_cents = 0});
       const auto surplus_doc = documents.save_and_approve(surplus);
@@ -493,7 +499,7 @@ int main() {
       xiaotu::DocInput empty_count;
       empty_count.doc_type = "STK_CNT";
       empty_count.warehouse_id = warehouse_list.at(0).id;
-      empty_count.doc_date = "2026-11-12";
+      empty_count.doc_date = kToday;
       empty_count.lines.push_back(
           xiaotu::DocLineInput{.item_id = decimal_item.id, .qty = 0, .price_cents = 0});
       const auto empty_count_doc = documents.save_and_approve(empty_count);
@@ -528,7 +534,7 @@ int main() {
       xiaotu::DocInput supplier_doc;
       supplier_doc.doc_type = "PUR_IN";
       supplier_doc.warehouse_id = warehouse_list.at(0).id;
-      supplier_doc.doc_date = "2026-11-12";
+      supplier_doc.doc_date = kToday;
       supplier_doc.partner_id = supplier.id;
       supplier_doc.partner = "手工填写的名称应被档案覆盖";
       supplier_doc.lines.push_back(
@@ -543,7 +549,7 @@ int main() {
         xiaotu::DocInput bad;
         bad.doc_type = "PUR_IN";
         bad.warehouse_id = warehouse_list.at(0).id;
-        bad.doc_date = "2026-11-12";
+        bad.doc_date = kToday;
         bad.partner_id = 999999;
         bad.lines.push_back(
             xiaotu::DocLineInput{.item_id = supplier_item.id, .qty = q(1), .price_cents = 100});
@@ -583,7 +589,7 @@ int main() {
       xiaotu::DocInput opening;
         opening.doc_type = "PUR_IN";
         opening.warehouse_id = warehouse_list.at(0).id;
-        opening.doc_date = "2026-11-12";
+        opening.doc_date = kToday;
         opening.lines.push_back(
             xiaotu::DocLineInput{.item_id = sales_item.id, .qty = q(10), .price_cents = 1000});
         documents.save_and_approve(opening);
@@ -592,7 +598,7 @@ int main() {
       xiaotu::DocInput customer_sale;
       customer_sale.doc_type = "SAL_OUT";
       customer_sale.warehouse_id = warehouse_list.at(0).id;
-      customer_sale.doc_date = "2026-11-12";
+      customer_sale.doc_date = kToday;
       customer_sale.partner_id = customer.id;
       customer_sale.partner = "手工名称应被档案覆盖";
       customer_sale.lines.push_back(
@@ -615,7 +621,7 @@ int main() {
       xiaotu::DocInput customer_return;
       customer_return.doc_type = "SAL_RET";
       customer_return.warehouse_id = warehouse_list.at(0).id;
-      customer_return.doc_date = "2026-11-12";
+      customer_return.doc_date = kToday;
       customer_return.partner_id = customer.id;
       customer_return.lines.push_back(
           xiaotu::DocLineInput{.item_id = sales_item.id, .qty = q(1), .price_cents = 2000});
@@ -633,7 +639,7 @@ int main() {
         xiaotu::DocInput doc;
         doc.doc_type = "SAL_OUT";
         doc.warehouse_id = warehouse_list.at(0).id;
-        doc.doc_date = "2026-11-12";
+        doc.doc_date = kToday;
         doc.partner_id = customer.id;
         doc.lines.push_back(
             xiaotu::DocLineInput{.item_id = sales_item.id, .qty = q(3), .price_cents = 1000});
@@ -642,7 +648,7 @@ int main() {
       xiaotu::DocInput sale_b_input;
       sale_b_input.doc_type = "SAL_OUT";
       sale_b_input.warehouse_id = warehouse_list.at(0).id;
-      sale_b_input.doc_date = "2026-11-12";
+      sale_b_input.doc_date = kToday;
       sale_b_input.partner_id = customer.id;
       sale_b_input.lines.push_back(
           xiaotu::DocLineInput{.item_id = sales_item.id, .qty = q(2), .price_cents = 1000});
@@ -668,14 +674,15 @@ int main() {
         input.amount_cents = amount;
         input.account_id = 1;
         input.method = "CASH";
-        input.settled_on = "2026-11-12";
+        input.settled_on = kToday;
         input.note = note;
         input.allocations = std::move(allocations);
         return settlements.create(input);
       };
       const auto first_settlement =
           make_settlement(1, customer_key, 1000, {{entry_a.id, 1000}}, "部分收款");
-      check(first_settlement.settle_no.rfind("SK20261112-", 0) == 0, "收款单号应以 SK 开头");
+      check(first_settlement.settle_no.rfind("SK" + kTodayYmd + "-", 0) == 0,
+            "收款单号应以 SK 开头");
       auto after_partial = entry_of(sale_a.id);
       check(after_partial.settled_cents == 1000 && after_partial.outstanding_cents == 2000 &&
                 after_partial.status == "PARTIAL",
@@ -736,13 +743,13 @@ int main() {
       // 报表：流水明细、收发明细与账龄都从同一份流水/台账聚合，结果需自洽。
       xiaotu::ReportService reports(db);
       xiaotu::ReportFilter report_filter;
-      report_filter.from = "2026-11-01";
-      report_filter.to = "2026-11-12";
+      report_filter.from = kMonthStart;
+      report_filter.to = kToday;
       report_filter.item_id = sales_item.id;
       const auto report_ledger = reports.stock_ledger(report_filter);
       check(!report_ledger.empty() && report_ledger.size() == stock.ledger(sales_item.id).size(),
             "流水明细应与库存流水条数一致");
-      check(report_ledger.front().biz_time.rfind("2026-11-12", 0) == 0,
+      check(report_ledger.front().biz_time.rfind(kToday, 0) == 0,
             "流水明细应按时间倒序取到当天记录");
 
       const auto flows = reports.goods_flow(report_filter);
@@ -769,7 +776,7 @@ int main() {
                 profits.front().cost_cents == 3455 && profits.front().profit_cents == -455,
             "销售毛利应为 4 件 / 收入 3000 / 成本 3455 / 毛利 -455 分");
 
-      const auto aging = reports.ar_ap_aging(1, "2026-11-12");
+      const auto aging = reports.ar_ap_aging(1, kToday);
       std::int64_t expected_ar = 0;
       for (const auto& row : finance.entries(1, customer_key)) {
         if (row.status != "VOIDED") expected_ar += row.outstanding_cents;
@@ -781,7 +788,7 @@ int main() {
 
       // 对账单：期初 + 单据 - 核销 = 期末，且期末与台账未核销余额一致。
       const auto statement =
-          reports.partner_statement(customer_key, 1, "2026-11-01", "2026-11-30");
+          reports.partner_statement(customer_key, 1, kMonthStart, kFarFuture);
       check(statement.partner_name == "测试客户档案", "对账单应取客户档案名称");
       check(statement.opening_cents == 0, "11-01 起期初应为 0");
       check(statement.increase_cents == 6000, "本期增加应为两笔应收加核销撤销 6000 分");
@@ -798,7 +805,7 @@ int main() {
             "最后一行的余额应为期末余额");
 
       const auto later_statement =
-          reports.partner_statement(customer_key, 1, "2026-11-13", "");
+          reports.partner_statement(customer_key, 1, kFarFuture, "");
       check(later_statement.opening_cents == -500 && later_statement.lines.empty() &&
                 later_statement.closing_cents == -500,
             "期间之外的发生额应全部计入下一期期初");
@@ -842,7 +849,7 @@ int main() {
       xiaotu::DocInput draft_input;
       draft_input.doc_type = "PUR_IN";
       draft_input.warehouse_id = warehouse_list.at(0).id;
-      draft_input.doc_date = "2026-11-12";
+      draft_input.doc_date = kToday;
       draft_input.partner = "草稿供应商";
       draft_input.lines.push_back(
           xiaotu::DocLineInput{.item_id = draft_item.id, .qty = q(5), .price_cents = 900});
@@ -902,18 +909,18 @@ int main() {
       // 预收：不填分摊也应保存，资金流水与余额要跟着变动。
       const auto prepayment = make_settlement(1, customer_key, 500, {}, "预收");
       check(prepayment.settle_no.rfind("SK", 0) == 0, "预收也应使用收款单号");
-      const auto fund_ledger = settlements.ledger(1, "2026-11-01", "2026-11-12");
+      const auto fund_ledger = settlements.ledger(1, kMonthStart, kToday);
       check(!fund_ledger.empty() && fund_ledger.front().opening, "资金流水应包含期初行");
       check(fund_ledger.back().balance_cents == 4000, "资金流水期末余额应为 40.00 元");
 
-      const auto fund_balances = settlements.account_balances("2026-11-12");
+      const auto fund_balances = settlements.account_balances(kToday);
       check(fund_balances.size() == 1 && fund_balances.front().inflow_cents == 4000 &&
                 fund_balances.front().outflow_cents == 0 &&
                 fund_balances.front().balance_cents == 4000,
             "账户余额应为累计收款减累计付款");
 
       settlements.reverse(prepayment.id);
-      check(settlements.ledger(1, "2026-11-01", "2026-11-12").back().balance_cents == 3500,
+      check(settlements.ledger(1, kMonthStart, kToday).back().balance_cents == 3500,
             "撤销预收后资金余额应回退");
 
       items.remove(draft_item.id);
@@ -953,7 +960,7 @@ int main() {
 
       // 打印模板：列白名单、默认唯一、软删除回退与乐观锁。
       xiaotu::PrintTemplateService templates(db);
-      check(xiaotu::print_targets().size() == 18, "打印目标应包含 10 种单据与 8 张报表");
+      check(xiaotu::print_targets().size() == 19, "打印目标应包含 11 种单据与 8 张报表");
 
       // 成本调整单：仓库与原因在明细行，只改结存金额；反审核不能把金额冲成负数。
       const auto adjust_item = items.create(
@@ -963,7 +970,7 @@ int main() {
 
       xiaotu::DocInput adjust;
       adjust.doc_type = "CST_ADJ";
-      adjust.doc_date = "2026-11-12";
+      adjust.doc_date = kToday;
       adjust.lines.push_back(xiaotu::DocLineInput{.item_id = adjust_item.id,
                                                   .qty = 0,
                                                   .price_cents = 0,
@@ -1184,7 +1191,7 @@ int main() {
       xiaotu::DocInput order_input;
       order_input.doc_type = "SAL_ORDER";
       order_input.warehouse_id = warehouse_list.at(0).id;
-      order_input.doc_date = "2026-11-12";
+      order_input.doc_date = kToday;
       order_input.partner = "订单客户";
       order_input.lines.push_back(
           {.item_id = ordered.id, .qty = q(6), .price_cents = 1500});
@@ -1268,7 +1275,7 @@ int main() {
       xiaotu::DocInput purchase_order_input;
       purchase_order_input.doc_type = "PUR_ORDER";
       purchase_order_input.warehouse_id = warehouse_list.at(0).id;
-      purchase_order_input.doc_date = "2026-11-12";
+      purchase_order_input.doc_date = kToday;
       purchase_order_input.partner = "订单供应商";
       purchase_order_input.lines.push_back(
           {.item_id = purchase_item.id, .qty = q(10), .price_cents = 800});
@@ -1296,6 +1303,9 @@ int main() {
       check(ap_entries(first_receipt.doc_id) == 1, "采购入库应生成应付");
       check(documents.detail(purchase_order.id).total_amount_cents == 8000,
             "下推改价不应回写订单金额");
+      const auto purchase_list = documents.list("PUR_ORDER");
+      check(purchase_list.size() == 1 && purchase_list.front().converted_qty == q(4),
+            "采购订单列表应返回累计已下推数量");
 
       purchase_convert.lines.at(0).qty = q(7);
       purchase_convert.lines.at(0).price_cents = -1;
@@ -1346,7 +1356,7 @@ int main() {
       xiaotu::DocInput other_in;
       other_in.doc_type = "OTH_IN";
       other_in.warehouse_id = warehouse_list.at(0).id;
-      other_in.doc_date = "2026-11-12";
+      other_in.doc_date = kToday;
       other_in.partner = "备注：受赠样品";
       other_in.lines.push_back(
           xiaotu::DocLineInput{.item_id = other.id, .qty = q(4), .price_cents = 250});
@@ -1359,7 +1369,7 @@ int main() {
       xiaotu::DocInput other_out;
       other_out.doc_type = "OTH_OUT";
       other_out.warehouse_id = warehouse_list.at(0).id;
-      other_out.doc_date = "2026-11-12";
+      other_out.doc_date = kToday;
       other_out.partner = "备注：领用";
       other_out.lines.push_back(
           xiaotu::DocLineInput{.item_id = other.id, .qty = q(1), .price_cents = 9999});
@@ -1384,7 +1394,7 @@ int main() {
         xiaotu::DocInput overdraw;
         overdraw.doc_type = "OTH_OUT";
         overdraw.warehouse_id = warehouse_list.at(0).id;
-        overdraw.doc_date = "2026-11-12";
+        overdraw.doc_date = kToday;
         overdraw.lines.push_back(
             xiaotu::DocLineInput{.item_id = other.id, .qty = q(4), .price_cents = 0});
         documents.save_and_approve(overdraw);
@@ -1404,7 +1414,7 @@ int main() {
         xiaotu::DocInput draft;
         draft.doc_type = "SAL_OUT";
         draft.warehouse_id = warehouse_list.at(0).id;
-        draft.doc_date = "2026-11-12";
+        draft.doc_date = kToday;
         draft.lines.push_back(
             xiaotu::DocLineInput{.item_id = concurrent.id, .qty = q(3), .price_cents = 500});
         draft_ids.push_back(documents.save_draft(draft).id);
@@ -1472,7 +1482,7 @@ int main() {
       xiaotu::DocInput reverse_sale;
       reverse_sale.doc_type = "SAL_OUT";
       reverse_sale.warehouse_id = warehouse_list.at(0).id;
-      reverse_sale.doc_date = "2026-11-12";
+      reverse_sale.doc_date = kToday;
       reverse_sale.lines.push_back(
           xiaotu::DocLineInput{.item_id = reverse_item.id, .qty = q(4), .price_cents = 500});
       const auto reverse_doc = documents.save_and_approve(reverse_sale);

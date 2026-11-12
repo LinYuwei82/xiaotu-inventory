@@ -1039,7 +1039,8 @@ std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limi
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
               "SELECT h.id, h.doc_no, h.doc_date, w.name, h.customer, h.total_qty,"
-              " h.total_amount_cents, h.status, h.order_status, h.created_at"
+              " h.total_amount_cents, h.status, h.order_status, h.created_at,"
+              " COALESCE((SELECT SUM(converted_qty) FROM doc_line WHERE doc_id = h.id), 0)"
               " FROM doc_header h JOIN warehouse w ON w.id = h.warehouse_id"
               " WHERE h.doc_type = ? ORDER BY h.id DESC LIMIT ?;");
     stmt.bind(1, doc_type).bind(2, static_cast<std::int64_t>(limit));
@@ -1055,6 +1056,7 @@ std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limi
       summary.status = stmt.text(7);
       summary.order_status = stmt.text(8);
       summary.created_at = stmt.text(9);
+      summary.converted_qty = stmt.i64(10);
       documents.push_back(std::move(summary));
     }
   });

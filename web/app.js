@@ -1311,35 +1311,78 @@
     await reload();
   }
 
-  // ---------- 销售订单 ----------
+  // ---------- 订单页面（销售订单 / 采购订单共用） ----------
 
-  async function orderPage(mount) {
-    const docType = "SAL_ORDER";
+  async function orderPage(mount, options = {}) {
+    const config = {
+      docType: "SAL_ORDER",
+      title: "销售订单",
+      subtitle: "只做需求确认与转出库来源，不占库存、不写流水、不产生往来",
+      partnerLabel: "客户",
+      partnerApi: "/api/customers",
+      warehouseLabel: "预计出库仓",
+      convertTitle: "转出库",
+      convertWarehouseLabel: "出库仓库",
+      convertDateLabel: "出库日期",
+      convertAction: "转出库",
+      convertSubmit: "确认转出",
+      convertNotice: "已生成销售出库单：",
+      convertedLabel: "已转出库",
+      partialLabel: "部分转出",
+      emptyLabel: "还没有销售订单",
+      ...options,
+    };
+    const docType = config.docType;
     let warehouses = [];
     let items = [];
     let customers = [];
     let documents = [];
     let editingId = 0;
     let convertingId = 0;
+    let page = 1;
+    const pageSize = 20;
 
     mount.innerHTML = `
       <div class="page-head">
         <div>
-          <h2>销售订单</h2>
-          <p class="page-sub">只做需求确认与转出库来源，不占库存、不写流水、不产生往来</p>
+          <h2>${escapeHtml(config.title)}</h2>
+          <p class="page-sub">${escapeHtml(config.subtitle)}</p>
         </div>
         <button class="btn" data-role="refresh">刷新</button>
       </div>
       <div class="card">
+        <form class="grid-form" data-role="filters">
+          <label class="field"><span>关键词</span>
+            <input type="text" data-field="keyword" placeholder="单号 / ${escapeHtml(
+              config.partnerLabel
+            )}" />
+          </label>
+          <label class="field"><span>状态</span>
+            <select data-field="status">
+              <option value="">全部</option>
+              <option value="DRAFT">草稿</option>
+              <option value="CONFIRMED">已确认</option>
+              <option value="PARTIAL">${escapeHtml(config.partialLabel)}</option>
+              <option value="CONVERTED">${escapeHtml(config.convertedLabel)}</option>
+              <option value="CLOSED">已关闭</option>
+            </select>
+          </label>
+          <div class="form-actions">
+            <button class="btn primary" type="submit">查询</button>
+            <button class="btn" type="button" data-role="filter-reset">重置</button>
+          </div>
+        </form>
+      </div>
+      <div class="card">
         <form class="doc-form" data-role="form">
           <div class="doc-head">
-            <label class="field"><span>预计出库仓</span>
+            <label class="field"><span>${escapeHtml(config.warehouseLabel)}</span>
               <select data-role="warehouse" required></select>
             </label>
             <label class="field"><span>订单日期</span>
               <input type="date" data-role="date" required />
             </label>
-            <label class="field"><span>客户</span>
+            <label class="field"><span>${escapeHtml(config.partnerLabel)}</span>
               <select data-role="customer"></select>
             </label>
           </div>
@@ -1354,27 +1397,35 @@
       </div>
       <div class="card" data-role="convert-card" hidden>
         <div class="card-head">
-          <h3>转出库</h3>
+          <h3>${escapeHtml(config.convertTitle)}</h3>
           <span class="page-sub" data-role="convert-title"></span>
         </div>
         <div class="doc-head">
-          <label class="field"><span>出库仓库</span>
+          <label class="field"><span>${escapeHtml(config.convertWarehouseLabel)}</span>
             <select data-role="convert-warehouse"></select>
           </label>
-          <label class="field"><span>出库日期</span>
+          <label class="field"><span>${escapeHtml(config.convertDateLabel)}</span>
             <input type="date" data-role="convert-date" />
           </label>
         </div>
         <table class="table" data-role="convert-lines"></table>
         <div class="form-actions">
-          <button class="btn primary" type="button" data-role="convert-submit">确认转出</button>
+          <button class="btn primary" type="button" data-role="convert-submit">${escapeHtml(
+            config.convertSubmit
+          )}</button>
           <button class="btn" type="button" data-role="convert-cancel">取消</button>
         </div>
       </div>
       <div class="card">
         <table class="table" data-role="documents"></table>
+        <div class="form-actions">
+          <button class="btn" type="button" data-role="prev">上一页</button>
+          <span class="page-sub" data-role="page-info"></span>
+          <button class="btn" type="button" data-role="next">下一页</button>
+        </div>
       </div>`;
 
+    const filters = mount.querySelector('[data-role="filters"]');
     const form = mount.querySelector('[data-role="form"]');
     const warehouseSelect = mount.querySelector('[data-role="warehouse"]');
     const dateInput = mount.querySelector('[data-role="date"]');
@@ -1386,20 +1437,25 @@
     const convertWarehouse = mount.querySelector('[data-role="convert-warehouse"]');
     const convertDate = mount.querySelector('[data-role="convert-date"]');
     const convertLines = mount.querySelector('[data-role="convert-lines"]');
+    const prevButton = mount.querySelector('[data-role="prev"]');
+    const nextButton = mount.querySelector('[data-role="next"]');
+    const pageInfo = mount.querySelector('[data-role="page-info"]');
+    const keywordField = filters.querySelector('[data-field="keyword"]');
+    const statusField = filters.querySelector('[data-field="status"]');
 
     dateInput.value = new Date().toISOString().slice(0, 10);
     convertDate.value = dateInput.value;
-
-    function itemLabel(itemId) {
-      const item = items.find((row) => row.id === itemId);
-      return item ? item.code + " " + item.name : String(itemId);
-    }
 
     function itemLabel(item) {
       return [item.code, item.name, item.spec]
         .map((part) => (part || "").trim())
         .filter(Boolean)
         .join(" ");
+    }
+
+    function itemLabelById(itemId) {
+      const item = items.find((row) => row.id === itemId);
+      return item ? itemLabel(item) : String(itemId);
     }
 
     function itemOptions(selected) {
@@ -1450,10 +1506,20 @@
       addLine();
     }
 
+    function orderState(doc) {
+      if (doc.status === "DRAFT") return "DRAFT";
+      if (doc.order_status === "CLOSED") return "CLOSED";
+      if (doc.order_status === "CONVERTED") return "CONVERTED";
+      if (BigInt(doc.converted_qty || 0) > 0n) return "PARTIAL";
+      return "CONFIRMED";
+    }
+
     function orderStatusLabel(doc) {
-      if (doc.status === "DRAFT") return "草稿";
-      if (doc.order_status === "CONVERTED") return "已转出库";
-      if (doc.order_status === "CLOSED") return "已关闭";
+      const state = orderState(doc);
+      if (state === "DRAFT") return "草稿";
+      if (state === "CLOSED") return "已关闭";
+      if (state === "CONVERTED") return config.convertedLabel;
+      if (state === "PARTIAL") return config.partialLabel;
       return "已确认";
     }
 
@@ -1472,23 +1538,48 @@
       if (doc.order_status === "CONFIRMED") {
         return (
           print +
-          '<button class="link" data-role="convert">转出库</button>' +
+          `<button class="link" data-role="convert">${escapeHtml(config.convertAction)}</button>` +
           '<button class="link danger" data-role="close">关闭</button>'
         );
       }
       return print;
     }
 
+    function filteredDocuments() {
+      const keyword = keywordField.value.trim().toLowerCase();
+      const status = statusField.value;
+      return documents.filter((doc) => {
+        if (status && orderState(doc) !== status) return false;
+        if (!keyword) return true;
+        return (
+          doc.doc_no.toLowerCase().includes(keyword) ||
+          (doc.customer || "").toLowerCase().includes(keyword)
+        );
+      });
+    }
+
     function renderDocuments() {
-      if (!documents.length) {
-        documentsTable.innerHTML =
-          '<tbody><tr><td class="empty">还没有销售订单</td></tr></tbody>';
+      const rows = filteredDocuments();
+      const total = rows.length;
+      const pages = Math.max(1, Math.ceil(total / pageSize));
+      page = Math.min(Math.max(1, page), pages);
+      const start = (page - 1) * pageSize;
+      const visible = rows.slice(start, start + pageSize);
+      pageInfo.textContent = "第 " + page + " / " + pages + " 页 · 共 " + total + " 条";
+      prevButton.disabled = page <= 1;
+      nextButton.disabled = page >= pages;
+      if (!visible.length) {
+        documentsTable.innerHTML = `<tbody><tr><td class="empty">${escapeHtml(
+          documents.length ? "没有符合条件的订单" : config.emptyLabel
+        )}</td></tr></tbody>`;
         return;
       }
       documentsTable.innerHTML = `
-        <thead><tr><th>订单号</th><th>日期</th><th>仓库</th><th>客户</th><th>数量</th>
+        <thead><tr><th>订单号</th><th>日期</th><th>仓库</th><th>${escapeHtml(
+          config.partnerLabel
+        )}</th><th>数量</th>
           <th>金额（元）</th><th>状态</th><th class="actions">操作</th></tr></thead>
-        <tbody>${documents
+        <tbody>${visible
           .map(
             (doc) => `<tr data-id="${doc.id}">
               <td>${escapeHtml(doc.doc_no)}</td>
@@ -1509,7 +1600,7 @@
         api("GET", "/api/warehouses"),
         api("GET", "/api/items"),
         api("GET", "/api/documents?doc_type=" + docType),
-        api("GET", "/api/customers"),
+        api("GET", config.partnerApi),
       ]);
       warehouses = warehouseList;
       items = itemList;
@@ -1619,21 +1710,26 @@
       try {
         const detail = await api("GET", "/api/documents/" + doc.id);
         convertingId = doc.id;
-        convertTitle.textContent = detail.doc_no + " · " + (detail.partner || "未指定客户");
+        convertTitle.textContent =
+          detail.doc_no + " · " + (detail.partner || "未指定" + config.partnerLabel);
         convertWarehouse.value = String(detail.warehouse_id);
         convertDate.value = new Date().toISOString().slice(0, 10);
         convertLines.innerHTML = `
-          <thead><tr><th>商品</th><th>订单数量</th><th>已转</th><th>剩余</th><th>本次转出</th></tr></thead>
+          <thead><tr><th>商品</th><th>订单数量</th><th>已下推</th><th>剩余</th><th>本次数量</th><th>单价（元）</th></tr></thead>
           <tbody>${detail.lines
             .map((line) => {
               const remaining = BigInt(line.qty) - BigInt(line.converted_qty);
-              return `<tr data-line-id="${line.id}">
-                <td>${escapeHtml(itemLabel(line.item_id))}</td>
+              return `<tr data-line-id="${line.id}" data-price-cents="${line.price_cents}">
+                <td>${escapeHtml(itemLabelById(line.item_id))}</td>
                 <td>${qtyText(line.qty)}</td>
                 <td>${qtyText(line.converted_qty)}</td>
                 <td>${qtyText(remaining)}</td>
                 <td><input type="text" inputmode="decimal"
                   value="${qtyText(remaining)}" data-role="convert-qty" ${remaining <= 0n ? "disabled" : ""} /></td>
+                <td><input type="number" min="0" step="0.01"
+                  value="${(line.price_cents / 100).toFixed(2)}" data-role="convert-price" ${
+                    remaining <= 0n ? "disabled" : ""
+                  } /></td>
               </tr>`;
             })
             .join("")}</tbody>`;
@@ -1651,13 +1747,23 @@
         if (input.disabled) continue;
         const qty = parseQty(input.value, true);
         if (qty === null) {
-          showNotice("转出数量格式不正确，最多 4 位小数", "error");
+          showNotice("数量格式不正确，最多 4 位小数", "error");
           return;
         }
-        if (qty !== "0") lines.push({ order_line_id: Number(row.dataset.lineId), qty });
+        if (qty === "0") continue;
+        const priceInput = row.querySelector('[data-role="convert-price"]');
+        const priceCents = Math.round(Number(priceInput.value || 0) * 100);
+        if (!Number.isFinite(priceCents) || priceCents < 0) {
+          showNotice("单价必须是不小于 0 的数字", "error");
+          return;
+        }
+        const entry = { order_line_id: Number(row.dataset.lineId), qty };
+        // 价格未改动时不传，交给后端沿用订单价。
+        if (priceCents !== Number(row.dataset.priceCents)) entry.price_cents = priceCents;
+        lines.push(entry);
       }
       if (!lines.length) {
-        showNotice("请填写要转出的数量", "error");
+        showNotice("请填写要下推的数量", "error");
         return;
       }
       try {
@@ -1666,7 +1772,7 @@
           doc_date: convertDate.value,
           lines,
         });
-        showNotice("已生成销售出库单：" + result.doc_no, "ok");
+        showNotice(config.convertNotice + result.doc_no, "ok");
         convertCard.hidden = true;
         convertingId = 0;
         await reload();
@@ -1684,6 +1790,25 @@
     mount.querySelector('[data-role="convert-cancel"]').addEventListener("click", () => {
       convertCard.hidden = true;
       convertingId = 0;
+    });
+    filters.addEventListener("submit", (event) => {
+      event.preventDefault();
+      page = 1;
+      renderDocuments();
+    });
+    filters.querySelector('[data-role="filter-reset"]').addEventListener("click", () => {
+      keywordField.value = "";
+      statusField.value = "";
+      page = 1;
+      renderDocuments();
+    });
+    prevButton.addEventListener("click", () => {
+      page -= 1;
+      renderDocuments();
+    });
+    nextButton.addEventListener("click", () => {
+      page += 1;
+      renderDocuments();
     });
 
     documentsTable.addEventListener("click", async (event) => {
@@ -1709,7 +1834,7 @@
           return;
         }
         if (button.dataset.role === "approve") {
-          if (!(await askConfirm("确认订单后不可再改单，只能转出库或关闭。继续？"))) return;
+          if (!(await askConfirm(`确认订单后不可再改单，只能${config.convertTitle}或关闭。继续？`))) return;
           await api("POST", "/api/documents/" + id + "/approve");
           showNotice("订单已确认", "ok");
         } else if (button.dataset.role === "edit") {
@@ -1724,7 +1849,7 @@
           await openConvert(documents.find((doc) => doc.id === id));
           return;
         } else if (button.dataset.role === "close") {
-          if (!(await askConfirm("关闭后订单不能再转出，确认？"))) return;
+          if (!(await askConfirm(`关闭后订单不能再${config.convertTitle}，确认？`))) return;
           await api("POST", "/api/documents/" + id + "/close");
           showNotice("订单已关闭", "ok");
         }
@@ -3737,6 +3862,29 @@
         }),
     },
     {
+      key: "purchase-orders",
+      title: "采购订单",
+      group: "purchase",
+      render: (mount) =>
+        orderPage(mount, {
+          docType: "PUR_ORDER",
+          title: "采购订单",
+          subtitle: "只做需求确认与入库来源，不占库存、不写流水、不产生往来",
+          partnerLabel: "供应商",
+          partnerApi: "/api/suppliers",
+          warehouseLabel: "预计入库仓",
+          convertTitle: "入库",
+          convertWarehouseLabel: "入库仓库",
+          convertDateLabel: "入库日期",
+          convertAction: "入库",
+          convertSubmit: "确认入库",
+          convertNotice: "已生成采购入库单：",
+          convertedLabel: "已全部入库",
+          partialLabel: "部分入库",
+          emptyLabel: "还没有采购订单",
+        }),
+    },
+    {
       key: "sales",
       title: "销售出库",
       group: "sales",
@@ -3798,7 +3946,7 @@
       key: "sales-orders",
       title: "销售订单",
       group: "sales",
-      render: orderPage,
+      render: (mount) => orderPage(mount),
     },
     {
       key: "transfer",

@@ -49,6 +49,7 @@ struct DocSummary {
   std::string warehouse_name;
   std::string customer;
   std::int64_t total_qty = 0;
+  std::int64_t converted_qty = 0;  // 订单累计已下推数量，用于列表展示部分完成状态
   std::int64_t total_amount_cents = 0;
   std::string status;
   std::string order_status;

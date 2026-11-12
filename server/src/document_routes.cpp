@@ -53,6 +53,7 @@ nlohmann::json summary_to_json(const DocSummary& summary) {
       {"warehouse_name", summary.warehouse_name},
       {"customer", summary.customer},
       {"total_qty", qty_text(summary.total_qty)},
+      {"converted_qty", qty_text(summary.converted_qty)},
       {"total_amount_cents", summary.total_amount_cents},
       {"status", summary.status},
       {"order_status", summary.order_status},

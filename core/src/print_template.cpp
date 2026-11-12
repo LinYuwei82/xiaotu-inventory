@@ -149,6 +149,7 @@ std::vector<PrintTargetDef> make_targets() {
       {"DOC", "OTH_IN", "其他入库单", doc_columns},
       {"DOC", "OTH_OUT", "其他出库单", doc_columns},
       {"DOC", "SAL_ORDER", "销售订单", doc_columns},
+      {"DOC", "PUR_ORDER", "采购订单", doc_columns},
       {"DOC", "CST_ADJ", "成本调整单", cost_adjust_columns},
       {"REPORT", "stock-balance", "库存余额表", balance_columns},
       {"REPORT", "stock-ledger", "库存流水明细", ledger_columns},
