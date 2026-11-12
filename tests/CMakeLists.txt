@@ -19,3 +19,9 @@ add_executable(xiaotu_platform_paths_smoke "${CMAKE_CURRENT_SOURCE_DIR}/platform
 target_link_libraries(xiaotu_platform_paths_smoke PRIVATE xiaotu_server Threads::Threads)
 
 add_test(NAME platform_paths_smoke COMMAND xiaotu_platform_paths_smoke)
+
+add_executable(xiaotu_xlsx_smoke "${CMAKE_CURRENT_SOURCE_DIR}/xlsx_smoke.cpp")
+target_link_libraries(xiaotu_xlsx_smoke PRIVATE xiaotu_core Threads::Threads)
+
+add_test(NAME xlsx_smoke
+         COMMAND xiaotu_xlsx_smoke "${CMAKE_CURRENT_SOURCE_DIR}/data")

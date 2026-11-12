@@ -49,6 +49,11 @@ endif()
 set(SQLITE_SOURCE "${THIRD_PARTY}/sqlite/sqlite3.c")
 set_source_files_properties("${SQLITE_SOURCE}" PROPERTIES COMPILE_OPTIONS "-w")
 
+# miniz 只用于读取 xlsx（inflate）：关掉压缩与 ZIP 归档 API，避免白编一份 deflate。
+set(MINIZ_DIR "${THIRD_PARTY}/miniz")
+set(MINIZ_SOURCE "${MINIZ_DIR}/miniz.c")
+set_source_files_properties("${MINIZ_SOURCE}" PROPERTIES COMPILE_OPTIONS "-w")
+
 # Argon2 官方参考实现内嵌编译，不依赖系统库或包管理器。
 set(ARGON2_DIR "${THIRD_PARTY}/argon2")
 set(ARGON2_SOURCES
@@ -83,14 +88,17 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/stock_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/token_hash.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/user_service.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/xlsx_reader.cpp"
   ${XIAOTU_GENERATED_CORE_SOURCES}
   "${SQLITE_SOURCE}"
+  "${MINIZ_SOURCE}"
   ${ARGON2_SOURCES}
   "${EMBEDDED_SOURCE}")
 
 target_include_directories(xiaotu_core
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PUBLIC "${THIRD_PARTY}/sqlite"
+  PRIVATE "${MINIZ_DIR}"
   PRIVATE "${ARGON2_DIR}/include"
   PRIVATE "${ARGON2_DIR}/src")
 
@@ -108,7 +116,12 @@ target_compile_definitions(xiaotu_core PRIVATE
   SQLITE_THREADSAFE=1
   SQLITE_DQS=0
   SQLITE_DEFAULT_FOREIGN_KEYS=1
-  SQLITE_OMIT_LOAD_EXTENSION=1)
+  SQLITE_OMIT_LOAD_EXTENSION=1
+  MINIZ_NO_DEFLATE_APIS=1
+  MINIZ_NO_ARCHIVE_APIS=1
+  MINIZ_NO_ZLIB_APIS=1
+  MINIZ_NO_STDIO=1
+  MINIZ_NO_TIME=1)
 
 # 优先使用 vcpkg 提供的 nlohmann-json，缺失时回落到随仓库内嵌的头文件。
 find_package(nlohmann_json CONFIG QUIET)
