@@ -963,10 +963,10 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
                                           .price_cents = lines.i64(3),
                                           .id = lines.i64(0),
                                           .converted_qty = lines.i64(4),
-                                          .source_order_line_id = lines.i64(5),
                                           .warehouse_id = lines.i64(6),
                                           .adjust_cents = lines.i64(7),
-                                          .adjust_reason = lines.text(8)});
+                                          .adjust_reason = lines.text(8),
+                                          .source_order_line_id = lines.i64(5)});
     }
   });
   return detail;
