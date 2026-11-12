@@ -112,6 +112,133 @@
     }
   }
 
+  // ---------- 自定义打印模板 ----------
+
+  function printAlign(align) {
+    return align === "RIGHT" ? "right" : align === "CENTER" ? "center" : "left";
+  }
+
+  function printCellText(value, type) {
+    if (value === null || value === undefined) return "";
+    if (type === "MONEY") return money(value);
+    return String(value);
+  }
+
+  function printTotalsText(totals) {
+    if (!totals) return "";
+    if (totals.total_amount_text !== undefined) {
+      return "合计数量 " + totals.total_qty + "，合计金额 " + totals.total_amount_text + " 元";
+    }
+    if (totals.closing_text !== undefined) {
+      return "期初余额 " + totals.opening_text + " 元，期末余额 " + totals.closing_text + " 元";
+    }
+    return "";
+  }
+
+  // 模板只提供展示配置，所有数据都按纯文本转义后拼进打印视图。
+  function printViewHtml(data) {
+    const tmpl = data.template || {};
+    const columns = data.columns || [];
+    const colgroup = columns
+      .map((column) =>
+        column.width_mm > 0 ? `<col style="width:${Number(column.width_mm)}mm" />` : "<col />"
+      )
+      .join("");
+    const head = columns
+      .map(
+        (column) =>
+          `<th style="text-align:${printAlign(column.align)}">${escapeHtml(column.label)}</th>`
+      )
+      .join("");
+    const body = (data.rows || []).length
+      ? data.rows
+          .map(
+            (row) =>
+              `<tr>${columns
+                .map((column) => {
+                  const styles = ["text-align:" + printAlign(column.align)];
+                  if (column.font_size_pt) styles.push("font-size:" + Number(column.font_size_pt) + "pt");
+                  if (column.bold) styles.push("font-weight:600");
+                  return `<td style="${styles.join(";")}">${escapeHtml(
+                    printCellText(row[column.key], column.type)
+                  )}</td>`;
+                })
+                .join("")}</tr>`
+          )
+          .join("")
+      : `<tr><td colspan="${columns.length || 1}" style="text-align:center">暂无数据</td></tr>`;
+    const fields = (data.header_fields || [])
+      .map(
+        (field) =>
+          `<div><strong>${escapeHtml(field.label)}：</strong>${escapeHtml(field.value)}</div>`
+      )
+      .join("");
+    const totals = printTotalsText(data.totals);
+    const headerText = data.header_text
+      ? `<div class="print-header">${escapeHtml(data.header_text)}</div>`
+      : "";
+    const footerText = data.footer_text
+      ? `<div class="print-footer">${escapeHtml(data.footer_text)}</div>`
+      : "";
+    return `
+      <div class="print-sheet" style="font-size:${Number(tmpl.font_size_pt) || 10}pt">
+        ${headerText}
+        <h1 class="print-title">${escapeHtml(data.title || "")}</h1>
+        <div class="print-subtitle">${escapeHtml(data.subtitle || "")}</div>
+        ${fields ? `<div class="print-fields">${fields}</div>` : ""}
+        <table class="print-table">
+          <colgroup>${colgroup}</colgroup>
+          <thead><tr>${head}</tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+        ${totals ? `<div class="print-totals">${escapeHtml(totals)}</div>` : ""}
+        <div class="print-meta">打印时间：${escapeHtml(data.printed_at || "")}</div>
+        ${footerText}
+      </div>`;
+  }
+
+  function printPageCss(tmpl) {
+    const size =
+      tmpl.page_size === "CUSTOM"
+        ? `${Number(tmpl.paper_width_mm)}mm ${Number(tmpl.paper_height_mm)}mm`
+        : tmpl.page_size || "A4";
+    const orientation = tmpl.orientation === "LANDSCAPE" ? " landscape" : " portrait";
+    const pageNumber = tmpl.show_page_no
+      ? ' @bottom-right { content: "第 " counter(page) " 页"; font-size: 9pt; }'
+      : "";
+    return `@page { size: ${size}${orientation}; margin: ${Number(tmpl.margin_mm)}mm;${pageNumber} }`;
+  }
+
+  function printWithTemplate(data) {
+    for (const node of document.querySelectorAll("[data-print-view]")) node.remove();
+    const view = document.createElement("section");
+    view.className = "print-view";
+    view.dataset.printView = "1";
+    view.innerHTML = printViewHtml(data);
+    document.body.appendChild(view);
+    const style = document.createElement("style");
+    style.dataset.printView = "1";
+    style.textContent = printPageCss(data.template || {});
+    document.head.appendChild(style);
+    document.body.classList.add("print-mode");
+    const cleanup = () => {
+      document.body.classList.remove("print-mode");
+      view.remove();
+      style.remove();
+    };
+    // 浏览器打印结束（含取消）后清理；单机版桥接不触发时，下次打印会先清掉旧视图。
+    window.addEventListener("afterprint", cleanup, { once: true });
+    printPage();
+  }
+
+  async function printTarget(path) {
+    try {
+      printWithTemplate(await api("GET", path));
+    } catch (error) {
+      showNotice(error.message, "error");
+    }
+  }
+
   // xlsx 是二进制，单机版桥接用 base64 传回原生保存，浏览器走 Blob 下载。
   function toBase64(bytes) {
     let binary = "";
@@ -443,17 +570,19 @@
     }
 
     function actionsFor(doc) {
+      const print = '<button class="link" data-role="print">打印</button>';
       if (doc.status === "DRAFT") {
         return (
+          print +
           '<button class="link" data-role="approve">审核</button>' +
           '<button class="link" data-role="edit">编辑</button>' +
           '<button class="link danger" data-role="delete">删除</button>'
         );
       }
       if (doc.status === "APPROVED") {
-        return '<button class="link danger" data-role="reverse">反审核</button>';
+        return print + '<button class="link danger" data-role="reverse">反审核</button>';
       }
-      return "—";
+      return print;
     }
 
     function renderDocuments() {
@@ -625,6 +754,15 @@
       if (!button) return;
       const id = Number(event.target.closest("tr").dataset.id);
       try {
+        if (button.dataset.role === "print") {
+          await printTarget(
+            "/api/print/render?target_type=DOC&target_key=" +
+              docType +
+              "&doc_id=" +
+              id
+          );
+          return;
+        }
         if (button.dataset.role === "reverse") {
           if (!confirm("反审核会生成反向库存流水，确认继续？")) return;
           await api("POST", "/api/documents/" + id + "/reverse");
@@ -784,7 +922,6 @@
   async function reportPage(mount) {
     const today = new Date().toISOString().slice(0, 10);
     mount.innerHTML = `
-      <div class="print-only print-head" data-role="print-head"></div>
       <div class="page-head">
         <div>
           <h2>报表</h2>
@@ -798,7 +935,6 @@
             <option value="-1">应付账龄</option>
           </select>
           <button class="btn" data-role="refresh">刷新</button>
-          <button class="btn" data-role="print">打印</button>
         </div>
       </div>
       <div class="card">
@@ -806,6 +942,7 @@
           <h3>库存余额表</h3>
           <button class="btn small" data-role="export-balance">导出 CSV</button>
           <button class="btn small" data-role="excel-balance">导出 Excel</button>
+          <button class="btn small" data-role="print-balance">打印</button>
         </div>
         <table class="table" data-role="balances"></table>
       </div>
@@ -814,6 +951,7 @@
           <h3>库存流水明细</h3>
           <button class="btn small" data-role="export-ledger">导出 CSV</button>
           <button class="btn small" data-role="excel-ledger">导出 Excel</button>
+          <button class="btn small" data-role="print-ledger">打印</button>
         </div>
         <table class="table" data-role="ledger"></table>
       </div>
@@ -822,6 +960,7 @@
           <h3>收发明细</h3>
           <button class="btn small" data-role="export-flows">导出 CSV</button>
           <button class="btn small" data-role="excel-flows">导出 Excel</button>
+          <button class="btn small" data-role="print-flows">打印</button>
         </div>
         <table class="table" data-role="flows"></table>
       </div>
@@ -830,6 +969,7 @@
           <h3>进销存汇总</h3>
           <button class="btn small" data-role="export-summary">导出 CSV</button>
           <button class="btn small" data-role="excel-summary">导出 Excel</button>
+          <button class="btn small" data-role="print-summary">打印</button>
         </div>
         <p class="page-sub">按商品跨仓库汇总：期初 + 入库 − 出库 = 期末，数量与金额双口径</p>
         <table class="table" data-role="summary"></table>
@@ -839,6 +979,7 @@
           <h3>销售毛利</h3>
           <button class="btn small" data-role="export-profit">导出 CSV</button>
           <button class="btn small" data-role="excel-profit">导出 Excel</button>
+          <button class="btn small" data-role="print-profit">打印</button>
         </div>
         <p class="page-sub">收入取单据金额，成本取审核写入的库存流水；已反审核单据不计入</p>
         <table class="table" data-role="profit"></table>
@@ -848,6 +989,7 @@
           <h3>应收应付余额与账龄</h3>
           <button class="btn small" data-role="export-aging">导出 CSV</button>
           <button class="btn small" data-role="excel-aging">导出 Excel</button>
+          <button class="btn small" data-role="print-aging">打印</button>
         </div>
         <p class="page-sub">统计范围：仅 v7 迁移后审核的单据，升级前已审核单据不计入往来与账龄；上方库存类报表不受影响</p>
         <table class="table" data-role="aging"></table>
@@ -856,7 +998,6 @@
     const fromInput = mount.querySelector('[data-role="from"]');
     const toInput = mount.querySelector('[data-role="to"]');
     const directionSelect = mount.querySelector('[data-role="direction"]');
-    const printHead = mount.querySelector('[data-role="print-head"]');
     const balancesTable = mount.querySelector('[data-role="balances"]');
     const ledgerTable = mount.querySelector('[data-role="ledger"]');
     const flowsTable = mount.querySelector('[data-role="flows"]');
@@ -874,17 +1015,6 @@
       );
     }
 
-    function renderPrintHead() {
-      const scope =
-        `期间 ${fromInput.value || "不限"} 至 ${toInput.value || "不限"}` +
-        `；账龄方向 ${directionSelect.value === "-1" ? "应付" : "应收"}`;
-      printHead.innerHTML = `
-        <div><strong>单位名称：</strong>小兔进销存</div>
-        <div><strong>报表：</strong>库存余额表 / 库存流水明细 / 收发明细 / 进销存汇总 / 销售毛利 / 应收应付余额与账龄</div>
-        <div><strong>筛选区间：</strong>${escapeHtml(scope)}</div>
-        <div><strong>打印时间：</strong>${escapeHtml(new Date().toLocaleString("zh-CN", { hour12: false }))}</div>`;
-    }
-
     async function reload() {
       const period = periodQuery();
       const [balances, ledger, flows, summary, profit, aging] = await Promise.all([
@@ -895,7 +1025,6 @@
         api("GET", "/api/reports/sales-profit" + period),
         api("GET", "/api/reports/ar-ap-aging?direction=" + directionSelect.value),
       ]);
-      renderPrintHead();
 
       balancesTable.innerHTML = !balances.length
         ? emptyRow("暂无库存", 5)
@@ -1057,10 +1186,37 @@
       () => "/api/reports/ar-ap-aging?direction=" + directionSelect.value + "&format=xlsx"
     );
 
-    mount.querySelector('[data-role="print"]').addEventListener("click", () => {
-      renderPrintHead();
-      printPage();
-    });
+    function wirePrint(role, pathFn) {
+      mount.querySelector(`[data-role="${role}"]`).addEventListener("click", () => printTarget(pathFn()));
+    }
+
+    wirePrint("print-balance", () => "/api/print/render?target_type=REPORT&target_key=stock-balance");
+    wirePrint(
+      "print-ledger",
+      () =>
+        "/api/print/render?target_type=REPORT&target_key=stock-ledger" +
+        periodQuery() +
+        "&limit=100000"
+    );
+    wirePrint(
+      "print-flows",
+      () => "/api/print/render?target_type=REPORT&target_key=goods-flow" + periodQuery()
+    );
+    wirePrint(
+      "print-summary",
+      () => "/api/print/render?target_type=REPORT&target_key=inventory-summary" + periodQuery()
+    );
+    wirePrint(
+      "print-profit",
+      () => "/api/print/render?target_type=REPORT&target_key=sales-profit" + periodQuery()
+    );
+    wirePrint(
+      "print-aging",
+      () =>
+        "/api/print/render?target_type=REPORT&target_key=ar-ap-aging&direction=" +
+        directionSelect.value
+    );
+
     mount.querySelector('[data-role="refresh"]').addEventListener("click", reload);
     directionSelect.addEventListener("change", reload);
     await reload();
@@ -1071,7 +1227,6 @@
   async function statementPage(mount) {
     const today = new Date().toISOString().slice(0, 10);
     mount.innerHTML = `
-      <div class="print-only print-head" data-role="print-head"></div>
       <div class="page-head">
         <div>
           <h2>对账单</h2>
@@ -1106,18 +1261,9 @@
     const partnerSelect = mount.querySelector('[data-role="partner"]');
     const fromInput = mount.querySelector('[data-role="from"]');
     const toInput = mount.querySelector('[data-role="to"]');
-    const printHead = mount.querySelector('[data-role="print-head"]');
     const title = mount.querySelector('[data-role="title"]');
     const summaryTable = mount.querySelector('[data-role="summary"]');
     const linesTable = mount.querySelector('[data-role="lines"]');
-    let current = null;
-
-    function periodLabel() {
-      return (
-        (fromInput.value || "起始不限") + " 至 " + (toInput.value || "截止不限")
-      );
-    }
-
     function queryPath() {
       return (
         "/api/reports/statement?partner_key=" +
@@ -1149,7 +1295,6 @@
     }
 
     function render(result) {
-      current = result;
       title.textContent =
         (result.partner_name || "未命名往来单位") +
         (result.direction === -1 ? " 应付对账单" : " 应收对账单");
@@ -1181,16 +1326,17 @@
              .join("")}</tbody>`;
     }
 
-    function renderPrintHead() {
-      printHead.innerHTML = `
-        <div><strong>单位名称：</strong>小兔进销存</div>
-        <div><strong>报表：</strong>${escapeHtml(
-          current ? title.textContent : "往来对账单"
-        )}</div>
-        <div><strong>筛选区间：</strong>${escapeHtml(periodLabel())}</div>
-        <div><strong>打印时间：</strong>${escapeHtml(
-          new Date().toLocaleString("zh-CN", { hour12: false })
-        )}</div>`;
+    function renderPath() {
+      return (
+        "/api/print/render?target_type=REPORT&target_key=statement&partner_key=" +
+        encodeURIComponent(partnerSelect.value) +
+        "&direction=" +
+        directionSelect.value +
+        "&from=" +
+        encodeURIComponent(fromInput.value) +
+        "&to=" +
+        encodeURIComponent(toInput.value)
+      );
     }
 
     async function reload() {
@@ -1198,7 +1344,6 @@
         showNotice("请先在客户或供应商档案中新增往来单位", "error");
         summaryTable.innerHTML = "";
         linesTable.innerHTML = "";
-        current = null;
         return;
       }
       showNotice("");
@@ -1245,11 +1390,422 @@
       }
     });
     mount.querySelector('[data-role="print"]').addEventListener("click", () => {
-      renderPrintHead();
-      printPage();
+      if (!partnerSelect.value) {
+        showNotice("请先选择往来单位", "error");
+        return;
+      }
+      printTarget(renderPath());
     });
 
     await loadPartners();
+    await reload();
+  }
+
+  // ---------- 打印模板管理 ----------
+
+  async function printTemplatePage(mount) {
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>打印模板</h2>
+          <p class="page-sub">模板只保存纸张、页眉页脚与列显示；列来自目标注册表，每个目标可设一个默认模板</p>
+        </div>
+        <div class="toolbar">
+          <select data-role="filter-target"></select>
+          <button class="btn" data-role="new">新建模板</button>
+          <button class="btn" data-role="refresh">刷新</button>
+        </div>
+      </div>
+      <div class="card" data-role="editor-card" hidden>
+        <div class="card-head">
+          <h3 data-role="editor-title">新建模板</h3>
+          <button class="btn small" type="button" data-role="copy-default">从内置默认复制列</button>
+        </div>
+        <form data-role="editor">
+          <div class="doc-head">
+            <label class="field"><span>名称</span><input data-role="name" maxlength="100" /></label>
+            <label class="field"><span>编码</span><input data-role="code" maxlength="50" /></label>
+            <label class="field"><span>目标</span><select data-role="target"></select></label>
+            <label class="field"><span>纸张</span>
+              <select data-role="page-size">
+                <option value="A4">A4</option>
+                <option value="A5">A5</option>
+                <option value="CUSTOM">自定义</option>
+              </select>
+            </label>
+            <label class="field"><span>方向</span>
+              <select data-role="orientation">
+                <option value="PORTRAIT">纵向</option>
+                <option value="LANDSCAPE">横向</option>
+              </select>
+            </label>
+            <label class="field"><span>页边距（mm）</span>
+              <input type="number" min="0" max="50" data-role="margin" />
+            </label>
+            <label class="field"><span>字号（pt）</span>
+              <input type="number" min="6" max="24" data-role="font-size" />
+            </label>
+            <label class="field" data-role="custom-size"><span>纸张宽（mm）</span>
+              <input type="number" min="1" max="1000" data-role="paper-width" />
+            </label>
+            <label class="field" data-role="custom-size"><span>纸张高（mm）</span>
+              <input type="number" min="1" max="1000" data-role="paper-height" />
+            </label>
+            <label class="field"><span>页眉文本</span>
+              <input data-role="header" maxlength="500" placeholder="可用 {title} {date} {doc_no} 等占位符" />
+            </label>
+            <label class="field"><span>页脚文本</span>
+              <input data-role="footer" maxlength="500" placeholder="纯文本，打印时按占位符替换" />
+            </label>
+            <label class="checkbox"><input type="checkbox" data-role="show-page-no" />显示页码</label>
+            <label class="checkbox"><input type="checkbox" data-role="is-default" />设为该目标默认</label>
+            <label class="checkbox"><input type="checkbox" data-role="active" />启用</label>
+          </div>
+          <table class="table print-columns" data-role="columns"></table>
+          <div class="form-actions">
+            <button class="btn primary" type="button" data-role="save">保存</button>
+            <button class="btn" type="button" data-role="cancel">取消</button>
+          </div>
+        </form>
+      </div>
+      <div class="card">
+        <table class="table" data-role="list"></table>
+      </div>`;
+
+    const filterSelect = mount.querySelector('[data-role="filter-target"]');
+    const editorCard = mount.querySelector('[data-role="editor-card"]');
+    const editorTitle = mount.querySelector('[data-role="editor-title"]');
+    const editorTarget = mount.querySelector('[data-role="target"]');
+    const nameInput = mount.querySelector('[data-role="name"]');
+    const codeInput = mount.querySelector('[data-role="code"]');
+    const pageSizeSelect = mount.querySelector('[data-role="page-size"]');
+    const orientationSelect = mount.querySelector('[data-role="orientation"]');
+    const marginInput = mount.querySelector('[data-role="margin"]');
+    const fontInput = mount.querySelector('[data-role="font-size"]');
+    const paperWidthInput = mount.querySelector('[data-role="paper-width"]');
+    const paperHeightInput = mount.querySelector('[data-role="paper-height"]');
+    const headerInput = mount.querySelector('[data-role="header"]');
+    const footerInput = mount.querySelector('[data-role="footer"]');
+    const showPageNoInput = mount.querySelector('[data-role="show-page-no"]');
+    const isDefaultInput = mount.querySelector('[data-role="is-default"]');
+    const activeInput = mount.querySelector('[data-role="active"]');
+    const customSizeFields = mount.querySelectorAll('[data-role="custom-size"]');
+    const columnsTable = mount.querySelector('[data-role="columns"]');
+    const listTable = mount.querySelector('[data-role="list"]');
+
+    let targets = [];
+    let templates = [];
+    let editing = null;
+    let editingColumns = [];
+
+    function splitTarget(value) {
+      const index = value.indexOf("|");
+      return { type: value.slice(0, index), key: value.slice(index + 1) };
+    }
+
+    function targetLabel(type, key) {
+      const target = targets.find((item) => item.type === type && item.key === key);
+      return target ? target.name : type + "/" + key;
+    }
+
+    function fillTargetOptions(select, includeAll) {
+      const groups = [
+        { label: "单据", type: "DOC" },
+        { label: "报表", type: "REPORT" },
+      ];
+      select.innerHTML =
+        (includeAll ? '<option value="">全部目标</option>' : "") +
+        groups
+          .map((group) => {
+            const options = targets
+              .filter((target) => target.type === group.type)
+              .map(
+                (target) =>
+                  `<option value="${target.type}|${target.key}">${escapeHtml(target.name)}</option>`
+              )
+              .join("");
+            return options ? `<optgroup label="${group.label}">${options}</optgroup>` : "";
+          })
+          .join("");
+    }
+
+    function builtinColumns(type, key) {
+      const target = targets.find((item) => item.type === type && item.key === key);
+      if (!target) return [];
+      return target.builtin.columns.map((column) => ({
+        column_key: column.column_key,
+        visible: column.visible,
+        width_mm: column.width_mm,
+        align: column.align,
+        font_size_pt: column.font_size_pt,
+        bold: column.bold,
+      }));
+    }
+
+    function updateCustomSize() {
+      const custom = pageSizeSelect.value === "CUSTOM";
+      for (const field of customSizeFields) field.hidden = !custom;
+    }
+
+    function renderColumns() {
+      const parts = splitTarget(editorTarget.value);
+      const target = targets.find(
+        (item) => item.type === parts.type && item.key === parts.key
+      );
+      const defs = target ? target.columns : [];
+      if (!editingColumns.length) {
+        columnsTable.innerHTML =
+          '<tbody><tr><td class="empty">请先选择打印目标</td></tr></tbody>';
+        return;
+      }
+      columnsTable.innerHTML = `
+        <thead><tr><th>显示</th><th>列</th><th>宽度（mm，0 自动）</th><th>对齐</th>
+          <th>字号（0 跟随）</th><th>加粗</th><th class="actions">排序</th></tr></thead>
+        <tbody>${editingColumns
+          .map((column, index) => {
+            const def = defs.find((item) => item.key === column.column_key);
+            return `<tr data-index="${index}">
+              <td><input type="checkbox" data-role="col-visible" ${column.visible ? "checked" : ""} /></td>
+              <td>${escapeHtml(def ? def.label : column.column_key)}
+                <div class="page-sub">${escapeHtml(column.column_key)}</div></td>
+              <td><input type="number" min="0" max="500" class="col-num" data-role="col-width"
+                value="${Number(column.width_mm) || 0}" /></td>
+              <td><select data-role="col-align">
+                <option value="LEFT" ${column.align === "LEFT" ? "selected" : ""}>左</option>
+                <option value="CENTER" ${column.align === "CENTER" ? "selected" : ""}>中</option>
+                <option value="RIGHT" ${column.align === "RIGHT" ? "selected" : ""}>右</option>
+              </select></td>
+              <td><input type="number" min="0" max="24" class="col-num" data-role="col-font"
+                value="${Number(column.font_size_pt) || 0}" /></td>
+              <td><input type="checkbox" data-role="col-bold" ${column.bold ? "checked" : ""} /></td>
+              <td class="actions">
+                <button class="link" type="button" data-role="col-up" ${index === 0 ? "disabled" : ""}>上移</button>
+                <button class="link" type="button" data-role="col-down"
+                  ${index === editingColumns.length - 1 ? "disabled" : ""}>下移</button>
+              </td>
+            </tr>`;
+          })
+          .join("")}</tbody>`;
+    }
+
+    function syncColumnsFromDom() {
+      const rows = columnsTable.querySelectorAll("tbody tr[data-index]");
+      rows.forEach((row, index) => {
+        const column = editingColumns[index];
+        if (!column) return;
+        column.visible = row.querySelector('[data-role="col-visible"]').checked;
+        column.width_mm = Number(row.querySelector('[data-role="col-width"]').value || 0);
+        column.align = row.querySelector('[data-role="col-align"]').value;
+        column.font_size_pt = Number(row.querySelector('[data-role="col-font"]').value || 0);
+        column.bold = row.querySelector('[data-role="col-bold"]').checked;
+      });
+    }
+
+    function openEditor(template) {
+      editing = template;
+      editorCard.hidden = false;
+      editorTitle.textContent = template ? "编辑模板" : "新建模板";
+      editorTarget.disabled = !!template;
+      nameInput.value = template ? template.name : "";
+      codeInput.value = template ? template.code : "";
+      editorTarget.value = template
+        ? template.target_type + "|" + template.target_key
+        : filterSelect.value || (targets[0] ? targets[0].type + "|" + targets[0].key : "");
+      pageSizeSelect.value = template ? template.page_size : "A4";
+      orientationSelect.value = template ? template.orientation : "PORTRAIT";
+      marginInput.value = template ? template.margin_mm : 12;
+      fontInput.value = template ? template.font_size_pt : 10;
+      paperWidthInput.value = template ? template.paper_width_mm : 0;
+      paperHeightInput.value = template ? template.paper_height_mm : 0;
+      headerInput.value = template ? template.header_text : "";
+      footerInput.value = template ? template.footer_text : "";
+      showPageNoInput.checked = template ? template.show_page_no : true;
+      isDefaultInput.checked = template ? template.is_default : false;
+      activeInput.checked = template ? template.active : true;
+      updateCustomSize();
+      if (template) {
+        editingColumns = template.columns.map((column) => ({ ...column }));
+      } else {
+        const parts = splitTarget(editorTarget.value);
+        editingColumns = builtinColumns(parts.type, parts.key);
+      }
+      renderColumns();
+      editorCard.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function closeEditor() {
+      editing = null;
+      editorCard.hidden = true;
+    }
+
+    function renderList() {
+      const filtered = filterSelect.value
+        ? templates.filter(
+            (template) =>
+              template.target_type + "|" + template.target_key === filterSelect.value
+          )
+        : templates;
+      if (!filtered.length) {
+        listTable.innerHTML =
+          '<tbody><tr><td class="empty">还没有模板，点「新建模板」时会从内置默认复制一份</td></tr></tbody>';
+        return;
+      }
+      listTable.innerHTML = `
+        <thead><tr><th>名称</th><th>编码</th><th>目标</th><th>默认</th><th>状态</th>
+          <th>版本</th><th>更新时间</th><th class="actions">操作</th></tr></thead>
+        <tbody>${filtered
+          .map(
+            (template) => `<tr data-id="${template.id}">
+              <td>${escapeHtml(template.name)}</td>
+              <td>${escapeHtml(template.code)}</td>
+              <td>${escapeHtml(targetLabel(template.target_type, template.target_key))}</td>
+              <td>${template.is_default ? "是" : "—"}</td>
+              <td>${template.active ? "启用" : "停用"}</td>
+              <td>${template.version}</td>
+              <td>${escapeHtml(template.updated_at)}</td>
+              <td class="actions">
+                <button class="link" data-role="edit">编辑</button>
+                ${
+                  template.is_default
+                    ? ""
+                    : '<button class="link" data-role="default">设为默认</button>'
+                }
+                <button class="link danger" data-role="delete">删除</button>
+              </td>
+            </tr>`
+          )
+          .join("")}</tbody>`;
+    }
+
+    async function reload() {
+      templates = await api("GET", "/api/print-templates");
+      renderList();
+    }
+
+    async function saveEditor() {
+      syncColumnsFromDom();
+      const parts = splitTarget(editorTarget.value);
+      if (!parts.type || !parts.key) {
+        showNotice("请选择打印目标", "error");
+        return;
+      }
+      if (!nameInput.value.trim() || !codeInput.value.trim()) {
+        showNotice("请填写模板名称与编码", "error");
+        return;
+      }
+      const body = {
+        name: nameInput.value.trim(),
+        code: codeInput.value.trim(),
+        target_type: parts.type,
+        target_key: parts.key,
+        page_size: pageSizeSelect.value,
+        orientation: orientationSelect.value,
+        paper_width_mm: Number(paperWidthInput.value || 0),
+        paper_height_mm: Number(paperHeightInput.value || 0),
+        margin_mm: Number(marginInput.value || 0),
+        font_size_pt: Number(fontInput.value || 10),
+        header_text: headerInput.value,
+        footer_text: footerInput.value,
+        show_page_no: showPageNoInput.checked,
+        is_default: isDefaultInput.checked,
+        active: activeInput.checked,
+        columns: editingColumns.map((column) => ({
+          column_key: column.column_key,
+          visible: column.visible,
+          width_mm: Number(column.width_mm) || 0,
+          align: column.align,
+          font_size_pt: Number(column.font_size_pt) || 0,
+          bold: column.bold,
+        })),
+      };
+      try {
+        if (editing) {
+          body.version = editing.version;
+          await api("PUT", "/api/print-templates/" + editing.id, body);
+          showNotice("模板已保存", "ok");
+        } else {
+          await api("POST", "/api/print-templates", body);
+          showNotice("模板已创建", "ok");
+        }
+        closeEditor();
+        await reload();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    }
+
+    editorTarget.addEventListener("change", () => {
+      if (editing) return;
+      const parts = splitTarget(editorTarget.value);
+      editingColumns = builtinColumns(parts.type, parts.key);
+      renderColumns();
+    });
+    pageSizeSelect.addEventListener("change", updateCustomSize);
+    mount.querySelector('[data-role="save"]').addEventListener("click", saveEditor);
+    mount.querySelector('[data-role="cancel"]').addEventListener("click", closeEditor);
+    mount.querySelector('[data-role="copy-default"]').addEventListener("click", () => {
+      syncColumnsFromDom();
+      const parts = splitTarget(editorTarget.value);
+      editingColumns = builtinColumns(parts.type, parts.key);
+      renderColumns();
+      showNotice("已按内置默认重置列", "ok");
+    });
+    columnsTable.addEventListener("click", (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      const row = event.target.closest("tr");
+      const index = Number(row.dataset.index);
+      syncColumnsFromDom();
+      if (button.dataset.role === "col-up" && index > 0) {
+        [editingColumns[index - 1], editingColumns[index]] = [
+          editingColumns[index],
+          editingColumns[index - 1],
+        ];
+      } else if (button.dataset.role === "col-down" && index < editingColumns.length - 1) {
+        [editingColumns[index + 1], editingColumns[index]] = [
+          editingColumns[index],
+          editingColumns[index + 1],
+        ];
+      } else {
+        return;
+      }
+      renderColumns();
+    });
+    listTable.addEventListener("click", async (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      const id = Number(event.target.closest("tr").dataset.id);
+      const template = templates.find((item) => item.id === id);
+      if (!template) return;
+      try {
+        if (button.dataset.role === "edit") {
+          openEditor(template);
+        } else if (button.dataset.role === "default") {
+          await api("POST", "/api/print-templates/" + id + "/default");
+          showNotice("已设为默认模板", "ok");
+          await reload();
+        } else if (button.dataset.role === "delete") {
+          if (!confirm("确认删除模板「" + template.name + "」？删除后该目标回退到内置默认。")) {
+            return;
+          }
+          await api("DELETE", "/api/print-templates/" + id);
+          if (editing && editing.id === id) closeEditor();
+          showNotice("模板已删除", "ok");
+          await reload();
+        }
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+    filterSelect.addEventListener("change", renderList);
+    mount.querySelector('[data-role="refresh"]').addEventListener("click", () => {
+      reload().catch((error) => showNotice(error.message, "error"));
+    });
+    mount.querySelector('[data-role="new"]').addEventListener("click", () => openEditor(null));
+
+    targets = await api("GET", "/api/print/targets");
+    fillTargetOptions(filterSelect, true);
+    fillTargetOptions(editorTarget, false);
     await reload();
   }
 
@@ -1411,6 +1967,7 @@
     },
     { key: "statement", title: "对账单", render: statementPage },
     { key: "stock", title: "库存", render: stockPage },
+    { key: "print-templates", title: "打印模板", render: printTemplatePage },
     { key: "reports", title: "报表", render: reportPage },
   ];
 

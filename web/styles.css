@@ -160,10 +160,6 @@ main {
   font-size: 12px;
 }
 
-.print-only {
-  display: none;
-}
-
 .btn {
   appearance: none;
   border: 1px solid var(--line);
@@ -370,17 +366,107 @@ main {
   .table tr {
     break-inside: avoid;
   }
+}
 
-  .print-only {
+/* ---------- 自定义打印模板 ---------- */
+
+.print-view {
+  display: none;
+}
+
+@media print {
+  /* 套用模板打印时只输出打印视图，屏幕上的页面整体隐藏。 */
+  body.print-mode .layout {
+    display: none !important;
+  }
+
+  body.print-mode .print-view {
     display: block;
   }
 
-  .print-head {
-    display: grid;
-    gap: 2px;
-    font-size: 10pt;
-    margin-bottom: 10px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid #000;
+  .print-sheet {
+    color: #000;
   }
+
+  .print-header {
+    font-size: 11pt;
+    margin-bottom: 4mm;
+    white-space: pre-wrap;
+  }
+
+  .print-title {
+    font-size: 1.6em;
+    text-align: center;
+    margin: 0 0 2mm;
+  }
+
+  .print-subtitle {
+    font-size: 0.9em;
+    color: #333;
+    text-align: center;
+    margin-bottom: 2mm;
+  }
+
+  .print-fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1mm 8mm;
+    font-size: 0.9em;
+    margin-bottom: 2mm;
+  }
+
+  .print-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+
+  .print-table th,
+  .print-table td {
+    border: 1px solid #555;
+    padding: 1.2mm 1.5mm;
+    word-break: break-all;
+  }
+
+  .print-table thead {
+    display: table-header-group;
+  }
+
+  .print-table tr {
+    break-inside: avoid;
+  }
+
+  .print-totals {
+    margin-top: 2mm;
+    font-weight: 600;
+  }
+
+  .print-meta {
+    margin-top: 2mm;
+    font-size: 0.8em;
+    color: #444;
+  }
+
+  .print-footer {
+    margin-top: 3mm;
+    padding-top: 1mm;
+    border-top: 1px solid #555;
+    font-size: 0.85em;
+    white-space: pre-wrap;
+  }
+}
+
+/* 模板编辑器的列配置 */
+
+.print-columns .col-num {
+  width: 80px;
+  font-size: 13px;
+}
+
+.print-columns td {
+  vertical-align: middle;
+}
+
+.print-columns .page-sub {
+  font-size: 11px;
 }
