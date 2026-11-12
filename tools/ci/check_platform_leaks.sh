@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # 平台代码泄漏检查：
-#   1. core/ 必须完全平台无关，不得出现 Apple 专有头、框架或条件编译；
+#   1. core/ 不得出现 Apple 专有头、框架或条件编译；
+#      唯一例外是 core/include/xiaotu/platform.h：它只补齐标准库在 POSIX 与
+#      Windows 上的能力差异（local_time / path_to_utf8），不引入平台框架与句柄，
+#      新增文件若需要条件编译，应先说服这条规则，而不是绕过检查；
 #   2. server/ 只允许 cli_main.cpp 在 #if defined(__APPLE__) 内引用 WebView 壳；
 #   3. shell/ 本身是 macOS 专有目录，不参与检查。
 set -euo pipefail
