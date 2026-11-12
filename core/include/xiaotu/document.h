@@ -11,7 +11,13 @@
 
 namespace xiaotu {
 
-enum class StockDirection { None, In, Out };
+enum class StockMode {
+  None,       // 不影响库存
+  In,         // 入库
+  Out,        // 出库
+  Transfer,   // 调拨：源仓出、目标仓入，两侧同一事务
+  Stocktake,  // 盘点：按实盘数与账面数的差额生成调整流水
+};
 enum class PriceSource { Manual };
 
 // 成本钩子：返回本次变动应结转的金额（正数，单位分）。
@@ -24,7 +30,7 @@ using CostHook = std::function<std::int64_t(std::int64_t qty, std::int64_t price
 struct DocumentDefinition {
   std::string doc_type;       // SAL_OUT / PUR_IN / ...
   std::string doc_no_prefix;  // XSCK / CGRK / ...
-  StockDirection stock_direction = StockDirection::None;
+  StockMode stock_mode = StockMode::None;
   bool affects_stock = false;
   PriceSource price_source = PriceSource::Manual;
   CostHook cost_hook;
@@ -39,6 +45,7 @@ const DocumentDefinition* find_document_definition(std::string_view doc_type);
 struct DocInput {
   std::string doc_type;
   std::int64_t warehouse_id = 0;
+  std::int64_t target_warehouse_id = 0;  // 仅调拨单使用：入库仓
   std::string doc_date;  // 空则取今天
   std::int64_t partner_id = 0;  // 供应商档案 id；0 表示只记录名称
   std::string partner;          // 往来单位名称快照（客户/供应商）
@@ -52,6 +59,7 @@ struct DocDetail {
   std::string doc_type;
   std::string doc_date;
   std::int64_t warehouse_id = 0;
+  std::int64_t target_warehouse_id = 0;
   std::int64_t partner_id = 0;
   std::string partner;
   std::string status;

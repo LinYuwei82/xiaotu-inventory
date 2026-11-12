@@ -271,8 +271,11 @@
       <div class="card">
         <form class="doc-form" data-role="form">
           <div class="doc-head">
-            <label class="field"><span>仓库</span>
+            <label class="field"><span>${config.twoWarehouse ? "调出仓库" : "仓库"}</span>
               <select data-role="warehouse" required></select>
+            </label>
+            <label class="field" ${config.twoWarehouse ? "" : "hidden"}><span>调入仓库</span>
+              <select data-role="target-warehouse" required></select>
             </label>
             <label class="field"><span>单据日期</span>
               <input type="date" data-role="date" required />
@@ -299,6 +302,7 @@
 
     const form = mount.querySelector('[data-role="form"]');
     const warehouseSelect = mount.querySelector('[data-role="warehouse"]');
+    const targetWarehouseSelect = mount.querySelector('[data-role="target-warehouse"]');
     const dateInput = mount.querySelector('[data-role="date"]');
     const linesTable = mount.querySelector('[data-role="lines"]');
     const partnerSelect = mount.querySelector('[data-role="partner-select"]');
@@ -413,13 +417,20 @@
             )
             .join("");
       }
-      warehouseSelect.innerHTML = warehouses
+      const warehouseOptions = warehouses
         .filter((warehouse) => warehouse.status)
         .map(
           (warehouse) =>
             `<option value="${warehouse.id}">${escapeHtml(warehouse.code + " " + warehouse.name)}</option>`
         )
         .join("");
+      warehouseSelect.innerHTML = warehouseOptions;
+      if (config.twoWarehouse) {
+        targetWarehouseSelect.innerHTML = warehouseOptions;
+        if (warehouses.filter((warehouse) => warehouse.status).length > 1) {
+          targetWarehouseSelect.selectedIndex = 1;
+        }
+      }
       renderDocuments();
       if (!linesTable.querySelector("tbody") || !linesTable.querySelector("tbody").children.length) {
         resetLines();
@@ -463,6 +474,7 @@
       const body = {
         doc_type: docType,
         warehouse_id: Number(warehouseSelect.value),
+        target_warehouse_id: config.twoWarehouse ? Number(targetWarehouseSelect.value) : 0,
         doc_date: dateInput.value,
         partner_id: usePartnerSelect ? Number(partnerSelect.value || 0) : 0,
         partner: usePartnerSelect
@@ -497,6 +509,9 @@
         editingId = doc.id;
         warehouseSelect.value = String(detail.warehouse_id);
         dateInput.value = detail.doc_date;
+        if (config.twoWarehouse && detail.target_warehouse_id) {
+          targetWarehouseSelect.value = String(detail.target_warehouse_id);
+        }
         form.querySelector('[data-role="partner"]').value = detail.partner || "";
         if (partnerSelect && !partnerSelect.hidden) {
           partnerSelect.value = detail.partner_id ? String(detail.partner_id) : "";
@@ -670,6 +685,33 @@
           partnerLabel: "客户",
           partnerPlaceholder: "可选",
           docLabel: "销售退货",
+        }),
+    },
+    {
+      key: "transfer",
+      title: "调拨",
+      render: (mount) =>
+        documentPage(mount, {
+          docType: "STK_TRF",
+          title: "库存调拨",
+          subtitle: "保存即审核：源仓出库与目标仓入库在同一事务内完成",
+          partnerLabel: "备注",
+          partnerPlaceholder: "可选",
+          docLabel: "调拨",
+          twoWarehouse: true,
+        }),
+    },
+    {
+      key: "stocktake",
+      title: "盘点",
+      render: (mount) =>
+        documentPage(mount, {
+          docType: "STK_CNT",
+          title: "库存盘点",
+          subtitle: "保存即审核：明细数量填实盘数，按与账面的差额生成调整流水",
+          partnerLabel: "备注",
+          partnerPlaceholder: "可选",
+          docLabel: "盘点",
         }),
     },
     { key: "stock", title: "库存", render: stockPage },

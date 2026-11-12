@@ -256,6 +256,11 @@ CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
 CREATE INDEX idx_audit_at ON audit_log(at);
 )SQL";
 
+// v6：调拨单需要调入仓库；0 表示非调拨单据。
+constexpr const char* kV6 = R"SQL(
+ALTER TABLE doc_header ADD COLUMN target_warehouse_id INTEGER NOT NULL DEFAULT 0;
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -276,6 +281,7 @@ const std::vector<Migration>& all_migrations() {
       {3, "v3_supplier", kV3},
       {4, "v4_unit", kV4},
       {5, "v5_audit_log", kV5},
+      {6, "v6_transfer_stocktake", kV6},
   };
   return migrations;
 }

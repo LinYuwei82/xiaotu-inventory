@@ -5,7 +5,7 @@ macOS 优先的进销存软件骨架：**一套 C++20 代码，两种运行形�
 - 不带参数启动 = **单机版**：内嵌服务只监听 `127.0.0.1` 的随机端口，生成一次性 token，用系统 WKWebView 打开本地页面。
 - `--server` 启动 = **网络版**：监听 `0.0.0.0`，用浏览器访问（启动日志会输出带 token 的一次性访问链接）。
 
-当前为 M0 骨架，已打通：**新建商品 → 采购入库 / 销售出库 / 退货（含草稿与反审核）→ 查看库存与流水**，并具备内置 `admin` 用户与最小角色权限。
+当前为 M0 骨架，已打通：**新建商品 → 采购入库 / 销售出库 / 退货 / 调拨 / 盘点（含草稿与反审核）→ 查看库存与流水**，并具备内置 `admin` 用户、最小角色权限与审计日志。
 
 ## 1. 环境要求
 
@@ -291,5 +291,5 @@ struct DocumentDefinition {
 ## 10. 参考
 
 - 技术方案：`docs/进销存技术方案.md`
-- 数据库结构：`core/src/migrations.cpp`（v5）
+- 数据库结构：`core/src/migrations.cpp`（v6）
 - API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`

@@ -41,7 +41,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 5, "迁移后 schema 版本应为 5");
+      check(db.schema_version() == 6, "迁移后 schema 版本应为 6");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -234,7 +234,7 @@ int main() {
       auto purchased = items.create(xiaotu::gen::ItemRow{.code = "P001", .name = "采购商品"});
       const auto balance_of = [&stock](std::int64_t item_id) {
         for (const auto& row : stock.balances()) {
-          if (row.item_id == item_id) return row;
+          if (row.item_id == item_id && row.warehouse_name == "主仓库") return row;
         }
         return xiaotu::StockBalanceRow{};
       };
@@ -292,6 +292,94 @@ int main() {
       }
       check(purchase_docs.size() == 3 && voided_purchases == 2,
             "应有三张采购入库单，期初与首笔采购被反审核为 VOIDED");
+
+      // 调拨：源仓出、目标仓入，同一事务；不足时整单拒绝。
+      const auto aux = warehouses.create(
+          xiaotu::gen::WarehouseRow{.code = "AUX", .name = "分仓"});
+      const auto balance_in = [&stock](const std::string& warehouse_name, std::int64_t item_id) {
+        for (const auto& row : stock.balances()) {
+          if (row.warehouse_name == warehouse_name && row.item_id == item_id) return row;
+        }
+        return xiaotu::StockBalanceRow{};
+      };
+
+      xiaotu::DocInput transfer;
+      transfer.doc_type = "STK_TRF";
+      transfer.warehouse_id = warehouse_list.at(0).id;
+      transfer.target_warehouse_id = aux.id;
+      transfer.doc_date = "2026-11-12";
+      transfer.lines.push_back(
+          xiaotu::DocLineInput{.item_id = purchased.id, .qty = 4, .price_cents = 0});
+      const auto transfer_doc = documents.save_and_approve(transfer);
+      check(transfer_doc.doc_no.rfind("DBD", 0) == 0, "调拨单号应以 DBD 开头");
+      auto source_balance = balance_in("主仓库", purchased.id);
+      auto target_balance = balance_in("分仓", purchased.id);
+      check(source_balance.qty == 6 && source_balance.amount_cents == 8400,
+            "调拨后源仓应为 6 件 / 8400 分");
+      check(target_balance.qty == 4 && target_balance.amount_cents == 5600,
+            "调拨后目标仓应为 4 件 / 5600 分");
+
+      bool over_transfer_rejected = false;
+      try {
+        xiaotu::DocInput too_much = transfer;
+        too_much.lines.clear();
+        too_much.lines.push_back(
+            xiaotu::DocLineInput{.item_id = purchased.id, .qty = 999, .price_cents = 0});
+        documents.save_and_approve(too_much);
+      } catch (const xiaotu::AppError& error) {
+        over_transfer_rejected = error.code() == "STOCK_INSUFFICIENT";
+      }
+      check(over_transfer_rejected, "调拨数量超过源仓结存应被拒绝");
+
+      documents.reverse(transfer_doc.id);
+      source_balance = balance_in("主仓库", purchased.id);
+      target_balance = balance_in("分仓", purchased.id);
+      check(source_balance.qty == 10 && source_balance.amount_cents == 14000,
+            "反审核调拨后源仓应回到 10 件 / 14000 分");
+      check(target_balance.qty == 0 && target_balance.amount_cents == 0,
+            "反审核调拨后目标仓应清零");
+
+      // 盘点：明细为实盘数，差额生成调整流水。
+      xiaotu::DocInput stocktake;
+      stocktake.doc_type = "STK_CNT";
+      stocktake.warehouse_id = warehouse_list.at(0).id;
+      stocktake.doc_date = "2026-11-12";
+      stocktake.lines.push_back(
+          xiaotu::DocLineInput{.item_id = purchased.id, .qty = 7, .price_cents = 0});
+      const auto stocktake_doc = documents.save_and_approve(stocktake);
+      check(stocktake_doc.doc_no.rfind("PDD", 0) == 0, "盘点单号应以 PDD 开头");
+      auto counted = balance_of(purchased.id);
+      check(counted.qty == 7 && counted.amount_cents == 9800,
+            "盘亏 3 件后应为 7 件 / 9800 分");
+
+      documents.reverse(stocktake_doc.id);
+      counted = balance_of(purchased.id);
+      check(counted.qty == 10 && counted.amount_cents == 14000, "反审核盘点后应回到 10 件 / 14000 分");
+
+      xiaotu::DocInput surplus;
+      surplus.doc_type = "STK_CNT";
+      surplus.warehouse_id = warehouse_list.at(0).id;
+      surplus.doc_date = "2026-11-12";
+      surplus.lines.push_back(
+          xiaotu::DocLineInput{.item_id = purchased.id, .qty = 12, .price_cents = 0});
+      const auto surplus_doc = documents.save_and_approve(surplus);
+      counted = balance_of(purchased.id);
+      check(counted.qty == 12 && counted.amount_cents == 16800,
+            "盘盈 2 件后应为 12 件 / 16800 分");
+      documents.reverse(surplus_doc.id);
+      check(balance_of(purchased.id).qty == 10, "反审核盘盈后应回到 10 件");
+
+      bool negative_stocktake_rejected = false;
+      try {
+        xiaotu::DocInput negative = surplus;
+        negative.lines.clear();
+        negative.lines.push_back(
+            xiaotu::DocLineInput{.item_id = purchased.id, .qty = -1, .price_cents = 0});
+        documents.save_and_approve(negative);
+      } catch (const xiaotu::AppError& error) {
+        negative_stocktake_rejected = error.code() == "INVALID_INPUT";
+      }
+      check(negative_stocktake_rejected, "实盘数量为负数应被拒绝");
 
       // 供应商档案：CRUD、编码唯一，并能被采购单据引用。
       const auto supplier = suppliers.create(

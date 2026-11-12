@@ -40,6 +40,7 @@ nlohmann::json detail_to_json(const DocDetail& detail) {
       {"doc_type", detail.doc_type},
       {"doc_date", detail.doc_date},
       {"warehouse_id", detail.warehouse_id},
+      {"target_warehouse_id", detail.target_warehouse_id},
       {"partner_id", detail.partner_id},
       {"partner", detail.partner},
       {"status", detail.status},
@@ -54,6 +55,7 @@ DocInput input_from_json(const nlohmann::json& body) {
   input.doc_type = body.value("doc_type", std::string{});
   input.warehouse_id = body.value("warehouse_id", std::int64_t{0});
   input.doc_date = body.value("doc_date", std::string{});
+  input.target_warehouse_id = body.value("target_warehouse_id", std::int64_t{0});
   input.partner_id = body.value("partner_id", std::int64_t{0});
   input.partner = body.value("partner", std::string{});
   if (body.contains("lines") && body["lines"].is_array()) {

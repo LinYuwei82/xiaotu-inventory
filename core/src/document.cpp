@@ -41,7 +41,7 @@ const std::vector<DocumentDefinition>& document_definitions() {
       DocumentDefinition{
           .doc_type = "SAL_OUT",
           .doc_no_prefix = "XSCK",
-          .stock_direction = StockDirection::Out,
+          .stock_mode = StockMode::Out,
           .affects_stock = true,
           .price_source = PriceSource::Manual,
           .cost_hook = moving_average_cost,
@@ -52,7 +52,7 @@ const std::vector<DocumentDefinition>& document_definitions() {
       DocumentDefinition{
           .doc_type = "PUR_IN",
           .doc_no_prefix = "CGRK",
-          .stock_direction = StockDirection::In,
+          .stock_mode = StockMode::In,
           .affects_stock = true,
           .price_source = PriceSource::Manual,
           .cost_hook = amount_by_unit_price,
@@ -63,7 +63,7 @@ const std::vector<DocumentDefinition>& document_definitions() {
       DocumentDefinition{
           .doc_type = "PUR_RET",
           .doc_no_prefix = "CGTH",
-          .stock_direction = StockDirection::Out,
+          .stock_mode = StockMode::Out,
           .affects_stock = true,
           .price_source = PriceSource::Manual,
           .cost_hook = amount_by_unit_price,
@@ -74,10 +74,32 @@ const std::vector<DocumentDefinition>& document_definitions() {
       DocumentDefinition{
           .doc_type = "SAL_RET",
           .doc_no_prefix = "XSTH",
-          .stock_direction = StockDirection::In,
+          .stock_mode = StockMode::In,
           .affects_stock = true,
           .price_source = PriceSource::Manual,
           .cost_hook = amount_by_unit_price,
+          .on_approve = nullptr,
+          .on_reverse = nullptr,
+      },
+      // 调拨：源仓按移动加权平均出库，目标仓按同一成本入库。
+      DocumentDefinition{
+          .doc_type = "STK_TRF",
+          .doc_no_prefix = "DBD",
+          .stock_mode = StockMode::Transfer,
+          .affects_stock = true,
+          .price_source = PriceSource::Manual,
+          .cost_hook = nullptr,
+          .on_approve = nullptr,
+          .on_reverse = nullptr,
+      },
+      // 盘点：明细数量为实盘数，审核时按差额生成调整流水。
+      DocumentDefinition{
+          .doc_type = "STK_CNT",
+          .doc_no_prefix = "PDD",
+          .stock_mode = StockMode::Stocktake,
+          .affects_stock = true,
+          .price_source = PriceSource::Manual,
+          .cost_hook = nullptr,
           .on_approve = nullptr,
           .on_reverse = nullptr,
       },
@@ -96,61 +118,42 @@ const DocumentDefinition* find_document_definition(std::string_view doc_type) {
 
 namespace {
 
-void apply_stock_move(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
-                      std::int64_t line_id, std::int64_t warehouse_id, const std::string& biz_time,
-                      const DocLineInput& line) {
-  std::int64_t balance_qty = 0;
-  std::int64_t balance_amount = 0;
-  {
-    Stmt balance(conn,
-                 "SELECT qty, amount_cents FROM stock_balance WHERE warehouse_id = ? AND item_id = ?;");
-    balance.bind(1, warehouse_id).bind(2, line.item_id);
-    if (balance.step()) {
-      balance_qty = balance.i64(0);
-      balance_amount = balance.i64(1);
-    }
-  }
+struct BalanceState {
+  std::int64_t qty = 0;
+  std::int64_t amount = 0;
+};
 
-  // 出库前校验可用数量：不足则整单事务回滚，不会出现半途扣减或负数结存。
-  if (definition.stock_direction == StockDirection::Out && balance_qty < line.qty) {
-    std::string code;
-    std::string name;
-    Stmt item(conn, "SELECT code, name FROM item WHERE id = ?;");
-    item.bind(1, line.item_id);
-    if (item.step()) {
-      code = item.text(0);
-      name = item.text(1);
-    }
-    throw AppError("STOCK_INSUFFICIENT", "库存不足：" + code + " " + name + " 可用 " +
-                                            std::to_string(balance_qty) + "，需出库 " +
-                                            std::to_string(line.qty));
+BalanceState read_balance(sqlite3* conn, std::int64_t warehouse_id, std::int64_t item_id) {
+  BalanceState state;
+  Stmt balance(conn,
+               "SELECT qty, amount_cents FROM stock_balance WHERE warehouse_id = ? AND item_id = ?;");
+  balance.bind(1, warehouse_id).bind(2, item_id);
+  if (balance.step()) {
+    state.qty = balance.i64(0);
+    state.amount = balance.i64(1);
   }
+  return state;
+}
 
-  const std::int64_t cost =
-      definition.cost_hook ? definition.cost_hook(line.qty, line.price_cents, balance_qty,
-                                                  balance_amount)
-                           : 0;
-  const bool outgoing = definition.stock_direction == StockDirection::Out;
-  const std::int64_t delta_qty = outgoing ? -line.qty : line.qty;
-  const std::int64_t delta_amount = outgoing ? -cost : cost;
-
-  {
-    Stmt ledger(conn,
-                "INSERT INTO stock_ledger (id, doc_id, doc_line_id, biz_type, biz_time,"
-                " warehouse_id, item_id, qty, amount_cents, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
-    ledger.bind(1, next_id())
-        .bind(2, doc_id)
-        .bind(3, line_id)
-        .bind(4, definition.doc_type)
-        .bind(5, biz_time)
-        .bind(6, warehouse_id)
-        .bind(7, line.item_id)
-        .bind(8, delta_qty)
-        .bind(9, delta_amount)
-        .bind(10, now_text())
-        .run();
-  }
+// 追加流水并同步结存；数量与金额都用增量写入，避免读改写竞态。
+void write_move(sqlite3* conn, const std::string& biz_type, std::int64_t doc_id,
+                std::int64_t line_id, std::int64_t warehouse_id, std::int64_t item_id,
+                const std::string& biz_time, std::int64_t delta_qty, std::int64_t delta_amount) {
+  Stmt ledger(conn,
+              "INSERT INTO stock_ledger (id, doc_id, doc_line_id, biz_type, biz_time,"
+              " warehouse_id, item_id, qty, amount_cents, created_at)"
+              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
+  ledger.bind(1, next_id())
+      .bind(2, doc_id)
+      .bind(3, line_id)
+      .bind(4, biz_type)
+      .bind(5, biz_time)
+      .bind(6, warehouse_id)
+      .bind(7, item_id)
+      .bind(8, delta_qty)
+      .bind(9, delta_amount)
+      .bind(10, now_text())
+      .run();
 
   Stmt upsert(conn,
               "INSERT INTO stock_balance (warehouse_id, item_id, qty, amount_cents, updated_at)"
@@ -160,11 +163,106 @@ void apply_stock_move(sqlite3* conn, const DocumentDefinition& definition, std::
               "   amount_cents = amount_cents + excluded.amount_cents,"
               "   updated_at = excluded.updated_at;");
   upsert.bind(1, warehouse_id)
-      .bind(2, line.item_id)
+      .bind(2, item_id)
       .bind(3, delta_qty)
       .bind(4, delta_amount)
       .bind(5, now_text())
       .run();
+}
+
+// 出库/调拨前校验可用数量：不足则整单事务回滚，不会出现半途扣减或负数结存。
+void ensure_available(sqlite3* conn, std::int64_t warehouse_id, std::int64_t item_id,
+                      std::int64_t need) {
+  const BalanceState balance = read_balance(conn, warehouse_id, item_id);
+  if (balance.qty >= need) {
+    return;
+  }
+  std::string code;
+  std::string name;
+  Stmt item(conn, "SELECT code, name FROM item WHERE id = ?;");
+  item.bind(1, item_id);
+  if (item.step()) {
+    code = item.text(0);
+    name = item.text(1);
+  }
+  throw AppError("STOCK_INSUFFICIENT", "库存不足：" + code + " " + name + " 可用 " +
+                                          std::to_string(balance.qty) + "，需出库 " +
+                                          std::to_string(need));
+}
+
+void apply_in_or_out(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
+                     std::int64_t line_id, std::int64_t warehouse_id, const std::string& biz_time,
+                     const DocLineInput& line) {
+  const BalanceState balance = read_balance(conn, warehouse_id, line.item_id);
+  const bool outgoing = definition.stock_mode == StockMode::Out;
+  if (outgoing) {
+    ensure_available(conn, warehouse_id, line.item_id, line.qty);
+  }
+
+  const std::int64_t cost =
+      definition.cost_hook ? definition.cost_hook(line.qty, line.price_cents, balance.qty,
+                                                  balance.amount)
+                           : 0;
+  write_move(conn, definition.doc_type, doc_id, line_id, warehouse_id, line.item_id, biz_time,
+             outgoing ? -line.qty : line.qty, outgoing ? -cost : cost);
+}
+
+// 调拨：源仓按移动加权平均出库，目标仓按同一成本入库，两侧同一事务。
+void apply_transfer(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
+                    std::int64_t line_id, std::int64_t warehouse_id,
+                    std::int64_t target_warehouse_id, const std::string& biz_time,
+                    const DocLineInput& line) {
+  ensure_available(conn, warehouse_id, line.item_id, line.qty);
+  const BalanceState source = read_balance(conn, warehouse_id, line.item_id);
+  const std::int64_t cost =
+      moving_average_cost(line.qty, line.price_cents, source.qty, source.amount);
+  write_move(conn, definition.doc_type, doc_id, line_id, warehouse_id, line.item_id, biz_time,
+             -line.qty, -cost);
+  // 入库腿使用独立 biz_type：同一明细行有两条流水，唯一索引按 (doc_line_id, biz_type) 约束。
+  write_move(conn, definition.doc_type + "_IN", doc_id, line_id, target_warehouse_id, line.item_id,
+             biz_time, line.qty, cost);
+}
+
+// 盘点：明细数量为实盘数，按差额写调整流水；差额为 0 不写。
+void apply_stocktake(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
+                     std::int64_t line_id, std::int64_t warehouse_id, const std::string& biz_time,
+                     const DocLineInput& line) {
+  const BalanceState balance = read_balance(conn, warehouse_id, line.item_id);
+  const std::int64_t diff = line.qty - balance.qty;
+  if (diff == 0) {
+    return;
+  }
+  std::int64_t amount = 0;
+  if (diff > 0) {
+    amount = balance.qty > 0 ? moving_average_cost(diff, line.price_cents, balance.qty,
+                                                   balance.amount)
+                             : diff * line.price_cents;
+  } else {
+    amount = -moving_average_cost(-diff, line.price_cents, balance.qty, balance.amount);
+  }
+  write_move(conn, definition.doc_type, doc_id, line_id, warehouse_id, line.item_id, biz_time, diff,
+             amount);
+}
+
+void apply_stock_move(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
+                      std::int64_t line_id, std::int64_t warehouse_id,
+                      std::int64_t target_warehouse_id, const std::string& biz_time,
+                      const DocLineInput& line) {
+  switch (definition.stock_mode) {
+    case StockMode::In:
+    case StockMode::Out:
+      apply_in_or_out(conn, definition, doc_id, line_id, warehouse_id, biz_time, line);
+      break;
+    case StockMode::Transfer:
+      apply_transfer(conn, definition, doc_id, line_id, warehouse_id, target_warehouse_id, biz_time,
+                     line);
+      break;
+    case StockMode::Stocktake:
+      apply_stocktake(conn, definition, doc_id, line_id, warehouse_id, biz_time, line);
+      break;
+    case StockMode::None:
+      break;
+  }
 }
 
 void ensure_warehouse(sqlite3* conn, std::int64_t warehouse_id) {
@@ -186,11 +284,23 @@ struct ValidatedDoc {
   std::int64_t total_amount = 0;
 };
 
-ValidatedDoc validate_document(sqlite3* conn, const DocInput& input, bool require_lines) {
+ValidatedDoc validate_document(sqlite3* conn, const DocInput& input,
+                               const DocumentDefinition& definition, bool require_lines) {
   ensure_warehouse(conn, input.warehouse_id);
+  if (definition.stock_mode == StockMode::Transfer) {
+    if (input.target_warehouse_id == 0) {
+      throw AppError("INVALID_INPUT", "请选择调入仓库");
+    }
+    if (input.target_warehouse_id == input.warehouse_id) {
+      throw AppError("INVALID_INPUT", "调出仓库与调入仓库不能相同");
+    }
+    ensure_warehouse(conn, input.target_warehouse_id);
+  }
   if (require_lines && input.lines.empty()) {
     throw AppError("INVALID_INPUT", "请至少录入一行明细");
   }
+
+  const bool allow_zero_qty = definition.stock_mode == StockMode::Stocktake;
 
   ValidatedDoc validated;
   validated.doc_date = input.doc_date.empty() ? today_text() : input.doc_date;
@@ -214,8 +324,8 @@ ValidatedDoc validate_document(sqlite3* conn, const DocInput& input, bool requir
     if (line.item_id == 0) {
       throw AppError("INVALID_INPUT", "明细行未选择商品");
     }
-    if (line.qty <= 0) {
-      throw AppError("INVALID_INPUT", "数量必须大于 0");
+    if (allow_zero_qty ? line.qty < 0 : line.qty <= 0) {
+      throw AppError("INVALID_INPUT", allow_zero_qty ? "实盘数量不能为负数" : "数量必须大于 0");
     }
     if (line.price_cents < 0) {
       throw AppError("INVALID_INPUT", "单价不能为负数");
@@ -261,52 +371,55 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
   const AuditStamp stamp = audit_stamp();
   if (approved) {
     Stmt header(conn,
-                "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id, partner_id,"
-                " customer, status, total_qty, total_amount_cents, created_at, created_by,"
-                " approved_at, approved_by)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?);");
+                "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id,"
+                " target_warehouse_id, partner_id, customer, status, total_qty,"
+                " total_amount_cents, created_at, created_by, approved_at, approved_by)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?);");
     header.bind(1, id)
         .bind(2, doc_no)
         .bind(3, doc_type)
         .bind(4, validated.doc_date)
         .bind(5, input.warehouse_id)
-        .bind(6, input.partner_id)
-        .bind(7, validated.partner)
-        .bind(8, validated.total_qty)
-        .bind(9, validated.total_amount)
-        .bind(10, stamp.at)
-        .bind(11, stamp.by)
-        .bind(12, stamp.at)
-        .bind(13, stamp.by)
+        .bind(6, input.target_warehouse_id)
+        .bind(7, input.partner_id)
+        .bind(8, validated.partner)
+        .bind(9, validated.total_qty)
+        .bind(10, validated.total_amount)
+        .bind(11, stamp.at)
+        .bind(12, stamp.by)
+        .bind(13, stamp.at)
+        .bind(14, stamp.by)
         .run();
     return;
   }
 
   Stmt header(conn,
-              "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id, partner_id,"
-              " customer, status, total_qty, total_amount_cents, created_at, created_by,"
-              " approved_at, approved_by)"
-              " VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, NULL, NULL);");
+              "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id,"
+              " target_warehouse_id, partner_id, customer, status, total_qty,"
+              " total_amount_cents, created_at, created_by, approved_at, approved_by)"
+              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, NULL, NULL);");
   header.bind(1, id)
       .bind(2, doc_no)
       .bind(3, doc_type)
       .bind(4, validated.doc_date)
       .bind(5, input.warehouse_id)
-      .bind(6, input.partner_id)
-      .bind(7, validated.partner)
-      .bind(8, validated.total_qty)
-      .bind(9, validated.total_amount)
-      .bind(10, stamp.at)
-      .bind(11, stamp.by)
+      .bind(6, input.target_warehouse_id)
+      .bind(7, input.partner_id)
+      .bind(8, validated.partner)
+      .bind(9, validated.total_qty)
+      .bind(10, validated.total_amount)
+      .bind(11, stamp.at)
+      .bind(12, stamp.by)
       .run();
 }
 
 void apply_stock_moves(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
-                       std::int64_t warehouse_id, const std::string& biz_time,
-                       const std::vector<DocLineInput>& lines,
+                       std::int64_t warehouse_id, std::int64_t target_warehouse_id,
+                       const std::string& biz_time, const std::vector<DocLineInput>& lines,
                        const std::vector<std::int64_t>& line_ids) {
   for (std::size_t i = 0; i < lines.size(); ++i) {
-    apply_stock_move(conn, definition, doc_id, line_ids.at(i), warehouse_id, biz_time, lines.at(i));
+    apply_stock_move(conn, definition, doc_id, line_ids.at(i), warehouse_id, target_warehouse_id,
+                     biz_time, lines.at(i));
   }
 }
 
@@ -325,14 +438,14 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input) 
 
   Created created;
   db_.write([&](sqlite3* conn) {
-    const ValidatedDoc validated = validate_document(conn, input, true);
+    const ValidatedDoc validated = validate_document(conn, input, *definition, true);
     created.id = next_id();
     created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
     insert_header(conn, created.id, created.doc_no, definition->doc_type, input, validated, true);
     const std::vector<std::int64_t> line_ids = insert_lines(conn, created.id, input.lines);
     if (definition->affects_stock) {
-      apply_stock_moves(conn, *definition, created.id, input.warehouse_id, validated.biz_time,
-                        input.lines, line_ids);
+      apply_stock_moves(conn, *definition, created.id, input.warehouse_id,
+                        input.target_warehouse_id, validated.biz_time, input.lines, line_ids);
     }
     if (definition->on_approve) {
       definition->on_approve(conn, created.id);
@@ -351,7 +464,7 @@ DocumentEngine::Created DocumentEngine::save_draft(const DocInput& input) {
 
   Created created;
   db_.write([&](sqlite3* conn) {
-    const ValidatedDoc validated = validate_document(conn, input, false);
+    const ValidatedDoc validated = validate_document(conn, input, *definition, false);
     created.id = next_id();
     created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
     insert_header(conn, created.id, created.doc_no, definition->doc_type, input, validated, false);
@@ -389,17 +502,19 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
       throw AppError("INVALID_INPUT", "不能修改单据类型");
     }
 
-    const ValidatedDoc validated = validate_document(conn, input, false);
+    const ValidatedDoc validated = validate_document(conn, input, *definition, false);
     Stmt update(conn,
-                "UPDATE doc_header SET doc_date = ?, warehouse_id = ?, partner_id = ?,"
-                " customer = ?, total_qty = ?, total_amount_cents = ? WHERE id = ?;");
+                "UPDATE doc_header SET doc_date = ?, warehouse_id = ?, target_warehouse_id = ?,"
+                " partner_id = ?, customer = ?, total_qty = ?, total_amount_cents = ?"
+                " WHERE id = ?;");
     update.bind(1, validated.doc_date)
         .bind(2, input.warehouse_id)
-        .bind(3, input.partner_id)
-        .bind(4, validated.partner)
-        .bind(5, validated.total_qty)
-        .bind(6, validated.total_amount)
-        .bind(7, doc_id)
+        .bind(3, input.target_warehouse_id)
+        .bind(4, input.partner_id)
+        .bind(5, validated.partner)
+        .bind(6, validated.total_qty)
+        .bind(7, validated.total_amount)
+        .bind(8, doc_id)
         .run();
 
     Stmt clear(conn, "DELETE FROM doc_line WHERE doc_id = ?;");
@@ -441,8 +556,8 @@ void DocumentEngine::approve(std::int64_t doc_id) {
     std::string doc_no;
     {
       Stmt header(conn,
-                  "SELECT doc_type, status, warehouse_id, doc_date, customer, partner_id, doc_no"
-                  " FROM doc_header WHERE id = ?;");
+                  "SELECT doc_type, status, warehouse_id, doc_date, customer, partner_id, doc_no,"
+                  " target_warehouse_id FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
@@ -454,6 +569,7 @@ void DocumentEngine::approve(std::int64_t doc_id) {
       input.partner = header.text(4);
       input.partner_id = header.i64(5);
       doc_no = header.text(6);
+      input.target_warehouse_id = header.i64(7);
     }
     if (status != "DRAFT") {
       throw AppError("INVALID_STATUS", "只有草稿可以审核");
@@ -477,10 +593,10 @@ void DocumentEngine::approve(std::int64_t doc_id) {
       }
     }
 
-    const ValidatedDoc validated = validate_document(conn, input, true);
+    const ValidatedDoc validated = validate_document(conn, input, *definition, true);
     if (definition->affects_stock) {
-      apply_stock_moves(conn, *definition, doc_id, input.warehouse_id, validated.biz_time,
-                        input.lines, line_ids);
+      apply_stock_moves(conn, *definition, doc_id, input.warehouse_id,
+                        input.target_warehouse_id, validated.biz_time, input.lines, line_ids);
     }
     const AuditStamp stamp = audit_stamp();
     Stmt update(conn,
@@ -505,8 +621,9 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
   db_.read([&](sqlite3* conn) {
     {
       Stmt header(conn,
-                  "SELECT id, doc_no, doc_type, doc_date, warehouse_id, partner_id, customer,"
-                  " status, total_qty, total_amount_cents FROM doc_header WHERE id = ?;");
+                  "SELECT id, doc_no, doc_type, doc_date, warehouse_id, target_warehouse_id,"
+                  " partner_id, customer, status, total_qty, total_amount_cents"
+                  " FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
@@ -516,11 +633,12 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
       detail.doc_type = header.text(2);
       detail.doc_date = header.text(3);
       detail.warehouse_id = header.i64(4);
-      detail.partner_id = header.i64(5);
-      detail.partner = header.text(6);
-      detail.status = header.text(7);
-      detail.total_qty = header.i64(8);
-      detail.total_amount_cents = header.i64(9);
+      detail.target_warehouse_id = header.i64(5);
+      detail.partner_id = header.i64(6);
+      detail.partner = header.text(7);
+      detail.status = header.text(8);
+      detail.total_qty = header.i64(9);
+      detail.total_amount_cents = header.i64(10);
     }
     Stmt lines(conn,
                "SELECT item_id, qty, price_cents FROM doc_line WHERE doc_id = ? ORDER BY line_no;");
@@ -569,18 +687,16 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
     std::string doc_type;
     std::string status;
     std::string doc_no;
-    std::int64_t warehouse_id = 0;
     {
       Stmt header(conn,
-                  "SELECT doc_type, status, warehouse_id, doc_no FROM doc_header WHERE id = ?;");
+                  "SELECT doc_type, status, doc_no FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
       }
       doc_type = header.text(0);
       status = header.text(1);
-      warehouse_id = header.i64(2);
-      doc_no = header.text(3);
+      doc_no = header.text(2);
     }
     if (status != "APPROVED") {
       throw AppError("INVALID_STATUS", "只有已审核的单据可以反审核");
@@ -591,32 +707,39 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
       std::int64_t item_id;
       std::int64_t qty;
       std::int64_t amount;
+      std::int64_t warehouse_id;
+      std::string biz_type;
     };
     std::vector<LedgerRow> rows;
     {
       Stmt ledger(conn,
-                  "SELECT doc_line_id, item_id, qty, amount_cents FROM stock_ledger"
-                  " WHERE doc_id = ? AND biz_type = ?;");
-      ledger.bind(1, doc_id).bind(2, doc_type);
+                  "SELECT doc_line_id, item_id, qty, amount_cents, warehouse_id, biz_type"
+                  " FROM stock_ledger WHERE doc_id = ? AND biz_type IN (?, ? || '_IN');");
+      ledger.bind(1, doc_id).bind(2, doc_type).bind(3, doc_type);
       while (ledger.step()) {
-        rows.push_back(LedgerRow{ledger.i64(0), ledger.i64(1), ledger.i64(2), ledger.i64(3)});
+        rows.push_back(LedgerRow{ledger.i64(0), ledger.i64(1), ledger.i64(2), ledger.i64(3),
+                                 ledger.i64(4), ledger.text(5)});
       }
     }
 
     for (const LedgerRow& row : rows) {
+      // 单腿单据沿用 REVERSE；调拨的入库腿追加独立类型，避免同一明细行的唯一索引冲突。
+      const std::string reverse_type =
+          row.biz_type == doc_type ? "REVERSE" : row.biz_type + "_REVERSE";
       Stmt ledger(conn,
                   "INSERT INTO stock_ledger (id, doc_id, doc_line_id, biz_type, biz_time,"
                   " warehouse_id, item_id, qty, amount_cents, created_at)"
-                  " VALUES (?, ?, ?, 'REVERSE', ?, ?, ?, ?, ?, ?);");
+                  " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
       ledger.bind(1, next_id())
           .bind(2, doc_id)
           .bind(3, row.line_id)
-          .bind(4, now_text())
-          .bind(5, warehouse_id)
-          .bind(6, row.item_id)
-          .bind(7, -row.qty)
-          .bind(8, -row.amount)
-          .bind(9, now_text())
+          .bind(4, reverse_type)
+          .bind(5, now_text())
+          .bind(6, row.warehouse_id)
+          .bind(7, row.item_id)
+          .bind(8, -row.qty)
+          .bind(9, -row.amount)
+          .bind(10, now_text())
           .run();
 
       Stmt upsert(conn,
@@ -626,7 +749,7 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
                   "   qty = qty + excluded.qty,"
                   "   amount_cents = amount_cents + excluded.amount_cents,"
                   "   updated_at = excluded.updated_at;");
-      upsert.bind(1, warehouse_id)
+      upsert.bind(1, row.warehouse_id)
           .bind(2, row.item_id)
           .bind(3, -row.qty)
           .bind(4, -row.amount)
