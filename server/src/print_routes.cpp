@@ -754,6 +754,11 @@ void respond_render(Services& services, const httplib::Request& req, httplib::Re
   render.placeholders["date"] = today_text();
   render.placeholders["printed_at"] = now_text();
   render.placeholders["period"] = render.subtitle;
+  // 公司抬头来自系统参数，模板里可用 {{company_name}} / {{company_phone}} / {{company_address}}。
+  const CompanySettings company = services.settings.company();
+  render.placeholders["company_name"] = company.name;
+  render.placeholders["company_phone"] = company.phone;
+  render.placeholders["company_address"] = company.address;
 
   nlohmann::json columns = nlohmann::json::array();
   for (const auto& column : resolved_print_columns(tmpl)) {
@@ -777,7 +782,13 @@ void respond_render(Services& services, const httplib::Request& req, httplib::Re
   body["title"] = render.title;
   body["subtitle"] = render.subtitle;
   body["printed_at"] = now_text();
-  body["header_text"] = apply_placeholders(tmpl.header_text, render.placeholders);
+  std::string header_text = apply_placeholders(tmpl.header_text, render.placeholders);
+  // 模板没写抬头时用公司名称兜底，避免配了公司信息却不出现在单据上；
+  // 电话与地址留给模板按需组合，不强行塞进默认抬头。
+  if (header_text.empty() && !company.name.empty()) {
+    header_text = company.name;
+  }
+  body["header_text"] = header_text;
   body["footer_text"] = apply_placeholders(tmpl.footer_text, render.placeholders);
   body["header_fields"] = render.header_fields;
   body["totals"] = render.totals;

@@ -78,7 +78,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 21, "迁移后 schema 版本应为 21");
+      check(db.schema_version() == 22, "迁移后 schema 版本应为 22");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -112,6 +112,12 @@ int main() {
             "操作员不应能审核成本调整单");
       check(!xiaotu::role_has_permission("viewer", "cost.adjust"),
             "只读角色不应能审核成本调整单");
+      check(xiaotu::role_has_permission("operator", "setting.write"),
+            "操作员应能维护系统参数");
+      check(xiaotu::role_has_permission("viewer", "setting.read"),
+            "只读角色应能查看系统参数");
+      check(!xiaotu::role_has_permission("viewer", "setting.write"),
+            "只读角色不应能修改系统参数");
 
       xiaotu::UserService users(db);
       const auto seeded_users = users.list();

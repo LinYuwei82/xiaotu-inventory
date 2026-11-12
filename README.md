@@ -15,7 +15,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 ## 0. 数据库结构版本
 
-当前 schema 为 **v21**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
+当前 schema 为 **v22**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -40,6 +40,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v19 | 客户 / 供应商税号 `tax_no`，客户信用额度 `credit_limit_cents`（0 视为不限制） |
 | v20 | 应收应付期初标记 `ar_ap_entry.opening`，`uk_ar_ap_doc` 放宽为只约束 `doc_id > 0` |
 | v21 | `item_barcode.item_id` 的唯一索引改为普通索引，为一商品多码预留；条码全局唯一不变 |
+| v22 | 新增 `app_setting` 键值表（公司名称/电话/地址）与 `setting.read` / `setting.write` 权限 |
 
 ## 1. 环境要求
 
@@ -467,7 +468,7 @@ struct DocumentDefinition {
 | operator（2） | 主数据读写（`item/unit/warehouse/supplier/customer` 的 `.read` + `.write`）、`document.read/write`、`stock.read`、`finance.read/write`、`print.template.read/write` |
 | viewer（3） | 上述所有 `.read`（含 `document.read`、`stock.read`、`finance.read`、`print.template.read`），无任何写权限 |
 
-权限点按十二组登记：`item`、`unit`、`warehouse`、`supplier`、`customer`、`document`、`stock`、`finance`、`print.template`、`user`、`audit`、`cost`，共 21 个权限码，其中 17 个有 `app_role_permission` 种子行。`user.read`、`user.write`、`audit.read` 与 `cost.adjust` 四个码没有种子行，实际只有 admin 的 `*` 通配覆盖：operator 与 viewer 无法访问用户管理与审计日志，也不能审核成本调整单。未在 `app_role_permission` 声明的权限码默认拒绝；模板管理权限与出数数据权限相互独立。资金账户（`/api/fund-accounts`）与资金流水报表复用 `finance.read/write`，不新增 `fund.*` 权限组。成本调整单的起草、改草稿与删除草稿用 `document.write`（操作员可提交申请），审核与反审核用 `cost.adjust`（仅管理员，见上）；查看调整差异仍只需 `stock.read`。
+权限点按十三组登记：`item`、`unit`、`warehouse`、`supplier`、`customer`、`document`、`stock`、`finance`、`print.template`、`setting`、`user`、`audit`、`cost`，共 23 个权限码，其中 19 个有 `app_role_permission` 种子行。`user.read`、`user.write`、`audit.read` 与 `cost.adjust` 四个码没有种子行，实际只有 admin 的 `*` 通配覆盖：operator 与 viewer 无法访问用户管理与审计日志，也不能审核成本调整单。未在 `app_role_permission` 声明的权限码默认拒绝；模板管理权限与出数数据权限相互独立。资金账户（`/api/fund-accounts`）与资金流水报表复用 `finance.read/write`，不新增 `fund.*` 权限组。系统参数由 operator 维护、viewer 只读（`setting.read/write`）。成本调整单的起草、改草稿与删除草稿用 `document.write`（操作员可提交申请），审核与反审核用 `cost.adjust`（仅管理员，见上）；查看调整差异仍只需 `stock.read`。
 
 ### 运行日志
 
@@ -556,6 +557,12 @@ struct DocumentDefinition {
 - 边界：模板只保存展示配置，不保存 SQL、脚本、HTML 或查询条件；页眉页脚为纯文本，仅做占位符字符串替换。
 - 状态：迁移、服务、API、前端与测试均已完成。
 
+### 系统参数与诊断
+
+- 页面「系统参数」（`/api/settings`，权限 `setting.read` / `setting.write`）：只开放公司名称、联系电话、公司地址三个键，落在 v22 的 `app_setting` 键值表；operator 可改、viewer 只读、admin 通配。Audit 记 `entity=setting`，每个变化的键一条，detail 为 `{"from":"…","to":"…"}`。
+- 打印消费：三个值作为打印模板占位符 `{{company_name}}`、`{{company_phone}}`、`{{company_address}}`；模板抬头为空时默认打印公司名称，电话与地址由模板按需组合。
+- 固定口径（页面只读展示、后端没有可改实现）：单据编号为「前缀 + YYYYMMDD + 4 位序号」，前缀按单据类型硬编码（如 `XSCK`/`CGRK`）；日期固定 `YYYY-MM-DD`；金额固定人民币元 2 位小数；数量小数位跟随商品单位（0–4 位）。
+
 ### 往来对账单
 
 - 页面「对账单」按往来单位输出期间对账单：期初 + 期间单据 − 期间核销 = 期末，逐行累计余额。
@@ -580,7 +587,7 @@ struct DocumentDefinition {
 - 导航使用 `#/<key>` 路由：**刷新保页**在单机版与网络版都有效；**前进 / 后退**只在 `--server` 的浏览器里有效，单机版 WKWebView 没有后退入口。单机版有意不开 `allowsBackForwardNavigationGestures`、也不加后退 / 前进菜单项：侧栏已经是完整导航路径，录入页的脏标记会拦住误跳，横扫手势还会和明细表的横向滚动冲突。未保存离开确认与提示 / 输入框都是页内自绘（`askDialog`），不依赖 `window.confirm` / `alert` / `prompt`（WKWebView 未实现对应面板）；单机版直接关闭窗口不会拦（WKWebView 不执行 `beforeunload`），网络版浏览器会提示，单机版请先保存再关窗。
 - 商品条码当前是**一商品一码**：只有 `item.barcode` 单列（全局唯一，空串可重复，多条空串允许）。`item_barcode` 表只是预留，代码尚未写入；v21 把它的 `item_id` 唯一索引改成普通索引，仅为将来多码留位，**一商品多码未实施**。
 - 含税价**未实施**：本期只存商品级税率 `item.tax_rate_bp`（整数万分比）用于展示与导入导出，没有单据行税率覆盖、也没有 `price_includes_tax` 之类的含税标记，税额不参与任何计算。
-- 审计日志覆盖登录成功 / 失败（失败记录尝试的用户名与来源 IP）、导出（`format=csv|xlsx` 与 `/export`，记录路径与筛选条件）、手动备份与恢复、用户角色变更（`role_change`，含原角色与新角色）、主数据导入、单据审核 / 反审核、收付款、成本超限确认等。导出审计只记 200 成功的请求；运行时没有可修改的系统参数，`config.toml` 由运维改文件后重启生效，不写审计。
+- 审计日志覆盖登录成功 / 失败（失败记录尝试的用户名与来源 IP）、导出（`format=csv|xlsx` 与 `/export`，记录路径与筛选条件）、手动备份与恢复、用户角色变更（`role_change`，含原角色与新角色）、系统参数修改（`entity=setting`，逐键记录原值与新值）、主数据导入、单据审核 / 反审核、收付款、成本超限确认等。导出审计只记 200 成功的请求并在响应写出前落库；`config.toml` 仍由运维改文件后重启生效，不写审计。
 - 无 Developer ID 证书，`.dmg` 为 ad-hoc 签名且未公证，Gatekeeper 会拦截首次打开，处理方式见第 10 节。
 - 应收应付与账龄只统计 v7 迁移之后审核的单据，升级前已审核单据不计入，详见「应收应付统计口径」。
 - 未接入 vcpkg 时依赖 `third_party/` 内嵌头文件；接入 vcpkg 后 `vcpkg.json` 会自动生效。

@@ -88,6 +88,7 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/print_template.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/report_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/settlement_service.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/setting_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/stock_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/token_hash.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/user_service.cpp"

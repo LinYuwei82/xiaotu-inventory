@@ -14,6 +14,7 @@
 #include "xiaotu/print_template.h"
 #include "xiaotu/report_service.h"
 #include "xiaotu/settlement_service.h"
+#include "xiaotu/setting_service.h"
 #include "xiaotu/stock_service.h"
 #include "xiaotu/user_service.h"
 
@@ -37,6 +38,7 @@ struct Services {
         reports(database),
         print_templates(database),
         cost_recalc(database),
+        settings(database),
         users(database) {}
 
   Db& db;
@@ -54,6 +56,7 @@ struct Services {
   ReportService reports;
   PrintTemplateService print_templates;
   CostRecalcService cost_recalc;
+  SettingService settings;
   UserService users;
 };
 

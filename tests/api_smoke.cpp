@@ -38,17 +38,26 @@ std::string body_field(const httplib::Result& result, const char* key) {
 }
 
 std::int64_t audit_count(xiaotu::Db& db, const std::string& action,
+                         const std::string& entity = {},
                          const std::string& detail_prefix = {}) {
   std::int64_t count = 0;
   db.read([&](sqlite3* conn) {
-    const std::string sql =
-        detail_prefix.empty()
-            ? "SELECT COUNT(*) FROM audit_log WHERE action = ?;"
-            : "SELECT COUNT(*) FROM audit_log WHERE action = ? AND detail LIKE ?;";
-    xiaotu::Stmt stmt(conn, sql);
-    stmt.bind(1, action);
+    std::string sql = "SELECT COUNT(*) FROM audit_log WHERE action = ?";
+    if (!entity.empty()) {
+      sql += " AND entity = ?";
+    }
     if (!detail_prefix.empty()) {
-      stmt.bind(2, detail_prefix + "%");
+      sql += " AND detail LIKE ?";
+    }
+    sql += ";";
+    xiaotu::Stmt stmt(conn, sql);
+    int index = 1;
+    stmt.bind(index++, action);
+    if (!entity.empty()) {
+      stmt.bind(index++, entity);
+    }
+    if (!detail_prefix.empty()) {
+      stmt.bind(index++, detail_prefix + "%");
     }
     if (stmt.step()) {
       count = stmt.i64(0);
@@ -126,6 +135,37 @@ void run_server_mode(const std::filesystem::path& dir) {
   check(xlsx && xlsx->status == 200, "主数据导出 XLSX 应返回 200");
   check(audit_count(db, "export") == 2, "两次导出应各写一条审计");
 
+  // 系统参数：默认三项为空，保存后回读一致，每个变化的键各一条审计。
+  const auto settings = client.Get("/api/settings");
+  check(settings && settings->status == 200, "系统参数读取应返回 200");
+  if (settings) {
+    const auto company = nlohmann::json::parse(settings->body).value("company", nlohmann::json::object());
+    check(company.contains("name") && company.contains("phone") && company.contains("address"),
+          "系统参数应返回公司抬头三项");
+    check(company.value("name", "").empty(), "公司名称初始应为空");
+  }
+  const auto saved = client.Put(
+      "/api/settings",
+      R"({"company":{"name":"冒烟公司","phone":"010-1234","address":"测试路 1 号"}})",
+      "application/json");
+  check(saved && saved->status == 200, "保存系统参数应返回 200");
+  if (saved) {
+    const auto company = nlohmann::json::parse(saved->body).value("company", nlohmann::json::object());
+    check(company.value("name", "") == "冒烟公司" && company.value("phone", "") == "010-1234" &&
+              company.value("address", "") == "测试路 1 号",
+          "保存后应返回新的公司抬头");
+  }
+  check(audit_count(db, "update", "setting") == 3, "三个变化的参数键应各写一条审计");
+
+  // 模板抬头为空时，打印用公司名称兜底。
+  const auto printed = client.Get("/api/print/render?target_type=REPORT&target_key=sales-profit");
+  check(printed && printed->status == 200, "打印渲染应返回 200");
+  if (printed) {
+    const auto render = nlohmann::json::parse(printed->body);
+    check(render.value("header_text", "") == "冒烟公司",
+          "模板抬头为空时应默认打印公司名称");
+  }
+
   http.stop();
 }
 
@@ -150,7 +190,7 @@ void run_local_mode(const std::filesystem::path& dir) {
   const std::string cookie = session ? session_cookie(session) : std::string{};
   const std::string csrf = session ? body_field(session, "csrf") : std::string{};
   check(!cookie.empty() && !csrf.empty(), "令牌登录应返回会话与 CSRF");
-  check(audit_count(db, "login", "单机令牌") == 1, "单机令牌登录应写一条审计");
+  check(audit_count(db, "login", "", "单机令牌") == 1, "单机令牌登录应写一条审计");
 
   const auto replay = client.Post("/api/session", R"({"token":"local-smoke-token"})",
                                   "application/json");

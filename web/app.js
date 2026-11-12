@@ -5200,6 +5200,67 @@
     await reload();
   }
 
+  // ---------- 系统参数 ----------
+
+  // 只开放公司抬头三项；编号规则、日期与金额格式仍是固定口径，只读展示。
+  async function settingPage(mount) {
+    const writable = can("setting.write");
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>系统参数</h2>
+          <p class="page-sub">公司抬头用于打印占位符与默认抬头；其余展示口径当前固定</p>
+        </div>
+      </div>
+      <div class="card">
+        <form class="grid-form" data-role="form">
+          <label class="field"><span>公司名称</span><input type="text" maxlength="100" data-field="name" ${writable ? "" : "disabled"} /></label>
+          <label class="field"><span>联系电话</span><input type="text" maxlength="50" data-field="phone" ${writable ? "" : "disabled"} /></label>
+          <label class="field"><span>公司地址</span><input type="text" maxlength="200" data-field="address" ${writable ? "" : "disabled"} /></label>
+          <div class="form-actions">
+            ${writable ? '<button class="btn primary" type="submit">保存</button>' : '<span class="page-sub">当前角色只读</span>'}
+          </div>
+        </form>
+      </div>
+      <div class="card">
+        <h3>固定口径（只读）</h3>
+        <p class="page-sub">单据编号：前缀 + 日期 YYYYMMDD + 4 位序号，例如 XSCK20261113-0001；前缀按单据类型固定，暂不可改。</p>
+        <p class="page-sub">日期显示固定 YYYY-MM-DD；金额为人民币元、2 位小数；数量小数位跟随商品单位设置（0–4 位）。</p>
+        <p class="page-sub">打印占位符：{{company_name}}、{{company_phone}}、{{company_address}}；模板抬头为空时默认打印公司名称。</p>
+      </div>`;
+
+    const form = mount.querySelector('[data-role="form"]');
+    const input = (name) => form.querySelector('[data-field="' + name + '"]');
+
+    try {
+      const data = await api("GET", "/api/settings");
+      const company = data.company || {};
+      input("name").value = company.name || "";
+      input("phone").value = company.phone || "";
+      input("address").value = company.address || "";
+    } catch (error) {
+      showNotice(error.message, "error");
+      return;
+    }
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!writable) return;
+      try {
+        await api("PUT", "/api/settings", {
+          company: {
+            name: input("name").value.trim(),
+            phone: input("phone").value.trim(),
+            address: input("address").value.trim(),
+          },
+        });
+        showNotice("系统参数已保存", "ok");
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+  }
+
   // ---------- 导航与启动 ----------
 
   // 二级导航：组只影响展示，页面 key 与权限判定不变。
@@ -5498,6 +5559,13 @@
       group: "system",
       permission: "audit.read",
       render: auditPage,
+    },
+    {
+      key: "settings",
+      title: "系统参数",
+      group: "system",
+      permission: "setting.read",
+      render: settingPage,
     },
   ];
 

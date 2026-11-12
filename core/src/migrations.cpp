@@ -735,6 +735,26 @@ DROP INDEX uk_item_barcode_item;
 CREATE INDEX idx_item_barcode_item ON item_barcode(item_id);
 )SQL";
 
+// v22：系统参数。只存少量本来就该由用户维护、且有代码消费的键：
+// 公司抬头（名称/电话/地址）会作为打印模板占位符并作为默认抬头。
+// 表用 key/value 存字符串，键白名单在 SettingService 里维护，避免变成任意配置表。
+constexpr const char* kV22 = R"SQL(
+CREATE TABLE app_setting (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL,
+  updated_by TEXT NOT NULL DEFAULT 'system'
+);
+
+INSERT INTO app_setting (key, value, updated_at, updated_by) VALUES
+  ('company_name',    '', datetime('now', 'localtime'), 'system'),
+  ('company_phone',   '', datetime('now', 'localtime'), 'system'),
+  ('company_address', '', datetime('now', 'localtime'), 'system');
+
+INSERT INTO app_role_permission (role_id, permission) VALUES
+  (2, 'setting.read'), (2, 'setting.write'), (3, 'setting.read');
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -771,6 +791,7 @@ const std::vector<Migration>& all_migrations() {
       {19, "v19_partner_tax_no_credit_limit", kV19},
       {20, "v20_ar_ap_opening", kV20},
       {21, "v21_item_barcode_multi", kV21},
+      {22, "v22_app_setting", kV22},
   };
   return migrations;
 }
