@@ -11,6 +11,7 @@
 #include "xiaotu/error.h"
 #include "xiaotu/http_json.h"
 #include "xiaotu/ids.h"
+#include "xiaotu/log.h"
 #include "xiaotu/resources.h"
 #include "xiaotu/routes.h"
 
@@ -55,6 +56,16 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
   server_->set_read_timeout(15, 0);
   server_->set_write_timeout(15, 0);
   server_->set_keep_alive_max_count(100);
+
+  // 访问日志只记录方法、路径、状态与请求标识；查询串、Cookie 与请求体不落盘。
+  server_->set_logger([](const httplib::Request& req, const httplib::Response& res) {
+    const auto& context = current_context();
+    std::string line = req.method + " " + req.path + " " + std::to_string(res.status);
+    if (!context.request_id.empty()) {
+      line += " req=" + context.request_id;
+    }
+    log_message(LogLevel::Info, line);
+  });
 
   server_->set_exception_handler([](const httplib::Request&, httplib::Response& res,
                                     std::exception_ptr ep) {

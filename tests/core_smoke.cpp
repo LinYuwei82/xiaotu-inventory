@@ -3,7 +3,9 @@
 
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <latch>
 #include <string>
 #include <thread>
@@ -17,6 +19,7 @@
 #include "xiaotu/finance_service.h"
 #include "xiaotu/gen/customer_service.h"
 #include "xiaotu/gen/item_service.h"
+#include "xiaotu/log.h"
 #include "xiaotu/gen/supplier_service.h"
 #include "xiaotu/gen/unit_service.h"
 #include "xiaotu/gen/warehouse_service.h"
@@ -1227,6 +1230,41 @@ int main() {
       check(tampered.difference_count >= 1, "篡改账面金额后应报出差异");
       check(tampered.differences.at(0).amount_diff_cents == -12345,
             "差异应为重算金额减账面金额");
+
+      // 运行日志：级别过滤、落盘与按大小滚动。
+      const auto log_dir = std::filesystem::temp_directory_path() / "xiaotu-log-smoke";
+      std::filesystem::remove_all(log_dir);
+      xiaotu::init_logging(xiaotu::LogOptions{.directory = log_dir,
+                                              .level = xiaotu::LogLevel::Info,
+                                              .max_bytes = 2048,
+                                              .keep_files = 2});
+      xiaotu::log_debug("debug-should-be-filtered");
+      xiaotu::log_info("info-visible");
+      xiaotu::log_warn("warn-visible");
+      xiaotu::shutdown_logging();
+      {
+        std::ifstream in(log_dir / "app.log", std::ios::binary);
+        const std::string text{std::istreambuf_iterator<char>(in),
+                               std::istreambuf_iterator<char>()};
+        check(text.find("[INFO]") != std::string::npos &&
+                  text.find("info-visible") != std::string::npos,
+              "INFO 日志应落盘");
+        check(text.find("warn-visible") != std::string::npos, "WARN 日志应落盘");
+        check(text.find("debug-should-be-filtered") == std::string::npos,
+              "默认级别应过滤 DEBUG");
+      }
+      xiaotu::init_logging(xiaotu::LogOptions{.directory = log_dir,
+                                              .level = xiaotu::LogLevel::Debug,
+                                              .max_bytes = 1024,
+                                              .keep_files = 2});
+      for (int index = 0; index < 200; ++index) {
+        xiaotu::log_info("rolling-line-" + std::to_string(index) +
+                         " ................................................");
+      }
+      xiaotu::shutdown_logging();
+      check(std::filesystem::exists(log_dir / "app.log.1"), "日志超限应滚动出 app.log.1");
+      std::filesystem::remove_all(log_dir);
+
 
     }
   } catch (const std::exception& error) {

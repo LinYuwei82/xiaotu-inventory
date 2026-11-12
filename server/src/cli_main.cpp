@@ -11,6 +11,7 @@
 #include "xiaotu/error.h"
 #include "xiaotu/http_server.h"
 #include "xiaotu/ids.h"
+#include "xiaotu/log.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/permissions.h"
 #include "xiaotu/platform_paths.h"
@@ -86,6 +87,18 @@ int main(int argc, char** argv) {
     std::filesystem::create_directories(data_dir);
     const std::filesystem::path database_path = data_dir / "app.db";
 
+    xiaotu::LogOptions log_options;
+    const char* log_dir = std::getenv("XIAOTU_LOG_DIR");
+    log_options.directory = (log_dir != nullptr && *log_dir != '\0')
+                                ? std::filesystem::path(log_dir)
+                                : data_dir / "logs";
+    const char* log_level = std::getenv("XIAOTU_LOG_LEVEL");
+    log_options.level = xiaotu::parse_log_level(log_level != nullptr ? log_level : "");
+    xiaotu::init_logging(log_options);
+    xiaotu::log_info(std::string("启动 版本=") + XIAOTU_VERSION +
+                     " 模式=" + (options.server ? "server" : "local") +
+                     " 数据目录=" + data_dir.string());
+
     std::cout << "小兔进销存 " << XIAOTU_VERSION << " (" << xiaotu::platform::name()
               << (options.server ? " / 网络版" : " / 单机版") << ")\n"
               << "数据目录: " << data_dir.string() << "\n"
@@ -95,6 +108,7 @@ int main(int argc, char** argv) {
     xiaotu::migrate(db);
     xiaotu::load_role_permissions(db);
     std::cout << "数据库结构版本: v" << db.schema_version() << std::endl;
+    xiaotu::log_info("数据库结构版本 v" + std::to_string(db.schema_version()));
 
     xiaotu::Services services(db);
     const std::string token = xiaotu::random_hex(32);
@@ -110,6 +124,7 @@ int main(int argc, char** argv) {
 
     if (!options.server) {
       const int port = http.bind("127.0.0.1", 0);
+      xiaotu::log_info("监听 127.0.0.1:" + std::to_string(port));
       http.serve_async();
       const std::string base = "http://127.0.0.1:" + std::to_string(port);
       std::string url = local_url(base, token);
@@ -123,6 +138,8 @@ int main(int argc, char** argv) {
 #if defined(XIAOTU_HAS_WEBVIEW)
       const int code = xiaotu::platform::run_webview(url, "小兔进销存");
       http.stop();
+      xiaotu::log_info("退出");
+      xiaotu::shutdown_logging();
       return code;
 #else
       std::cout << "当前构建未包含 WebView 壳，请用浏览器打开上面的访问地址。" << std::endl;
@@ -130,11 +147,14 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
       }
       http.stop();
+      xiaotu::log_info("退出");
+      xiaotu::shutdown_logging();
       return 0;
 #endif
     }
 
     const int port = http.bind("0.0.0.0", options.port);
+    xiaotu::log_info("监听 0.0.0.0:" + std::to_string(port));
     http.serve_async();
     std::cout << "服务地址: http://127.0.0.1:" << port << "/\n"
               << "访问凭据（10 分钟内有效，仅可使用一次）:\n  "
@@ -145,9 +165,13 @@ int main(int argc, char** argv) {
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
     http.stop();
+    xiaotu::log_info("退出");
+    xiaotu::shutdown_logging();
     return 0;
   } catch (const std::exception& error) {
+    xiaotu::log_error(std::string("启动失败: ") + error.what());
     std::cerr << "启动失败: " << error.what() << std::endl;
+    xiaotu::shutdown_logging();
     return 1;
   }
 }
