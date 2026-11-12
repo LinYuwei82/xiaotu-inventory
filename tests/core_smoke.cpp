@@ -898,10 +898,11 @@ int main() {
       const auto profits = reports.sales_profit(report_filter);
       check(profits.size() == 1 && profits.front().item_id == sales_item.id,
             "销售毛利应按商品返回一行");
-      // 成本取审核写入的流水：退货 +2000、两笔出库 3273 + 2182；已反审核的销售单不计入。
+      // 成本取审核写入的流水：退货按移动加权成本冲回 1000、
+      // 两笔出库按均价 1000 结转 3000 + 2000；已反审核的销售单不计入。
       check(profits.front().qty == q(4) && profits.front().revenue_cents == 3000 &&
-                profits.front().cost_cents == 3455 && profits.front().profit_cents == -455,
-            "销售毛利应为 4 件 / 收入 3000 / 成本 3455 / 毛利 -455 分");
+                profits.front().cost_cents == 4000 && profits.front().profit_cents == -1000,
+            "销售毛利应为 4 件 / 收入 3000 / 成本 4000 / 毛利 -1000 分");
 
       const auto aging = reports.ar_ap_aging(1, kToday);
       std::int64_t expected_ar = 0;
@@ -1310,7 +1311,7 @@ int main() {
 
       // 打印模板：列白名单、默认唯一、软删除回退与乐观锁。
       xiaotu::PrintTemplateService templates(db);
-      check(xiaotu::print_targets().size() == 23, "打印目标应包含 11 种单据与 12 张报表");
+      check(xiaotu::print_targets().size() == 25, "打印目标应包含 11 种单据与 14 张报表");
 
       // 成本调整单：仓库与原因在明细行，只改结存金额；反审核不能把金额冲成负数。
       const auto adjust_item = items.create(

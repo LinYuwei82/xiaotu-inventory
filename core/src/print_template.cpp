@@ -185,6 +185,32 @@ std::vector<PrintTargetDef> make_targets() {
       column_def("adjust_reason", "调整原因", "TEXT", "LEFT", 44),
   };
 
+  const std::vector<PrintColumnDef> sales_customer_columns = {
+      column_def("name", "客户", "TEXT", "LEFT", 40),
+      column_def("orders", "单数", "INTEGER", "RIGHT", 12),
+      column_def("qty", "销售数量", "INTEGER", "RIGHT", 16),
+      column_def("sales_cents", "销售额（元）", "MONEY", "RIGHT", 20),
+      column_def("return_cents", "退货额（元）", "MONEY", "RIGHT", 20),
+      column_def("net_cents", "净销售额（元）", "MONEY", "RIGHT", 20),
+      column_def("cost_cents", "成本（元）", "MONEY", "RIGHT", 18),
+      column_def("profit_cents", "毛利（元）", "MONEY", "RIGHT", 18),
+      column_def("margin", "毛利率", "TEXT", "RIGHT", 14),
+      column_def("ratio", "销售额占比", "TEXT", "RIGHT", 16),
+  };
+  const std::vector<PrintColumnDef> sales_salesperson_columns = {
+      column_def("name", "业务员", "TEXT", "LEFT", 32),
+      column_def("orders", "单数", "INTEGER", "RIGHT", 12),
+      column_def("customers", "客户数", "INTEGER", "RIGHT", 14),
+      column_def("qty", "销售数量", "INTEGER", "RIGHT", 16),
+      column_def("sales_cents", "销售额（元）", "MONEY", "RIGHT", 20),
+      column_def("return_cents", "退货额（元）", "MONEY", "RIGHT", 20),
+      column_def("net_cents", "净销售额（元）", "MONEY", "RIGHT", 20),
+      column_def("cost_cents", "成本（元）", "MONEY", "RIGHT", 18),
+      column_def("profit_cents", "毛利（元）", "MONEY", "RIGHT", 18),
+      column_def("margin", "毛利率", "TEXT", "RIGHT", 14),
+      column_def("ratio", "销售额占比", "TEXT", "RIGHT", 16),
+  };
+
   return {
       {"DOC", "SAL_OUT", "销售出库单", doc_columns},
       {"DOC", "PUR_IN", "采购入库单", doc_columns},
@@ -202,6 +228,8 @@ std::vector<PrintTargetDef> make_targets() {
       {"REPORT", "goods-flow", "收发明细", flow_columns},
       {"REPORT", "inventory-summary", "进销存汇总", summary_columns},
       {"REPORT", "sales-profit", "销售毛利", profit_columns},
+      {"REPORT", "sales-customer", "销售报表（按客户）", sales_customer_columns},
+      {"REPORT", "sales-salesperson", "销售报表（按业务员）", sales_salesperson_columns},
       {"REPORT", "purchase-detail", "采购明细", purchase_detail_columns},
       {"REPORT", "purchase-summary-supplier", "采购汇总（按供应商）", purchase_supplier_columns},
       {"REPORT", "purchase-summary-item", "采购汇总（按商品）", purchase_item_columns},

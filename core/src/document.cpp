@@ -81,7 +81,8 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .on_approve = nullptr,
           .on_reverse = nullptr,
       },
-      // 销售退货：入库方向，按录入成本单价增加库存金额。
+      // 销售退货：入库方向。本版未做「退货关联原销售单」，成本按退货时的移动
+      // 加权成本冲回（与出库同一套成本口径），不使用单据上的销售单价。
       DocumentDefinition{
           .doc_type = "SAL_RET",
           .doc_no_prefix = "XSTH",
@@ -91,7 +92,7 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .finance_direction = 1,
           .finance_red = true,
           .price_source = PriceSource::Manual,
-          .cost_hook = amount_by_unit_price,
+          .cost_hook = moving_average_cost,
           .on_approve = nullptr,
           .on_reverse = nullptr,
       },

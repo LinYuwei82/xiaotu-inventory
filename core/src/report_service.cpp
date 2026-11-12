@@ -79,7 +79,7 @@ std::vector<PurchaseDetailRow> load_purchase_rows(sqlite3* conn, const ReportFil
             "   AND (? = 0 OR l.item_id = ?)"
             "   AND (? = 0 OR h.warehouse_id = ?)"
             " ORDER BY h.doc_date, h.doc_no, l.id"
-            " LIMIT ?;");
+            " LIMIT ? OFFSET ?;");
   stmt.bind(1, filter.from)
       .bind(2, filter.from)
       .bind(3, filter.to)
@@ -90,7 +90,8 @@ std::vector<PurchaseDetailRow> load_purchase_rows(sqlite3* conn, const ReportFil
       .bind(8, filter.item_id)
       .bind(9, filter.warehouse_id)
       .bind(10, filter.warehouse_id)
-      .bind(11, limit <= 0 ? std::int64_t{-1} : limit);
+      .bind(11, limit <= 0 ? std::int64_t{-1} : limit)
+      .bind(12, static_cast<std::int64_t>(filter.offset));
   while (stmt.step()) {
     PurchaseDetailRow row;
     row.date = stmt.text(0);
@@ -144,7 +145,7 @@ std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& fil
               "   AND (? = 0 OR l.warehouse_id = ?)"
               "   AND (? = 0 OR l.qty * ? > 0)"
               "   AND (? = '' OR COALESCE(h.biz_category, '') = ?)"
-              " ORDER BY l.id DESC LIMIT ?;");
+              " ORDER BY l.id DESC LIMIT ? OFFSET ?;");
     stmt.bind(1, filter.from)
         .bind(2, filter.from)
         .bind(3, filter.to)
@@ -157,7 +158,8 @@ std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& fil
         .bind(10, static_cast<std::int64_t>(filter.qty_direction))
         .bind(11, filter.biz_category)
         .bind(12, filter.biz_category)
-        .bind(13, static_cast<std::int64_t>(filter.limit));
+        .bind(13, filter.limit <= 0 ? std::int64_t{-1} : static_cast<std::int64_t>(filter.limit))
+        .bind(14, static_cast<std::int64_t>(filter.offset));
     while (stmt.step()) {
       LedgerDetailRow row;
       row.id = stmt.i64(0);
@@ -698,6 +700,232 @@ StatementResult ReportService::partner_statement(std::string_view partner_key, i
       result.lines.push_back(std::move(row.line));
     }
     result.closing_cents = balance;
+  });
+  return result;
+}
+
+std::vector<SalesSummaryRow> ReportService::sales_summary(const ReportFilter& filter,
+                                                          std::string_view dimension) const {
+  const bool by_salesperson = dimension == "salesperson";
+  const std::string group_column = by_salesperson ? "h.salesperson_id" : "h.customer_id";
+  const std::string name_expression =
+      by_salesperson ? "COALESCE(NULLIF(MAX(h.salesperson_name), ''), '未指定业务员')"
+                     : "COALESCE(NULLIF(MAX(h.customer), ''), '未指定客户')";  std::vector<SalesSummaryRow> rows;
+  db_.read([&](sqlite3* conn) {
+    Stmt stmt(conn,
+              "SELECT " + group_column + ", " + name_expression +
+                  ", COUNT(DISTINCT h.id), COUNT(DISTINCT h.customer_id),"
+                  " SUM(CASE WHEN h.doc_type = 'SAL_OUT' THEN l.qty ELSE -l.qty END),"
+                  " SUM(CASE WHEN h.doc_type = 'SAL_OUT' THEN l.amount_cents ELSE 0 END)"
+                  "   AS sales_cents,"
+                  " SUM(CASE WHEN h.doc_type = 'SAL_RET' THEN l.amount_cents ELSE 0 END)"
+                  "   AS return_cents,"
+                  " -SUM(COALESCE(s.amount_cents, 0))"
+                  " FROM doc_header h"
+                  " JOIN doc_line l ON l.doc_id = h.id"
+                  " JOIN item i ON i.id = l.item_id"
+                  " LEFT JOIN stock_ledger s ON s.doc_id = h.id AND s.doc_line_id = l.id"
+                  "   AND s.biz_type = h.doc_type"
+                  " WHERE h.doc_type IN ('SAL_OUT', 'SAL_RET') AND h.status = 'APPROVED'"
+                  "   AND (? = '' OR h.doc_date >= ?)"
+                  "   AND (? = '' OR h.doc_date <= ?)"
+                  "   AND (? = 0 OR h.customer_id = ?)"
+                  "   AND (? = 0 OR l.item_id = ?)"
+                  "   AND (? = 0 OR h.warehouse_id = ?)"
+                  "   AND (? = 0 OR h.salesperson_id = ?)"
+                  " GROUP BY " + group_column +
+                  " ORDER BY (sales_cents - return_cents) DESC, " + name_expression + " ASC;");
+    // 未指定分组不隐藏，按净销售额排序后自然落位。
+    stmt.bind(1, filter.from)
+        .bind(2, filter.from)
+        .bind(3, filter.to)
+        .bind(4, filter.to)
+        .bind(5, filter.customer_id)
+        .bind(6, filter.customer_id)
+        .bind(7, filter.item_id)
+        .bind(8, filter.item_id)
+        .bind(9, filter.warehouse_id)
+        .bind(10, filter.warehouse_id)
+        .bind(11, filter.salesperson_id)
+        .bind(12, filter.salesperson_id);
+    while (stmt.step()) {
+      SalesSummaryRow row;
+      row.group_id = stmt.i64(0);
+      row.name = stmt.text(1);
+      row.orders = stmt.i64(2);
+      row.customers = stmt.i64(3);
+      row.qty = stmt.i64(4);
+      row.sales_cents = stmt.i64(5);
+      row.return_cents = stmt.i64(6);
+      row.net_cents = row.sales_cents - row.return_cents;
+      row.cost_cents = stmt.i64(7);
+      row.profit_cents = row.net_cents - row.cost_cents;
+      rows.push_back(std::move(row));
+    }
+  });
+  return rows;
+}
+
+std::vector<SalesDetailRow> ReportService::sales_detail(const ReportFilter& filter,
+                                                        std::string_view dimension) const {
+  (void)dimension;  // 两个维度的明细列相同，只是默认排序与汇总分组不同
+  std::vector<SalesDetailRow> rows;
+  db_.read([&](sqlite3* conn) {
+    Stmt stmt(conn,
+              "SELECT h.doc_date, h.doc_no,"
+              " COALESCE(NULLIF(h.customer, ''), '未指定客户'),"
+              " COALESCE(NULLIF(h.salesperson_name, ''), '未指定业务员'),"
+              " i.code, i.name, i.spec, i.unit,"
+              " CASE WHEN h.doc_type = 'SAL_RET' THEN -l.qty ELSE l.qty END,"
+              " l.price_cents,"
+              " CASE WHEN h.doc_type = 'SAL_RET' THEN -l.amount_cents ELSE l.amount_cents END,"
+              " -COALESCE(s.amount_cents, 0)"
+              " FROM doc_header h"
+              " JOIN doc_line l ON l.doc_id = h.id"
+              " JOIN item i ON i.id = l.item_id"
+              " LEFT JOIN stock_ledger s ON s.doc_id = h.id AND s.doc_line_id = l.id"
+              "   AND s.biz_type = h.doc_type"
+              " WHERE h.doc_type IN ('SAL_OUT', 'SAL_RET') AND h.status = 'APPROVED'"
+              "   AND (? = '' OR h.doc_date >= ?)"
+              "   AND (? = '' OR h.doc_date <= ?)"
+              "   AND (? = 0 OR h.customer_id = ?)"
+              "   AND (? = 0 OR l.item_id = ?)"
+              "   AND (? = 0 OR h.warehouse_id = ?)"
+              "   AND (? = 0 OR h.salesperson_id = ?)"
+              " ORDER BY h.doc_date, h.doc_no, l.id"
+              " LIMIT ? OFFSET ?;");
+    stmt.bind(1, filter.from)
+        .bind(2, filter.from)
+        .bind(3, filter.to)
+        .bind(4, filter.to)
+        .bind(5, filter.customer_id)
+        .bind(6, filter.customer_id)
+        .bind(7, filter.item_id)
+        .bind(8, filter.item_id)
+        .bind(9, filter.warehouse_id)
+        .bind(10, filter.warehouse_id)
+        .bind(11, filter.salesperson_id)
+        .bind(12, filter.salesperson_id)
+        .bind(13, filter.limit <= 0 ? std::int64_t{-1} : static_cast<std::int64_t>(filter.limit))
+        .bind(14, static_cast<std::int64_t>(filter.offset));
+    while (stmt.step()) {
+      SalesDetailRow row;
+      row.date = stmt.text(0);
+      row.doc_no = stmt.text(1);
+      row.customer = stmt.text(2);
+      row.salesperson = stmt.text(3);
+      row.item_code = stmt.text(4);
+      row.item_name = stmt.text(5);
+      row.spec = stmt.text(6);
+      row.unit = stmt.text(7);
+      row.qty = stmt.i64(8);
+      row.price_cents = stmt.i64(9);
+      row.amount_cents = stmt.i64(10);
+      row.cost_cents = stmt.i64(11);
+      rows.push_back(std::move(row));
+    }
+  });
+  return rows;
+}
+
+SalesDetailTotals ReportService::sales_detail_totals(const ReportFilter& filter) const {
+  SalesDetailTotals totals;
+  db_.read([&](sqlite3* conn) {
+    Stmt stmt(conn,
+              "SELECT COUNT(*),"
+              " SUM(CASE WHEN h.doc_type = 'SAL_RET' THEN -l.qty ELSE l.qty END),"
+              " SUM(CASE WHEN h.doc_type = 'SAL_RET' THEN -l.amount_cents"
+              "          ELSE l.amount_cents END),"
+              " -SUM(COALESCE(s.amount_cents, 0))"
+              " FROM doc_header h"
+              " JOIN doc_line l ON l.doc_id = h.id"
+              " LEFT JOIN stock_ledger s ON s.doc_id = h.id AND s.doc_line_id = l.id"
+              "   AND s.biz_type = h.doc_type"
+              " WHERE h.doc_type IN ('SAL_OUT', 'SAL_RET') AND h.status = 'APPROVED'"
+              "   AND (? = '' OR h.doc_date >= ?)"
+              "   AND (? = '' OR h.doc_date <= ?)"
+              "   AND (? = 0 OR h.customer_id = ?)"
+              "   AND (? = 0 OR l.item_id = ?)"
+              "   AND (? = 0 OR h.warehouse_id = ?)"
+              "   AND (? = 0 OR h.salesperson_id = ?);");
+    stmt.bind(1, filter.from)
+        .bind(2, filter.from)
+        .bind(3, filter.to)
+        .bind(4, filter.to)
+        .bind(5, filter.customer_id)
+        .bind(6, filter.customer_id)
+        .bind(7, filter.item_id)
+        .bind(8, filter.item_id)
+        .bind(9, filter.warehouse_id)
+        .bind(10, filter.warehouse_id)
+        .bind(11, filter.salesperson_id)
+        .bind(12, filter.salesperson_id);
+    if (stmt.step()) {
+      totals.rows = stmt.i64(0);
+      totals.qty = stmt.i64(1);
+      totals.amount_cents = stmt.i64(2);
+      totals.cost_cents = stmt.i64(3);
+      totals.profit_cents = totals.amount_cents - totals.cost_cents;
+    }
+  });
+  return totals;
+}
+
+DashboardResult ReportService::dashboard(std::string_view today) const {  DashboardResult result;
+  result.today = std::string(today);
+  result.month_start = result.today.size() >= 7 ? result.today.substr(0, 7) + "-01" : "";
+  db_.read([&](sqlite3* conn) {
+    const auto sales_range = [&](const std::string& from, const std::string& to,
+                                 std::int64_t* sales, std::int64_t* returns,
+                                 std::int64_t* cost) {
+      Stmt stmt(conn,
+                "SELECT"
+                " SUM(CASE WHEN h.doc_type = 'SAL_OUT' THEN l.amount_cents ELSE 0 END),"
+                " SUM(CASE WHEN h.doc_type = 'SAL_RET' THEN l.amount_cents ELSE 0 END),"
+                " -SUM(COALESCE(s.amount_cents, 0))"
+                " FROM doc_header h"
+                " JOIN doc_line l ON l.doc_id = h.id"
+                " LEFT JOIN stock_ledger s ON s.doc_id = h.id AND s.doc_line_id = l.id"
+                "   AND s.biz_type = h.doc_type"
+                " WHERE h.doc_type IN ('SAL_OUT', 'SAL_RET') AND h.status = 'APPROVED'"
+                "   AND h.doc_date >= ? AND h.doc_date <= ?;");
+      stmt.bind(1, from).bind(2, to);
+      if (stmt.step()) {
+        *sales = stmt.i64(0);
+        *returns = stmt.i64(1);
+        *cost = stmt.i64(2);
+      }
+    };
+    sales_range(result.today, result.today, &result.today_sales_cents,
+                &result.today_return_cents, &result.today_cost_cents);
+    sales_range(result.month_start, result.today, &result.month_sales_cents,
+                &result.month_return_cents, &result.month_cost_cents);
+    result.today_profit_cents =
+        result.today_sales_cents - result.today_return_cents - result.today_cost_cents;
+    result.month_profit_cents =
+        result.month_sales_cents - result.month_return_cents - result.month_cost_cents;
+    {
+      Stmt stmt(conn, "SELECT COALESCE(SUM(amount_cents), 0) FROM stock_balance;");
+      if (stmt.step()) result.stock_value_cents = stmt.i64(0);
+    }
+    {
+      Stmt stmt(conn,
+                "SELECT partner_id,"
+                " COALESCE(NULLIF(MAX(partner_name), ''), '未指定客户'),"
+                " SUM(amount_cents - settled_cents)"
+                " FROM ar_ap_entry"
+                " WHERE direction = 1 AND status IN ('OPEN', 'PARTIAL')"
+                " GROUP BY partner_id"
+                " ORDER BY SUM(amount_cents - settled_cents) DESC"
+                " LIMIT 10;");
+      while (stmt.step()) {
+        DashboardDebtor debtor;
+        debtor.partner_id = stmt.i64(0);
+        debtor.name = stmt.text(1);
+        debtor.outstanding_cents = stmt.i64(2);
+        result.top_debtors.push_back(std::move(debtor));
+      }
+    }
   });
   return result;
 }

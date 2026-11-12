@@ -225,7 +225,8 @@ std::string apply_placeholders(std::string text,
 
 const char* data_permission(const PrintTargetDef& target) {
   if (target.type == "DOC") return "document.read";
-  if (target.key == "sales-profit" || target.key == "purchase-detail" ||
+  if (target.key == "sales-profit" || target.key == "sales-customer" ||
+      target.key == "sales-salesperson" || target.key == "purchase-detail" ||
       target.key == "purchase-summary-supplier" || target.key == "purchase-summary-item" ||
       target.key == "ar-ap-aging" || target.key == "statement" || target.key == "fund-ledger") {
     return "finance.read";
@@ -241,6 +242,7 @@ ReportFilter report_filter(const httplib::Request& req) {
   filter.warehouse_id = param_i64(req, "warehouse_id", 0);
   filter.customer_id = param_i64(req, "customer_id", 0);
   filter.supplier_id = param_i64(req, "supplier_id", 0);
+  filter.salesperson_id = param_i64(req, "salesperson_id", 0);
   const std::string flow = param_text(req, "flow");
   if (flow == "in") filter.qty_direction = 1;
   if (flow == "out") filter.qty_direction = -1;
@@ -261,6 +263,40 @@ struct PrintRender {
 void render_report(Services& services, const PrintTargetDef& target, const httplib::Request& req,
                    PrintRender& render) {
   const ReportFilter filter = report_filter(req);
+
+  if (target.key == "sales-customer" || target.key == "sales-salesperson") {
+    const bool by_salesperson = target.key == "sales-salesperson";
+    const auto rows =
+        services.reports.sales_summary(filter, by_salesperson ? "salesperson" : "customer");
+    std::int64_t total_net = 0;
+    std::int64_t total_profit = 0;
+    std::int64_t total_qty = 0;
+    for (const auto& row : rows) {
+      total_net += row.net_cents;
+      total_profit += row.profit_cents;
+      total_qty += row.qty;
+    }
+    render.subtitle = period_label(filter.from, filter.to) + "；只计已审核的销售出库与销售退货；" +
+                      "退货按负数冲减；毛利按出库时的移动加权成本";
+    for (const auto& row : rows) {
+      nlohmann::json item{{"name", row.name},
+                          {"orders", row.orders},
+                          {"customers", row.customers},
+                          {"qty", qty_text(row.qty)},
+                          {"sales_cents", row.sales_cents},
+                          {"return_cents", row.return_cents},
+                          {"net_cents", row.net_cents},
+                          {"cost_cents", row.cost_cents},
+                          {"profit_cents", row.profit_cents},
+                          {"margin", margin_text(row.net_cents, row.profit_cents)},
+                          {"ratio", margin_text(total_net, row.net_cents)}};
+      render.rows.push_back(std::move(item));
+    }
+    render.totals = {{"text", "合计 " + std::to_string(rows.size()) + " 组，数量 " +
+                                  qty_text(total_qty) + "，净销售额 " + money_text(total_net) +
+                                  " 元，毛利 " + money_text(total_profit) + " 元"}};
+    return;
+  }
 
   if (target.key == "stock-balance") {
     const bool hide_zero = req.has_param("hide_zero") && req.get_param_value("hide_zero") != "0";

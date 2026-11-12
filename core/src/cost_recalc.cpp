@@ -116,8 +116,15 @@ CostRecalcResult CostRecalcService::recalculate(std::int64_t item_id,
             amount = line.has_regular ? -line.regular : stored_amount;
             line.in_leg = amount;
             line.has_in_leg = true;
-          } else if (biz_type == "PUR_IN" || biz_type == "SAL_RET") {
+          } else if (biz_type == "PUR_IN") {
             amount = mul_qty_price(qty, price);
+            line.regular = amount;
+            line.has_regular = true;
+          } else if (biz_type == "SAL_RET") {
+            // 销售退货按退货时的移动加权成本入库，与 document.cpp 的成本钩子一致；
+            // 单据上的销售单价只影响应收红字，不参与库存金额。
+            amount = state.qty > 0 ? moving_average_cost(qty, price, state.qty, state.amount)
+                                   : 0;
             line.regular = amount;
             line.has_regular = true;
           }
