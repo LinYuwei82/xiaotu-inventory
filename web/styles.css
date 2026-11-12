@@ -349,22 +349,48 @@ main {
   color: var(--muted);
 }
 
+/* 输入框与下拉共用同一套字段尺寸，避免原生 select 在 WKWebView 里偏矮。 */
 .field input,
 .field select,
 .lines input,
-.lines select {
+.lines select,
+.toolbar input,
+.toolbar select,
+.print-columns input,
+.print-columns select {
+  height: 32px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 0 8px;
+  font-family: inherit;
   font-size: 13px;
+  line-height: 30px;
   color: var(--text);
   background: #fff;
+}
+
+/* 只去掉 select 的原生外观（保留原生弹出菜单、键盘与滚轮），再补一个箭头。 */
+.field select,
+.lines select,
+.toolbar select,
+.print-columns select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 26px;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='none' stroke='%236b7280' stroke-width='1.5' d='M1 1l4 4 4-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 10px 6px;
 }
 
 .field input:focus,
 .field select:focus,
 .lines input:focus,
-.lines select:focus {
+.lines select:focus,
+.toolbar input:focus,
+.toolbar select:focus,
+.print-columns input:focus,
+.print-columns select:focus {
   outline: 2px solid #bfdbfe;
   border-color: var(--accent);
 }
