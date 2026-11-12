@@ -124,9 +124,13 @@ struct PurchaseDetailRow {
 struct PurchaseSupplierSummaryRow {
   std::int64_t partner_id = 0;
   std::string supplier;
-  std::int64_t qty = 0;
-  std::int64_t amount_cents = 0;
-  std::int64_t avg_price_cents = 0;
+  std::int64_t in_qty = 0;            // 入库数量（只计 PUR_IN）
+  std::int64_t in_amount_cents = 0;   // 入库金额（只计 PUR_IN）
+  std::int64_t return_amount_cents = 0;  // 退货额（正数，便于展示）
+  std::int64_t qty = 0;               // 净数量 = 入库 - 退货
+  std::int64_t amount_cents = 0;      // 净金额 = 入库 - 退货
+  std::int64_t avg_price_cents = 0;   // 入库均价 = 入库金额 / 入库数量
+  bool has_inbound = false;           // 无入库时均价显示「—」
 };
 
 struct PurchaseItemSummaryRow {
@@ -135,9 +139,24 @@ struct PurchaseItemSummaryRow {
   std::string item_name;
   std::string spec;
   std::string unit;
+  std::int64_t in_qty = 0;
+  std::int64_t in_amount_cents = 0;
+  std::int64_t return_amount_cents = 0;
   std::int64_t qty = 0;
   std::int64_t amount_cents = 0;
   std::int64_t avg_price_cents = 0;
+  bool has_inbound = false;
+};
+
+// 采购汇总合计：均价同样按入库行全量计算，不能对分组均价再平均。
+struct PurchaseSummaryTotals {
+  std::int64_t in_qty = 0;
+  std::int64_t in_amount_cents = 0;
+  std::int64_t return_amount_cents = 0;
+  std::int64_t qty = 0;
+  std::int64_t amount_cents = 0;
+  std::int64_t avg_price_cents = 0;
+  bool has_inbound = false;
 };
 
 // 分页受限的明细报表：合计必须按全量算，不能用页面截断后的行求和。
@@ -183,6 +202,7 @@ class ReportService {
       const ReportFilter& filter) const;
   std::vector<PurchaseItemSummaryRow> purchase_summary_by_item(
       const ReportFilter& filter) const;
+  PurchaseSummaryTotals purchase_summary_totals(const ReportFilter& filter) const;
   std::vector<OtherFlowSummaryRow> other_flow_summary(const ReportFilter& filter) const;
   ReportTotals purchase_detail_totals(const ReportFilter& filter) const;
   ReportTotals stock_ledger_totals(const ReportFilter& filter) const;

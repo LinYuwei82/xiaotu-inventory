@@ -470,6 +470,12 @@ ValidatedDoc validate_document(sqlite3* conn, const DocInput& input,
   if ((require_lines || cost_adjust) && input.lines.empty()) {
     throw AppError("INVALID_INPUT", "请至少录入一行明细");
   }
+  // 采购入库/退货必须填供应商：草稿可暂不填，审核时卡住。
+  // 档案 ID 与名称快照都为空才算「没填」；历史文本往来单位仍可正常审核。
+  if (require_lines && (definition.doc_type == "PUR_IN" || definition.doc_type == "PUR_RET") &&
+      input.partner_id == 0 && input.partner.empty()) {
+    throw AppError("INVALID_INPUT", "采购单据必须选择供应商");
+  }
 
   const bool allow_zero_qty = definition.stock_mode == StockMode::Stocktake;
 

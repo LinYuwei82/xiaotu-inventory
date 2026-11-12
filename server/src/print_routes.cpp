@@ -396,41 +396,47 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
   if (target.key == "purchase-summary-supplier") {
     render.subtitle = period_label(filter.from, filter.to) + "；" +
                       dimension_label(filter.item_id, "商品") + "；" +
-                      dimension_label(filter.warehouse_id, "仓库") + "；按供应商汇总";
-    std::int64_t total_qty = 0;
-    std::int64_t total_amount = 0;
+                      dimension_label(filter.warehouse_id, "仓库") +
+                      "；按供应商汇总；均价 = 入库金额 ÷ 入库数量";
     for (const auto& row : services.reports.purchase_summary_by_supplier(filter)) {
-      total_qty += row.qty;
-      total_amount += row.amount_cents;
       render.rows.push_back({{"supplier", row.supplier},
+                             {"in_qty", qty_text(row.in_qty)},
+                             {"in_amount_cents", row.in_amount_cents},
+                             {"return_amount_cents", row.return_amount_cents},
                              {"qty", qty_text(row.qty)},
                              {"amount_cents", row.amount_cents},
-                             {"avg_price_cents", row.avg_price_cents}});
+                             {"avg_price_cents",
+                              row.has_inbound ? nlohmann::json(row.avg_price_cents)
+                                              : nlohmann::json("—")}});
     }
-    render.totals = {{"total_qty", qty_text(total_qty)},
-                     {"total_amount_text", money_text(total_amount)}};
+    const auto totals = services.reports.purchase_summary_totals(filter);
+    render.totals = {{"total_qty", qty_text(totals.qty)},
+                     {"total_amount_text", money_text(totals.amount_cents)}};
     return;
   }
 
   if (target.key == "purchase-summary-item") {
     render.subtitle = period_label(filter.from, filter.to) + "；" +
                       dimension_label(filter.supplier_id, "供应商") + "；" +
-                      dimension_label(filter.warehouse_id, "仓库") + "；按商品汇总";
-    std::int64_t total_qty = 0;
-    std::int64_t total_amount = 0;
+                      dimension_label(filter.warehouse_id, "仓库") +
+                      "；按商品汇总；均价 = 入库金额 ÷ 入库数量";
     for (const auto& row : services.reports.purchase_summary_by_item(filter)) {
-      total_qty += row.qty;
-      total_amount += row.amount_cents;
       render.rows.push_back({{"item_code", row.item_code},
                              {"item_name", row.item_name},
                              {"spec", row.spec},
                              {"unit", row.unit},
+                             {"in_qty", qty_text(row.in_qty)},
+                             {"in_amount_cents", row.in_amount_cents},
+                             {"return_amount_cents", row.return_amount_cents},
                              {"qty", qty_text(row.qty)},
                              {"amount_cents", row.amount_cents},
-                             {"avg_price_cents", row.avg_price_cents}});
+                             {"avg_price_cents",
+                              row.has_inbound ? nlohmann::json(row.avg_price_cents)
+                                              : nlohmann::json("—")}});
     }
-    render.totals = {{"total_qty", qty_text(total_qty)},
-                     {"total_amount_text", money_text(total_amount)}};
+    const auto totals = services.reports.purchase_summary_totals(filter);
+    render.totals = {{"total_qty", qty_text(totals.qty)},
+                     {"total_amount_text", money_text(totals.amount_cents)}};
     return;
   }
 

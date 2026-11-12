@@ -339,7 +339,8 @@
 
   function printCellText(value, type) {
     if (value === null || value === undefined) return "";
-    if (type === "MONEY") return money(value);
+    // 「—」等占位文本按原样输出，避免被金额格式化吞掉。
+    if (type === "MONEY" && typeof value === "number") return money(value);
     return String(value);
   }
 
@@ -2765,35 +2766,68 @@
            </tr></tfoot>`;
 
       const summaryByItem = purchaseBySelect.value === "item";
-      purchaseSummaryTable.innerHTML = !purchaseSummary.length
-        ? emptyRow("该期间无采购", summaryByItem ? 7 : 4)
+      const summaryRows = purchaseSummary.rows || [];
+      const summaryTotals = purchaseSummary.totals || {};
+      // 入库均价只计 PUR_IN；无入库行时显示「—」，不显示 0。
+      const inboundAvgText = (row) => (row.has_inbound ? money(row.avg_price_cents) : "—");
+      // 净数量按入库减退货如实显示，负数额外标注「净退货」。
+      const netQtyCell = (row) =>
+        `<td class="${qtyIsNegative(row.qty) ? "negative" : ""}">${qtyText(row.qty)}${
+          row.qty < 0 ? "（净退货）" : ""
+        }</td>`;
+      purchaseSummaryTable.innerHTML = !summaryRows.length
+        ? emptyRow("该期间无采购", summaryByItem ? 10 : 7)
         : summaryByItem
           ? `<thead><tr><th>商品编码</th><th>商品名称</th><th>规格</th><th>单位</th>
-               <th>数量</th><th>金额（元）</th><th>均价（元）</th></tr></thead>
-             <tbody>${purchaseSummary
+               <th>入库数量</th><th>入库金额（元）</th><th>退货额（元）</th>
+               <th>净数量</th><th>净金额（元）</th><th>入库均价（元）</th></tr></thead>
+             <tbody>${summaryRows
                .map(
                  (row) => `<tr>
                    <td>${escapeHtml(row.item_code)}</td>
                    <td>${escapeHtml(row.item_name)}</td>
                    <td>${escapeHtml(row.spec)}</td>
                    <td>${escapeHtml(row.unit)}</td>
-                   <td class="${qtyIsNegative(row.qty) ? "negative" : ""}">${qtyText(row.qty)}</td>
+                   <td>${qtyText(row.in_qty)}</td>
+                   <td>${money(row.in_amount_cents)}</td>
+                   <td>${money(row.return_amount_cents)}</td>
+                   ${netQtyCell(row)}
                    <td>${money(row.amount_cents)}</td>
-                   <td>${money(row.avg_price_cents)}</td>
+                   <td>${inboundAvgText(row)}</td>
                  </tr>`
                )
-               .join("")}</tbody>`
-          : `<thead><tr><th>供应商</th><th>数量</th><th>金额（元）</th><th>均价（元）</th></tr></thead>
-             <tbody>${purchaseSummary
+               .join("")}</tbody>
+           <tfoot><tr><td>合计</td><td colspan="3"></td>
+             <td>${qtyText(summaryTotals.in_qty || 0)}</td>
+             <td>${money(summaryTotals.in_amount_cents || 0)}</td>
+             <td>${money(summaryTotals.return_amount_cents || 0)}</td>
+             <td>${qtyText(summaryTotals.qty || 0)}</td>
+             <td>${money(summaryTotals.amount_cents || 0)}</td>
+             <td>${inboundAvgText(summaryTotals)}</td>
+           </tr></tfoot>`
+          : `<thead><tr><th>供应商</th><th>入库数量</th><th>入库金额（元）</th><th>退货额（元）</th>
+               <th>净数量</th><th>净金额（元）</th><th>入库均价（元）</th></tr></thead>
+             <tbody>${summaryRows
                .map(
                  (row) => `<tr>
                    <td>${escapeHtml(row.supplier)}</td>
-                   <td class="${qtyIsNegative(row.qty) ? "negative" : ""}">${qtyText(row.qty)}</td>
+                   <td>${qtyText(row.in_qty)}</td>
+                   <td>${money(row.in_amount_cents)}</td>
+                   <td>${money(row.return_amount_cents)}</td>
+                   ${netQtyCell(row)}
                    <td>${money(row.amount_cents)}</td>
-                   <td>${money(row.avg_price_cents)}</td>
+                   <td>${inboundAvgText(row)}</td>
                  </tr>`
                )
-               .join("")}</tbody>`;
+               .join("")}</tbody>
+           <tfoot><tr><td>合计</td>
+             <td>${qtyText(summaryTotals.in_qty || 0)}</td>
+             <td>${money(summaryTotals.in_amount_cents || 0)}</td>
+             <td>${money(summaryTotals.return_amount_cents || 0)}</td>
+             <td>${qtyText(summaryTotals.qty || 0)}</td>
+             <td>${money(summaryTotals.amount_cents || 0)}</td>
+             <td>${inboundAvgText(summaryTotals)}</td>
+           </tr></tfoot>`;
 
       otherFlowTable.innerHTML = !otherFlow.length
         ? emptyRow("该期间无其他出入库", 5)

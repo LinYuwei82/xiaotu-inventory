@@ -144,20 +144,27 @@ std::vector<PrintTargetDef> make_targets() {
       column_def("price_cents", "单价（元）", "MONEY", "RIGHT", 16),
       column_def("amount_cents", "金额（元）", "MONEY", "RIGHT", 18),
   };
+  // 采购汇总：入库与退货分列，均价只取入库行（无入库时打印「—」）。
   const std::vector<PrintColumnDef> purchase_supplier_columns = {
-      column_def("supplier", "供应商", "TEXT", "LEFT", 44),
-      column_def("qty", "数量", "INTEGER", "RIGHT", 16),
-      column_def("amount_cents", "金额（元）", "MONEY", "RIGHT", 22),
-      column_def("avg_price_cents", "均价（元）", "MONEY", "RIGHT", 22),
+      column_def("supplier", "供应商", "TEXT", "LEFT", 40),
+      column_def("in_qty", "入库数量", "INTEGER", "RIGHT", 16),
+      column_def("in_amount_cents", "入库金额（元）", "MONEY", "RIGHT", 20),
+      column_def("return_amount_cents", "退货额（元）", "MONEY", "RIGHT", 20),
+      column_def("qty", "净数量", "INTEGER", "RIGHT", 16),
+      column_def("amount_cents", "净金额（元）", "MONEY", "RIGHT", 20),
+      column_def("avg_price_cents", "入库均价（元）", "MONEY", "RIGHT", 20),
   };
   const std::vector<PrintColumnDef> purchase_item_columns = {
-      column_def("item_code", "商品编码", "TEXT", "LEFT", 26),
-      column_def("item_name", "商品名称", "TEXT", "LEFT", 44),
-      column_def("spec", "规格", "TEXT", "LEFT", 26),
-      column_def("unit", "单位", "TEXT", "CENTER", 12),
-      column_def("qty", "数量", "INTEGER", "RIGHT", 16),
-      column_def("amount_cents", "金额（元）", "MONEY", "RIGHT", 22),
-      column_def("avg_price_cents", "均价（元）", "MONEY", "RIGHT", 22),
+      column_def("item_code", "商品编码", "TEXT", "LEFT", 20),
+      column_def("item_name", "商品名称", "TEXT", "LEFT", 34),
+      column_def("spec", "规格", "TEXT", "LEFT", 18),
+      column_def("unit", "单位", "TEXT", "CENTER", 10),
+      column_def("in_qty", "入库数量", "INTEGER", "RIGHT", 14),
+      column_def("in_amount_cents", "入库金额（元）", "MONEY", "RIGHT", 18),
+      column_def("return_amount_cents", "退货额（元）", "MONEY", "RIGHT", 18),
+      column_def("qty", "净数量", "INTEGER", "RIGHT", 14),
+      column_def("amount_cents", "净金额（元）", "MONEY", "RIGHT", 18),
+      column_def("avg_price_cents", "入库均价（元）", "MONEY", "RIGHT", 18),
   };
 
   const std::vector<PrintColumnDef> other_flow_columns = {

@@ -63,7 +63,8 @@ std::vector<PurchaseDetailRow> load_purchase_rows(sqlite3* conn, const ReportFil
   std::vector<PurchaseDetailRow> rows;
   Stmt stmt(conn,
             "SELECT h.doc_date, h.doc_no, h.doc_type,"
-            " COALESCE(NULLIF(s.name, ''), h.customer), h.partner_id,"
+            " COALESCE(NULLIF(s.name, ''), NULLIF(h.customer, ''), '未指定供应商'),"
+            " h.partner_id,"
             " l.item_id, i.code, i.name, i.spec, i.unit, w.name,"
             " l.qty, l.price_cents, l.amount_cents"
             " FROM doc_header h"
@@ -359,12 +360,21 @@ std::vector<PurchaseSupplierSummaryRow> ReportService::purchase_summary_by_suppl
       summary.supplier = row.supplier;
       summary.qty += row.qty;
       summary.amount_cents += row.amount_cents;
+      if (row.kind == "采购入库") {
+        summary.in_qty += row.qty;
+        summary.in_amount_cents += row.amount_cents;
+      } else {
+        summary.return_amount_cents += -row.amount_cents;
+      }
     }
   });
   std::vector<PurchaseSupplierSummaryRow> rows;
   rows.reserve(grouped.size());
   for (auto& [key, summary] : grouped) {
-    summary.avg_price_cents = avg_price_cents(summary.qty, summary.amount_cents);
+    summary.has_inbound = summary.in_qty > 0;
+    // 入库均价只用入库行，退货不参与；无入库时保持 0 并由 has_inbound 提示显示「—」。
+    summary.avg_price_cents =
+        summary.has_inbound ? avg_price_cents(summary.in_qty, summary.in_amount_cents) : 0;
     rows.push_back(std::move(summary));
   }
   return rows;
@@ -385,15 +395,43 @@ std::vector<PurchaseItemSummaryRow> ReportService::purchase_summary_by_item(
       summary.unit = row.unit;
       summary.qty += row.qty;
       summary.amount_cents += row.amount_cents;
+      if (row.kind == "采购入库") {
+        summary.in_qty += row.qty;
+        summary.in_amount_cents += row.amount_cents;
+      } else {
+        summary.return_amount_cents += -row.amount_cents;
+      }
     }
   });
   std::vector<PurchaseItemSummaryRow> rows;
   rows.reserve(grouped.size());
   for (auto& [key, summary] : grouped) {
-    summary.avg_price_cents = avg_price_cents(summary.qty, summary.amount_cents);
+    summary.has_inbound = summary.in_qty > 0;
+    summary.avg_price_cents =
+        summary.has_inbound ? avg_price_cents(summary.in_qty, summary.in_amount_cents) : 0;
     rows.push_back(std::move(summary));
   }
   return rows;
+}
+
+PurchaseSummaryTotals ReportService::purchase_summary_totals(const ReportFilter& filter) const {
+  PurchaseSummaryTotals totals;
+  db_.read([&](sqlite3* conn) {
+    for (const auto& row : load_purchase_rows(conn, filter, 0)) {
+      totals.qty += row.qty;
+      totals.amount_cents += row.amount_cents;
+      if (row.kind == "采购入库") {
+        totals.in_qty += row.qty;
+        totals.in_amount_cents += row.amount_cents;
+      } else {
+        totals.return_amount_cents += -row.amount_cents;
+      }
+    }
+  });
+  totals.has_inbound = totals.in_qty > 0;
+  totals.avg_price_cents =
+      totals.has_inbound ? avg_price_cents(totals.in_qty, totals.in_amount_cents) : 0;
+  return totals;
 }
 
 std::vector<OtherFlowSummaryRow> ReportService::other_flow_summary(

@@ -277,6 +277,7 @@ int main() {
       opening.doc_type = "PUR_IN";
       opening.warehouse_id = warehouse_list.at(0).id;
       opening.doc_date = kToday;
+      opening.partner = "期初供应商";
       opening.lines.push_back(
           xiaotu::DocLineInput{.item_id = item.id, .qty = q(5), .price_cents = 1000});
       const auto opening_doc = documents.save_and_approve(opening);
@@ -576,6 +577,26 @@ int main() {
       }
       check(missing_supplier_rejected, "引用不存在的供应商应被拒绝");
 
+      // 采购单据必须填供应商：草稿可暂不填，审核时拒绝。
+      {
+        xiaotu::DocInput no_supplier_draft;
+        no_supplier_draft.doc_type = "PUR_IN";
+        no_supplier_draft.warehouse_id = warehouse_list.at(0).id;
+        no_supplier_draft.doc_date = kToday;
+        no_supplier_draft.lines.push_back(
+            xiaotu::DocLineInput{.item_id = supplier_item.id, .qty = q(1), .price_cents = 100});
+        const auto created_draft = documents.save_draft(no_supplier_draft);
+        bool approve_rejected = false;
+        try {
+          documents.approve(created_draft.id);
+        } catch (const xiaotu::AppError& error) {
+          approve_rejected =
+              error.code() == "INVALID_INPUT" && error.what() == std::string("采购单据必须选择供应商");
+        }
+        check(approve_rejected, "草稿未选供应商时审核应被拒绝");
+        documents.delete_draft(created_draft.id);
+      }
+
       // 计量单位档案：商品引用档案时回填名称快照，老数据 unit_id=0 继续按文本读取。
       check(units.list().size() == 7, "迁移应内置 7 个计量单位");
       const auto bottled =
@@ -607,6 +628,7 @@ int main() {
         opening.doc_type = "PUR_IN";
         opening.warehouse_id = warehouse_list.at(0).id;
         opening.doc_date = kToday;
+        opening.partner = "期初供应商";
         opening.lines.push_back(
             xiaotu::DocLineInput{.item_id = sales_item.id, .qty = q(10), .price_cents = 1000});
         documents.save_and_approve(opening);
@@ -881,15 +903,87 @@ int main() {
             "按供应商汇总应返回一行并取档案名称");
       check(by_supplier.front().qty == q(11) && by_supplier.front().amount_cents == 12000,
             "按供应商汇总应为净数量 11、净金额 12000 分");
-      check(by_supplier.front().avg_price_cents == 1091,
-            "均价应由净金额与净数量整数换算并四舍五入");
+      check(by_supplier.front().in_qty == q(15) && by_supplier.front().in_amount_cents == 16000 &&
+                by_supplier.front().return_amount_cents == 4000 && by_supplier.front().has_inbound,
+            "按供应商汇总应分列入库数量 15、入库金额 16000、退货额 4000");
+      check(by_supplier.front().avg_price_cents == 1067,
+            "入库均价只取入库行（16000 ÷ 15 = 10.67 元），退货不参与");
+      const auto supplier_totals = reports.purchase_summary_totals(purchase_filter);
+      check(supplier_totals.qty == q(11) && supplier_totals.amount_cents == 12000 &&
+                supplier_totals.in_qty == q(15) &&
+                supplier_totals.in_amount_cents == 16000 &&
+                supplier_totals.return_amount_cents == 4000 &&
+                supplier_totals.avg_price_cents == 1067,
+            "采购汇总合计应按全量入库行计算均价，不能对分组均价再平均");
 
       purchase_filter.item_id = report_item.id;
       const auto by_item = reports.purchase_summary_by_item(purchase_filter);
       check(by_item.size() == 1 && by_item.front().item_code == "PR01" &&
                 by_item.front().qty == q(11) && by_item.front().amount_cents == 12000 &&
-                by_item.front().avg_price_cents == 1091,
-            "按商品汇总应与按供应商汇总的净额一致");
+                by_item.front().avg_price_cents == 1067,
+            "按商品汇总应与按供应商汇总的入库均价一致");
+
+      // 三种边界：只有退货、退货价高于进货价、入库与退货数量相等。
+      const auto edge_supplier = suppliers.create(
+          xiaotu::gen::SupplierRow{.code = "GYS901", .name = "边界供应商"});
+      // 只退货组的库存由另一家供应商入库提供，保证筛选 edge_supplier 时只有退货行。
+      const auto edge_stock_supplier = suppliers.create(
+          xiaotu::gen::SupplierRow{.code = "GYS902", .name = "边界备货供应商"});
+      const auto make_edge = [&](const std::string& doc_type, std::int64_t item_id,
+                                 std::int64_t qty, std::int64_t price_cents,
+                                 std::int64_t supplier_id) {
+        xiaotu::DocInput doc;
+        doc.doc_type = doc_type;
+        doc.warehouse_id = warehouse_list.at(0).id;
+        doc.doc_date = kToday;
+        doc.partner_id = supplier_id;
+        doc.lines.push_back(
+            xiaotu::DocLineInput{.item_id = item_id, .qty = qty, .price_cents = price_cents});
+        return documents.save_and_approve(doc);
+      };
+      auto only_return = items.create(xiaotu::gen::ItemRow{.code = "PR02", .name = "只退货商品"});
+      make_edge("PUR_IN", only_return.id, q(10), 1000, edge_stock_supplier.id);
+      make_edge("PUR_RET", only_return.id, q(3), 2000, edge_supplier.id);
+      const auto higher_return = items.create(
+          xiaotu::gen::ItemRow{.code = "PR03", .name = "退价高于进价商品"});
+      make_edge("PUR_IN", higher_return.id, q(10), 1000, edge_supplier.id);
+      make_edge("PUR_RET", higher_return.id, q(2), 1500, edge_supplier.id);
+      auto equal_qty =
+          items.create(xiaotu::gen::ItemRow{.code = "PR04", .name = "入库退货相等商品"});
+      make_edge("PUR_IN", equal_qty.id, q(5), 800, edge_supplier.id);
+      make_edge("PUR_RET", equal_qty.id, q(5), 800, edge_supplier.id);
+
+      xiaotu::ReportFilter edge_filter;
+      edge_filter.from = kMonthStart;
+      edge_filter.to = kToday;
+      edge_filter.supplier_id = edge_supplier.id;
+      const auto edge_rows = reports.purchase_summary_by_item(edge_filter);
+      const auto find_edge = [&](const std::string& code) {
+        for (const auto& row : edge_rows) {
+          if (row.item_code == code) return row;
+        }
+        return xiaotu::PurchaseItemSummaryRow{};
+      };
+      const auto only_return_row = find_edge("PR02");
+      check(!only_return_row.has_inbound && only_return_row.in_qty == 0 &&
+                only_return_row.qty == -q(3) && only_return_row.return_amount_cents == 6000,
+            "只有退货的分组应无入库、净数量为负、退货额单列");
+      const auto higher_return_row = find_edge("PR03");
+      check(higher_return_row.has_inbound && higher_return_row.avg_price_cents == 1000 &&
+                higher_return_row.return_amount_cents == 3000 &&
+                higher_return_row.amount_cents == 7000,
+            "退价高于进价时均价仍取入库价，退货额按实际退货金额单列");
+      const auto equal_row = find_edge("PR04");
+      check(equal_row.has_inbound && equal_row.qty == 0 && equal_row.amount_cents == 0 &&
+                equal_row.avg_price_cents == 800,
+            "入库与退货数量相等时净数量为 0，均价仍为入库均价");
+      edge_filter.supplier_id = 0;
+      edge_filter.item_id = only_return.id;
+      edge_filter.supplier_id = edge_supplier.id;
+      const auto only_return_totals = reports.purchase_summary_totals(edge_filter);
+      check(only_return_totals.qty == -q(3) && only_return_totals.in_qty == 0 &&
+                !only_return_totals.has_inbound,
+            "合计口径下无入库行时应标记无入库，由前端显示「—」");
 
       purchase_filter.supplier_id = 999999;
       check(reports.purchase_summary_by_supplier(purchase_filter).empty() &&
@@ -1021,8 +1115,13 @@ int main() {
       items.remove(bottled.id);
       items.remove(sales_item.id);
       items.remove(report_item.id);
+      items.remove(only_return.id);
+      items.remove(higher_return.id);
+      items.remove(equal_qty.id);
       items.remove(decimal_item.id);
       suppliers.remove(supplier.id);
+      suppliers.remove(edge_supplier.id);
+      suppliers.remove(edge_stock_supplier.id);
       customers.remove(customer.id);
       check(items.list().empty(), "软删除后列表中不应再出现该商品");
 
