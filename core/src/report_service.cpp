@@ -456,6 +456,53 @@ std::vector<OtherFlowSummaryRow> ReportService::other_flow_summary(
   return rows;
 }
 
+ReportTotals ReportService::purchase_detail_totals(const ReportFilter& filter) const {
+  // 复用明细取数（不限行）再求和，保证合计与导出/汇总口径完全一致。
+  ReportTotals totals;
+  db_.read([&](sqlite3* conn) {
+    for (const auto& row : load_purchase_rows(conn, filter, 0)) {
+      ++totals.rows;
+      totals.qty += row.qty;
+      totals.amount_cents += row.amount_cents;
+    }
+  });
+  return totals;
+}
+
+ReportTotals ReportService::stock_ledger_totals(const ReportFilter& filter) const {
+  ReportTotals totals;
+  db_.read([&](sqlite3* conn) {
+    Stmt stmt(conn,
+              "SELECT COUNT(*), COALESCE(SUM(l.qty), 0), COALESCE(SUM(l.amount_cents), 0)"
+              " FROM stock_ledger l"
+              " JOIN doc_header h ON h.id = l.doc_id"
+              " WHERE (? = '' OR substr(l.biz_time, 1, 10) >= ?)"
+              "   AND (? = '' OR substr(l.biz_time, 1, 10) <= ?)"
+              "   AND (? = 0 OR l.item_id = ?)"
+              "   AND (? = 0 OR l.warehouse_id = ?)"
+              "   AND (? = 0 OR l.qty * ? > 0)"
+              "   AND (? = '' OR COALESCE(h.biz_category, '') = ?);");
+    stmt.bind(1, filter.from)
+        .bind(2, filter.from)
+        .bind(3, filter.to)
+        .bind(4, filter.to)
+        .bind(5, filter.item_id)
+        .bind(6, filter.item_id)
+        .bind(7, filter.warehouse_id)
+        .bind(8, filter.warehouse_id)
+        .bind(9, static_cast<std::int64_t>(filter.qty_direction))
+        .bind(10, static_cast<std::int64_t>(filter.qty_direction))
+        .bind(11, filter.biz_category)
+        .bind(12, filter.biz_category);
+    if (stmt.step()) {
+      totals.rows = stmt.i64(0);
+      totals.qty = stmt.i64(1);
+      totals.amount_cents = stmt.i64(2);
+    }
+  });
+  return totals;
+}
+
 std::vector<AgingRow> ReportService::ar_ap_aging(int direction, std::string_view as_of) const {
   std::vector<AgingRow> rows;
   db_.read([&](sqlite3* conn) {

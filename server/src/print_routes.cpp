@@ -283,7 +283,13 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                       qty_direction_label(filter.qty_direction) + "；业务类型 " +
                       (filter.biz_category.empty() ? std::string("全部")
                                                    : stock_biz_category_label(filter.biz_category));
-    for (const auto& row : services.reports.stock_ledger(filter)) {
+    const auto ledger_rows = services.reports.stock_ledger(filter);
+    const auto ledger_totals = services.reports.stock_ledger_totals(filter);
+    if (ledger_totals.rows > static_cast<std::int64_t>(ledger_rows.size())) {
+      render.subtitle += "；共 " + std::to_string(ledger_totals.rows) + " 行，本次仅含前 " +
+                         std::to_string(ledger_rows.size()) + " 行";
+    }
+    for (const auto& row : ledger_rows) {
       render.rows.push_back({{"biz_time", row.biz_time},
                              {"biz_type", stock_biz_label(row.biz_type)},
                              {"biz_category", stock_biz_category_label(row.biz_category)},
@@ -294,6 +300,8 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"qty", qty_text(row.qty)},
                              {"amount_cents", row.amount_cents}});
     }
+    render.totals = {{"total_qty", qty_text(ledger_totals.qty)},
+                     {"total_amount_text", money_text(ledger_totals.amount_cents)}};
     return;
   }
 
@@ -360,11 +368,13 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                       dimension_label(filter.item_id, "商品") + "；" +
                       dimension_label(filter.warehouse_id, "仓库") +
                       "；退货数量与金额按负数冲减";
-    std::int64_t total_qty = 0;
-    std::int64_t total_amount = 0;
-    for (const auto& row : services.reports.purchase_detail(filter)) {
-      total_qty += row.qty;
-      total_amount += row.amount_cents;
+    const auto rows = services.reports.purchase_detail(filter);
+    const auto totals = services.reports.purchase_detail_totals(filter);
+    if (totals.rows > static_cast<std::int64_t>(rows.size())) {
+      render.subtitle += "；共 " + std::to_string(totals.rows) + " 行，本次仅含前 " +
+                         std::to_string(rows.size()) + " 行";
+    }
+    for (const auto& row : rows) {
       render.rows.push_back({{"date", row.date},
                              {"doc_no", row.doc_no},
                              {"kind", row.kind},
@@ -378,8 +388,8 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"price_cents", row.price_cents},
                              {"amount_cents", row.amount_cents}});
     }
-    render.totals = {{"total_qty", qty_text(total_qty)},
-                     {"total_amount_text", money_text(total_amount)}};
+    render.totals = {{"total_qty", qty_text(totals.qty)},
+                     {"total_amount_text", money_text(totals.amount_cents)}};
     return;
   }
 

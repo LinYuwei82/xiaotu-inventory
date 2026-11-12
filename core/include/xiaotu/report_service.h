@@ -140,6 +140,13 @@ struct PurchaseItemSummaryRow {
   std::int64_t avg_price_cents = 0;
 };
 
+// 分页受限的明细报表：合计必须按全量算，不能用页面截断后的行求和。
+struct ReportTotals {
+  std::int64_t rows = 0;
+  std::int64_t qty = 0;
+  std::int64_t amount_cents = 0;
+};
+
 // 其他出入库按业务类型汇总：入库与出库分列，出库数量与金额取绝对值。
 struct OtherFlowSummaryRow {
   std::string category;  // GIFT / USAGE / LOSS / OPENING / OTHER
@@ -177,6 +184,8 @@ class ReportService {
   std::vector<PurchaseItemSummaryRow> purchase_summary_by_item(
       const ReportFilter& filter) const;
   std::vector<OtherFlowSummaryRow> other_flow_summary(const ReportFilter& filter) const;
+  ReportTotals purchase_detail_totals(const ReportFilter& filter) const;
+  ReportTotals stock_ledger_totals(const ReportFilter& filter) const;
   std::vector<AgingRow> ar_ap_aging(int direction, std::string_view as_of) const;
 
   // 往来对账单：期初 + 期间单据 - 期间核销 = 期末；只读，不落表。

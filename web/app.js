@@ -2317,6 +2317,7 @@
           <button class="btn small" data-role="print-ledger">打印</button>
           <button class="btn small" data-role="pdf-ledger">导出 PDF</button>
         </div>
+        <p class="page-sub" data-role="ledger-hint"></p>
         <table class="table" data-role="ledger"></table>
       </div>
       <div class="card">
@@ -2374,6 +2375,7 @@
             <button class="btn small" data-role="pdf-purchase-detail">导出 PDF</button>
           </span>
         </div>
+        <p class="page-sub" data-role="purchase-detail-hint"></p>
         <table class="table" data-role="purchase-detail"></table>
         <div class="card-head">
           <h3>采购汇总</h3>
@@ -2429,6 +2431,7 @@
     const ledgerTable = mount.querySelector('[data-role="ledger"]');
     const ledgerFlowSelect = mount.querySelector('[data-role="ledger-flow"]');
     const ledgerCategorySelect = mount.querySelector('[data-role="ledger-category"]');
+    const ledgerHint = mount.querySelector('[data-role="ledger-hint"]');
     const flowsTable = mount.querySelector('[data-role="flows"]');
     const summaryTable = mount.querySelector('[data-role="summary"]');
     const profitTable = mount.querySelector('[data-role="profit"]');
@@ -2441,6 +2444,11 @@
     const purchaseItemSelect = mount.querySelector('[data-role="purchase-item"]');
     const purchaseWarehouseSelect = mount.querySelector('[data-role="purchase-warehouse"]');
     const purchaseDetailTable = mount.querySelector('[data-role="purchase-detail"]');
+    const purchaseDetailHint = mount.querySelector('[data-role="purchase-detail-hint"]');
+    // 导出侧的服务端上限；超过时要明确告知，不能静默截断。
+    const reportExportLimit = 100000;
+    let purchaseDetailTotal = 0;
+    let ledgerTotal = 0;
     const purchaseSummaryTable = mount.querySelector('[data-role="purchase-summary"]');
     const otherFlowCategorySelect = mount.querySelector('[data-role="other-flow-category"]');
     const otherFlowWarehouseSelect = mount.querySelector('[data-role="other-flow-warehouse"]');
@@ -2617,10 +2625,16 @@
              )
              .join("")}</tbody>`;
 
-      ledgerTable.innerHTML = !ledger.length
+      const ledgerRows = ledger.rows || [];
+      ledgerTotal = ledger.total || 0;
+      ledgerHint.textContent =
+        ledger.total > ledgerRows.length
+          ? `共 ${ledger.total} 行，当前显示前 ${ledgerRows.length} 行；导出 CSV / Excel 查看全部`
+          : `共 ${ledger.total || 0} 行`;
+      ledgerTable.innerHTML = !ledgerRows.length
         ? emptyRow("该期间暂无流水", 8)
         : `<thead><tr><th>时间</th><th>类型</th><th>业务类型</th><th>单据号</th><th>商品</th><th>仓库</th><th>数量</th><th>金额（元）</th></tr></thead>
-           <tbody>${ledger
+           <tbody>${ledgerRows
              .map(
                (row) => `<tr>
                  <td>${escapeHtml(row.biz_time)}</td>
@@ -2633,7 +2647,10 @@
                  <td>${money(row.amount_cents)}</td>
                </tr>`
              )
-             .join("")}</tbody>`;
+             .join("")}</tbody>
+           <tfoot><tr><td>合计</td><td colspan="5"></td>
+             <td>${qtyText(ledger.totals ? ledger.totals.qty : 0)}</td>
+             <td>${money(ledger.totals ? ledger.totals.amount_cents : 0)}</td></tr></tfoot>`;
 
       flowsTable.innerHTML = !flows.length
         ? emptyRow("该期间无收发", 9)
@@ -2714,11 +2731,17 @@
              )
              .join("")}</tbody>`;
 
-      purchaseDetailTable.innerHTML = !purchaseDetail.length
+      const purchaseRows = purchaseDetail.rows || [];
+      purchaseDetailTotal = purchaseDetail.total || 0;
+      purchaseDetailHint.textContent =
+        purchaseDetail.total > purchaseRows.length
+          ? `共 ${purchaseDetail.total} 行，当前显示前 ${purchaseRows.length} 行；导出 CSV / Excel 查看全部`
+          : `共 ${purchaseDetail.total || 0} 行`;
+      purchaseDetailTable.innerHTML = !purchaseRows.length
         ? emptyRow("该期间无采购", 9)
         : `<thead><tr><th>日期</th><th>单号</th><th>类型</th><th>供应商</th><th>商品</th>
              <th>规格</th><th>数量</th><th>单价（元）</th><th>金额（元）</th></tr></thead>
-           <tbody>${purchaseDetail
+           <tbody>${purchaseRows
              .map(
                (row) => `<tr>
                  <td>${escapeHtml(row.date)}</td>
@@ -2734,7 +2757,12 @@
                  )}</td>
                </tr>`
              )
-             .join("")}</tbody>`;
+             .join("")}</tbody>
+           <tfoot><tr><td>合计</td><td colspan="5"></td>
+             <td>${qtyText(purchaseDetail.totals ? purchaseDetail.totals.qty : 0)}</td>
+             <td></td>
+             <td>${money(purchaseDetail.totals ? purchaseDetail.totals.amount_cents : 0)}</td>
+           </tr></tfoot>`;
 
       const summaryByItem = purchaseBySelect.value === "item";
       purchaseSummaryTable.innerHTML = !purchaseSummary.length
@@ -2784,11 +2812,20 @@
              .join("")}</tbody>`;
     }
 
-    function wireExport(role, pathFn) {
+    // totalFn 返回服务端真实总行数；超过导出上限时提示实际导出范围。
+    function wireExport(role, pathFn, totalFn) {
       mount.querySelector(`[data-role="${role}"]`).addEventListener("click", async () => {
         try {
           await downloadCsv(pathFn());
-          showNotice("已导出 CSV", "ok");
+          const total = totalFn ? totalFn() : 0;
+          if (total > reportExportLimit) {
+            showNotice(
+              `共 ${total} 行，单次导出上限 ${reportExportLimit} 行，已导出前 ${reportExportLimit} 行`,
+              "error"
+            );
+          } else {
+            showNotice("已导出 CSV", "ok");
+          }
         } catch (error) {
           showNotice(error.message, "error");
         }
@@ -2796,7 +2833,11 @@
     }
 
     wireExport("export-balance", () => "/api/reports/stock-balance?format=csv");
-    wireExport("export-ledger", () => "/api/reports/stock-ledger" + ledgerQuery() + "&format=csv");
+    wireExport(
+      "export-ledger",
+      () => "/api/reports/stock-ledger" + ledgerQuery() + "&format=csv",
+      () => ledgerTotal
+    );
     wireExport("export-flows", () => "/api/reports/goods-flow" + periodQuery() + "&format=csv");
     wireExport(
       "export-summary",
@@ -2805,7 +2846,8 @@
     wireExport("export-profit", () => "/api/reports/sales-profit" + periodQuery() + "&format=csv");
     wireExport(
       "export-purchase-detail",
-      () => "/api/reports/purchase-detail" + purchaseQuery() + "&format=csv"
+      () => "/api/reports/purchase-detail" + purchaseQuery() + "&format=csv",
+      () => purchaseDetailTotal
     );
     wireExport(
       "export-purchase-summary",
@@ -2834,11 +2876,19 @@
         "&format=csv"
     );
 
-    function wireExcel(role, pathFn) {
+    function wireExcel(role, pathFn, totalFn) {
       mount.querySelector(`[data-role="${role}"]`).addEventListener("click", async () => {
         try {
           await downloadXlsx(pathFn());
-          showNotice("已导出 Excel", "ok");
+          const total = totalFn ? totalFn() : 0;
+          if (total > reportExportLimit) {
+            showNotice(
+              `共 ${total} 行，单次导出上限 ${reportExportLimit} 行，已导出前 ${reportExportLimit} 行`,
+              "error"
+            );
+          } else {
+            showNotice("已导出 Excel", "ok");
+          }
         } catch (error) {
           showNotice(error.message, "error");
         }
@@ -2846,7 +2896,11 @@
     }
 
     wireExcel("excel-balance", () => "/api/reports/stock-balance?format=xlsx");
-    wireExcel("excel-ledger", () => "/api/reports/stock-ledger" + ledgerQuery() + "&format=xlsx");
+    wireExcel(
+      "excel-ledger",
+      () => "/api/reports/stock-ledger" + ledgerQuery() + "&format=xlsx",
+      () => ledgerTotal
+    );
     wireExcel("excel-flows", () => "/api/reports/goods-flow" + periodQuery() + "&format=xlsx");
     wireExcel(
       "excel-summary",
@@ -2855,7 +2909,8 @@
     wireExcel("excel-profit", () => "/api/reports/sales-profit" + periodQuery() + "&format=xlsx");
     wireExcel(
       "excel-purchase-detail",
-      () => "/api/reports/purchase-detail" + purchaseQuery() + "&format=xlsx"
+      () => "/api/reports/purchase-detail" + purchaseQuery() + "&format=xlsx",
+      () => purchaseDetailTotal
     );
     wireExcel(
       "excel-purchase-summary",

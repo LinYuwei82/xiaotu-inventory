@@ -509,13 +509,19 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      }
                      if (csv_requested(req) || xlsx_requested(req)) filter.limit = 100000;
                      const auto rows = services.reports.stock_ledger(filter);
+                     const auto totals = services.reports.stock_ledger_totals(filter);
+                     const bool truncated = totals.rows > static_cast<std::int64_t>(rows.size());
                      const std::string scope =
                          period_label(filter) + "；" +
                          dimension_label(filter.item_id, "商品") + "；" +
                          dimension_label(filter.warehouse_id, "仓库") + "；方向 " +
                          qty_direction_label(filter.qty_direction) + "；业务类型 " +
                          (filter.biz_category.empty() ? std::string("全部")
-                                                      : biz_category_label(filter.biz_category));
+                                                      : biz_category_label(filter.biz_category)) +
+                         "；共 " + std::to_string(totals.rows) + " 行" +
+                         (truncated ? "，本次仅含前 " + std::to_string(rows.size()) +
+                                          " 行（导出上限 " + std::to_string(filter.limit) + "）"
+                                    : std::string());
                      if (csv_requested(req)) {
                        std::string csv;
                        csv_preamble(csv, "库存流水明细", scope);
@@ -527,6 +533,8 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                        row.item_code, row.item_name, row.warehouse_name,
                                        qty_text(row.qty), yuan(row.amount_cents)});
                        }
+                       csv_row(csv, {"合计", "", "", "", "", "", "", qty_text(totals.qty),
+                                     yuan(totals.amount_cents)});
                        send_csv(res, "stock-ledger-" + date_stamp() + ".csv", csv);
                        return;
                      }
@@ -546,6 +554,15 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                         XlsxCell::text(qty_text(row.qty)),
                                         XlsxCell::money(row.amount_cents)});
                        }
+                       sheet.add_row({XlsxCell::text("合计"),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(qty_text(totals.qty)),
+                                      XlsxCell::money(totals.amount_cents)});
                        send_xlsx(res, "stock-ledger-" + date_stamp() + ".xlsx", sheet.build());
                        return;
                      }
@@ -553,7 +570,13 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      for (const auto& row : rows) {
                        list.push_back(ledger_to_json(row));
                      }
-                     json_ok(res, list);
+                     json_ok(res, nlohmann::json{{"total", totals.rows},
+                                                 {"limit", filter.limit},
+                                                 {"truncated", truncated},
+                                                 {"rows", list},
+                                                 {"totals",
+                                                  {{"qty", qty_text(totals.qty)},
+                                                   {"amount_cents", totals.amount_cents}}}});
                    }));
 
   server.Get("/api/reports/goods-flow",
@@ -678,9 +701,16 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      ReportFilter filter = parse_filter(req);
                      if (csv_requested(req) || xlsx_requested(req)) filter.limit = 100000;
                      const auto rows = services.reports.purchase_detail(filter);
+                     const auto totals = services.reports.purchase_detail_totals(filter);
+                     const bool truncated = totals.rows > static_cast<std::int64_t>(rows.size());
+                     const std::string scope =
+                         purchase_scope(filter) + "；共 " + std::to_string(totals.rows) + " 行" +
+                         (truncated ? "，本次仅含前 " + std::to_string(rows.size()) +
+                                          " 行（导出上限 " + std::to_string(filter.limit) + "）"
+                                    : std::string());
                      if (csv_requested(req)) {
                        std::string csv;
-                       csv_preamble(csv, "采购明细", purchase_scope(filter));
+                       csv_preamble(csv, "采购明细", scope);
                        csv_row(csv, {"日期", "单号", "类型", "供应商", "商品编码", "商品名称",
                                      "规格", "单位", "仓库", "数量", "单价（元）", "金额（元）"});
                        for (const auto& row : rows) {
@@ -689,12 +719,14 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                        row.warehouse_name, qty_text(row.qty),
                                        yuan(row.price_cents), yuan(row.amount_cents)});
                        }
+                       csv_row(csv, {"合计", "", "", "", "", "", "", "", "",
+                                     qty_text(totals.qty), "", yuan(totals.amount_cents)});
                        send_csv(res, "purchase-detail-" + date_stamp() + ".csv", csv);
                        return;
                      }
                      if (xlsx_requested(req)) {
                        XlsxSheet sheet("采购明细");
-                       xlsx_preamble(sheet, "采购明细", purchase_scope(filter));
+                       xlsx_preamble(sheet, "采购明细", scope);
                        sheet.add_header_row({"日期", "单号", "类型", "供应商", "商品编码",
                                              "商品名称", "规格", "单位", "仓库", "数量",
                                              "单价（元）", "金额（元）"});
@@ -712,6 +744,18 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                         XlsxCell::money(row.price_cents),
                                         XlsxCell::money(row.amount_cents)});
                        }
+                       sheet.add_row({XlsxCell::text("合计"),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text(qty_text(totals.qty)),
+                                      XlsxCell::text(""),
+                                      XlsxCell::money(totals.amount_cents)});
                        send_xlsx(res, "purchase-detail-" + date_stamp() + ".xlsx",
                                  sheet.build());
                        return;
@@ -720,7 +764,13 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      for (const auto& row : rows) {
                        list.push_back(purchase_detail_to_json(row));
                      }
-                     json_ok(res, list);
+                     json_ok(res, nlohmann::json{{"total", totals.rows},
+                                                 {"limit", filter.limit},
+                                                 {"truncated", truncated},
+                                                 {"rows", list},
+                                                 {"totals",
+                                                  {{"qty", qty_text(totals.qty)},
+                                                   {"amount_cents", totals.amount_cents}}}});
                    }));
 
   // 采购汇总：by=supplier（默认）按供应商名称升序，by=item 按商品编码升序。

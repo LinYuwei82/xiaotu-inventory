@@ -869,6 +869,10 @@ int main() {
                 purchase_rows.back().amount_cents == -4000 &&
                 purchase_rows.back().price_cents == 1000,
             "采购明细退货行数量与金额应为负、单价保持正数");
+      const auto purchase_totals = reports.purchase_detail_totals(purchase_filter);
+      check(purchase_totals.rows == 3 && purchase_totals.qty == q(11) &&
+                purchase_totals.amount_cents == 12000,
+            "采购明细合计应按全量计算且不依赖行数上限");
 
       purchase_filter.item_id = 0;
       purchase_filter.supplier_id = report_supplier.id;
@@ -1493,6 +1497,10 @@ int main() {
       check(usage_ledger.size() == 1 && usage_ledger.front().biz_category == "USAGE" &&
                 usage_ledger.front().biz_type == "OTH_OUT",
             "库存流水应能按业务类型筛选");
+      const auto usage_totals = reports.stock_ledger_totals(category_filter);
+      check(usage_totals.rows == 1 && usage_totals.qty == q(-1) &&
+                usage_totals.amount_cents < 0,
+            "库存流水合计应按全量计算且数量方向保持原样");
 
       xiaotu::ReportFilter other_filter;
       other_filter.from = kMonthStart;
