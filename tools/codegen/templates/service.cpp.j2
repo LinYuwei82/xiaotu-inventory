@@ -63,6 +63,13 @@ void {{ t.Name }}Service::validate(const {{ t.Name }}Row& row) {
 {% for f in t.unique_fields %}
     ensure_unique(conn, "{{ t.table }}", "{{ f.name }}", input.{{ f.name }}, 0, "{{ f.label }}");
 {% endfor %}
+{% for f in t.fields %}
+{% if f.get("unique_nonempty") %}
+    if (!input.{{ f.name }}.empty()) {
+      ensure_unique(conn, "{{ t.table }}", "{{ f.name }}", input.{{ f.name }}, 0, "{{ f.label }}");
+    }
+{% endif %}
+{% endfor %}
     {{ t.Name }}Dao::insert(conn, input);
 {% if t.audit_column %}
     audit_write(conn, "create", "{{ t.key }}", input.id, input.{{ t.audit_column }});
@@ -83,6 +90,13 @@ void {{ t.Name }}Service::validate(const {{ t.Name }}Row& row) {
 {% endfor %}
 {% for f in t.unique_fields %}
     ensure_unique(conn, "{{ t.table }}", "{{ f.name }}", input.{{ f.name }}, id, "{{ f.label }}");
+{% endfor %}
+{% for f in t.fields %}
+{% if f.get("unique_nonempty") %}
+    if (!input.{{ f.name }}.empty()) {
+      ensure_unique(conn, "{{ t.table }}", "{{ f.name }}", input.{{ f.name }}, id, "{{ f.label }}");
+    }
+{% endif %}
 {% endfor %}
     {{ t.Name }}Dao::update(conn, input);
 {% if t.audit_column %}

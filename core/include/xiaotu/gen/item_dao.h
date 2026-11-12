@@ -15,8 +15,11 @@ struct ItemRow {
   std::string code = "";
   std::string name = "";
   std::string spec = "";
+  std::string barcode = "";
   std::string unit = "件";
   std::int64_t unit_id = 1;
+  std::int64_t category_id = 0;
+  std::int64_t tax_rate_bp = 0;
   bool status = true;
 };
 

@@ -28,7 +28,7 @@
 {% endfor %}
     ],
     render: function (mount, ui) {
-      ui.crudPage(mount, this);
+      ui.{{ t.get("page_render", "crudPage") }}(mount, this);
     }
   };
 })();

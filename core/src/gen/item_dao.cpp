@@ -20,9 +20,12 @@ ItemRow read_row(Stmt& stmt) {
   row.code = stmt.text(1);
   row.name = stmt.text(2);
   row.spec = stmt.text(3);
-  row.unit = stmt.text(4);
-  row.unit_id = stmt.i64(5);
-  row.status = stmt.i64(6) != 0;
+  row.barcode = stmt.text(4);
+  row.unit = stmt.text(5);
+  row.unit_id = stmt.i64(6);
+  row.category_id = stmt.i64(7);
+  row.tax_rate_bp = stmt.i64(8);
+  row.status = stmt.i64(9) != 0;
   return row;
 }
 
@@ -32,7 +35,7 @@ std::vector<ItemRow> ItemDao::list() {
   std::vector<ItemRow> rows;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
-              "SELECT id, code, name, spec, unit, unit_id, status FROM item WHERE is_deleted = 0"
+              "SELECT id, code, name, spec, barcode, unit, unit_id, category_id, tax_rate_bp, status FROM item WHERE is_deleted = 0"
               " ORDER BY code;");
     while (stmt.step()) {
       rows.push_back(read_row(stmt));
@@ -45,7 +48,7 @@ std::optional<ItemRow> ItemDao::find(std::int64_t id) {
   std::optional<ItemRow> result;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
-              "SELECT id, code, name, spec, unit, unit_id, status FROM item"
+              "SELECT id, code, name, spec, barcode, unit, unit_id, category_id, tax_rate_bp, status FROM item"
               " WHERE id = ? AND is_deleted = 0;");
     stmt.bind(1, id);
     if (stmt.step()) {
@@ -59,16 +62,19 @@ void ItemDao::insert(sqlite3* conn, ItemRow& row) {
   row.id = next_id();
   const AuditStamp stamp = audit_stamp();
   Stmt stmt(conn,
-            "INSERT INTO item (id, code, name, spec, unit, unit_id, status, "
+            "INSERT INTO item (id, code, name, spec, barcode, unit, unit_id, category_id, tax_rate_bp, status, "
             " is_deleted, created_at, created_by, updated_at, updated_by)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?,  0, ?, ?, ?, ?);");
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,  0, ?, ?, ?, ?);");
   int index = 1;
   stmt.bind(index++, row.id);
   stmt.bind(index++, row.code);
   stmt.bind(index++, row.name);
   stmt.bind(index++, row.spec);
+  stmt.bind(index++, row.barcode);
   stmt.bind(index++, row.unit);
   stmt.bind(index++, row.unit_id);
+  stmt.bind(index++, row.category_id);
+  stmt.bind(index++, row.tax_rate_bp);
   stmt.bind(index++, static_cast<std::int64_t>(row.status ? 1 : 0));
   stmt.bind(index++, stamp.at);
   stmt.bind(index++, stamp.by);
@@ -80,15 +86,18 @@ void ItemDao::insert(sqlite3* conn, ItemRow& row) {
 void ItemDao::update(sqlite3* conn, const ItemRow& row) {
   const AuditStamp stamp = audit_stamp();
   Stmt stmt(conn,
-            "UPDATE item SET code = ?, name = ?, spec = ?, unit = ?, unit_id = ?, status = ?, "
+            "UPDATE item SET code = ?, name = ?, spec = ?, barcode = ?, unit = ?, unit_id = ?, category_id = ?, tax_rate_bp = ?, status = ?, "
             " updated_at = ?, updated_by = ?"
             " WHERE id = ? AND is_deleted = 0;");
   int index = 1;
   stmt.bind(index++, row.code);
   stmt.bind(index++, row.name);
   stmt.bind(index++, row.spec);
+  stmt.bind(index++, row.barcode);
   stmt.bind(index++, row.unit);
   stmt.bind(index++, row.unit_id);
+  stmt.bind(index++, row.category_id);
+  stmt.bind(index++, row.tax_rate_bp);
   stmt.bind(index++, static_cast<std::int64_t>(row.status ? 1 : 0));
   stmt.bind(index++, stamp.at);
   stmt.bind(index++, stamp.by);

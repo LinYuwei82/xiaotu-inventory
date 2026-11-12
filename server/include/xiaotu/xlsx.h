@@ -28,6 +28,9 @@ class XlsxSheet {
   void add_text_row(std::initializer_list<std::string> cells);
   void add_header_row(std::initializer_list<std::string> cells);
   void add_row(std::initializer_list<XlsxCell> cells);
+  void add_text_row(const std::vector<std::string>& cells);
+  void add_header_row(const std::vector<std::string>& cells);
+  void add_row(const std::vector<XlsxCell>& cells);
 
   std::string build() const;
 

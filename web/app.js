@@ -597,6 +597,7 @@
           <button class="btn" type="button" data-role="cancel">取消</button>
         </div>
       </div>
+      ${def.filters ? '<div class="card filters" data-role="filters"></div>' : ""}
       <div class="card">
         <table class="table" data-role="table"></table>
       </div>`;
@@ -604,6 +605,75 @@
     const formCard = mount.querySelector('[data-role="form-card"]');
     const form = mount.querySelector('[data-role="form"]');
     const table = mount.querySelector('[data-role="table"]');
+    const filtersBar = mount.querySelector('[data-role="filters"]');
+
+    function optionLabel(option) {
+      if (option.full_name) return option.full_name;
+      return [option.code, option.name].filter(Boolean).join(" ") || String(option.id);
+    }
+
+    async function renderFilters() {
+      if (!def.filters) return;
+      const parts = [];
+      for (const filter of def.filters) {
+        if (filter.optionsApi) {
+          const options = await api("GET", filter.optionsApi);
+          parts.push(`<label class="field"><span>${escapeHtml(filter.label)}</span>
+            <select data-filter="${escapeHtml(filter.key)}">
+              <option value="">${escapeHtml(filter.allLabel || "全部")}</option>
+              ${filter.zeroLabel ? `<option value="0">${escapeHtml(filter.zeroLabel)}</option>` : ""}
+              ${options
+                .filter((option) => option.status !== false)
+                .map(
+                  (option) =>
+                    `<option value="${option.id}">${escapeHtml(
+                      "　".repeat(Math.max(0, (option.depth || 1) - 1)) + optionLabel(option)
+                    )}</option>`
+                )
+                .join("")}
+            </select>
+          </label>`);
+        } else if (filter.options) {
+          parts.push(`<label class="field"><span>${escapeHtml(filter.label)}</span>
+            <select data-filter="${escapeHtml(filter.key)}">
+              <option value="">${escapeHtml(filter.allLabel || "全部")}</option>
+              ${filter.options
+                .map(
+                  (option) =>
+                    `<option value="${escapeHtml(option.value)}">${escapeHtml(option.label)}</option>`
+                )
+                .join("")}
+            </select>
+          </label>`);
+        } else {
+          parts.push(`<label class="field"><span>${escapeHtml(filter.label)}</span>
+            <input type="text" data-filter="${escapeHtml(filter.key)}" placeholder="${escapeHtml(
+            filter.placeholder || ""
+          )}" />
+          </label>`);
+        }
+      }
+      parts.push('<button class="btn" type="button" data-role="filter-reset">重置</button>');
+      filtersBar.innerHTML = parts.join("");
+      filtersBar.addEventListener("change", () => reload());
+      filtersBar.querySelector('[data-role="filter-reset"]').addEventListener("click", () => {
+        filtersBar.querySelectorAll("[data-filter]").forEach((input) => {
+          input.value = "";
+        });
+        reload();
+      });
+    }
+
+    function filterQuery() {
+      if (!def.filters) return "";
+      const params = [];
+      for (const filter of def.filters) {
+        const input = filtersBar.querySelector('[data-filter="' + filter.key + '"]');
+        const value = input ? input.value.trim() : "";
+        if (value) params.push(encodeURIComponent(filter.key) + "=" + encodeURIComponent(value));
+      }
+      return params.length ? "?" + params.join("&") : "";
+    }
 
     function fieldInput(field, value) {
       if (field.type === "bool") {
@@ -625,20 +695,27 @@
                   (option) =>
                     `<option value="${option.id}" ${
                       String(option.id) === String(value) ? "selected" : ""
-                    }>${escapeHtml(option.code + " " + option.name)}</option>`
+                    }>${escapeHtml(
+                      "　".repeat(Math.max(0, (option.depth || 1) - 1)) + optionLabel(option)
+                    )}</option>`
                 )
                 .join("")}
             </select>
           </label>`;
       }
       if (field.type === "int") {
-        const min = field.min === undefined ? "" : ` min="${Number(field.min)}"`;
-        const max = field.max === undefined ? "" : ` max="${Number(field.max)}"`;
+        const scale = field.scale || 1;
+        const min = field.min === undefined ? "" : ` min="${Number(field.min) / scale}"`;
+        const max = field.max === undefined ? "" : ` max="${Number(field.max) / scale}"`;
+        const shown =
+          value === undefined || value === null
+            ? ""
+            : Number(value) / scale;
         return `<label class="field">
           <span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>
-          <input type="number" step="1"${min}${max} data-field="${escapeHtml(field.key)}" value="${escapeHtml(
-          value === undefined || value === null ? "" : value
-        )}" ${field.required ? "required" : ""} />
+          <input type="number" step="${scale === 1 ? "1" : "0.01"}"${min}${max} data-field="${escapeHtml(
+          field.key
+        )}" value="${escapeHtml(shown)}" ${field.required ? "required" : ""} />
         </label>`;
       }
       return `<label class="field">
@@ -676,7 +753,7 @@
         } else if (field.optionsApi) {
           payload[field.key] = Number(input.value || 0);
         } else if (field.type === "int") {
-          payload[field.key] = Number(input.value || 0);
+          payload[field.key] = Math.round(Number(input.value || 0) * (field.scale || 1));
         } else {
           payload[field.key] = input.value.trim();
         }
@@ -700,6 +777,9 @@
               if (column.type === "bool") {
                 return `<td>${value ? "是" : "否"}</td>`;
               }
+              if (column.type === "percent_bp") {
+                return `<td>${(Number(value || 0) / 100).toFixed(2)}%</td>`;
+              }
               return `<td>${escapeHtml(value)}</td>`;
             })
             .join("");
@@ -715,9 +795,11 @@
     }
 
     async function reload() {
-      rows = await api("GET", def.api);
+      rows = await api("GET", def.api + filterQuery());
       renderTable();
     }
+
+    await renderFilters();
 
     if (io) {
       async function showImportErrors(payload) {
@@ -893,6 +975,200 @@
         if (!(await askConfirm("确认删除这条记录？"))) return;
         try {
           await api("DELETE", def.api + "/" + id);
+          await reload();
+        } catch (error) {
+          showNotice(error.message, "error");
+        }
+      }
+    });
+
+    await reload();
+  }
+
+  // 商品页在通用 CRUD 之上补分类/条码列与筛选；税率按百分数录入，提交时换回整数万分比。
+  function itemPage(mount, def) {
+    const fields = def.fields.map((field) =>
+      field.key === "tax_rate_bp" ? { ...field, label: "税率（%）", scale: 100 } : field
+    );
+    return crudPage(mount, {
+      ...def,
+      columns: [
+        { key: "code", label: "编码", type: "string" },
+        { key: "name", label: "名称", type: "string" },
+        { key: "spec", label: "规格", type: "string" },
+        { key: "category_name", label: "分类", type: "string" },
+        { key: "barcode", label: "条码", type: "string" },
+        { key: "unit", label: "单位", type: "string" },
+        { key: "tax_rate_bp", label: "税率", type: "percent_bp" },
+        { key: "status", label: "启用", type: "bool" },
+      ],
+      fields,
+      filters: [
+        {
+          key: "category_id",
+          label: "分类",
+          optionsApi: "/api/item-categories",
+          allLabel: "全部分类",
+          zeroLabel: "未分类",
+        },
+        { key: "q", label: "搜索", placeholder: "编码 / 名称 / 条码" },
+      ],
+    });
+  }
+
+  // 商品分类树：数据库不限层，界面按产品约定只允许建到第三层。
+  async function itemCategoryPage(mount) {
+    let rows = [];
+    let editingId = 0;
+    const writable = can("item.write");
+
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>商品分类</h2>
+          <p class="page-sub">最多三层；停用分类不再出现在新建商品的下拉中，已归属的商品照常显示</p>
+        </div>
+        <div class="page-actions">
+          <button class="btn" data-role="refresh">刷新</button>
+          <button class="btn primary" data-role="new" ${writable ? "" : "hidden"}>新增一级分类</button>
+        </div>
+      </div>
+      <div class="card" data-role="form-card" hidden>
+        <form class="grid-form" data-role="form">
+          <label class="field"><span>上级分类</span><select data-role="parent"></select></label>
+          <label class="field"><span>分类名称 *</span><input type="text" data-role="name" required /></label>
+          <label class="field"><span>排序</span><input type="number" step="1" data-role="sort" value="0" /></label>
+          <label class="checkbox"><input type="checkbox" data-role="status" checked /> 启用</label>
+        </form>
+        <div class="form-actions">
+          <button class="btn primary" type="button" data-role="save">保存</button>
+          <button class="btn" type="button" data-role="cancel">取消</button>
+        </div>
+      </div>
+      <div class="card"><table class="table" data-role="table"></table></div>`;
+
+    const formCard = mount.querySelector('[data-role="form-card"]');
+    const form = mount.querySelector('[data-role="form"]');
+    const parentSelect = mount.querySelector('[data-role="parent"]');
+    const nameInput = mount.querySelector('[data-role="name"]');
+    const sortInput = mount.querySelector('[data-role="sort"]');
+    const statusInput = mount.querySelector('[data-role="status"]');
+    const table = mount.querySelector('[data-role="table"]');
+
+    function renderTable() {
+      if (!rows.length) {
+        table.innerHTML = '<tbody><tr><td class="empty">还没有分类，先建一个一级分类</td></tr></tbody>';
+        return;
+      }
+      table.innerHTML = `<thead><tr><th>分类名称</th><th>商品数</th><th>排序</th><th>状态</th><th class="actions">操作</th></tr></thead>
+        <tbody>${rows
+          .map((row) => {
+            const indent = "　".repeat(Math.max(0, row.depth - 1));
+            return `<tr data-id="${row.id}">
+              <td>${indent}${escapeHtml(row.name)}</td>
+              <td>${row.item_count}</td>
+              <td>${row.sort_order}</td>
+              <td>${row.status ? "启用" : "停用"}</td>
+              <td class="actions">
+                ${
+                  writable && row.depth < 3
+                    ? '<button class="link" data-role="add-child">新增子分类</button>'
+                    : ""
+                }
+                ${writable ? '<button class="link" data-role="edit">编辑</button>' : ""}
+                ${writable ? '<button class="link danger" data-role="delete">删除</button>' : ""}
+              </td>
+            </tr>`;
+          })
+          .join("")}</tbody>`;
+    }
+
+    function openForm(row, parentId) {
+      editingId = row ? row.id : 0;
+      // 第三层之下不再提供新建入口；编辑时保留当前上级，避免被下拉截断。
+      const parents = rows.filter(
+        (item) =>
+          item.depth < 3 &&
+          (!row || (item.id !== row.id && !item.path.startsWith(row.path)))
+      );
+      parentSelect.innerHTML =
+        `<option value="0">一级分类</option>` +
+        parents
+          .map(
+            (item) =>
+              `<option value="${item.id}">${"　".repeat(item.depth - 1)}${escapeHtml(item.name)}</option>`
+          )
+          .join("");
+      if (row) {
+        parentSelect.value = String(row.parent_id);
+        // 当前上级若因层级限制不在列表里，补一个选项，避免保存时被改到根。
+        if (!parents.some((item) => item.id === row.parent_id) && row.parent_id !== 0) {
+          parentSelect.insertAdjacentHTML(
+            "beforeend",
+            `<option value="${row.parent_id}">（当前上级）</option>`
+          );
+          parentSelect.value = String(row.parent_id);
+        }
+      } else {
+        parentSelect.value = String(parentId || 0);
+      }
+      nameInput.value = row ? row.name : "";
+      sortInput.value = row ? row.sort_order : 0;
+      statusInput.checked = row ? row.status : true;
+      formCard.hidden = false;
+      nameInput.focus();
+    }
+
+    async function reload() {
+      rows = await api("GET", "/api/item-categories");
+      renderTable();
+    }
+
+    mount.querySelector('[data-role="new"]').addEventListener("click", () => openForm(null));
+    mount.querySelector('[data-role="refresh"]').addEventListener("click", () => reload());
+    mount.querySelector('[data-role="cancel"]').addEventListener("click", () => {
+      formCard.hidden = true;
+    });
+    mount.querySelector('[data-role="save"]').addEventListener("click", async () => {
+      const payload = {
+        parent_id: Number(parentSelect.value || 0),
+        name: nameInput.value.trim(),
+        sort_order: Number(sortInput.value || 0),
+        status: statusInput.checked,
+      };
+      if (!payload.name) {
+        showNotice("分类名称不能为空", "error");
+        return;
+      }
+      try {
+        if (editingId) {
+          await api("PUT", "/api/item-categories/" + editingId, payload);
+        } else {
+          await api("POST", "/api/item-categories", payload);
+        }
+        formCard.hidden = true;
+        showNotice("");
+        await reload();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+
+    table.addEventListener("click", async (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      const tr = event.target.closest("tr");
+      const id = Number(tr.dataset.id);
+      const row = rows.find((item) => item.id === id);
+      if (!row) return;
+      if (button.dataset.role === "edit") {
+        openForm(row);
+      } else if (button.dataset.role === "add-child") {
+        openForm(null, row.id);
+      } else if (button.dataset.role === "delete") {
+        if (!(await askConfirm("确认删除分类「" + row.name + "」？"))) return;
+        try {
+          await api("DELETE", "/api/item-categories/" + id);
           await reload();
         } catch (error) {
           showNotice(error.message, "error");
@@ -4562,6 +4838,13 @@
       render: financePage,
     },
     { key: "statement", title: "对账单", group: "finance", render: statementPage },
+    {
+      key: "item-categories",
+      title: "商品分类",
+      group: "master",
+      permission: "item.read",
+      render: itemCategoryPage,
+    },
     { key: "stock", title: "库存", group: "stock", render: stockPage },
     { key: "print-templates", title: "打印模板", group: "system", render: printTemplatePage },
     { key: "reports", title: "报表", group: "", render: reportPage },
@@ -4680,7 +4963,7 @@
     const container = document.createElement("section");
     container.className = "page";
     main.appendChild(container);
-    Promise.resolve(page.render(container, { crudPage, money, escapeHtml, can })).catch(
+    Promise.resolve(page.render(container, { crudPage, itemPage, money, escapeHtml, can })).catch(
       (error) => {
         showNotice(error.message, "error");
       }

@@ -370,6 +370,18 @@ main {
   gap: 10px 14px;
 }
 
+/* 列表页筛选条：字段横向排列，重置按钮与输入底部对齐。 */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+}
+
+.filters .field {
+  min-width: 180px;
+}
+
 .field {
   display: flex;
   flex-direction: column;

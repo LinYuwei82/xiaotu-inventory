@@ -28,6 +28,7 @@
 #include "xiaotu/gen/supplier_service.h"
 #include "xiaotu/gen/unit_service.h"
 #include "xiaotu/gen/warehouse_service.h"
+#include "xiaotu/item_category.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/cost_recalc.h"
 #include "xiaotu/permissions.h"
@@ -75,7 +76,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 16, "迁移后 schema 版本应为 16");
+      check(db.schema_version() == 17, "迁移后 schema 版本应为 17");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -253,6 +254,56 @@ int main() {
         duplicate_rejected = error.code() == "DUPLICATE_CODE";
       }
       check(duplicate_rejected, "重复编码应被拒绝");
+
+      // 商品分类：三级路径、同级重名、按 path 取整棵子树、带商品时禁止删除。
+      xiaotu::ItemCategoryService categories(db);
+      const auto root = categories.create(0, "食品", 10, true);
+      const auto child = categories.create(root.id, "饮料", 20, true);
+      const auto grandchild = categories.create(child.id, "碳酸饮料", 30, true);
+      check(root.path == "/" + std::to_string(root.id) + "/", "根分类 path 应以自身 id 结尾");
+      check(grandchild.path == root.path + std::to_string(child.id) + "/" +
+                                    std::to_string(grandchild.id) + "/",
+            "子分类 path 应拼接父路径");
+      check(grandchild.depth == 3, "第三层分类深度应为 3");
+      bool sibling_duplicate = false;
+      try {
+        categories.create(root.id, "饮料", 0, true);
+      } catch (const xiaotu::AppError& error) {
+        sibling_duplicate = error.code() == "DUPLICATE_NAME";
+      }
+      check(sibling_duplicate, "同一级下重名分类应被拒绝");
+      const auto subtree = categories.subtree_ids(root.id);
+      check(subtree.size() == 3, "根分类子树应包含自身与两个下级");
+
+      auto categorized = items.create(xiaotu::gen::ItemRow{.code = "C001",
+                                                           .name = "可乐",
+                                                           .barcode = "6901234567890",
+                                                           .category_id = grandchild.id,
+                                                           .tax_rate_bp = 1300});
+      check(categorized.tax_rate_bp == 1300 && categorized.category_id == grandchild.id,
+            "商品应保存分类与整数万分比税率");
+      bool barcode_duplicate = false;
+      try {
+        items.create(xiaotu::gen::ItemRow{
+            .code = "C002", .name = "重复条码商品", .barcode = "6901234567890"});
+      } catch (const xiaotu::AppError& error) {
+        barcode_duplicate = error.code() == "DUPLICATE_CODE";
+      }
+      check(barcode_duplicate, "重复条码应被拒绝");
+      bool category_in_use = false;
+      try {
+        categories.remove(grandchild.id);
+      } catch (const xiaotu::AppError& error) {
+        category_in_use = error.code() == "CATEGORY_HAS_ITEMS";
+      }
+      check(category_in_use, "分类下还有商品时应拒绝删除");
+      bool tax_out_of_range = false;
+      try {
+        items.create(xiaotu::gen::ItemRow{.code = "C003", .name = "错税率", .tax_rate_bp = 10001});
+      } catch (const xiaotu::AppError& error) {
+        tax_out_of_range = error.code() == "INVALID_INPUT";
+      }
+      check(tax_out_of_range, "税率超过 10000 个基点应被拒绝");
 
       // 库存不足：审核前整单校验，拒绝后不留下单据与流水。
       xiaotu::DocInput insufficient;
@@ -1199,6 +1250,7 @@ int main() {
       suppliers.remove(edge_supplier.id);
       suppliers.remove(edge_stock_supplier.id);
       customers.remove(customer.id);
+      items.remove(categorized.id);
       check(items.list().empty(), "软删除后列表中不应再出现该商品");
 
       // 审计日志：关键写操作都留痕，且能回答谁/何时/对象/动作。

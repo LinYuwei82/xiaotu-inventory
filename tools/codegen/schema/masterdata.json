@@ -17,13 +17,19 @@
       "nav_group": "master",
       "import": true,
       "order_by": "code",
+      "custom_list": true,
+      "page_render": "itemPage",
       "fields": [
         { "name": "code", "label": "编码", "type": "string", "required": true, "unique": true, "in_list": true, "in_form": true },
         { "name": "name", "label": "名称", "type": "string", "required": true, "unique": false, "in_list": true, "in_form": true },
         { "name": "spec", "label": "规格", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true },
+        { "name": "barcode", "label": "条码", "type": "string", "required": false, "unique": false, "unique_nonempty": true, "in_list": true, "in_form": true },
         { "name": "unit", "label": "单位", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": false, "default": "件" },
         { "name": "unit_id", "label": "计量单位", "type": "int", "required": false, "unique": false, "in_list": false, "in_form": true, "default": 1,
           "options_api": "/api/units", "reference": { "table": "unit", "display": "name" }, "sync_to": "unit" },
+        { "name": "category_id", "label": "商品分类", "type": "int", "required": false, "unique": false, "in_list": true, "in_form": true, "default": 0,
+          "options_api": "/api/item-categories" },
+        { "name": "tax_rate_bp", "label": "税率（万分比）", "type": "int", "required": false, "unique": false, "in_list": false, "in_form": true, "default": 0, "min": 0, "max": 10000 },
         { "name": "status", "label": "启用", "type": "bool", "required": false, "unique": false, "in_list": true, "in_form": true, "default": true }
       ]
     },

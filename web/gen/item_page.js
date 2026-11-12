@@ -15,18 +15,23 @@
       { key: "code", label: "编码", type: "string" },
       { key: "name", label: "名称", type: "string" },
       { key: "spec", label: "规格", type: "string" },
+      { key: "barcode", label: "条码", type: "string" },
       { key: "unit", label: "单位", type: "string" },
+      { key: "category_id", label: "商品分类", type: "int" },
       { key: "status", label: "启用", type: "bool" },
     ],
     fields: [
       { key: "code", label: "编码", type: "string", required: true, default: "" },
       { key: "name", label: "名称", type: "string", required: true, default: "" },
       { key: "spec", label: "规格", type: "string", required: false, default: "" },
+      { key: "barcode", label: "条码", type: "string", required: false, default: "" },
       { key: "unit_id", label: "计量单位", type: "int", required: false, default: 1, optionsApi: "/api/units" },
+      { key: "category_id", label: "商品分类", type: "int", required: false, default: 0, optionsApi: "/api/item-categories" },
+      { key: "tax_rate_bp", label: "税率（万分比）", type: "int", required: false, default: 0, min: 0, max: 10000 },
       { key: "status", label: "启用", type: "bool", required: false, default: true },
     ],
     render: function (mount, ui) {
-      ui.crudPage(mount, this);
+      ui.itemPage(mount, this);
     }
   };
 })();

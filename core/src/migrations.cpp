@@ -635,6 +635,46 @@ UPDATE doc_header SET biz_category = 'OTHER'
 WHERE doc_type IN ('OTH_IN', 'OTH_OUT') AND biz_category = '';
 )SQL";
 
+// v17：商品分类、条码与税率。分类用 parent_id + path 冗余，按前缀匹配整棵子树，
+// 不递归；层数由数据库放开、界面按产品约定卡三层。条码本版一商品一码，
+// 同时建好 item_barcode 预留一商品多码的扩展位（暂不写入）。
+constexpr const char* kV17 = R"SQL(
+CREATE TABLE item_category (
+  id         INTEGER PRIMARY KEY,
+  parent_id  INTEGER NOT NULL DEFAULT 0,
+  name       TEXT    NOT NULL,
+  path       TEXT    NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  status     INTEGER NOT NULL DEFAULT 1,
+  is_deleted INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT    NOT NULL,
+  created_by TEXT    NOT NULL DEFAULT 'system',
+  updated_at TEXT    NOT NULL,
+  updated_by TEXT    NOT NULL DEFAULT 'system',
+  CHECK (status IN (0, 1)),
+  CHECK (is_deleted IN (0, 1))
+);
+CREATE UNIQUE INDEX uk_item_category_sibling ON item_category(parent_id, name)
+  WHERE is_deleted = 0;
+CREATE INDEX idx_item_category_path ON item_category(path);
+
+ALTER TABLE item ADD COLUMN category_id INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE item ADD COLUMN tax_rate_bp INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE item ADD COLUMN barcode TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX uk_item_barcode ON item(barcode) WHERE barcode <> '';
+
+CREATE TABLE item_barcode (
+  id         INTEGER PRIMARY KEY,
+  item_id    INTEGER NOT NULL REFERENCES item(id),
+  barcode    TEXT    NOT NULL,
+  is_primary INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT    NOT NULL,
+  CHECK (is_primary IN (0, 1))
+);
+CREATE UNIQUE INDEX uk_item_barcode_code ON item_barcode(barcode);
+CREATE UNIQUE INDEX uk_item_barcode_item ON item_barcode(item_id);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -666,6 +706,7 @@ const std::vector<Migration>& all_migrations() {
       {14, "v14_stock_balance_non_negative", kV14},
       {15, "v15_stocktake_ledger_direction", kV15},
       {16, "v16_document_biz_category", kV16},
+      {17, "v17_item_category_barcode_tax", kV17},
   };
   return migrations;
 }

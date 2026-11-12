@@ -33,6 +33,7 @@ nlohmann::json to_json(const {{ t.Name }}Row& row) {
 }  // namespace
 
 void register_{{ t.key }}_routes(httplib::Server& server, Services& services) {
+{% if not t.get("custom_list") %}
   server.Get("{{ t.api }}",
              guard("{{ t.permissions.read }}",
                    [&services](const httplib::Request&, httplib::Response& res) {
@@ -42,6 +43,7 @@ void register_{{ t.key }}_routes(httplib::Server& server, Services& services) {
                      }
                      json_ok(res, list);
                    }));
+{% endif %}
 
   server.Post("{{ t.api }}",
               guard("{{ t.permissions.write }}",

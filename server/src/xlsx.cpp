@@ -325,6 +325,27 @@ void XlsxSheet::add_row(std::initializer_list<XlsxCell> cells) {
   header_flags_.push_back(false);
 }
 
+void XlsxSheet::add_text_row(const std::vector<std::string>& cells) {
+  std::vector<XlsxCell> row;
+  row.reserve(cells.size());
+  for (const auto& cell : cells) row.push_back(XlsxCell::text(cell));
+  rows_.push_back(std::move(row));
+  header_flags_.push_back(false);
+}
+
+void XlsxSheet::add_header_row(const std::vector<std::string>& cells) {
+  std::vector<XlsxCell> row;
+  row.reserve(cells.size());
+  for (const auto& cell : cells) row.push_back(XlsxCell::text(cell));
+  rows_.push_back(std::move(row));
+  header_flags_.push_back(true);
+}
+
+void XlsxSheet::add_row(const std::vector<XlsxCell>& cells) {
+  rows_.push_back(cells);
+  header_flags_.push_back(false);
+}
+
 std::string XlsxSheet::build() const {
   return zip_store({
       {"[Content_Types].xml", content_types_xml()},

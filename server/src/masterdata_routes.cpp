@@ -11,6 +11,7 @@
 #include "xiaotu/error.h"
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
+#include "xiaotu/item_category.h"
 #include "xiaotu/masterdata_io.h"
 #include "xiaotu/services.h"
 #include "xiaotu/xlsx.h"
@@ -141,25 +142,214 @@ std::string build_csv(const MasterExport& table) {
 
 std::string build_xlsx(const std::string& sheet_name, const MasterExport& table) {
   XlsxSheet sheet(sheet_name);
-  if (table.header.size() == 5) {
-    sheet.add_header_row({table.header[0], table.header[1], table.header[2], table.header[3],
-                          table.header[4]});
-    for (const auto& row : table.rows) {
-      sheet.add_text_row({row[0], row[1], row[2], row[3], row[4]});
-    }
-  } else {
-    sheet.add_header_row({table.header[0], table.header[1], table.header[2], table.header[3],
-                          table.header[4], table.header[5]});
-    for (const auto& row : table.rows) {
-      sheet.add_text_row({row[0], row[1], row[2], row[3], row[4], row[5]});
+  sheet.add_header_row(table.header);
+  for (const auto& row : table.rows) sheet.add_text_row(row);
+  return sheet.build();
+}
+
+std::int64_t param_int(const httplib::Request& req, const char* name, std::int64_t fallback) {
+  if (!req.has_param(name)) return fallback;
+  try {
+    return std::stoll(req.get_param_value(name));
+  } catch (...) {
+    return fallback;
+  }
+}
+
+std::string like_pattern(const std::string& value) {
+  // 用户输入里的 % 与 _ 按字面匹配，避免「%」把整表搜出来。
+  std::string escaped;
+  escaped.reserve(value.size() + 2);
+  for (const char ch : value) {
+    if (ch == '%' || ch == '_' || ch == '\\') escaped.push_back('\\');
+    escaped.push_back(ch);
+  }
+  return "%" + escaped + "%";
+}
+
+nlohmann::json category_json(const ItemCategoryRow& row, const std::string& full_name) {
+  return nlohmann::json{{"id", row.id},
+                        {"parent_id", row.parent_id},
+                        {"name", row.name},
+                        {"full_name", full_name},
+                        {"path", row.path},
+                        {"sort_order", row.sort_order},
+                        {"status", row.status},
+                        {"depth", row.depth},
+                        {"item_count", row.item_count}};
+}
+
+std::vector<std::string> category_names(const std::vector<ItemCategoryRow>& rows) {
+  std::vector<std::string> names(rows.size());
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    names[i] = rows[i].name;
+    std::string path = rows[i].path;
+    // 去掉自己的 id，剩余前缀逐级找父分类。
+    const std::size_t last = path.find_last_of('/', path.size() - 2);
+    if (last == std::string::npos || last == 0) continue;
+    path = path.substr(0, last + 1);
+    for (std::size_t j = 0; j < rows.size(); ++j) {
+      if (rows[j].path == path) {
+        names[i] = names[j] + "/" + rows[i].name;
+        break;
+      }
     }
   }
-  return sheet.build();
+  return names;
 }
 
 }  // namespace
 
 void register_masterdata_routes(httplib::Server& server, Services& services) {
+  // 商品列表：分类子树、条码精确匹配、编码/名称/条码关键字。
+  server.Get("/api/items",
+             guard("item.read",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     ItemCategoryService categories(services.db);
+                     std::vector<std::int64_t> category_ids;
+                     const bool has_category = req.has_param("category_id");
+                     if (has_category) {
+                       const std::int64_t category_id =
+                           param_int(req, "category_id", 0);
+                       const bool include_children =
+                           param_int(req, "include_children", 1) != 0;
+                       if (category_id > 0 && include_children) {
+                         category_ids = categories.subtree_ids(category_id);
+                         if (category_ids.empty()) {
+                           json_ok(res, nlohmann::json::array());
+                           return;
+                         }
+                       } else {
+                         category_ids.push_back(category_id);
+                       }
+                     }
+                     std::string sql =
+                         "SELECT i.id, i.code, i.name, i.spec, i.unit, i.unit_id,"
+                         " i.category_id, COALESCE(c.name, ''), i.tax_rate_bp, i.barcode,"
+                         " i.status FROM item i"
+                         " LEFT JOIN item_category c ON c.id = i.category_id"
+                         " WHERE i.is_deleted = 0";
+                     std::vector<std::string> bindings;
+                     if (has_category) {
+                       if (category_ids.size() == 1) {
+                         sql += " AND i.category_id = " + std::to_string(category_ids.front());
+                       } else {
+                         sql += " AND i.category_id IN (";
+                         for (std::size_t i = 0; i < category_ids.size(); ++i) {
+                           if (i != 0) sql += ", ";
+                           sql += std::to_string(category_ids[i]);
+                         }
+                         sql += ")";
+                       }
+                     }
+                     if (req.has_param("barcode")) {
+                       const std::string barcode = req.get_param_value("barcode");
+                       if (barcode.empty()) {
+                         json_ok(res, nlohmann::json::array());
+                         return;
+                       }
+                       sql += " AND i.barcode = ?";
+                       bindings.push_back(barcode);
+                     }
+                     if (req.has_param("q")) {
+                       sql +=
+                           " AND (i.code LIKE ? ESCAPE '\\' OR i.name LIKE ? ESCAPE '\\'"
+                           " OR i.barcode LIKE ? ESCAPE '\\')";
+                       const std::string pattern = like_pattern(req.get_param_value("q"));
+                       bindings.push_back(pattern);
+                       bindings.push_back(pattern);
+                       bindings.push_back(pattern);
+                     }
+                     sql += " ORDER BY i.code;";
+                     nlohmann::json list = nlohmann::json::array();
+                     services.db.read([&](sqlite3* conn) {
+                       Stmt stmt(conn, sql);
+                       for (std::size_t i = 0; i < bindings.size(); ++i) {
+                         stmt.bind(static_cast<std::int64_t>(i + 1), bindings[i]);
+                       }
+                       while (stmt.step()) {
+                         list.push_back(nlohmann::json{
+                             {"id", stmt.i64(0)},
+                             {"code", stmt.text(1)},
+                             {"name", stmt.text(2)},
+                             {"spec", stmt.text(3)},
+                             {"unit", stmt.text(4)},
+                             {"unit_id", stmt.i64(5)},
+                             {"category_id", stmt.i64(6)},
+                             {"category_name", stmt.text(7)},
+                             {"tax_rate_bp", stmt.i64(8)},
+                             {"barcode", stmt.text(9)},
+                             {"status", stmt.i64(10) != 0},
+                         });
+                       }
+                     });
+                     json_ok(res, list);
+                   }));
+
+  server.Get("/api/item-categories",
+             guard("item.read",
+                   [&services](const httplib::Request&, httplib::Response& res) {
+                     ItemCategoryService categories(services.db);
+                     const auto rows = categories.list();
+                     const auto names = category_names(rows);
+                     nlohmann::json list = nlohmann::json::array();
+                     for (std::size_t i = 0; i < rows.size(); ++i) {
+                       list.push_back(category_json(rows[i], names[i]));
+                     }
+                     json_ok(res, list);
+                   }));
+
+  server.Post("/api/item-categories",
+              guard("item.write",
+                    [&services](const httplib::Request& req, httplib::Response& res) {
+                      const auto body = json_body(req);
+                      ItemCategoryService categories(services.db);
+                      const auto row = categories.create(
+                          body.value("parent_id", std::int64_t{0}),
+                          body.value("name", std::string{}),
+                          body.value("sort_order", std::int64_t{0}),
+                          body.value("status", true));
+                      const auto rows = categories.list();
+                      const auto names = category_names(rows);
+                      for (std::size_t i = 0; i < rows.size(); ++i) {
+                        if (rows[i].id == row.id) {
+                          json_ok(res, category_json(rows[i], names[i]));
+                          return;
+                        }
+                      }
+                      json_ok(res, category_json(row, row.name));
+                    }));
+
+  server.Put(R"(/api/item-categories/(\d+))",
+             guard("item.write",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     const std::int64_t id = std::stoll(req.matches[1].str());
+                     const auto body = json_body(req);
+                     ItemCategoryService categories(services.db);
+                     categories.update(id, body.value("parent_id", std::int64_t{0}),
+                                       body.value("name", std::string{}),
+                                       body.value("sort_order", std::int64_t{0}),
+                                       body.value("status", true));
+                     const auto rows = categories.list();
+                     const auto names = category_names(rows);
+                     for (std::size_t i = 0; i < rows.size(); ++i) {
+                       if (rows[i].id == id) {
+                         json_ok(res, category_json(rows[i], names[i]));
+                         return;
+                       }
+                     }
+                     json_ok(res, nlohmann::json{{"id", id}});
+                   }));
+
+  server.Delete(R"(/api/item-categories/(\d+))",
+                guard("item.write",
+                      [&services](const httplib::Request& req, httplib::Response& res) {
+                        const std::int64_t id = std::stoll(req.matches[1].str());
+                        ItemCategoryService categories(services.db);
+                        categories.remove(id);
+                        json_ok(res, nlohmann::json{{"ok", true}});
+                      }));
+
   for (const auto& route : kRoutes) {
     const std::string base = route.base;
     const MasterKind kind = route.kind;

@@ -19,8 +19,11 @@ nlohmann::json to_json(const ItemRow& row) {
       {"code", row.code},
       {"name", row.name},
       {"spec", row.spec},
+      {"barcode", row.barcode},
       {"unit", row.unit},
       {"unit_id", row.unit_id},
+      {"category_id", row.category_id},
+      {"tax_rate_bp", row.tax_rate_bp},
       {"status", row.status},
   };
 }
@@ -30,8 +33,11 @@ ItemRow from_json(const nlohmann::json& body) {
   row.code = body.value("code", "");
   row.name = body.value("name", "");
   row.spec = body.value("spec", "");
+  row.barcode = body.value("barcode", "");
   row.unit = body.value("unit", "件");
   row.unit_id = body.value("unit_id", 1);
+  row.category_id = body.value("category_id", 0);
+  row.tax_rate_bp = body.value("tax_rate_bp", 0);
   row.status = body.value("status", true);
   return row;
 }
@@ -39,15 +45,6 @@ ItemRow from_json(const nlohmann::json& body) {
 }  // namespace
 
 void register_item_routes(httplib::Server& server, Services& services) {
-  server.Get("/api/items",
-             guard("item.read",
-                   [&services](const httplib::Request&, httplib::Response& res) {
-                     nlohmann::json list = nlohmann::json::array();
-                     for (const auto& row : services.item.list()) {
-                       list.push_back(to_json(row));
-                     }
-                     json_ok(res, list);
-                   }));
 
   server.Post("/api/items",
               guard("item.write",

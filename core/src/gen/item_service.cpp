@@ -39,6 +39,9 @@ void ItemService::validate(const ItemRow& row) {
   if (row.name.empty()) {
     throw AppError("INVALID_INPUT", "名称不能为空");
   }
+  if (row.tax_rate_bp < 0 || row.tax_rate_bp > 10000) {
+    throw AppError("INVALID_INPUT", "税率（万分比）应在 0–10000 之间");
+  }
 }
 
 ItemRow ItemService::create(ItemRow input) {
@@ -47,6 +50,9 @@ ItemRow ItemService::create(ItemRow input) {
     sync_reference(conn, input.unit_id, "unit", "name",
                    input.unit, "计量单位");
     ensure_unique(conn, "item", "code", input.code, 0, "编码");
+    if (!input.barcode.empty()) {
+      ensure_unique(conn, "item", "barcode", input.barcode, 0, "条码");
+    }
     ItemDao::insert(conn, input);
     audit_write(conn, "create", "item", input.id, input.code);
   });
@@ -60,6 +66,9 @@ ItemRow ItemService::update(std::int64_t id, ItemRow input) {
     sync_reference(conn, input.unit_id, "unit", "name",
                    input.unit, "计量单位");
     ensure_unique(conn, "item", "code", input.code, id, "编码");
+    if (!input.barcode.empty()) {
+      ensure_unique(conn, "item", "barcode", input.barcode, id, "条码");
+    }
     ItemDao::update(conn, input);
     audit_write(conn, "update", "item", id, input.code);
   });
