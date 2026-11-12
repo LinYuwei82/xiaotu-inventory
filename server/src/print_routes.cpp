@@ -471,9 +471,14 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
       return method.empty() ? "未记录" : method;
     };
     for (const auto& row : services.settlements.ledger(account_id, from, to)) {
+      const bool reversed = !row.opening && row.note.rfind("撤销", 0) == 0;
+      const std::string kind =
+          row.opening ? "期初"
+                      : (row.direction == 1 ? (reversed ? "撤销收款" : "收款")
+                                            : (reversed ? "撤销付款" : "付款"));
       render.rows.push_back(
           {{"date", row.settled_on},
-           {"kind", row.opening ? "期初" : (row.direction == 1 ? "收款" : "付款")},
+           {"kind", kind},
            {"doc_no", row.settle_no},
            {"partner_name", row.partner_name},
            {"method", fund_method(row.method)},
@@ -493,7 +498,7 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
     const std::string as_of = req.has_param("as_of") ? req.get_param_value("as_of")
                                                      : today_text();
     render.subtitle = std::string("方向 ") + (direction == -1 ? "应付" : "应收") + "；截止日 " +
-                      as_of;
+                      as_of + "；按截止日时点还原（业务日期晚于截止日不计入，核销按核销日期还原）";
     render.placeholders["as_of"] = as_of;
     for (const auto& row : services.reports.ar_ap_aging(direction, as_of)) {
       render.rows.push_back({{"partner_name", row.partner_name.empty() ? row.partner_key

@@ -654,8 +654,12 @@ int main() {
             "销售单据应取客户档案名称");
 
       documents.reverse(customer_sale_doc.id);
-      check(finance.entries(1, customer_key).at(0).status == "VOIDED",
-            "反审核后应收记录应作废");
+      // 列表默认排除作废台账，与账龄口径一致；显式按状态查询仍可看到历史。
+      const auto after_void = finance.entries(1, customer_key);
+      check(after_void.empty(), "反审核后应收记录不应再出现在未结列表中");
+      const auto voided_rows = finance.entries(1, customer_key, "VOIDED");
+      check(voided_rows.size() == 1 && voided_rows.at(0).doc_id == customer_sale_doc.id,
+            "显式按 VOIDED 状态查询应能看到已作废记录");
 
       xiaotu::DocInput customer_return;
       customer_return.doc_type = "SAL_RET";
@@ -1105,6 +1109,78 @@ int main() {
       settlements.reverse(prepayment.id);
       check(settlements.ledger(1, kMonthStart, kToday).back().balance_cents == 3500,
             "撤销预收后资金余额应回退");
+
+      // 资金余额符号：期初 + 收款 − 付款，支出列不重复负号。
+      const auto payment = make_settlement(-1, customer_key, 500, {}, "付款");
+      const auto after_payment = settlements.account_balances(kToday);
+      check(after_payment.size() == 1 && after_payment.front().outflow_cents == 500 &&
+                after_payment.front().balance_cents == 3000,
+            "期初 3500 付款 500 后余额应为 3000（不是 4000）");
+      const auto payment_row = settlements.ledger(1, kMonthStart, kToday).back();
+      check(payment_row.expense_cents == 500 && payment_row.balance_cents == 3000,
+            "资金流水支出列应显示正数 500，余额 3000");
+      settlements.reverse(payment.id);
+      const auto after_payment_reverse = settlements.account_balances(kToday);
+      check(after_payment_reverse.front().balance_cents == 3500,
+            "撤销付款后余额应回到 3500");
+      const auto reversed_payment_row = settlements.ledger(1, kMonthStart, kToday).back();
+      check(reversed_payment_row.expense_cents == 500 &&
+                reversed_payment_row.balance_cents == 3500,
+            "撤销付款的支出列不应出现负号，余额回到 3500");
+
+      // 账龄按截止日时点还原：业务日期晚于截止日不计入，核销按核销日期还原。
+      // 每月 1 日跑测试时月初与今天相同，跳过该场景避免日期重合。
+      if (kMonthStart != kToday) {
+        const auto point_customer = customers.create(
+            xiaotu::gen::CustomerRow{.code = "KH900", .name = "时点客户"});
+        const std::string point_key = "C:" + std::to_string(point_customer.id);
+        xiaotu::DocInput month_sale;
+        month_sale.doc_type = "SAL_OUT";
+        month_sale.warehouse_id = warehouse_list.at(0).id;
+        month_sale.doc_date = kMonthStart;
+        month_sale.partner_id = point_customer.id;
+        month_sale.lines.push_back(
+            xiaotu::DocLineInput{.item_id = sales_item.id, .qty = q(1), .price_cents = 1000});
+        const auto month_doc = documents.save_and_approve(month_sale);
+        xiaotu::DocInput today_sale = month_sale;
+        today_sale.doc_date = kToday;
+        documents.save_and_approve(today_sale);
+
+        // 截止到月初：只看到月初那张，且未被今天才发生的核销冲减。
+        std::int64_t before_settle = -1;
+        for (const auto& row : reports.ar_ap_aging(1, kMonthStart)) {
+          if (row.partner_key == point_key) before_settle = row.total_cents;
+        }
+        check(before_settle == 1000, "截止到月初只应包含月初单据 1000 分，今天单据不计入");
+
+        std::int64_t month_entry_id = 0;
+        for (const auto& row : finance.entries(1, point_key)) {
+          if (row.doc_id == month_doc.id) month_entry_id = row.id;
+        }
+        xiaotu::SettlementCreateInput point_settle;
+        point_settle.direction = 1;
+        point_settle.partner_key = point_key;
+        point_settle.amount_cents = 1000;
+        point_settle.account_id = 1;
+        point_settle.method = "CASH";
+        point_settle.settled_on = kToday;
+        point_settle.allocations.push_back(
+            xiaotu::AllocationInput{.entry_id = month_entry_id, .amount_cents = 1000});
+        settlements.create(point_settle);
+
+        std::int64_t after_at_month = -1;
+        std::int64_t after_at_today = -1;
+        for (const auto& row : reports.ar_ap_aging(1, kMonthStart)) {
+          if (row.partner_key == point_key) after_at_month = row.total_cents;
+        }
+        for (const auto& row : reports.ar_ap_aging(1, kToday)) {
+          if (row.partner_key == point_key) after_at_today = row.total_cents;
+        }
+        check(after_at_month == 1000, "截止到月初时，今天的核销不应提前冲减月初余额");
+        check(after_at_today == 1000,
+              "截止到今天时，月初单据已核销、只剩今天单据 1000 分");
+        customers.remove(point_customer.id);
+      }
 
       items.remove(draft_item.id);
       items.remove(sales_returned.id);

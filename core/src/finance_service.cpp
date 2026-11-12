@@ -16,7 +16,8 @@ std::vector<ArApRow> FinanceService::entries(int direction, std::string_view par
               " FROM ar_ap_entry"
               " WHERE (? = 0 OR direction = ?)"
               "   AND (? = '' OR partner_key = ?)"
-              "   AND (? = '' OR status = ?)"
+              // 未显式指定状态时排除作废台账，与账龄报表口径一致。
+              "   AND (CASE WHEN ? = '' THEN status <> 'VOIDED' ELSE status = ? END)"
               " ORDER BY biz_date DESC, id DESC;");
     stmt.bind(1, static_cast<std::int64_t>(direction))
         .bind(2, static_cast<std::int64_t>(direction))

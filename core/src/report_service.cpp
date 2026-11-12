@@ -561,11 +561,17 @@ std::vector<AgingRow> ReportService::ar_ap_aging(int direction, std::string_view
               " SUM(CASE WHEN due_date <> '' AND due_date < ?1"
               "          AND CAST(julianday(?1) - julianday(due_date) AS INTEGER) > 90"
               "          THEN outstanding_cents ELSE 0 END) AS d90_plus_cents"
-              " FROM (SELECT partner_key, partner_name, direction, due_date,"
-              "         amount_cents - settled_cents AS outstanding_cents"
-              "       FROM ar_ap_entry"
-              "       WHERE status <> 'VOIDED' AND amount_cents - settled_cents <> 0"
-              "         AND (?2 = 0 OR direction = ?2)) t"
+              " FROM (SELECT e.partner_key, e.partner_name, e.direction, e.due_date,"
+              "         e.amount_cents - COALESCE(("
+              "           SELECT SUM(a.amount_cents) FROM settlement_allocation a"
+              "           JOIN settlement s ON s.id = a.settlement_id"
+              "           WHERE a.entry_id = e.id AND s.settled_on <= ?1), 0)"
+              "           AS outstanding_cents"
+              "       FROM ar_ap_entry e"
+              // 时点快照：业务日期晚于截止日的不计入。
+              "       WHERE e.status <> 'VOIDED' AND e.biz_date <= ?1"
+              "         AND (?2 = 0 OR e.direction = ?2)) t"
+              " WHERE outstanding_cents <> 0"
               " GROUP BY partner_key, partner_name, direction"
               " ORDER BY total_cents DESC;");
     stmt.bind(1, std::string(as_of)).bind(2, static_cast<std::int64_t>(direction));

@@ -438,10 +438,12 @@ std::vector<FundLedgerRow> SettlementService::ledger(std::int64_t account_id,
       row.note = stmt.text(5);
       row.direction = static_cast<int>(stmt.i64(6));
       const std::int64_t amount = stmt.i64(7);
+      // 列名已表达方向，金额只展示绝对值；撤销行（金额为负）由备注与类型说明。
+      // 余额仍按带符号金额累计，保证撤销后余额回退。
       if (row.direction == 1) {
-        row.income_cents = amount;
+        row.income_cents = amount < 0 ? -amount : amount;
       } else {
-        row.expense_cents = -amount;
+        row.expense_cents = amount < 0 ? -amount : amount;
       }
       balance += row.direction == 1 ? amount : -amount;
       row.balance_cents = balance;
@@ -459,7 +461,7 @@ std::vector<FundBalanceRow> SettlementService::account_balances(
     Stmt stmt(conn,
               "SELECT a.id, a.code, a.name, a.kind, a.opening_cents,"
               " COALESCE(SUM(CASE WHEN s.direction = 1 THEN s.amount_cents ELSE 0 END), 0),"
-              " COALESCE(SUM(CASE WHEN s.direction = -1 THEN -s.amount_cents ELSE 0 END), 0)"
+              " COALESCE(SUM(CASE WHEN s.direction = -1 THEN s.amount_cents ELSE 0 END), 0)"
               " FROM fund_account a"
               " LEFT JOIN settlement s ON s.account_id = a.id AND s.settled_on <= ?"
               " WHERE a.is_deleted = 0"
@@ -482,7 +484,7 @@ std::vector<FundBalanceRow> SettlementService::account_balances(
     Stmt legacy(conn,
                 "SELECT COUNT(*),"
                 " COALESCE(SUM(CASE WHEN direction = 1 THEN amount_cents ELSE 0 END), 0),"
-                " COALESCE(SUM(CASE WHEN direction = -1 THEN -amount_cents ELSE 0 END), 0)"
+                " COALESCE(SUM(CASE WHEN direction = -1 THEN amount_cents ELSE 0 END), 0)"
                 " FROM settlement WHERE account_id = 0 AND settled_on <= ?;");
     legacy.bind(1, cut);
     if (legacy.step() && legacy.i64(0) > 0) {

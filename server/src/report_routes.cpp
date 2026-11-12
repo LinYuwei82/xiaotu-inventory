@@ -1096,7 +1096,9 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        csv_preamble(csv, "应收应付余额与账龄",
                                     std::string("方向 ") + (direction == -1 ? "应付" : "应收") +
                                         "；截止日 " + as_of +
-                                        "；仅统计 v7 迁移后审核的单据");
+                                        "；仅统计 v7 迁移后审核的单据"
+                                        "；按截止日时点还原：业务日期晚于截止日不计入，"
+                                        "核销按核销日期还原");
                        csv_row(csv, {"往来单位", "方向", "合计（元）", "未到期（元）", "1-30 天（元）",
                                      "31-60 天（元）", "61-90 天（元）", "90 天以上（元）"});
                        for (const auto& row : rows) {
@@ -1115,7 +1117,9 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        xlsx_preamble(sheet, "应收应付余额与账龄",
                                      std::string("方向 ") + (direction == -1 ? "应付" : "应收") +
                                          "；截止日 " + as_of +
-                                         "；仅统计 v7 迁移后审核的单据");
+                                         "；仅统计 v7 迁移后审核的单据"
+                                         "；按截止日时点还原：业务日期晚于截止日不计入，"
+                                         "核销按核销日期还原");
                        sheet.add_header_row({"往来单位", "方向", "合计（元）", "未到期（元）",
                                              "1-30 天（元）", "31-60 天（元）", "61-90 天（元）",
                                              "90 天以上（元）"});
@@ -1157,7 +1161,10 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      const auto rows = services.settlements.ledger(account_id, from, to);
                      const auto direction_text = [](const FundLedgerRow& row) -> std::string {
                        if (row.opening) return "期初";
-                       return row.direction == 1 ? "收款" : "付款";
+                       // 撤销行金额为负，列内只显示绝对值，靠类型区分「撤销收款/付款」。
+                       const bool reversed = row.note.rfind("撤销", 0) == 0;
+                       if (row.direction == 1) return reversed ? "撤销收款" : "收款";
+                       return reversed ? "撤销付款" : "付款";
                      };
 
                      if (format == "csv") {
