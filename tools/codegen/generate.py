@@ -104,11 +104,15 @@ def render(env: Environment, template: str, context: dict) -> str:
     return text
 
 
+DRIFT: list[Path] = []
+
+
 def write(path: Path, content: str, check: bool) -> None:
     existing = path.read_text(encoding="utf-8") if path.exists() else None
     if check:
         if existing != content:
             print(f"[drift] {path.relative_to(ROOT)}")
+            DRIFT.append(path)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     if existing != content:
@@ -268,6 +272,10 @@ def main() -> int:
             generate_editions(schema_path, schema, env, args.check)
         else:
             generate_tables(schema, env, args.check)
+
+    if args.check and DRIFT:
+        print(f"漂移：{len(DRIFT)} 个生成物与 schema 不一致", file=sys.stderr)
+        return 1
     return 0
 
 
