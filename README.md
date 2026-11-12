@@ -588,9 +588,9 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 #### 平台与边界
 
 - 执行平台为 **Gitee Go**，流水线文件是仓库根目录的 `.workflow/MasterPipeline.yml`；检查逻辑只来自 `tools/ci/check.sh`，Gitee Go 侧不复制步骤。
-- 云端只有 **Linux 运行器**（`build@gcc` 10.3，Ubuntu 20.04 基础镜像）。**macOS 全量构建（含 WKWebView 壳）和 Windows MSVC 构建不在云端覆盖**，仍需本地执行；需要自动门禁时接 Gitee Go 自建主机组，把对应机器挂进来。
+- 云端只有 **Linux 运行器**（`build@gcc` 10.3，Ubuntu 20.04 基础镜像）。**Windows MSVC 构建不在 Gitee 云端覆盖**，改由 GitHub 镜像仓库的 `windows-build` 工作流承担；**macOS 全量构建（含 WKWebView 壳）**仍需本地执行。
 - 首次开通必须在网页「新建流水线 → 可视化编排 → 保存」：平台会向仓库提交 `.workflow/` 下的标准文件。仓库里的 `MasterPipeline.yml` 已按平台格式写好，若被平台覆盖，用仓库版本替换即可；不要把「提交了 yml」当成已开通。
-- 原 GitHub Actions 工作流已删除，避免两套流水线重复维护。
+- Gitee 侧不使用 GitHub Actions，避免两套 Linux 流水线重复维护。**GitHub 镜像仓库**另有一条独立的 Windows 构建，见下节。
 
 #### 触发规则
 
@@ -601,6 +601,15 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 | 其他分支推送、Tag、PR 合并产生的推送 | 否（PR 合并后落在 `main` 上，按上一行触发） |
 
 `strategy.blocking: true` 开启阻塞构建：上一次没跑完时，下一次排队等待，不并行消耗核分。
+
+#### GitHub 镜像的 Windows 构建
+
+- 文件：`.github/workflows/windows-build.yml`；只在 `push` 到 `main` 时触发，在 `windows-latest` 上依次执行
+  `cmake --preset windows-release` → `cmake --build --preset windows-release` → `ctest --test-dir build/windows`。
+- 只做「编得过 + 用例过」，**不打包、不签名**。依赖 runner 自带的 VS2022 MSVC、CMake 与 Ninja；
+  `windows-release` preset 不启用 ccache，`XIAOTU_BUILD_SHELL=OFF` 所以不编 WebView 壳。
+- 镜像只推 `main` 和 tag，因此这条流水线是**合并后才发现**，不是 PR 事前拦截。需要事前拦截时，
+  再把自建 Windows runner 挂到 Gitee Go 的主机组。
 
 #### 耗时与免费额度
 

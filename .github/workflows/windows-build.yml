@@ -1,0 +1,33 @@
+name: Windows build
+
+# 只做「编得过 + 用例过」，不打包、不签名。
+# 触发条件与镜像仓库的推送策略一致：只推 main 和 tag，因此这里是「合并后才发现」。
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # GitHub 托管 runner 默认没有把 cl.exe 放进 PATH，而仓库的 windows-release
+      # preset 用 Ninja。这个 action 只调用 runner 自带的 vcvars64.bat 设置 MSVC 环境，
+      # 不安装额外工具链；CMake、Ninja 均由 windows-latest 预装。
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        run: cmake --preset windows-release
+
+      - name: Build
+        run: cmake --build --preset windows-release
+
+      - name: Test
+        run: ctest --test-dir build/windows --output-on-failure
