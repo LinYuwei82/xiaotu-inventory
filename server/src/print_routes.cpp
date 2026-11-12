@@ -186,8 +186,9 @@ std::string apply_placeholders(std::string text,
 
 const char* data_permission(const PrintTargetDef& target) {
   if (target.type == "DOC") return "document.read";
-  if (target.key == "sales-profit" || target.key == "ar-ap-aging" ||
-      target.key == "statement" || target.key == "fund-ledger") {
+  if (target.key == "sales-profit" || target.key == "purchase-detail" ||
+      target.key == "purchase-summary-supplier" || target.key == "purchase-summary-item" ||
+      target.key == "ar-ap-aging" || target.key == "statement" || target.key == "fund-ledger") {
     return "finance.read";
   }
   return "stock.read";
@@ -200,6 +201,7 @@ ReportFilter report_filter(const httplib::Request& req) {
   filter.item_id = param_i64(req, "item_id", 0);
   filter.warehouse_id = param_i64(req, "warehouse_id", 0);
   filter.customer_id = param_i64(req, "customer_id", 0);
+  filter.supplier_id = param_i64(req, "supplier_id", 0);
   filter.limit = static_cast<int>(param_i64(req, "limit", 100000));
   return filter;
 }
@@ -302,6 +304,76 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"profit_cents", row.profit_cents},
                              {"margin", margin_text(row.revenue_cents, row.profit_cents)}});
     }
+    return;
+  }
+
+  if (target.key == "purchase-detail") {
+    render.subtitle = period_label(filter.from, filter.to) + "；" +
+                      dimension_label(filter.supplier_id, "供应商") + "；" +
+                      dimension_label(filter.item_id, "商品") + "；" +
+                      dimension_label(filter.warehouse_id, "仓库") +
+                      "；退货数量与金额按负数冲减";
+    std::int64_t total_qty = 0;
+    std::int64_t total_amount = 0;
+    for (const auto& row : services.reports.purchase_detail(filter)) {
+      total_qty += row.qty;
+      total_amount += row.amount_cents;
+      render.rows.push_back({{"date", row.date},
+                             {"doc_no", row.doc_no},
+                             {"kind", row.kind},
+                             {"supplier", row.supplier},
+                             {"item_code", row.item_code},
+                             {"item_name", row.item_name},
+                             {"spec", row.spec},
+                             {"unit", row.unit},
+                             {"warehouse_name", row.warehouse_name},
+                             {"qty", qty_text(row.qty)},
+                             {"price_cents", row.price_cents},
+                             {"amount_cents", row.amount_cents}});
+    }
+    render.totals = {{"total_qty", qty_text(total_qty)},
+                     {"total_amount_text", money_text(total_amount)}};
+    return;
+  }
+
+  if (target.key == "purchase-summary-supplier") {
+    render.subtitle = period_label(filter.from, filter.to) + "；" +
+                      dimension_label(filter.item_id, "商品") + "；" +
+                      dimension_label(filter.warehouse_id, "仓库") + "；按供应商汇总";
+    std::int64_t total_qty = 0;
+    std::int64_t total_amount = 0;
+    for (const auto& row : services.reports.purchase_summary_by_supplier(filter)) {
+      total_qty += row.qty;
+      total_amount += row.amount_cents;
+      render.rows.push_back({{"supplier", row.supplier},
+                             {"qty", qty_text(row.qty)},
+                             {"amount_cents", row.amount_cents},
+                             {"avg_price_cents", row.avg_price_cents}});
+    }
+    render.totals = {{"total_qty", qty_text(total_qty)},
+                     {"total_amount_text", money_text(total_amount)}};
+    return;
+  }
+
+  if (target.key == "purchase-summary-item") {
+    render.subtitle = period_label(filter.from, filter.to) + "；" +
+                      dimension_label(filter.supplier_id, "供应商") + "；" +
+                      dimension_label(filter.warehouse_id, "仓库") + "；按商品汇总";
+    std::int64_t total_qty = 0;
+    std::int64_t total_amount = 0;
+    for (const auto& row : services.reports.purchase_summary_by_item(filter)) {
+      total_qty += row.qty;
+      total_amount += row.amount_cents;
+      render.rows.push_back({{"item_code", row.item_code},
+                             {"item_name", row.item_name},
+                             {"spec", row.spec},
+                             {"unit", row.unit},
+                             {"qty", qty_text(row.qty)},
+                             {"amount_cents", row.amount_cents},
+                             {"avg_price_cents", row.avg_price_cents}});
+    }
+    render.totals = {{"total_qty", qty_text(total_qty)},
+                     {"total_amount_text", money_text(total_amount)}};
     return;
   }
 

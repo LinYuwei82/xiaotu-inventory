@@ -2290,6 +2290,41 @@
       </div>
       <div class="card">
         <div class="card-head">
+          <h3>采购报表</h3>
+          <select data-role="purchase-by">
+            <option value="supplier">汇总维度：按供应商</option>
+            <option value="item">汇总维度：按商品</option>
+          </select>
+        </div>
+        <p class="page-sub">期间与页首一致；包含采购入库与采购退货，退货数量与金额按负数冲减，仅统计已审核单据</p>
+        <div class="toolbar">
+          <select data-role="purchase-supplier"></select>
+          <select data-role="purchase-item"></select>
+          <select data-role="purchase-warehouse"></select>
+        </div>
+        <div class="card-head">
+          <h3>采购明细</h3>
+          <span class="toolbar">
+            <button class="btn small" data-role="export-purchase-detail">导出 CSV</button>
+            <button class="btn small" data-role="excel-purchase-detail">导出 Excel</button>
+            <button class="btn small" data-role="print-purchase-detail">打印</button>
+            <button class="btn small" data-role="pdf-purchase-detail">导出 PDF</button>
+          </span>
+        </div>
+        <table class="table" data-role="purchase-detail"></table>
+        <div class="card-head">
+          <h3>采购汇总</h3>
+          <span class="toolbar">
+            <button class="btn small" data-role="export-purchase-summary">导出 CSV</button>
+            <button class="btn small" data-role="excel-purchase-summary">导出 Excel</button>
+            <button class="btn small" data-role="print-purchase-summary">打印</button>
+            <button class="btn small" data-role="pdf-purchase-summary">导出 PDF</button>
+          </span>
+        </div>
+        <table class="table" data-role="purchase-summary"></table>
+      </div>
+      <div class="card">
+        <div class="card-head">
           <h3>应收应付余额与账龄</h3>
           <button class="btn small" data-role="export-aging">导出 CSV</button>
           <button class="btn small" data-role="excel-aging">导出 Excel</button>
@@ -2312,6 +2347,12 @@
     const fundAccountSelect = mount.querySelector('[data-role="fund-account"]');
     const fundLedgerTable = mount.querySelector('[data-role="fund-ledger"]');
     const fundBalancesTable = mount.querySelector('[data-role="fund-balances"]');
+    const purchaseBySelect = mount.querySelector('[data-role="purchase-by"]');
+    const purchaseSupplierSelect = mount.querySelector('[data-role="purchase-supplier"]');
+    const purchaseItemSelect = mount.querySelector('[data-role="purchase-item"]');
+    const purchaseWarehouseSelect = mount.querySelector('[data-role="purchase-warehouse"]');
+    const purchaseDetailTable = mount.querySelector('[data-role="purchase-detail"]');
+    const purchaseSummaryTable = mount.querySelector('[data-role="purchase-summary"]');
 
     function emptyRow(text, colspan) {
       return `<tbody><tr><td class="empty" colspan="${colspan}">${text}</td></tr></tbody>`;
@@ -2323,9 +2364,38 @@
       );
     }
 
+    // 采购明细与采购汇总共用期间与供应商 / 商品 / 仓库筛选。
+    function purchaseQuery() {
+      return (
+        periodQuery() +
+        "&supplier_id=" + encodeURIComponent(purchaseSupplierSelect.value || "0") +
+        "&item_id=" + encodeURIComponent(purchaseItemSelect.value || "0") +
+        "&warehouse_id=" + encodeURIComponent(purchaseWarehouseSelect.value || "0")
+      );
+    }
+
+    // 保留上次选择，避免刷新后筛选条件被重置。
+    function fillSelect(select, rows, allLabel, label) {
+      const previous = select.value;
+      select.innerHTML =
+        `<option value="0">${allLabel}</option>` +
+        rows
+          .filter((row) => row.status)
+          .map((row) => `<option value="${row.id}">${escapeHtml(label(row))}</option>`)
+          .join("");
+      if (previous && [...select.options].some((option) => option.value === previous)) {
+        select.value = previous;
+      }
+    }
+
     async function reload() {
       const period = periodQuery();
-      const accounts = await api("GET", "/api/fund-accounts");
+      const [accounts, suppliers, items, warehouses] = await Promise.all([
+        api("GET", "/api/fund-accounts"),
+        api("GET", "/api/suppliers"),
+        api("GET", "/api/items"),
+        api("GET", "/api/warehouses"),
+      ]);
       const previous = fundAccountSelect.value;
       fundAccountSelect.innerHTML =
         accounts
@@ -2339,19 +2409,38 @@
       if (previous && accounts.some((row) => String(row.id) === previous)) {
         fundAccountSelect.value = previous;
       }
+      fillSelect(purchaseSupplierSelect, suppliers, "全部供应商", (row) => row.code + " " + row.name);
+      fillSelect(purchaseItemSelect, items, "全部商品", (row) => row.code + " " + row.name);
+      fillSelect(purchaseWarehouseSelect, warehouses, "全部仓库", (row) => row.code + " " + row.name);
       const fundQuery =
         period + "&account_id=" + encodeURIComponent(fundAccountSelect.value || "0");
-      const [balances, ledger, flows, summary, profit, aging, fundLedger, fundBalances] =
-        await Promise.all([
-          api("GET", "/api/reports/stock-balance"),
-          api("GET", "/api/reports/stock-ledger" + period + "&limit=500"),
-          api("GET", "/api/reports/goods-flow" + period),
-          api("GET", "/api/reports/inventory-summary" + period),
-          api("GET", "/api/reports/sales-profit" + period),
-          api("GET", "/api/reports/ar-ap-aging?direction=" + directionSelect.value),
-          api("GET", "/api/reports/fund-ledger" + fundQuery),
-          api("GET", "/api/reports/fund-balances?as_of=" + encodeURIComponent(toInput.value)),
-        ]);
+      const purchaseQ = purchaseQuery();
+      const [
+        balances,
+        ledger,
+        flows,
+        summary,
+        profit,
+        aging,
+        fundLedger,
+        fundBalances,
+        purchaseDetail,
+        purchaseSummary,
+      ] = await Promise.all([
+        api("GET", "/api/reports/stock-balance"),
+        api("GET", "/api/reports/stock-ledger" + period + "&limit=500"),
+        api("GET", "/api/reports/goods-flow" + period),
+        api("GET", "/api/reports/inventory-summary" + period),
+        api("GET", "/api/reports/sales-profit" + period),
+        api("GET", "/api/reports/ar-ap-aging?direction=" + directionSelect.value),
+        api("GET", "/api/reports/fund-ledger" + fundQuery),
+        api("GET", "/api/reports/fund-balances?as_of=" + encodeURIComponent(toInput.value)),
+        api("GET", "/api/reports/purchase-detail" + purchaseQ + "&limit=500"),
+        api(
+          "GET",
+          "/api/reports/purchase-summary" + purchaseQ + "&by=" + purchaseBySelect.value
+        ),
+      ]);
 
       fundLedgerTable.innerHTML = !fundLedger.length
         ? emptyRow("该账户暂无资金流水", 10)
@@ -2505,6 +2594,59 @@
                </tr>`
              )
              .join("")}</tbody>`;
+
+      purchaseDetailTable.innerHTML = !purchaseDetail.length
+        ? emptyRow("该期间无采购", 9)
+        : `<thead><tr><th>日期</th><th>单号</th><th>类型</th><th>供应商</th><th>商品</th>
+             <th>规格</th><th>数量</th><th>单价（元）</th><th>金额（元）</th></tr></thead>
+           <tbody>${purchaseDetail
+             .map(
+               (row) => `<tr>
+                 <td>${escapeHtml(row.date)}</td>
+                 <td>${escapeHtml(row.doc_no)}</td>
+                 <td>${escapeHtml(row.kind)}</td>
+                 <td>${escapeHtml(row.supplier)}</td>
+                 <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
+                 <td>${escapeHtml(row.spec)}</td>
+                 <td class="${qtyIsNegative(row.qty) ? "negative" : ""}">${qtyText(row.qty)}</td>
+                 <td>${money(row.price_cents)}</td>
+                 <td class="${row.amount_cents < 0 ? "negative" : ""}">${money(
+                   row.amount_cents
+                 )}</td>
+               </tr>`
+             )
+             .join("")}</tbody>`;
+
+      const summaryByItem = purchaseBySelect.value === "item";
+      purchaseSummaryTable.innerHTML = !purchaseSummary.length
+        ? emptyRow("该期间无采购", summaryByItem ? 7 : 4)
+        : summaryByItem
+          ? `<thead><tr><th>商品编码</th><th>商品名称</th><th>规格</th><th>单位</th>
+               <th>数量</th><th>金额（元）</th><th>均价（元）</th></tr></thead>
+             <tbody>${purchaseSummary
+               .map(
+                 (row) => `<tr>
+                   <td>${escapeHtml(row.item_code)}</td>
+                   <td>${escapeHtml(row.item_name)}</td>
+                   <td>${escapeHtml(row.spec)}</td>
+                   <td>${escapeHtml(row.unit)}</td>
+                   <td class="${qtyIsNegative(row.qty) ? "negative" : ""}">${qtyText(row.qty)}</td>
+                   <td>${money(row.amount_cents)}</td>
+                   <td>${money(row.avg_price_cents)}</td>
+                 </tr>`
+               )
+               .join("")}</tbody>`
+          : `<thead><tr><th>供应商</th><th>数量</th><th>金额（元）</th><th>均价（元）</th></tr></thead>
+             <tbody>${purchaseSummary
+               .map(
+                 (row) => `<tr>
+                   <td>${escapeHtml(row.supplier)}</td>
+                   <td class="${qtyIsNegative(row.qty) ? "negative" : ""}">${qtyText(row.qty)}</td>
+                   <td>${money(row.amount_cents)}</td>
+                   <td>${money(row.avg_price_cents)}</td>
+                 </tr>`
+               )
+               .join("")}</tbody>`;
     }
 
     function wireExport(role, pathFn) {
@@ -2526,6 +2668,19 @@
       () => "/api/reports/inventory-summary" + periodQuery() + "&format=csv"
     );
     wireExport("export-profit", () => "/api/reports/sales-profit" + periodQuery() + "&format=csv");
+    wireExport(
+      "export-purchase-detail",
+      () => "/api/reports/purchase-detail" + purchaseQuery() + "&format=csv"
+    );
+    wireExport(
+      "export-purchase-summary",
+      () =>
+        "/api/reports/purchase-summary" +
+        purchaseQuery() +
+        "&by=" +
+        purchaseBySelect.value +
+        "&format=csv"
+    );
     wireExport(
       "export-aging",
       () => "/api/reports/ar-ap-aging?direction=" + directionSelect.value + "&format=csv"
@@ -2559,6 +2714,19 @@
       () => "/api/reports/inventory-summary" + periodQuery() + "&format=xlsx"
     );
     wireExcel("excel-profit", () => "/api/reports/sales-profit" + periodQuery() + "&format=xlsx");
+    wireExcel(
+      "excel-purchase-detail",
+      () => "/api/reports/purchase-detail" + purchaseQuery() + "&format=xlsx"
+    );
+    wireExcel(
+      "excel-purchase-summary",
+      () =>
+        "/api/reports/purchase-summary" +
+        purchaseQuery() +
+        "&by=" +
+        purchaseBySelect.value +
+        "&format=xlsx"
+    );
     wireExcel(
       "excel-aging",
       () => "/api/reports/ar-ap-aging?direction=" + directionSelect.value + "&format=xlsx"
@@ -2600,6 +2768,20 @@
       () => "/api/print/render?target_type=REPORT&target_key=sales-profit" + periodQuery()
     );
     wirePrint(
+      "print-purchase-detail",
+      () =>
+        "/api/print/render?target_type=REPORT&target_key=purchase-detail" +
+        purchaseQuery() +
+        "&limit=100000"
+    );
+    wirePrint(
+      "print-purchase-summary",
+      () =>
+        "/api/print/render?target_type=REPORT&target_key=purchase-summary-" +
+        purchaseBySelect.value +
+        purchaseQuery()
+    );
+    wirePrint(
       "print-aging",
       () =>
         "/api/print/render?target_type=REPORT&target_key=ar-ap-aging&direction=" +
@@ -2617,6 +2799,10 @@
     mount.querySelector('[data-role="refresh"]').addEventListener("click", reload);
     directionSelect.addEventListener("change", reload);
     fundAccountSelect.addEventListener("change", reload);
+    purchaseBySelect.addEventListener("change", reload);
+    purchaseSupplierSelect.addEventListener("change", reload);
+    purchaseItemSelect.addEventListener("change", reload);
+    purchaseWarehouseSelect.addEventListener("change", reload);
     await reload();
   }
 

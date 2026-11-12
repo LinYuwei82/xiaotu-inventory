@@ -810,6 +810,74 @@ int main() {
                 later_statement.closing_cents == -500,
             "期间之外的发生额应全部计入下一期期初");
 
+      // 采购报表：入库为正、退货为负；汇总按净额计算均价（整数四舍五入）。
+      const auto report_supplier = suppliers.create(
+          xiaotu::gen::SupplierRow{.code = "GYS900", .name = "报表供应商"});
+      const auto report_item =
+          items.create(xiaotu::gen::ItemRow{.code = "PR01", .name = "采购报表商品"});
+      const auto make_purchase = [&](const std::string& doc_type, std::int64_t qty,
+                                     std::int64_t price_cents) {
+        xiaotu::DocInput doc;
+        doc.doc_type = doc_type;
+        doc.warehouse_id = warehouse_list.at(0).id;
+        doc.doc_date = kToday;
+        doc.partner_id = report_supplier.id;
+        doc.lines.push_back(xiaotu::DocLineInput{.item_id = report_item.id, .qty = qty,
+                                                 .price_cents = price_cents});
+        return documents.save_and_approve(doc);
+      };
+      make_purchase("PUR_IN", q(10), 1000);
+      make_purchase("PUR_IN", q(5), 1200);
+      make_purchase("PUR_RET", q(4), 1000);
+
+      xiaotu::ReportFilter purchase_filter;
+      purchase_filter.from = kMonthStart;
+      purchase_filter.to = kToday;
+      purchase_filter.item_id = report_item.id;
+      const auto purchase_rows = reports.purchase_detail(purchase_filter);
+      check(purchase_rows.size() == 3, "采购明细应含两笔入库与一笔退货");
+      bool detail_sorted = true;
+      for (std::size_t i = 1; i < purchase_rows.size(); ++i) {
+        if (purchase_rows[i - 1].date > purchase_rows[i].date ||
+            (purchase_rows[i - 1].date == purchase_rows[i].date &&
+             purchase_rows[i - 1].doc_no > purchase_rows[i].doc_no)) {
+          detail_sorted = false;
+        }
+      }
+      check(detail_sorted, "采购明细应按日期、单号升序");
+      check(purchase_rows.front().kind == "采购入库" && purchase_rows.front().qty == q(10) &&
+                purchase_rows.front().amount_cents == 10000,
+            "采购明细入库行数量与金额应为正");
+      check(purchase_rows.back().kind == "采购退货" && purchase_rows.back().qty == -q(4) &&
+                purchase_rows.back().amount_cents == -4000 &&
+                purchase_rows.back().price_cents == 1000,
+            "采购明细退货行数量与金额应为负、单价保持正数");
+
+      purchase_filter.item_id = 0;
+      purchase_filter.supplier_id = report_supplier.id;
+      const auto by_supplier = reports.purchase_summary_by_supplier(purchase_filter);
+      check(by_supplier.size() == 1 && by_supplier.front().supplier == "报表供应商",
+            "按供应商汇总应返回一行并取档案名称");
+      check(by_supplier.front().qty == q(11) && by_supplier.front().amount_cents == 12000,
+            "按供应商汇总应为净数量 11、净金额 12000 分");
+      check(by_supplier.front().avg_price_cents == 1091,
+            "均价应由净金额与净数量整数换算并四舍五入");
+
+      purchase_filter.item_id = report_item.id;
+      const auto by_item = reports.purchase_summary_by_item(purchase_filter);
+      check(by_item.size() == 1 && by_item.front().item_code == "PR01" &&
+                by_item.front().qty == q(11) && by_item.front().amount_cents == 12000 &&
+                by_item.front().avg_price_cents == 1091,
+            "按商品汇总应与按供应商汇总的净额一致");
+
+      purchase_filter.supplier_id = 999999;
+      check(reports.purchase_summary_by_supplier(purchase_filter).empty() &&
+                reports.purchase_detail(purchase_filter).empty(),
+            "按不存在的供应商筛选应返回空");
+      purchase_filter.supplier_id = report_supplier.id;
+      purchase_filter.warehouse_id = 999999;
+      check(reports.purchase_detail(purchase_filter).empty(), "按不存在的仓库筛选应返回空");
+
       // 采购退货：先入库再退货，以及入库后部分退货。
       auto returned = items.create(xiaotu::gen::ItemRow{.code = "R001", .name = "退货商品"});
       make_doc("PUR_IN", returned.id, q(10), 1000);
@@ -931,6 +999,7 @@ int main() {
       items.remove(supplier_item.id);
       items.remove(bottled.id);
       items.remove(sales_item.id);
+      items.remove(report_item.id);
       items.remove(decimal_item.id);
       suppliers.remove(supplier.id);
       customers.remove(customer.id);
@@ -960,7 +1029,7 @@ int main() {
 
       // 打印模板：列白名单、默认唯一、软删除回退与乐观锁。
       xiaotu::PrintTemplateService templates(db);
-      check(xiaotu::print_targets().size() == 19, "打印目标应包含 11 种单据与 8 张报表");
+      check(xiaotu::print_targets().size() == 22, "打印目标应包含 11 种单据与 11 张报表");
 
       // 成本调整单：仓库与原因在明细行，只改结存金额；反审核不能把金额冲成负数。
       const auto adjust_item = items.create(

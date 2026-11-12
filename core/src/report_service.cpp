@@ -3,11 +3,13 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "xiaotu/db.h"
+#include "xiaotu/qty.h"
 
 namespace xiaotu {
 namespace {
@@ -53,6 +55,75 @@ struct StatementRaw {
   int rank = 0;  // 同一天先列单据，再列核销
   StatementLine line;
 };
+
+// 采购报表统一取数：采购入库与采购退货都取已审核单据的明细行。
+// 退货行数量、金额取负；单价保持正数（退货单价）。limit <= 0 表示不限行数。
+std::vector<PurchaseDetailRow> load_purchase_rows(sqlite3* conn, const ReportFilter& filter,
+                                                  std::int64_t limit) {
+  std::vector<PurchaseDetailRow> rows;
+  Stmt stmt(conn,
+            "SELECT h.doc_date, h.doc_no, h.doc_type,"
+            " COALESCE(NULLIF(s.name, ''), h.customer), h.partner_id,"
+            " l.item_id, i.code, i.name, i.spec, i.unit, w.name,"
+            " l.qty, l.price_cents, l.amount_cents"
+            " FROM doc_header h"
+            " JOIN doc_line l ON l.doc_id = h.id"
+            " JOIN item i ON i.id = l.item_id"
+            " JOIN warehouse w ON w.id = h.warehouse_id"
+            " LEFT JOIN supplier s ON s.id = h.partner_id"
+            " WHERE h.doc_type IN ('PUR_IN', 'PUR_RET') AND h.status = 'APPROVED'"
+            "   AND (? = '' OR h.doc_date >= ?)"
+            "   AND (? = '' OR h.doc_date <= ?)"
+            "   AND (? = 0 OR h.partner_id = ?)"
+            "   AND (? = 0 OR l.item_id = ?)"
+            "   AND (? = 0 OR h.warehouse_id = ?)"
+            " ORDER BY h.doc_date, h.doc_no, l.id"
+            " LIMIT ?;");
+  stmt.bind(1, filter.from)
+      .bind(2, filter.from)
+      .bind(3, filter.to)
+      .bind(4, filter.to)
+      .bind(5, filter.supplier_id)
+      .bind(6, filter.supplier_id)
+      .bind(7, filter.item_id)
+      .bind(8, filter.item_id)
+      .bind(9, filter.warehouse_id)
+      .bind(10, filter.warehouse_id)
+      .bind(11, limit <= 0 ? std::int64_t{-1} : limit);
+  while (stmt.step()) {
+    PurchaseDetailRow row;
+    row.date = stmt.text(0);
+    row.doc_no = stmt.text(1);
+    const bool is_return = stmt.text(2) == "PUR_RET";
+    row.kind = is_return ? "采购退货" : "采购入库";
+    row.supplier = stmt.text(3);
+    row.partner_id = stmt.i64(4);
+    row.item_id = stmt.i64(5);
+    row.item_code = stmt.text(6);
+    row.item_name = stmt.text(7);
+    row.spec = stmt.text(8);
+    row.unit = stmt.text(9);
+    row.warehouse_name = stmt.text(10);
+    const std::int64_t qty = stmt.i64(11);
+    row.qty = is_return ? -qty : qty;
+    row.price_cents = stmt.i64(12);
+    const std::int64_t amount = stmt.i64(13);
+    row.amount_cents = is_return ? -amount : amount;
+    rows.push_back(std::move(row));
+  }
+  return rows;
+}
+
+// 均价（分/单位）= 净金额 × 10000 ÷ 净数量，整数四舍五入，不进浮点。
+std::int64_t avg_price_cents(std::int64_t qty, std::int64_t amount_cents) {
+  if (qty == 0) return 0;
+  const std::int64_t numerator = amount_cents * kQtyScale;
+  const bool negative = (numerator < 0) != (qty < 0);
+  const std::int64_t abs_numerator = numerator < 0 ? -numerator : numerator;
+  const std::int64_t abs_qty = qty < 0 ? -qty : qty;
+  const std::int64_t quotient = (abs_numerator + abs_qty / 2) / abs_qty;
+  return negative ? -quotient : quotient;
+}
 
 }  // namespace
 
@@ -258,6 +329,63 @@ std::vector<SalesProfitRow> ReportService::sales_profit(const ReportFilter& filt
       rows.push_back(std::move(row));
     }
   });
+  return rows;
+}
+
+std::vector<PurchaseDetailRow> ReportService::purchase_detail(const ReportFilter& filter) const {
+  std::vector<PurchaseDetailRow> rows;
+  db_.read([&](sqlite3* conn) {
+    rows = load_purchase_rows(conn, filter, filter.limit);
+  });
+  return rows;
+}
+
+std::vector<PurchaseSupplierSummaryRow> ReportService::purchase_summary_by_supplier(
+    const ReportFilter& filter) const {
+  // 汇总需要全部明细，不受分页 limit 影响；键 = 供应商名称 + ID，天然按名称升序。
+  std::map<std::string, PurchaseSupplierSummaryRow> grouped;
+  db_.read([&](sqlite3* conn) {
+    for (const auto& row : load_purchase_rows(conn, filter, 0)) {
+      const std::string key = row.supplier + '\x1f' + std::to_string(row.partner_id);
+      auto& summary = grouped[key];
+      summary.partner_id = row.partner_id;
+      summary.supplier = row.supplier;
+      summary.qty += row.qty;
+      summary.amount_cents += row.amount_cents;
+    }
+  });
+  std::vector<PurchaseSupplierSummaryRow> rows;
+  rows.reserve(grouped.size());
+  for (auto& [key, summary] : grouped) {
+    summary.avg_price_cents = avg_price_cents(summary.qty, summary.amount_cents);
+    rows.push_back(std::move(summary));
+  }
+  return rows;
+}
+
+std::vector<PurchaseItemSummaryRow> ReportService::purchase_summary_by_item(
+    const ReportFilter& filter) const {
+  // 键 = 商品编码 + ID，按商品编码升序输出。
+  std::map<std::string, PurchaseItemSummaryRow> grouped;
+  db_.read([&](sqlite3* conn) {
+    for (const auto& row : load_purchase_rows(conn, filter, 0)) {
+      const std::string key = row.item_code + '\x1f' + std::to_string(row.item_id);
+      auto& summary = grouped[key];
+      summary.item_id = row.item_id;
+      summary.item_code = row.item_code;
+      summary.item_name = row.item_name;
+      summary.spec = row.spec;
+      summary.unit = row.unit;
+      summary.qty += row.qty;
+      summary.amount_cents += row.amount_cents;
+    }
+  });
+  std::vector<PurchaseItemSummaryRow> rows;
+  rows.reserve(grouped.size());
+  for (auto& [key, summary] : grouped) {
+    summary.avg_price_cents = avg_price_cents(summary.qty, summary.amount_cents);
+    rows.push_back(std::move(summary));
+  }
   return rows;
 }
 

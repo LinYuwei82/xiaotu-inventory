@@ -102,12 +102,50 @@ struct StatementResult {
   std::vector<StatementLine> lines;
 };
 
+// 采购明细：采购入库为正、采购退货为负，金额按行数量 × 单价取整到分。
+struct PurchaseDetailRow {
+  std::string date;
+  std::string doc_no;
+  std::string kind;  // 采购入库 / 采购退货
+  std::string supplier;
+  std::int64_t partner_id = 0;
+  std::int64_t item_id = 0;
+  std::string item_code;
+  std::string item_name;
+  std::string spec;
+  std::string unit;
+  std::string warehouse_name;
+  std::int64_t qty = 0;          // 退货为负
+  std::int64_t price_cents = 0;  // 退货仍为正的退货单价
+  std::int64_t amount_cents = 0; // 退货为负
+};
+
+struct PurchaseSupplierSummaryRow {
+  std::int64_t partner_id = 0;
+  std::string supplier;
+  std::int64_t qty = 0;
+  std::int64_t amount_cents = 0;
+  std::int64_t avg_price_cents = 0;
+};
+
+struct PurchaseItemSummaryRow {
+  std::int64_t item_id = 0;
+  std::string item_code;
+  std::string item_name;
+  std::string spec;
+  std::string unit;
+  std::int64_t qty = 0;
+  std::int64_t amount_cents = 0;
+  std::int64_t avg_price_cents = 0;
+};
+
 struct ReportFilter {
   std::string from;  // 含（YYYY-MM-DD），空表示不限
   std::string to;    // 含（YYYY-MM-DD），空表示不限
   std::int64_t item_id = 0;
   std::int64_t warehouse_id = 0;
   std::int64_t customer_id = 0;
+  std::int64_t supplier_id = 0;
   int limit = 500;
 };
 
@@ -120,6 +158,12 @@ class ReportService {
   std::vector<GoodsFlowRow> goods_flow(const ReportFilter& filter) const;
   std::vector<InventorySummaryRow> inventory_summary(const ReportFilter& filter) const;
   std::vector<SalesProfitRow> sales_profit(const ReportFilter& filter) const;
+  // 采购明细与汇总：默认含采购入库与采购退货，退货按负数冲减。
+  std::vector<PurchaseDetailRow> purchase_detail(const ReportFilter& filter) const;
+  std::vector<PurchaseSupplierSummaryRow> purchase_summary_by_supplier(
+      const ReportFilter& filter) const;
+  std::vector<PurchaseItemSummaryRow> purchase_summary_by_item(
+      const ReportFilter& filter) const;
   std::vector<AgingRow> ar_ap_aging(int direction, std::string_view as_of) const;
 
   // 往来对账单：期初 + 期间单据 - 期间核销 = 期末；只读，不落表。

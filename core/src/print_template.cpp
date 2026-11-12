@@ -129,6 +129,36 @@ std::vector<PrintTargetDef> make_targets() {
       column_def("balance_cents", "余额（元）", "MONEY", "RIGHT", 18),
   };
 
+  const std::vector<PrintColumnDef> purchase_detail_columns = {
+      column_def("date", "日期", "TEXT", "LEFT", 22),
+      column_def("doc_no", "单号", "TEXT", "LEFT", 28),
+      column_def("kind", "类型", "TEXT", "CENTER", 14),
+      column_def("supplier", "供应商", "TEXT", "LEFT", 30),
+      column_def("item_code", "商品编码", "TEXT", "LEFT", 24),
+      column_def("item_name", "商品名称", "TEXT", "LEFT", 34),
+      column_def("spec", "规格", "TEXT", "LEFT", 20),
+      column_def("unit", "单位", "TEXT", "CENTER", 10),
+      column_def("warehouse_name", "仓库", "TEXT", "LEFT", 22),
+      column_def("qty", "数量", "INTEGER", "RIGHT", 14),
+      column_def("price_cents", "单价（元）", "MONEY", "RIGHT", 16),
+      column_def("amount_cents", "金额（元）", "MONEY", "RIGHT", 18),
+  };
+  const std::vector<PrintColumnDef> purchase_supplier_columns = {
+      column_def("supplier", "供应商", "TEXT", "LEFT", 44),
+      column_def("qty", "数量", "INTEGER", "RIGHT", 16),
+      column_def("amount_cents", "金额（元）", "MONEY", "RIGHT", 22),
+      column_def("avg_price_cents", "均价（元）", "MONEY", "RIGHT", 22),
+  };
+  const std::vector<PrintColumnDef> purchase_item_columns = {
+      column_def("item_code", "商品编码", "TEXT", "LEFT", 26),
+      column_def("item_name", "商品名称", "TEXT", "LEFT", 44),
+      column_def("spec", "规格", "TEXT", "LEFT", 26),
+      column_def("unit", "单位", "TEXT", "CENTER", 12),
+      column_def("qty", "数量", "INTEGER", "RIGHT", 16),
+      column_def("amount_cents", "金额（元）", "MONEY", "RIGHT", 22),
+      column_def("avg_price_cents", "均价（元）", "MONEY", "RIGHT", 22),
+  };
+
   const std::vector<PrintColumnDef> cost_adjust_columns = {
       column_def("item_code", "商品编码", "TEXT", "LEFT", 24),
       column_def("item_name", "商品", "TEXT", "LEFT", 36),
@@ -156,6 +186,9 @@ std::vector<PrintTargetDef> make_targets() {
       {"REPORT", "goods-flow", "收发明细", flow_columns},
       {"REPORT", "inventory-summary", "进销存汇总", summary_columns},
       {"REPORT", "sales-profit", "销售毛利", profit_columns},
+      {"REPORT", "purchase-detail", "采购明细", purchase_detail_columns},
+      {"REPORT", "purchase-summary-supplier", "采购汇总（按供应商）", purchase_supplier_columns},
+      {"REPORT", "purchase-summary-item", "采购汇总（按商品）", purchase_item_columns},
       {"REPORT", "ar-ap-aging", "应收应付余额与账龄", aging_columns},
       {"REPORT", "statement", "对账单", statement_columns},
       {"REPORT", "fund-ledger", "资金流水", fund_ledger_columns},

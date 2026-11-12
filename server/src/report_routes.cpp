@@ -33,6 +33,9 @@ ReportFilter parse_filter(const httplib::Request& req) {
   if (req.has_param("customer_id")) {
     filter.customer_id = std::stoll(req.get_param_value("customer_id"));
   }
+  if (req.has_param("supplier_id")) {
+    filter.supplier_id = std::stoll(req.get_param_value("supplier_id"));
+  }
   if (req.has_param("limit")) filter.limit = std::stoi(req.get_param_value("limit"));
   return filter;
 }
@@ -230,6 +233,55 @@ nlohmann::json profit_to_json(const SalesProfitRow& row) {
       {"revenue_cents", row.revenue_cents},
       {"cost_cents", row.cost_cents},
       {"profit_cents", row.profit_cents},
+  };
+}
+
+// 采购报表口径说明：入库与退货同表，退货按负数冲减，只统计已审核单据。
+std::string purchase_scope(const ReportFilter& filter) {
+  return period_label(filter) + "；" + dimension_label(filter.supplier_id, "供应商") + "；" +
+         dimension_label(filter.item_id, "商品") + "；" +
+         dimension_label(filter.warehouse_id, "仓库") +
+         "；包含采购入库与采购退货，退货数量与金额按负数冲减，仅统计已审核单据";
+}
+
+nlohmann::json purchase_detail_to_json(const PurchaseDetailRow& row) {
+  return nlohmann::json{
+      {"date", row.date},
+      {"doc_no", row.doc_no},
+      {"kind", row.kind},
+      {"supplier", row.supplier},
+      {"item_id", row.item_id},
+      {"item_code", row.item_code},
+      {"item_name", row.item_name},
+      {"spec", row.spec},
+      {"unit", row.unit},
+      {"warehouse_name", row.warehouse_name},
+      {"qty", qty_text(row.qty)},
+      {"price_cents", row.price_cents},
+      {"amount_cents", row.amount_cents},
+  };
+}
+
+nlohmann::json purchase_supplier_to_json(const PurchaseSupplierSummaryRow& row) {
+  return nlohmann::json{
+      {"partner_id", row.partner_id},
+      {"supplier", row.supplier},
+      {"qty", qty_text(row.qty)},
+      {"amount_cents", row.amount_cents},
+      {"avg_price_cents", row.avg_price_cents},
+  };
+}
+
+nlohmann::json purchase_item_to_json(const PurchaseItemSummaryRow& row) {
+  return nlohmann::json{
+      {"item_id", row.item_id},
+      {"item_code", row.item_code},
+      {"item_name", row.item_name},
+      {"spec", row.spec},
+      {"unit", row.unit},
+      {"qty", qty_text(row.qty)},
+      {"amount_cents", row.amount_cents},
+      {"avg_price_cents", row.avg_price_cents},
   };
 }
 
@@ -549,6 +601,143 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      nlohmann::json list = nlohmann::json::array();
                      for (const auto& row : rows) {
                        list.push_back(profit_to_json(row));
+                     }
+                     json_ok(res, list);
+                   }));
+
+  server.Get("/api/reports/purchase-detail",
+             guard("finance.read",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     ReportFilter filter = parse_filter(req);
+                     if (csv_requested(req) || xlsx_requested(req)) filter.limit = 100000;
+                     const auto rows = services.reports.purchase_detail(filter);
+                     if (csv_requested(req)) {
+                       std::string csv;
+                       csv_preamble(csv, "采购明细", purchase_scope(filter));
+                       csv_row(csv, {"日期", "单号", "类型", "供应商", "商品编码", "商品名称",
+                                     "规格", "单位", "仓库", "数量", "单价（元）", "金额（元）"});
+                       for (const auto& row : rows) {
+                         csv_row(csv, {row.date, row.doc_no, row.kind, row.supplier,
+                                       row.item_code, row.item_name, row.spec, row.unit,
+                                       row.warehouse_name, qty_text(row.qty),
+                                       yuan(row.price_cents), yuan(row.amount_cents)});
+                       }
+                       send_csv(res, "purchase-detail-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
+                     if (xlsx_requested(req)) {
+                       XlsxSheet sheet("采购明细");
+                       xlsx_preamble(sheet, "采购明细", purchase_scope(filter));
+                       sheet.add_header_row({"日期", "单号", "类型", "供应商", "商品编码",
+                                             "商品名称", "规格", "单位", "仓库", "数量",
+                                             "单价（元）", "金额（元）"});
+                       for (const auto& row : rows) {
+                         sheet.add_row({XlsxCell::text(row.date),
+                                        XlsxCell::text(row.doc_no),
+                                        XlsxCell::text(row.kind),
+                                        XlsxCell::text(row.supplier),
+                                        XlsxCell::text(row.item_code),
+                                        XlsxCell::text(row.item_name),
+                                        XlsxCell::text(row.spec),
+                                        XlsxCell::text(row.unit),
+                                        XlsxCell::text(row.warehouse_name),
+                                        XlsxCell::text(qty_text(row.qty)),
+                                        XlsxCell::money(row.price_cents),
+                                        XlsxCell::money(row.amount_cents)});
+                       }
+                       send_xlsx(res, "purchase-detail-" + date_stamp() + ".xlsx",
+                                 sheet.build());
+                       return;
+                     }
+                     nlohmann::json list = nlohmann::json::array();
+                     for (const auto& row : rows) {
+                       list.push_back(purchase_detail_to_json(row));
+                     }
+                     json_ok(res, list);
+                   }));
+
+  // 采购汇总：by=supplier（默认）按供应商名称升序，by=item 按商品编码升序。
+  server.Get("/api/reports/purchase-summary",
+             guard("finance.read",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     const ReportFilter filter = parse_filter(req);
+                     const std::string by =
+                         req.has_param("by") ? req.get_param_value("by") : std::string("supplier");
+                     const bool by_item = by == "item";
+                     const std::string scope = purchase_scope(filter) + "；维度 " +
+                                               (by_item ? "按商品" : "按供应商") +
+                                               "；均价 = 净金额 ÷ 净数量";
+
+                     if (by_item) {
+                       const auto rows = services.reports.purchase_summary_by_item(filter);
+                       if (csv_requested(req)) {
+                         std::string csv;
+                         csv_preamble(csv, "采购汇总（按商品）", scope);
+                         csv_row(csv, {"商品编码", "商品名称", "规格", "单位", "数量",
+                                       "金额（元）", "均价（元）"});
+                         for (const auto& row : rows) {
+                           csv_row(csv, {row.item_code, row.item_name, row.spec, row.unit,
+                                         qty_text(row.qty), yuan(row.amount_cents),
+                                         yuan(row.avg_price_cents)});
+                         }
+                         send_csv(res, "purchase-summary-item-" + date_stamp() + ".csv", csv);
+                         return;
+                       }
+                       if (xlsx_requested(req)) {
+                         XlsxSheet sheet("采购汇总（按商品）");
+                         xlsx_preamble(sheet, "采购汇总（按商品）", scope);
+                         sheet.add_header_row({"商品编码", "商品名称", "规格", "单位", "数量",
+                                               "金额（元）", "均价（元）"});
+                         for (const auto& row : rows) {
+                           sheet.add_row({XlsxCell::text(row.item_code),
+                                          XlsxCell::text(row.item_name),
+                                          XlsxCell::text(row.spec),
+                                          XlsxCell::text(row.unit),
+                                          XlsxCell::text(qty_text(row.qty)),
+                                          XlsxCell::money(row.amount_cents),
+                                          XlsxCell::money(row.avg_price_cents)});
+                         }
+                         send_xlsx(res, "purchase-summary-item-" + date_stamp() + ".xlsx",
+                                   sheet.build());
+                         return;
+                       }
+                       nlohmann::json list = nlohmann::json::array();
+                       for (const auto& row : rows) {
+                         list.push_back(purchase_item_to_json(row));
+                       }
+                       json_ok(res, list);
+                       return;
+                     }
+
+                     const auto rows = services.reports.purchase_summary_by_supplier(filter);
+                     if (csv_requested(req)) {
+                       std::string csv;
+                       csv_preamble(csv, "采购汇总（按供应商）", scope);
+                       csv_row(csv, {"供应商", "数量", "金额（元）", "均价（元）"});
+                       for (const auto& row : rows) {
+                         csv_row(csv, {row.supplier, qty_text(row.qty),
+                                       yuan(row.amount_cents), yuan(row.avg_price_cents)});
+                       }
+                       send_csv(res, "purchase-summary-supplier-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
+                     if (xlsx_requested(req)) {
+                       XlsxSheet sheet("采购汇总（按供应商）");
+                       xlsx_preamble(sheet, "采购汇总（按供应商）", scope);
+                       sheet.add_header_row({"供应商", "数量", "金额（元）", "均价（元）"});
+                       for (const auto& row : rows) {
+                         sheet.add_row({XlsxCell::text(row.supplier),
+                                        XlsxCell::text(qty_text(row.qty)),
+                                        XlsxCell::money(row.amount_cents),
+                                        XlsxCell::money(row.avg_price_cents)});
+                       }
+                       send_xlsx(res, "purchase-summary-supplier-" + date_stamp() + ".xlsx",
+                                 sheet.build());
+                       return;
+                     }
+                     nlohmann::json list = nlohmann::json::array();
+                     for (const auto& row : rows) {
+                       list.push_back(purchase_supplier_to_json(row));
                      }
                      json_ok(res, list);
                    }));
