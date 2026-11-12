@@ -96,6 +96,10 @@ int run_webview(const std::string& url, const std::string& title) {
                         action:@selector(orderFrontStandardAboutPanel:)
                  keyEquivalent:@""];
     [app_menu addItem:[NSMenuItem separatorItem]];
+    [app_menu addItemWithTitle:[@"隐藏 " stringByAppendingString:app_name]
+                        action:@selector(hide:)
+                 keyEquivalent:@"h"];
+    [app_menu addItem:[NSMenuItem separatorItem]];
     [app_menu addItemWithTitle:[@"退出 " stringByAppendingString:app_name]
                         action:@selector(terminate:)
                  keyEquivalent:@"q"];
@@ -112,6 +116,31 @@ int run_webview(const std::string& url, const std::string& title) {
     [print_item setTarget:script_handler];
     [file_menu addItem:print_item];
     [file_item setSubmenu:file_menu];
+
+    // 编辑菜单：target 留空，交给响应者链，焦点在 WKWebView 输入框时也能生效。
+    NSMenuItem* edit_item = [[NSMenuItem alloc] init];
+    [menubar addItem:edit_item];
+    NSMenu* edit_menu = [[NSMenu alloc] initWithTitle:@"编辑"];
+    [edit_menu addItemWithTitle:@"撤销" action:@selector(undo:) keyEquivalent:@"z"];
+    [edit_menu addItemWithTitle:@"重做" action:@selector(redo:) keyEquivalent:@"Z"];
+    [edit_menu addItem:[NSMenuItem separatorItem]];
+    [edit_menu addItemWithTitle:@"剪切" action:@selector(cut:) keyEquivalent:@"x"];
+    [edit_menu addItemWithTitle:@"复制" action:@selector(copy:) keyEquivalent:@"c"];
+    [edit_menu addItemWithTitle:@"粘贴" action:@selector(paste:) keyEquivalent:@"v"];
+    [edit_menu addItemWithTitle:@"全选" action:@selector(selectAll:) keyEquivalent:@"a"];
+    [edit_item setSubmenu:edit_menu];
+
+    NSMenuItem* window_item = [[NSMenuItem alloc] init];
+    [menubar addItem:window_item];
+    NSMenu* window_menu = [[NSMenu alloc] initWithTitle:@"窗口"];
+    [window_menu addItemWithTitle:@"最小化"
+                           action:@selector(performMiniaturize:)
+                    keyEquivalent:@"m"];
+    [window_menu addItemWithTitle:@"关闭"
+                           action:@selector(performClose:)
+                    keyEquivalent:@"w"];
+    [window_item setSubmenu:window_menu];
+    [NSApp setWindowsMenu:window_menu];
 
     const NSRect frame = NSMakeRect(0, 0, 1280, 840);
     NSWindow* window = [[NSWindow alloc]
