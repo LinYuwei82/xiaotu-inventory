@@ -199,6 +199,25 @@ main {
   margin: 0 0 16px;
 }
 
+.confirm-input {
+  width: 100%;
+  height: 32px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 30px;
+  color: var(--text);
+  background: #fff;
+}
+
+.confirm-input:focus {
+  outline: 2px solid #bfdbfe;
+  border-color: var(--accent);
+}
+
 .confirm-actions {
   display: flex;
   justify-content: flex-end;

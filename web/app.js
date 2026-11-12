@@ -35,10 +35,12 @@
   // false；离开确认改用页内确认层，不依赖浏览器原生对话框。
   let confirmDialogOpen = false;
 
-  function askConfirm(message, options) {
-    const okText = (options && options.okText) || "确定";
-    const cancelText = (options && options.cancelText) || "取消";
-    if (confirmDialogOpen) return Promise.resolve(false);
+  // options: message / okText / cancelText（传 null 表示只有确认按钮）/ withInput / defaultValue
+  function askDialog(options) {
+    const okText = options.okText || "确定";
+    const cancelText = options.cancelText === undefined ? "取消" : options.cancelText;
+    const withInput = Boolean(options.withInput);
+    if (confirmDialogOpen) return Promise.resolve({ ok: false, value: null });
     confirmDialogOpen = true;
     return new Promise((resolve) => {
       const mask = document.createElement("div");
@@ -49,7 +51,15 @@
       box.setAttribute("aria-modal", "true");
       const text = document.createElement("p");
       text.className = "confirm-text";
-      text.textContent = message;
+      text.textContent = options.message;
+      let field = null;
+      if (withInput) {
+        field = document.createElement("input");
+        field.type = "text";
+        field.className = "confirm-input";
+        field.value =
+          options.defaultValue === undefined ? "" : String(options.defaultValue);
+      }
       const actions = document.createElement("div");
       actions.className = "confirm-actions";
       const cancel = document.createElement("button");
@@ -60,17 +70,19 @@
       ok.type = "button";
       ok.className = "btn primary";
       ok.textContent = okText;
-      actions.append(cancel, ok);
-      box.append(text, actions);
+      if (cancelText !== null) actions.append(cancel);
+      actions.append(ok);
+      if (field) box.append(text, field, actions);
+      else box.append(text, actions);
       mask.append(box);
 
       const previous = document.activeElement;
-      function close(result) {
+      function close(confirmed) {
         document.removeEventListener("keydown", onKey, true);
         mask.remove();
         confirmDialogOpen = false;
         if (previous && previous.focus) previous.focus();
-        resolve(result);
+        resolve({ ok: confirmed, value: field ? field.value : null });
       }
       function onKey(event) {
         if (event.key === "Escape") {
@@ -88,8 +100,31 @@
       });
       document.addEventListener("keydown", onKey, true);
       document.body.appendChild(mask);
-      ok.focus();
+      if (field) {
+        field.focus();
+        field.select();
+      } else {
+        ok.focus();
+      }
     });
+  }
+
+  async function askConfirm(message, options) {
+    const result = await askDialog({
+      message,
+      okText: options && options.okText,
+      cancelText: options && options.cancelText,
+    });
+    return result.ok;
+  }
+
+  async function askAlert(message) {
+    await askDialog({ message, okText: "知道了", cancelText: null });
+  }
+
+  async function askPrompt(message, defaultValue) {
+    const result = await askDialog({ message, defaultValue, withInput: true });
+    return result.ok ? result.value : null;
   }
 
   async function confirmLeavePage() {
@@ -643,7 +678,7 @@
         await loadOptions();
         openForm(rows.find((item) => item.id === id));
       } else if (button.dataset.role === "delete") {
-        if (!confirm("确认删除这条记录？")) return;
+        if (!(await askConfirm("确认删除这条记录？"))) return;
         try {
           await api("DELETE", def.api + "/" + id);
           await reload();
@@ -1050,15 +1085,15 @@
           return;
         }
         if (button.dataset.role === "reverse") {
-          if (!confirm("反审核会生成反向库存流水，确认继续？")) return;
+          if (!(await askConfirm("反审核会生成反向库存流水，确认继续？"))) return;
           await api("POST", "/api/documents/" + id + "/reverse");
           showNotice("已反审核", "ok");
         } else if (button.dataset.role === "approve") {
-          if (!confirm("审核后才会写库存流水，确认继续？")) return;
+          if (!(await askConfirm("审核后才会写库存流水，确认继续？"))) return;
           await api("POST", "/api/documents/" + id + "/approve");
           showNotice("已审核", "ok");
         } else if (button.dataset.role === "delete") {
-          if (!confirm("确认删除这张草稿？")) return;
+          if (!(await askConfirm("确认删除这张草稿？"))) return;
           await api("DELETE", "/api/documents/" + id);
           if (editingId === id) resetForm();
           showNotice("草稿已删除", "ok");
@@ -1463,14 +1498,14 @@
           return;
         }
         if (button.dataset.role === "approve") {
-          if (!confirm("确认订单后不可再改单，只能转出库或关闭。继续？")) return;
+          if (!(await askConfirm("确认订单后不可再改单，只能转出库或关闭。继续？"))) return;
           await api("POST", "/api/documents/" + id + "/approve");
           showNotice("订单已确认", "ok");
         } else if (button.dataset.role === "edit") {
           await startEdit(documents.find((doc) => doc.id === id));
           return;
         } else if (button.dataset.role === "delete") {
-          if (!confirm("确认删除这张订单草稿？")) return;
+          if (!(await askConfirm("确认删除这张订单草稿？"))) return;
           await api("DELETE", "/api/documents/" + id);
           if (editingId === id) resetForm();
           showNotice("订单草稿已删除", "ok");
@@ -1478,7 +1513,7 @@
           await openConvert(documents.find((doc) => doc.id === id));
           return;
         } else if (button.dataset.role === "close") {
-          if (!confirm("关闭后订单不能再转出，确认？")) return;
+          if (!(await askConfirm("关闭后订单不能再转出，确认？"))) return;
           await api("POST", "/api/documents/" + id + "/close");
           showNotice("订单已关闭", "ok");
         }
@@ -1724,12 +1759,12 @@
         const button = settlementsTable.querySelector(`[data-reverse="${index}"]`);
         if (!button) return;
         button.addEventListener("click", async () => {
-          if (!window.confirm(`撤销收付款 ${row.settle_no}？`)) return;
+          if (!(await askConfirm(`撤销收付款 ${row.settle_no}？`))) return;
           try {
             await api("POST", `/api/settlements/${row.id}/reverse`, {});
             await reload();
           } catch (error) {
-            window.alert(error.message);
+            await askAlert(error.message);
           }
         });
       });
@@ -1741,11 +1776,11 @@
       const entry = entries.find((row) => String(row.id) === button.dataset.settle);
       if (!entry) return;
       const defaultAmount = (Math.abs(entry.outstanding_cents) / 100).toFixed(2);
-      const input = window.prompt("本次核销金额（元）", defaultAmount);
+      const input = await askPrompt("本次核销金额（元）", defaultAmount);
       if (input === null) return;
       const value = Number(input);
       if (!Number.isFinite(value) || value <= 0) {
-        window.alert("请输入大于 0 的金额");
+        await askAlert("请输入大于 0 的金额");
         return;
       }
       const cents = Math.round(value * 100) * Math.sign(entry.outstanding_cents);
@@ -1761,7 +1796,7 @@
         });
         await reload();
       } catch (error) {
-        window.alert(error.message);
+        await askAlert(error.message);
       }
     });
 
@@ -1771,16 +1806,16 @@
     mount.querySelector('[data-role="submit"]').addEventListener("click", async () => {
       const partnerKey = partnerSelect.value;
       if (!partnerKey) {
-        window.alert("请选择往来单位");
+        await askAlert("请选择往来单位");
         return;
       }
       if (!accountSelect.value) {
-        window.alert("请先在「资金账户」建档并启用");
+        await askAlert("请先在「资金账户」建档并启用");
         return;
       }
       const amount = Number(amountInput.value);
       if (!Number.isFinite(amount) || amount <= 0) {
-        window.alert("请输入大于 0 的金额");
+        await askAlert("请输入大于 0 的金额");
         return;
       }
       const amountCents = Math.round(amount * 100);
@@ -1790,7 +1825,7 @@
         if (!row.selected) continue;
         const lineAmount = Number(row.amount);
         if (!Number.isFinite(lineAmount) || lineAmount <= 0) {
-          window.alert("分摊金额必须大于 0");
+          await askAlert("分摊金额必须大于 0");
           return;
         }
         const cents = Math.round(lineAmount * 100) * Math.sign(row.outstanding_cents);
@@ -1798,7 +1833,7 @@
         payload.push({ entry_id: row.id, amount_cents: cents });
       }
       if (allocated > amountCents) {
-        window.alert("分摊合计不能超过收付款金额");
+        await askAlert("分摊合计不能超过收付款金额");
         return;
       }
       const partner = partners.find((row) => String(row.id) === partnerKey.slice(2));
@@ -1820,7 +1855,7 @@
         await reload();
         showNotice("收付款单已保存", "ok");
       } catch (error) {
-        window.alert(error.message);
+        await askAlert(error.message);
       }
     });
     await reload();
@@ -2803,7 +2838,7 @@
           showNotice("已设为默认模板", "ok");
           await reload();
         } else if (button.dataset.role === "delete") {
-          if (!confirm("确认删除模板「" + template.name + "」？删除后该目标回退到内置默认。")) {
+          if (!(await askConfirm("确认删除模板「" + template.name + "」？删除后该目标回退到内置默认。"))) {
             return;
           }
           await api("DELETE", "/api/print-templates/" + id);
@@ -3193,7 +3228,7 @@
           showNotice(error.message, "error");
         }
       } else if (action === "delete") {
-        if (!confirm("确认删除用户 " + row.username + "？该账号会立即退出登录。")) return;
+        if (!(await askConfirm("确认删除用户 " + row.username + "？该账号会立即退出登录。"))) return;
         try {
           await api("DELETE", "/api/users/" + row.id);
           await reload();
