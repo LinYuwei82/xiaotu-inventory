@@ -608,6 +608,16 @@ int main() {
             "收发明细期末数应等于库存余额");
       check(flows.front().opening_qty == 0, "11-01 起期初应为 0");
 
+      const auto inv_summary = reports.inventory_summary(report_filter);
+      check(inv_summary.size() == 1 && inv_summary.front().item_id == sales_item.id,
+            "进销存汇总应按商品返回一行");
+      check(inv_summary.front().opening_qty == 0 &&
+                inv_summary.front().closing_qty == flows.front().closing_qty,
+            "进销存汇总期末数量应等于收发明细期末");
+      check(inv_summary.front().closing_amount_cents ==
+                balance_of(sales_item.id).amount_cents,
+            "进销存汇总期末金额应等于库存余额金额");
+
       const auto aging = reports.ar_ap_aging(1, "2026-11-12");
       std::int64_t expected_ar = 0;
       for (const auto& row : finance.entries(1, customer_key)) {

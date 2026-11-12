@@ -142,6 +142,23 @@ nlohmann::json flow_to_json(const GoodsFlowRow& row) {
   };
 }
 
+nlohmann::json summary_to_json(const InventorySummaryRow& row) {
+  return nlohmann::json{
+      {"item_id", row.item_id},
+      {"item_code", row.item_code},
+      {"item_name", row.item_name},
+      {"unit", row.unit},
+      {"opening_qty", row.opening_qty},
+      {"in_qty", row.in_qty},
+      {"out_qty", row.out_qty},
+      {"closing_qty", row.closing_qty},
+      {"opening_amount_cents", row.opening_amount_cents},
+      {"in_amount_cents", row.in_amount_cents},
+      {"out_amount_cents", row.out_amount_cents},
+      {"closing_amount_cents", row.closing_amount_cents},
+  };
+}
+
 nlohmann::json aging_to_json(const AgingRow& row) {
   return nlohmann::json{
       {"partner_key", row.partner_key},
@@ -226,6 +243,41 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      nlohmann::json list = nlohmann::json::array();
                      for (const auto& row : rows) {
                        list.push_back(balance_to_json(row));
+                     }
+                     json_ok(res, list);
+                   }));
+
+  server.Get("/api/reports/inventory-summary",
+             guard("stock.read",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     const ReportFilter filter = parse_filter(req);
+                     const auto rows = services.reports.inventory_summary(filter);
+                     if (csv_requested(req)) {
+                       std::string csv;
+                       csv_preamble(csv, "进销存汇总",
+                                    period_label(filter) + "；" +
+                                        dimension_label(filter.item_id, "商品") + "；" +
+                                        dimension_label(filter.warehouse_id, "仓库") +
+                                        "；按商品跨仓库汇总");
+                       csv_row(csv, {"商品编码", "商品名称", "单位", "期初数量",
+                                     "期初金额（元）", "入库数量", "入库金额（元）",
+                                     "出库数量", "出库金额（元）", "期末数量",
+                                     "期末金额（元）"});
+                       for (const auto& row : rows) {
+                         csv_row(csv, {row.item_code, row.item_name, row.unit,
+                                       std::to_string(row.opening_qty),
+                                       yuan(row.opening_amount_cents),
+                                       std::to_string(row.in_qty), yuan(row.in_amount_cents),
+                                       std::to_string(row.out_qty), yuan(row.out_amount_cents),
+                                       std::to_string(row.closing_qty),
+                                       yuan(row.closing_amount_cents)});
+                       }
+                       send_csv(res, "inventory-summary-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
+                     nlohmann::json list = nlohmann::json::array();
+                     for (const auto& row : rows) {
+                       list.push_back(summary_to_json(row));
                      }
                      json_ok(res, list);
                    }));

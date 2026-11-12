@@ -155,6 +155,65 @@ std::vector<GoodsFlowRow> ReportService::goods_flow(const ReportFilter& filter) 
   return rows;
 }
 
+std::vector<InventorySummaryRow> ReportService::inventory_summary(
+    const ReportFilter& filter) const {
+  const std::string from_start = filter.from.empty() ? std::string{} : filter.from + " 00:00:00";
+  std::vector<InventorySummaryRow> rows;
+  db_.read([&](sqlite3* conn) {
+    Stmt stmt(conn,
+              "SELECT item_id, item_code, item_name, unit,"
+              " opening_qty, in_qty, out_qty, opening_qty + in_qty - out_qty AS closing_qty,"
+              " opening_amount, in_amount, out_amount,"
+              " opening_amount + in_amount - out_amount AS closing_amount"
+              " FROM ("
+              "   SELECT i.id AS item_id, i.code AS item_code, i.name AS item_name, i.unit,"
+              "     SUM(CASE WHEN l.biz_time < ?1 THEN l.qty ELSE 0 END) AS opening_qty,"
+              "     SUM(CASE WHEN l.biz_time < ?1 THEN l.amount_cents ELSE 0 END) AS opening_amount,"
+              "     SUM(CASE WHEN l.biz_time >= ?1"
+              "              AND (?2 = '' OR substr(l.biz_time, 1, 10) <= ?2)"
+              "              AND l.qty > 0 THEN l.qty ELSE 0 END) AS in_qty,"
+              "     SUM(CASE WHEN l.biz_time >= ?1"
+              "              AND (?2 = '' OR substr(l.biz_time, 1, 10) <= ?2)"
+              "              AND l.qty > 0 THEN l.amount_cents ELSE 0 END) AS in_amount,"
+              "     SUM(CASE WHEN l.biz_time >= ?1"
+              "              AND (?2 = '' OR substr(l.biz_time, 1, 10) <= ?2)"
+              "              AND l.qty < 0 THEN -l.qty ELSE 0 END) AS out_qty,"
+              "     SUM(CASE WHEN l.biz_time >= ?1"
+              "              AND (?2 = '' OR substr(l.biz_time, 1, 10) <= ?2)"
+              "              AND l.qty < 0 THEN -l.amount_cents ELSE 0 END) AS out_amount"
+              "   FROM stock_ledger l"
+              "   JOIN item i ON i.id = l.item_id"
+              "   WHERE (?3 = 0 OR l.warehouse_id = ?3)"
+              "     AND (?4 = 0 OR l.item_id = ?4)"
+              "   GROUP BY i.id"
+              " ) t"
+              " WHERE opening_qty <> 0 OR in_qty <> 0 OR out_qty <> 0"
+              "    OR opening_amount <> 0 OR in_amount <> 0 OR out_amount <> 0"
+              " ORDER BY item_code;");
+    stmt.bind(1, from_start)
+        .bind(2, filter.to)
+        .bind(3, filter.warehouse_id)
+        .bind(4, filter.item_id);
+    while (stmt.step()) {
+      InventorySummaryRow row;
+      row.item_id = stmt.i64(0);
+      row.item_code = stmt.text(1);
+      row.item_name = stmt.text(2);
+      row.unit = stmt.text(3);
+      row.opening_qty = stmt.i64(4);
+      row.in_qty = stmt.i64(5);
+      row.out_qty = stmt.i64(6);
+      row.closing_qty = stmt.i64(7);
+      row.opening_amount_cents = stmt.i64(8);
+      row.in_amount_cents = stmt.i64(9);
+      row.out_amount_cents = stmt.i64(10);
+      row.closing_amount_cents = stmt.i64(11);
+      rows.push_back(std::move(row));
+    }
+  });
+  return rows;
+}
+
 std::vector<AgingRow> ReportService::ar_ap_aging(int direction, std::string_view as_of) const {
   std::vector<AgingRow> rows;
   db_.read([&](sqlite3* conn) {

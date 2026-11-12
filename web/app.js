@@ -780,6 +780,14 @@
       </div>
       <div class="card">
         <div class="card-head">
+          <h3>进销存汇总</h3>
+          <button class="btn small" data-role="export-summary">导出 CSV</button>
+        </div>
+        <p class="page-sub">按商品跨仓库汇总：期初 + 入库 − 出库 = 期末，数量与金额双口径</p>
+        <table class="table" data-role="summary"></table>
+      </div>
+      <div class="card">
+        <div class="card-head">
           <h3>应收应付余额与账龄</h3>
           <button class="btn small" data-role="export-aging">导出 CSV</button>
         </div>
@@ -794,6 +802,7 @@
     const balancesTable = mount.querySelector('[data-role="balances"]');
     const ledgerTable = mount.querySelector('[data-role="ledger"]');
     const flowsTable = mount.querySelector('[data-role="flows"]');
+    const summaryTable = mount.querySelector('[data-role="summary"]');
     const agingTable = mount.querySelector('[data-role="aging"]');
 
     function emptyRow(text, colspan) {
@@ -812,17 +821,18 @@
         `；账龄方向 ${directionSelect.value === "-1" ? "应付" : "应收"}`;
       printHead.innerHTML = `
         <div><strong>单位名称：</strong>小兔进销存</div>
-        <div><strong>报表：</strong>库存余额表 / 库存流水明细 / 收发明细 / 应收应付余额与账龄</div>
+        <div><strong>报表：</strong>库存余额表 / 库存流水明细 / 收发明细 / 进销存汇总 / 应收应付余额与账龄</div>
         <div><strong>筛选区间：</strong>${escapeHtml(scope)}</div>
         <div><strong>打印时间：</strong>${escapeHtml(new Date().toLocaleString("zh-CN", { hour12: false }))}</div>`;
     }
 
     async function reload() {
       const period = periodQuery();
-      const [balances, ledger, flows, aging] = await Promise.all([
+      const [balances, ledger, flows, summary, aging] = await Promise.all([
         api("GET", "/api/reports/stock-balance"),
         api("GET", "/api/reports/stock-ledger" + period + "&limit=500"),
         api("GET", "/api/reports/goods-flow" + period),
+        api("GET", "/api/reports/inventory-summary" + period),
         api("GET", "/api/reports/ar-ap-aging?direction=" + directionSelect.value),
       ]);
       renderPrintHead();
@@ -879,6 +889,25 @@
              )
              .join("")}</tbody>`;
 
+      summaryTable.innerHTML = !summary.length
+        ? emptyRow("该期间无进销存发生", 8)
+        : `<thead><tr><th>商品编码</th><th>商品名称</th><th>单位</th><th>期初数量</th>
+             <th>入库数量</th><th>出库数量</th><th>期末数量</th><th>期末金额（元）</th></tr></thead>
+           <tbody>${summary
+             .map(
+               (row) => `<tr>
+                 <td>${escapeHtml(row.item_code)}</td>
+                 <td>${escapeHtml(row.item_name)}</td>
+                 <td>${escapeHtml(row.unit)}</td>
+                 <td>${row.opening_qty}</td>
+                 <td>${row.in_qty}</td>
+                 <td>${row.out_qty}</td>
+                 <td class="${row.closing_qty < 0 ? "negative" : ""}">${row.closing_qty}</td>
+                 <td>${money(row.closing_amount_cents)}</td>
+               </tr>`
+             )
+             .join("")}</tbody>`;
+
       agingTable.innerHTML = !aging.length
         ? emptyRow("暂无未核销余额", 7)
         : `<thead><tr><th>往来单位</th><th>合计（元）</th><th>未到期</th><th>1-30 天</th>
@@ -912,6 +941,10 @@
     wireExport("export-balance", () => "/api/reports/stock-balance?format=csv");
     wireExport("export-ledger", () => "/api/reports/stock-ledger" + periodQuery() + "&format=csv");
     wireExport("export-flows", () => "/api/reports/goods-flow" + periodQuery() + "&format=csv");
+    wireExport(
+      "export-summary",
+      () => "/api/reports/inventory-summary" + periodQuery() + "&format=csv"
+    );
     wireExport(
       "export-aging",
       () => "/api/reports/ar-ap-aging?direction=" + directionSelect.value + "&format=csv"

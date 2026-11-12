@@ -49,6 +49,22 @@ struct AgingRow {
   std::int64_t d90_plus_cents = 0;
 };
 
+// 进销存汇总：按商品（跨仓库）汇总期初、入库、出库、期末，数量与金额双口径。
+struct InventorySummaryRow {
+  std::int64_t item_id = 0;
+  std::string item_code;
+  std::string item_name;
+  std::string unit;
+  std::int64_t opening_qty = 0;
+  std::int64_t in_qty = 0;
+  std::int64_t out_qty = 0;
+  std::int64_t closing_qty = 0;
+  std::int64_t opening_amount_cents = 0;
+  std::int64_t in_amount_cents = 0;
+  std::int64_t out_amount_cents = 0;
+  std::int64_t closing_amount_cents = 0;
+};
+
 // 对账单明细行：单据与核销记录合并后按日期排序，余额逐行累计。
 struct StatementLine {
   std::string date;
@@ -89,6 +105,7 @@ class ReportService {
 
   std::vector<LedgerDetailRow> stock_ledger(const ReportFilter& filter) const;
   std::vector<GoodsFlowRow> goods_flow(const ReportFilter& filter) const;
+  std::vector<InventorySummaryRow> inventory_summary(const ReportFilter& filter) const;
   std::vector<AgingRow> ar_ap_aging(int direction, std::string_view as_of) const;
 
   // 往来对账单：期初 + 期间单据 - 期间核销 = 期末；只读，不落表。
