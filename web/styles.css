@@ -79,20 +79,66 @@ body {
   color: #fff;
 }
 
-/* 二级导航：组标题只做分组，不占页面 key。 */
-.sidebar nav .nav-group {
-  margin-top: 6px;
+/* 二级导航：手风琴只展开一组，当前页所在组保留高亮。 */
+.sidebar nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
-.nav-group-title {
+.sidebar nav .nav-group {
+  margin-top: 4px;
+}
+
+.sidebar nav .nav-group-title {
+  appearance: none;
+  border: 0;
+  background: transparent;
   color: #9ca3af;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-family: inherit;
   font-size: 12px;
-  padding: 6px 10px 2px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.sidebar nav .nav-group-title:hover {
+  background: transparent;
+  color: #e5e7eb;
+}
+
+.nav-chevron {
+  font-size: 12px;
+  transition: transform 0.15s ease;
+}
+
+.nav-group.open .nav-chevron {
+  transform: rotate(90deg);
+}
+
+.nav-group-items {
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-group.open .nav-group-items {
+  display: flex;
 }
 
 .sidebar nav button[data-group] {
   padding-left: 22px;
   font-size: 13px;
+}
+
+.nav-group.active > .nav-group-title {
+  color: #fff;
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .sidebar nav .nav-top {

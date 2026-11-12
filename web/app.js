@@ -3309,8 +3309,10 @@
           )
           .join("");
         return `<div class="nav-group" data-group="${entry.group.key}">
-            <div class="nav-group-title">${escapeHtml(entry.group.title)}</div>
-            ${items}
+            <button type="button" class="nav-group-title" data-group-toggle="${entry.group.key}" aria-expanded="false">
+              <span>${escapeHtml(entry.group.title)}</span><span class="nav-chevron">›</span>
+            </button>
+            <div class="nav-group-items">${items}</div>
           </div>`;
       })
       .join("");
@@ -3464,7 +3466,7 @@
     { key: "statement", title: "对账单", group: "finance", render: statementPage },
     { key: "stock", title: "库存", group: "stock", render: stockPage },
     { key: "print-templates", title: "打印模板", group: "system", render: printTemplatePage },
-    { key: "reports", title: "报表", render: reportPage },
+    { key: "reports", title: "报表", group: "", render: reportPage },
     { key: "users", title: "用户", group: "system", permission: "user.read", render: userPage },
     {
       key: "audit",
@@ -3475,13 +3477,46 @@
     },
   ];
 
-  function mountPage(page) {
+  // 导航状态：手风琴只记住一个展开组；页面 key 供下次打开回到原页。
+  function readNavState(key) {
+    try {
+      return localStorage.getItem(key) || "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function writeNavState(key, value) {
+    try {
+      if (value) localStorage.setItem(key, value);
+      else localStorage.removeItem(key);
+    } catch (error) {
+      // 隐私模式等禁用存储时静默降级，导航仍然可用。
+    }
+  }
+
+  function expandGroup(key) {
+    for (const group of nav.querySelectorAll(".nav-group")) {
+      const open = key !== "" && group.dataset.group === key;
+      group.classList.toggle("open", open);
+      const toggle = group.querySelector("[data-group-toggle]");
+      if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+  }
+
+  function mountPage(page, options) {
+    const persist = !options || options.persist !== false;
     state.current = page.key;
+    if (page.group) expandGroup(page.group);
     for (const link of nav.querySelectorAll("button[data-key]")) {
       link.classList.toggle("active", link.dataset.key === page.key);
     }
     for (const group of nav.querySelectorAll(".nav-group")) {
       group.classList.toggle("active", group.dataset.group === page.group);
+    }
+    if (persist) {
+      writeNavState("xiaotu.nav.page", page.key);
+      writeNavState("xiaotu.nav.group", page.group || "");
     }
     main.querySelectorAll(":scope > *").forEach((node) => {
       if (node !== notice) node.remove();
@@ -3566,15 +3601,23 @@
 
       nav.innerHTML = navHtml(buildNav(all));
       nav.addEventListener("click", (event) => {
-        const button = event.target.closest("button");
+        const toggle = event.target.closest("[data-group-toggle]");
+        if (toggle) {
+          const group = toggle.closest(".nav-group");
+          const key = group.classList.contains("open") ? "" : group.dataset.group;
+          expandGroup(key);
+          writeNavState("xiaotu.nav.group", key);
+          return;
+        }
+        const button = event.target.closest("button[data-key]");
         if (!button) return;
         const page = all.find((item) => item.key === button.dataset.key);
         if (page) mountPage(page);
       });
 
-      if (all.length) {
-        mountPage(all[0]);
-      }
+      const savedPage = readNavState("xiaotu.nav.page");
+      const initial = all.find((page) => page.key === savedPage) || all[0];
+      if (initial) mountPage(initial, { persist: false });
     } catch (error) {
       if (error.status === 401) {
         renderLogin("请使用用户名与口令登录");
