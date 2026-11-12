@@ -83,11 +83,13 @@ def prepare_table(table: dict) -> dict:
         )
 
     columns = ", ".join(f["name"] for f in fields)
+    names = {f["name"] for f in fields}
     return {
         **table,
         "Name": "".join(part.capitalize() for part in table["table"].split("_")),
         "fields": fields,
         "unique_fields": [f for f in fields if f.get("unique")],
+        "audit_column": "code" if "code" in names else "name" if "name" in names else "",
         "select_columns": f"id, {columns}",
         "insert_columns": f"{columns}, ",
         "value_placeholders": ", ".join(["?"] * len(fields)) + ", ",

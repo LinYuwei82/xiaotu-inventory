@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "xiaotu/audit.h"
 #include "xiaotu/crud.h"
 #include "xiaotu/error.h"
 #include "xiaotu/permissions.h"
@@ -128,6 +129,8 @@ UserRow UserService::create(const UserInput& input) {
         .bind(8, stamp.by)
         .run();
     id = sqlite3_last_insert_rowid(conn);
+    audit_write(conn, "create", "user", id, input.username,
+                "{\"role\":\"" + input.role + "\"}");
   });
   return get(id);
 }
@@ -158,6 +161,9 @@ UserRow UserService::update(std::int64_t id, const UserInput& input) {
         .bind(6, stamp.by)
         .bind(7, id)
         .run();
+    audit_write(conn, "update", "user", id, input.username,
+                "{\"role\":\"" + input.role + "\",\"active\":" +
+                    std::string(input.active ? "true" : "false") + "}");
   });
   return get(id);
 }
@@ -166,7 +172,18 @@ void UserService::remove(std::int64_t id) {
   if (id == kBuiltinAdminId) {
     throw AppError("USER_PROTECTED", "内置管理员不能删除");
   }
-  db_.write([&](sqlite3* conn) { soft_delete(conn, "app_user", id); });
+  db_.write([&](sqlite3* conn) {
+    std::string username;
+    {
+      Stmt stmt(conn, "SELECT username FROM app_user WHERE id = ?;");
+      stmt.bind(1, id);
+      if (stmt.step()) {
+        username = stmt.text(0);
+      }
+    }
+    soft_delete(conn, "app_user", id);
+    audit_write(conn, "delete", "user", id, username);
+  });
 }
 
 std::int64_t UserService::count_active() const {

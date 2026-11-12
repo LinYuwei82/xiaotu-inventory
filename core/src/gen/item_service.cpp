@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "xiaotu/audit.h"
 #include "xiaotu/crud.h"
 #include "xiaotu/error.h"
 
@@ -47,6 +48,7 @@ ItemRow ItemService::create(ItemRow input) {
                    input.unit, "计量单位");
     ensure_unique(conn, "item", "code", input.code, 0, "编码");
     ItemDao::insert(conn, input);
+    audit_write(conn, "create", "item", input.id, input.code);
   });
   return input;
 }
@@ -59,13 +61,23 @@ ItemRow ItemService::update(std::int64_t id, ItemRow input) {
                    input.unit, "计量单位");
     ensure_unique(conn, "item", "code", input.code, id, "编码");
     ItemDao::update(conn, input);
+    audit_write(conn, "update", "item", id, input.code);
   });
   return input;
 }
 
 void ItemService::remove(std::int64_t id) {
   db_.write([&](sqlite3* conn) {
+    std::string entity_no;
+    {
+      Stmt stmt(conn, "SELECT code FROM item WHERE id = ?;");
+      stmt.bind(1, id);
+      if (stmt.step()) {
+        entity_no = stmt.text(0);
+      }
+    }
     ItemDao::soft_delete(conn, id);
+    audit_write(conn, "delete", "item", id, entity_no);
   });
 }
 

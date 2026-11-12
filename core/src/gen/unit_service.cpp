@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "xiaotu/audit.h"
 #include "xiaotu/crud.h"
 #include "xiaotu/error.h"
 
@@ -27,6 +28,7 @@ UnitRow UnitService::create(UnitRow input) {
   db_.write([&](sqlite3* conn) {
     ensure_unique(conn, "unit", "code", input.code, 0, "编码");
     UnitDao::insert(conn, input);
+    audit_write(conn, "create", "unit", input.id, input.code);
   });
   return input;
 }
@@ -37,13 +39,23 @@ UnitRow UnitService::update(std::int64_t id, UnitRow input) {
   db_.write([&](sqlite3* conn) {
     ensure_unique(conn, "unit", "code", input.code, id, "编码");
     UnitDao::update(conn, input);
+    audit_write(conn, "update", "unit", id, input.code);
   });
   return input;
 }
 
 void UnitService::remove(std::int64_t id) {
   db_.write([&](sqlite3* conn) {
+    std::string entity_no;
+    {
+      Stmt stmt(conn, "SELECT code FROM unit WHERE id = ?;");
+      stmt.bind(1, id);
+      if (stmt.step()) {
+        entity_no = stmt.text(0);
+      }
+    }
     UnitDao::soft_delete(conn, id);
+    audit_write(conn, "delete", "unit", id, entity_no);
   });
 }
 

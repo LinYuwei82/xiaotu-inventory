@@ -2,6 +2,7 @@ set(THIRD_PARTY "${CMAKE_SOURCE_DIR}/third_party")
 include("${CMAKE_SOURCE_DIR}/cmake/generated_sources.cmake")
 
 add_library(xiaotu_server STATIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/audit_routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/document_routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/http_guard.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/http_json.cpp"

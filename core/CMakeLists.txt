@@ -50,6 +50,7 @@ set(SQLITE_SOURCE "${THIRD_PARTY}/sqlite/sqlite3.c")
 set_source_files_properties("${SQLITE_SOURCE}" PROPERTIES COMPILE_OPTIONS "-w")
 
 add_library(xiaotu_core STATIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/audit.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/context.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/crud.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/db.cpp"

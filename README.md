@@ -291,5 +291,5 @@ struct DocumentDefinition {
 ## 10. 参考
 
 - 技术方案：`docs/进销存技术方案.md`
-- 数据库结构：`core/src/migrations.cpp`（v2）
-- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/users`、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`
+- 数据库结构：`core/src/migrations.cpp`（v5）
+- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`

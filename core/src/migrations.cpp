@@ -240,6 +240,22 @@ INSERT INTO app_role_permission (role_id, permission) VALUES
   (3, 'unit.read');
 )SQL";
 
+// v5：审计日志。只追加，不提供修改与删除；不建外键，对象被删除后仍可追溯。
+constexpr const char* kV5 = R"SQL(
+CREATE TABLE audit_log (
+  id        INTEGER PRIMARY KEY,
+  at        TEXT    NOT NULL,
+  actor     TEXT    NOT NULL,
+  action    TEXT    NOT NULL,
+  entity    TEXT    NOT NULL,
+  entity_id INTEGER NOT NULL DEFAULT 0,
+  entity_no TEXT    NOT NULL DEFAULT '',
+  detail    TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
+CREATE INDEX idx_audit_at ON audit_log(at);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -259,6 +275,7 @@ const std::vector<Migration>& all_migrations() {
       {2, "v2_user_and_role", kV2},
       {3, "v3_supplier", kV3},
       {4, "v4_unit", kV4},
+      {5, "v5_audit_log", kV5},
   };
   return migrations;
 }

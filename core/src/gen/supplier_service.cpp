@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "xiaotu/audit.h"
 #include "xiaotu/crud.h"
 #include "xiaotu/error.h"
 
@@ -27,6 +28,7 @@ SupplierRow SupplierService::create(SupplierRow input) {
   db_.write([&](sqlite3* conn) {
     ensure_unique(conn, "supplier", "code", input.code, 0, "编码");
     SupplierDao::insert(conn, input);
+    audit_write(conn, "create", "supplier", input.id, input.code);
   });
   return input;
 }
@@ -37,13 +39,23 @@ SupplierRow SupplierService::update(std::int64_t id, SupplierRow input) {
   db_.write([&](sqlite3* conn) {
     ensure_unique(conn, "supplier", "code", input.code, id, "编码");
     SupplierDao::update(conn, input);
+    audit_write(conn, "update", "supplier", id, input.code);
   });
   return input;
 }
 
 void SupplierService::remove(std::int64_t id) {
   db_.write([&](sqlite3* conn) {
+    std::string entity_no;
+    {
+      Stmt stmt(conn, "SELECT code FROM supplier WHERE id = ?;");
+      stmt.bind(1, id);
+      if (stmt.step()) {
+        entity_no = stmt.text(0);
+      }
+    }
     SupplierDao::soft_delete(conn, id);
+    audit_write(conn, "delete", "supplier", id, entity_no);
   });
 }
 

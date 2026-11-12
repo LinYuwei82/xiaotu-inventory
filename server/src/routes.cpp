@@ -13,6 +13,7 @@ namespace xiaotu {
 void register_document_routes(httplib::Server& server, Services& services);
 void register_stock_routes(httplib::Server& server, Services& services);
 void register_user_routes(httplib::Server& server, Services& services);
+void register_audit_routes(httplib::Server& server, Services& services);
 
 void register_all_routes(httplib::Server& server, Services& services) {
   gen::register_item_routes(server, services);
@@ -22,6 +23,7 @@ void register_all_routes(httplib::Server& server, Services& services) {
   register_document_routes(server, services);
   register_stock_routes(server, services);
   register_user_routes(server, services);
+  register_audit_routes(server, services);
 }
 
 }  // namespace xiaotu

@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "xiaotu/audit.h"
 #include "xiaotu/crud.h"
 #include "xiaotu/error.h"
 
@@ -27,6 +28,7 @@ WarehouseRow WarehouseService::create(WarehouseRow input) {
   db_.write([&](sqlite3* conn) {
     ensure_unique(conn, "warehouse", "code", input.code, 0, "编码");
     WarehouseDao::insert(conn, input);
+    audit_write(conn, "create", "warehouse", input.id, input.code);
   });
   return input;
 }
@@ -37,13 +39,23 @@ WarehouseRow WarehouseService::update(std::int64_t id, WarehouseRow input) {
   db_.write([&](sqlite3* conn) {
     ensure_unique(conn, "warehouse", "code", input.code, id, "编码");
     WarehouseDao::update(conn, input);
+    audit_write(conn, "update", "warehouse", id, input.code);
   });
   return input;
 }
 
 void WarehouseService::remove(std::int64_t id) {
   db_.write([&](sqlite3* conn) {
+    std::string entity_no;
+    {
+      Stmt stmt(conn, "SELECT code FROM warehouse WHERE id = ?;");
+      stmt.bind(1, id);
+      if (stmt.step()) {
+        entity_no = stmt.text(0);
+      }
+    }
     WarehouseDao::soft_delete(conn, id);
+    audit_write(conn, "delete", "warehouse", id, entity_no);
   });
 }
 

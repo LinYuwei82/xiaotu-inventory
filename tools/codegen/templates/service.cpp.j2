@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "xiaotu/audit.h"
 #include "xiaotu/crud.h"
 #include "xiaotu/error.h"
 
@@ -56,6 +57,9 @@ void {{ t.Name }}Service::validate(const {{ t.Name }}Row& row) {
     ensure_unique(conn, "{{ t.table }}", "{{ f.name }}", input.{{ f.name }}, 0, "{{ f.label }}");
 {% endfor %}
     {{ t.Name }}Dao::insert(conn, input);
+{% if t.audit_column %}
+    audit_write(conn, "create", "{{ t.key }}", input.id, input.{{ t.audit_column }});
+{% endif %}
   });
   return input;
 }
@@ -74,13 +78,29 @@ void {{ t.Name }}Service::validate(const {{ t.Name }}Row& row) {
     ensure_unique(conn, "{{ t.table }}", "{{ f.name }}", input.{{ f.name }}, id, "{{ f.label }}");
 {% endfor %}
     {{ t.Name }}Dao::update(conn, input);
+{% if t.audit_column %}
+    audit_write(conn, "update", "{{ t.key }}", id, input.{{ t.audit_column }});
+{% endif %}
   });
   return input;
 }
 
 void {{ t.Name }}Service::remove(std::int64_t id) {
   db_.write([&](sqlite3* conn) {
+{% if t.audit_column %}
+    std::string entity_no;
+    {
+      Stmt stmt(conn, "SELECT {{ t.audit_column }} FROM {{ t.table }} WHERE id = ?;");
+      stmt.bind(1, id);
+      if (stmt.step()) {
+        entity_no = stmt.text(0);
+      }
+    }
+{% endif %}
     {{ t.Name }}Dao::soft_delete(conn, id);
+{% if t.audit_column %}
+    audit_write(conn, "delete", "{{ t.key }}", id, entity_no);
+{% endif %}
   });
 }
 

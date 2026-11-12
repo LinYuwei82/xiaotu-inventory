@@ -5,6 +5,7 @@
 #include <iostream>
 #include <string>
 
+#include "xiaotu/audit.h"
 #include "xiaotu/db.h"
 #include "xiaotu/document.h"
 #include "xiaotu/edition.h"
@@ -40,7 +41,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 4, "迁移后 schema 版本应为 4");
+      check(db.schema_version() == 5, "迁移后 schema 版本应为 5");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -313,6 +314,12 @@ int main() {
         bad_unit_rejected = error.code() == "NOT_FOUND";
       }
       check(bad_unit_rejected, "引用不存在的计量单位应被拒绝");
+      const auto bottled_updated =
+          items.update(bottled.id, xiaotu::gen::ItemRow{.code = "U001",
+                                                       .name = "瓶装商品（改名）",
+                                                       .unit_id = 2});
+      check(bottled_updated.name == "瓶装商品（改名）" && bottled_updated.unit == "瓶",
+            "商品更新应保留单位引用");
 
       // 采购退货：先入库再退货，以及入库后部分退货。
       auto returned = items.create(xiaotu::gen::ItemRow{.code = "R001", .name = "退货商品"});
@@ -419,6 +426,28 @@ int main() {
       items.remove(bottled.id);
       suppliers.remove(supplier.id);
       check(items.list().empty(), "软删除后列表中不应再出现该商品");
+
+      // 审计日志：关键写操作都留痕，且能回答谁/何时/对象/动作。
+      const auto audit_rows = xiaotu::audit_recent(db, 500);
+      const auto has_audit = [&audit_rows](const std::string& action, const std::string& entity) {
+        for (const auto& row : audit_rows) {
+          if (row.action == action && row.entity == entity && !row.actor.empty() &&
+              !row.at.empty()) {
+            return true;
+          }
+        }
+        return false;
+      };
+      check(has_audit("create", "item"), "主数据新增应写审计日志");
+      check(has_audit("update", "item"), "主数据修改应写审计日志");
+      check(has_audit("delete", "item"), "主数据删除应写审计日志");
+      check(has_audit("create", "supplier"), "供应商新增应写审计日志");
+      check(has_audit("create", "user"), "用户变更应写审计日志");
+      check(has_audit("approve", "document"), "单据审核应写审计日志");
+      check(has_audit("save_draft", "document"), "单据存草稿应写审计日志");
+      check(has_audit("update_draft", "document"), "草稿编辑应写审计日志");
+      check(has_audit("delete_draft", "document"), "草稿删除应写审计日志");
+      check(has_audit("reverse", "document"), "反审核应写审计日志");
     }
   } catch (const std::exception& error) {
     std::cerr << "异常: " << error.what() << std::endl;

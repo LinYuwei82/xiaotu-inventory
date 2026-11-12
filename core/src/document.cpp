@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "xiaotu/crud.h"
+#include "xiaotu/audit.h"
 #include "xiaotu/doc_number.h"
 #include "xiaotu/error.h"
 #include "xiaotu/ids.h"
@@ -294,6 +295,11 @@ void apply_stock_moves(sqlite3* conn, const DocumentDefinition& definition, std:
   }
 }
 
+std::string doc_detail(const std::string& doc_type, const ValidatedDoc& validated) {
+  return "{\"doc_type\":\"" + doc_type + "\",\"qty\":" + std::to_string(validated.total_qty) +
+         ",\"amount_cents\":" + std::to_string(validated.total_amount) + "}";
+}
+
 }  // namespace
 
 DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input) {
@@ -316,6 +322,8 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input) 
     if (definition->on_approve) {
       definition->on_approve(conn, created.id);
     }
+    audit_write(conn, "approve", "document", created.id, created.doc_no,
+                doc_detail(definition->doc_type, validated));
   });
   return created;
 }
@@ -333,6 +341,8 @@ DocumentEngine::Created DocumentEngine::save_draft(const DocInput& input) {
     created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
     insert_header(conn, created.id, created.doc_no, definition->doc_type, input, validated, false);
     insert_lines(conn, created.id, input.lines);
+    audit_write(conn, "save_draft", "document", created.id, created.doc_no,
+                doc_detail(definition->doc_type, validated));
   });
   return created;
 }
@@ -346,14 +356,16 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
   db_.write([&](sqlite3* conn) {
     std::string status;
     std::string doc_type;
+    std::string doc_no;
     {
-      Stmt header(conn, "SELECT status, doc_type FROM doc_header WHERE id = ?;");
+      Stmt header(conn, "SELECT status, doc_type, doc_no FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
       }
       status = header.text(0);
       doc_type = header.text(1);
+      doc_no = header.text(2);
     }
     if (status != "DRAFT") {
       throw AppError("INVALID_STATUS", "只有草稿可以编辑");
@@ -378,19 +390,23 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
     Stmt clear(conn, "DELETE FROM doc_line WHERE doc_id = ?;");
     clear.bind(1, doc_id).run();
     insert_lines(conn, doc_id, input.lines);
+    audit_write(conn, "update_draft", "document", doc_id, doc_no,
+                doc_detail(doc_type, validated));
   });
 }
 
 void DocumentEngine::delete_draft(std::int64_t doc_id) {
   db_.write([&](sqlite3* conn) {
     std::string status;
+    std::string doc_no;
     {
-      Stmt header(conn, "SELECT status FROM doc_header WHERE id = ?;");
+      Stmt header(conn, "SELECT status, doc_no FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
       }
       status = header.text(0);
+      doc_no = header.text(1);
     }
     if (status != "DRAFT") {
       throw AppError("INVALID_STATUS", "只有草稿可以删除");
@@ -399,6 +415,7 @@ void DocumentEngine::delete_draft(std::int64_t doc_id) {
     lines.bind(1, doc_id).run();
     Stmt header(conn, "DELETE FROM doc_header WHERE id = ?;");
     header.bind(1, doc_id).run();
+    audit_write(conn, "delete_draft", "document", doc_id, doc_no);
   });
 }
 
@@ -406,9 +423,10 @@ void DocumentEngine::approve(std::int64_t doc_id) {
   db_.write([&](sqlite3* conn) {
     DocInput input;
     std::string status;
+    std::string doc_no;
     {
       Stmt header(conn,
-                  "SELECT doc_type, status, warehouse_id, doc_date, customer, partner_id"
+                  "SELECT doc_type, status, warehouse_id, doc_date, customer, partner_id, doc_no"
                   " FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
@@ -420,6 +438,7 @@ void DocumentEngine::approve(std::int64_t doc_id) {
       input.doc_date = header.text(3);
       input.partner = header.text(4);
       input.partner_id = header.i64(5);
+      doc_no = header.text(6);
     }
     if (status != "DRAFT") {
       throw AppError("INVALID_STATUS", "只有草稿可以审核");
@@ -461,6 +480,8 @@ void DocumentEngine::approve(std::int64_t doc_id) {
     if (definition->on_approve) {
       definition->on_approve(conn, doc_id);
     }
+    audit_write(conn, "approve", "document", doc_id, doc_no,
+                doc_detail(definition->doc_type, validated));
   });
 }
 
@@ -532,9 +553,11 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
   db_.write([&](sqlite3* conn) {
     std::string doc_type;
     std::string status;
+    std::string doc_no;
     std::int64_t warehouse_id = 0;
     {
-      Stmt header(conn, "SELECT doc_type, status, warehouse_id FROM doc_header WHERE id = ?;");
+      Stmt header(conn,
+                  "SELECT doc_type, status, warehouse_id, doc_no FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
@@ -542,6 +565,7 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
       doc_type = header.text(0);
       status = header.text(1);
       warehouse_id = header.i64(2);
+      doc_no = header.text(3);
     }
     if (status != "APPROVED") {
       throw AppError("INVALID_STATUS", "只有已审核的单据可以反审核");
@@ -603,6 +627,7 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
         definition->on_reverse(conn, doc_id);
       }
     }
+    audit_write(conn, "reverse", "document", doc_id, doc_no);
   });
 }
 
