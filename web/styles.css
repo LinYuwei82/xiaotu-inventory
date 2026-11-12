@@ -382,6 +382,17 @@ main {
   font-weight: 400;
 }
 
+.barcode-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.barcode-row input[type="text"] {
+  flex: 1;
+}
+
 .table .actions {
   width: 1%;
   text-align: right;
