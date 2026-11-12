@@ -3229,6 +3229,8 @@
               <select data-role="page-size">
                 <option value="A4">A4</option>
                 <option value="A5">A5</option>
+                <option value="241x140">针式 241×140 mm</option>
+                <option value="241x93">针式 241×93 mm</option>
                 <option value="CUSTOM">自定义</option>
               </select>
             </label>
@@ -3341,7 +3343,30 @@
       }));
     }
 
+    // 针式预设只改前端选择项，落库仍是 CUSTOM + 宽高，不需要改纸张枚举与表结构。
+    const paperPresets = {
+      "241x140": { width: 241, height: 140 },
+      "241x93": { width: 241, height: 93 },
+    };
+
+    function paperPresetKey(template) {
+      if (template && template.page_size === "CUSTOM") {
+        for (const [key, size] of Object.entries(paperPresets)) {
+          if (Number(template.paper_width_mm) === size.width &&
+              Number(template.paper_height_mm) === size.height) {
+            return key;
+          }
+        }
+      }
+      return template ? template.page_size : "A4";
+    }
+
     function updateCustomSize() {
+      const preset = paperPresets[pageSizeSelect.value];
+      if (preset) {
+        paperWidthInput.value = preset.width;
+        paperHeightInput.value = preset.height;
+      }
       const custom = pageSizeSelect.value === "CUSTOM";
       for (const field of customSizeFields) field.hidden = !custom;
     }
@@ -3410,7 +3435,7 @@
       editorTarget.value = template
         ? template.target_type + "|" + template.target_key
         : filterSelect.value || (targets[0] ? targets[0].type + "|" + targets[0].key : "");
-      pageSizeSelect.value = template ? template.page_size : "A4";
+      pageSizeSelect.value = template ? paperPresetKey(template) : "A4";
       orientationSelect.value = template ? template.orientation : "PORTRAIT";
       marginInput.value = template ? template.margin_mm : 12;
       fontInput.value = template ? template.font_size_pt : 10;
@@ -3492,15 +3517,20 @@
         showNotice("请填写模板名称与编码", "error");
         return;
       }
+      const paperPreset = paperPresets[pageSizeSelect.value];
       const body = {
         name: nameInput.value.trim(),
         code: codeInput.value.trim(),
         target_type: parts.type,
         target_key: parts.key,
-        page_size: pageSizeSelect.value,
+        page_size: paperPreset ? "CUSTOM" : pageSizeSelect.value,
         orientation: orientationSelect.value,
-        paper_width_mm: Number(paperWidthInput.value || 0),
-        paper_height_mm: Number(paperHeightInput.value || 0),
+        paper_width_mm: paperPreset
+          ? paperPreset.width
+          : Number(paperWidthInput.value || 0),
+        paper_height_mm: paperPreset
+          ? paperPreset.height
+          : Number(paperHeightInput.value || 0),
         margin_mm: Number(marginInput.value || 0),
         font_size_pt: Number(fontInput.value || 10),
         header_text: headerInput.value,
