@@ -69,7 +69,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 13, "迁移后 schema 版本应为 13");
+      check(db.schema_version() == 14, "迁移后 schema 版本应为 14");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -580,7 +580,7 @@ int main() {
       const auto sales_item =
           items.create(xiaotu::gen::ItemRow{.code = "F001", .name = "往来商品", .unit_id = 1});
       {
-        xiaotu::DocInput opening;
+      xiaotu::DocInput opening;
         opening.doc_type = "PUR_IN";
         opening.warehouse_id = warehouse_list.at(0).id;
         opening.doc_date = "2026-11-12";
@@ -1511,6 +1511,23 @@ int main() {
       check(balance_of(claimed.id).qty == q(2), "反审核被拒后库存不应变化");
       check(documents.detail(claimed_in.id).status == "APPROVED",
             "反审核被拒后单据应保持已审核");
+
+      // 数据库触发器是最后兜底：绕过业务层直接写负结存也必须被拒绝。
+      bool negative_rejected = false;
+      std::string negative_message;
+      try {
+        db.write([&](sqlite3* conn) {
+          xiaotu::Stmt update(conn, "UPDATE stock_balance SET qty = -1 WHERE item_id = ?;");
+          update.bind(1, claimed.id).run();
+        });
+      } catch (const xiaotu::AppError& error) {
+        negative_rejected = true;
+        negative_message = error.what();
+      }
+      check(negative_rejected, "数据库应拒绝负结存");
+      check(negative_message.find("不能为负") != std::string::npos,
+            "负结存错误应说明数量/金额不能为负");
+      check(balance_of(claimed.id).qty == q(2), "负结存写入被拒后库存不应变化");
 
       // 备份与恢复：快照可校验，恢复后 schema 一致，覆盖前留安全备份。
       const auto backup_root =

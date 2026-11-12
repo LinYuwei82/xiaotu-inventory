@@ -596,6 +596,24 @@ CREATE INDEX idx_stock_ledger_doc ON stock_ledger(doc_id);
 CREATE UNIQUE INDEX uk_stock_ledger_doc_line ON stock_ledger(doc_line_id, biz_type);
 )SQL";
 
+// v14：结存数量/金额不得为负。只加触发器兜底，不重建表、不改历史数据；
+// 历史负结存留给盘点单修正，迁移不做静默归零。
+constexpr const char* kV14 = R"SQL(
+CREATE TRIGGER trg_stock_balance_non_negative_insert
+BEFORE INSERT ON stock_balance
+WHEN NEW.qty < 0 OR NEW.amount_cents < 0
+BEGIN
+  SELECT RAISE(ABORT, '结存数量和金额不能为负');
+END;
+
+CREATE TRIGGER trg_stock_balance_non_negative_update
+BEFORE UPDATE OF qty, amount_cents ON stock_balance
+WHEN NEW.qty < 0 OR NEW.amount_cents < 0
+BEGIN
+  SELECT RAISE(ABORT, '结存数量和金额不能为负');
+END;
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -624,6 +642,7 @@ const std::vector<Migration>& all_migrations() {
       {11, "v11_decimal_qty", kV11},
       {12, "v12_fund_account", kV12},
       {13, "v13_cost_adjust", kV13},
+      {14, "v14_stock_balance_non_negative", kV14},
   };
   return migrations;
 }

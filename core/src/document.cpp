@@ -203,7 +203,60 @@ BalanceState read_balance(sqlite3* conn, std::int64_t warehouse_id, std::int64_t
   return state;
 }
 
-// 追加流水并同步结存；数量与金额都用增量写入，避免读改写竞态。
+// 所有结存写入的唯一出口：同一事务内先算后写，数量或金额为负直接拒绝。
+// 正常出库/反审核仍由 ensure_available / REVERSE_WOULD_NEGATIVE 给出更具体的
+// 提示；这里是最后的兜底，覆盖盘点、成本调整和将来新增的写入路径。
+void apply_balance_delta(sqlite3* conn, std::int64_t warehouse_id, std::int64_t item_id,
+                         std::int64_t delta_qty, std::int64_t delta_amount) {
+  const BalanceState current = read_balance(conn, warehouse_id, item_id);
+  const std::int64_t next_qty = current.qty + delta_qty;
+  const std::int64_t next_amount = current.amount + delta_amount;
+  if (next_qty < 0 || next_amount < 0) {
+    std::string code;
+    std::string name;
+    Stmt item(conn, "SELECT code, name FROM item WHERE id = ?;");
+    item.bind(1, item_id);
+    if (item.step()) {
+      code = item.text(0);
+      name = item.text(1);
+    }
+    const std::string label = code + " " + name;
+    if (next_qty < 0) {
+      throw AppError("STOCK_WOULD_NEGATIVE",
+                     "结存数量不能为负：" + label + " 当前结存 " + qty_text(current.qty) +
+                         "，本次变动 " + qty_text(delta_qty));
+    }
+    throw AppError("STOCK_WOULD_NEGATIVE",
+                   "结存金额不能为负：" + label + " 当前结存 " +
+                       std::to_string(current.amount) + " 分，本次变动 " +
+                       std::to_string(delta_amount) + " 分");
+  }
+
+  // 写最终值而不是 `qty = qty + ?`：BEFORE INSERT 触发器在 UPSERT 冲突判定前
+  // 就会看到待插入的负数增量，增量写法会被误伤。这里已持有写事务，先算后写无竞态。
+  Stmt update(conn,
+              "UPDATE stock_balance SET qty = ?, amount_cents = ?, updated_at = ?"
+              " WHERE warehouse_id = ? AND item_id = ?;");
+  update.bind(1, next_qty)
+      .bind(2, next_amount)
+      .bind(3, now_text())
+      .bind(4, warehouse_id)
+      .bind(5, item_id)
+      .run();
+  if (sqlite3_changes(conn) == 0) {
+    Stmt insert(conn,
+                "INSERT INTO stock_balance (warehouse_id, item_id, qty, amount_cents, updated_at)"
+                " VALUES (?, ?, ?, ?, ?);");
+    insert.bind(1, warehouse_id)
+        .bind(2, item_id)
+        .bind(3, next_qty)
+        .bind(4, next_amount)
+        .bind(5, now_text())
+        .run();
+  }
+}
+
+// 追加流水并同步结存；调用方必须处于同一个写事务内。
 void write_move(sqlite3* conn, const std::string& biz_type, std::int64_t doc_id,
                 std::int64_t line_id, std::int64_t warehouse_id, std::int64_t item_id,
                 const std::string& biz_time, std::int64_t delta_qty, std::int64_t delta_amount) {
@@ -223,19 +276,7 @@ void write_move(sqlite3* conn, const std::string& biz_type, std::int64_t doc_id,
       .bind(10, now_text())
       .run();
 
-  Stmt upsert(conn,
-              "INSERT INTO stock_balance (warehouse_id, item_id, qty, amount_cents, updated_at)"
-              " VALUES (?, ?, ?, ?, ?)"
-              " ON CONFLICT (warehouse_id, item_id) DO UPDATE SET"
-              "   qty = qty + excluded.qty,"
-              "   amount_cents = amount_cents + excluded.amount_cents,"
-              "   updated_at = excluded.updated_at;");
-  upsert.bind(1, warehouse_id)
-      .bind(2, item_id)
-      .bind(3, delta_qty)
-      .bind(4, delta_amount)
-      .bind(5, now_text())
-      .run();
+  apply_balance_delta(conn, warehouse_id, item_id, delta_qty, delta_amount);
 }
 
 // 出库/调拨前校验可用数量：不足则整单事务回滚，不会出现半途扣减或负数结存。
@@ -1112,19 +1153,7 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
           .bind(10, now_text())
           .run();
 
-      Stmt upsert(conn,
-                  "INSERT INTO stock_balance (warehouse_id, item_id, qty, amount_cents, updated_at)"
-                  " VALUES (?, ?, ?, ?, ?)"
-                  " ON CONFLICT (warehouse_id, item_id) DO UPDATE SET"
-                  "   qty = qty + excluded.qty,"
-                  "   amount_cents = amount_cents + excluded.amount_cents,"
-                  "   updated_at = excluded.updated_at;");
-      upsert.bind(1, row.warehouse_id)
-          .bind(2, row.item_id)
-          .bind(3, -row.qty)
-          .bind(4, -row.amount)
-          .bind(5, now_text())
-          .run();
+      apply_balance_delta(conn, row.warehouse_id, row.item_id, -row.qty, -row.amount);
     }
 
     Stmt update(conn, "UPDATE doc_header SET status = 'VOIDED' WHERE id = ?;");
