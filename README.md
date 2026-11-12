@@ -230,9 +230,9 @@ WebView 会打开 `http://127.0.0.1:5173/?api=http://127.0.0.1:<port>#t=<token>`
 
 ## 4. 走通一次完整链路
 
-界面操作：
+界面操作（左侧按「采购 / 销售 / 库存 / 财务 / 报表 / 基础资料 / 系统」分组，同一时间展开一组；报表是独立入口）：
 
-1. 「商品」→ 新增：编码 `T001`，名称 `测试商品`，单位 `件`。
+1. 「基础资料 → 商品」→ 新增：编码 `T001`，名称 `测试商品`，单位 `件`。
 2. 「采购入库」→ 选择仓库（内置「主仓库」）→ 添加明细行：选商品、数量 `5`、单价 `10.00` → 保存并审核，库存变为 `5`，流水一条 `PUR_IN`。
 3. 「销售出库」→ 添加明细行：数量 `2`、单价 `12.34` → 保存并审核，库存变为 `3`，流水追加 `SAL_OUT`，应收台账同步生成。
 4. 「库存」看到数量 `3`；对该销售出库点「反审核」后数量回到 `5`，流水追加一条 `REVERSE`（原流水不被删除）。
@@ -372,14 +372,14 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
    }
    ```
 
-2. **重新生成**：`tools/codegen/.venv/bin/python tools/codegen/generate.py`。DAO、服务、路由、前端页面、CMake 清单一次到位，`web/gen/pages.json` 自动追加该页，前端导航无需手改。
+2. **重新生成**：`tools/codegen/.venv/bin/python tools/codegen/generate.py`。DAO、服务、路由、前端页面、CMake 清单一次到位，`web/gen/pages.json` 自动追加该页（含 `permission` 与 `nav_group`），前端导航按 `nav_group` 自动归组，无需手改。
 3. **加迁移**：在 `core/src/migrations.cpp` 新增一版脚本（`all_migrations()` 里追加，v2 起已有用户与角色表），建表必须包含生成器依赖的列：
    `id INTEGER PRIMARY KEY`、业务字段、`is_deleted INTEGER NOT NULL DEFAULT 0`、
    `created_at/created_by/updated_at/updated_by TEXT NOT NULL`，唯一列建唯一索引。
    **已发布的迁移脚本不允许修改**（启动时会校验 checksum）。
 4. **加权限码**：在迁移脚本的 `app_role_permission` 种子里把 `customer.read` / `customer.write` 授予相应角色（未声明的权限码默认拒绝）。
 5. **重新构建**：`cmake --build --preset release`（`CONFIGURE_DEPENDS` 会自动重新配置）。
-6. **验证**：界面出现「客户」菜单，或
+6. **验证**：界面「基础资料」组下出现「客户」菜单，或
    `curl -b cookies http://127.0.0.1:<port>/api/customers`。
 
 ## 7. 单据同构引擎
