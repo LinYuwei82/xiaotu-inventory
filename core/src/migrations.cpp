@@ -755,6 +755,33 @@ INSERT INTO app_role_permission (role_id, permission) VALUES
   (2, 'setting.read'), (2, 'setting.write'), (3, 'setting.read');
 )SQL";
 
+// v23：负库存开关。默认 '0'（一律拒绝）。v14 的两个触发器改成带条件：
+// 只有 app_setting 里显式写 '1' 才放行负结存，开关缺失或任何其他值都按拒绝处理，
+// 默认路径不存在绕过；应用层仍保留 ensure_available 给出更友好的报错。
+constexpr const char* kV23 = R"SQL(
+INSERT INTO app_setting (key, value, updated_at, updated_by) VALUES
+  ('allow_negative_stock', '0', datetime('now', 'localtime'), 'system');
+
+DROP TRIGGER trg_stock_balance_non_negative_insert;
+DROP TRIGGER trg_stock_balance_non_negative_update;
+
+CREATE TRIGGER trg_stock_balance_non_negative_insert
+BEFORE INSERT ON stock_balance
+WHEN (NEW.qty < 0 OR NEW.amount_cents < 0)
+ AND COALESCE((SELECT value FROM app_setting WHERE key = 'allow_negative_stock'), '0') <> '1'
+BEGIN
+  SELECT RAISE(ABORT, '结存数量和金额不能为负');
+END;
+
+CREATE TRIGGER trg_stock_balance_non_negative_update
+BEFORE UPDATE OF qty, amount_cents ON stock_balance
+WHEN (NEW.qty < 0 OR NEW.amount_cents < 0)
+ AND COALESCE((SELECT value FROM app_setting WHERE key = 'allow_negative_stock'), '0') <> '1'
+BEGIN
+  SELECT RAISE(ABORT, '结存数量和金额不能为负');
+END;
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -792,6 +819,7 @@ const std::vector<Migration>& all_migrations() {
       {20, "v20_ar_ap_opening", kV20},
       {21, "v21_item_barcode_multi", kV21},
       {22, "v22_app_setting", kV22},
+      {23, "v23_allow_negative_stock", kV23},
   };
   return migrations;
 }

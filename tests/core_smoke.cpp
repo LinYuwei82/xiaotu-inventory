@@ -25,6 +25,7 @@
 #include "xiaotu/gen/item_service.h"
 #include "xiaotu/log.h"
 #include "xiaotu/password.h"
+#include "xiaotu/setting_service.h"
 #include "xiaotu/gen/supplier_service.h"
 #include "xiaotu/gen/unit_service.h"
 #include "xiaotu/gen/customer_service.h"
@@ -78,7 +79,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 22, "迁移后 schema 版本应为 22");
+      check(db.schema_version() == 23, "迁移后 schema 版本应为 23");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -2091,6 +2092,37 @@ int main() {
       check(negative_message.find("不能为负") != std::string::npos,
             "负结存错误应说明数量/金额不能为负");
       check(balance_of(claimed.id).qty == q(2), "负结存写入被拒后库存不应变化");
+
+      // 负库存开关：默认关时出库超库存被拒；显式开启后可形成负结存，关回后恢复拦截。
+      xiaotu::SettingService settings(db);
+      check(!settings.load().allow_negative_stock, "负库存开关默认应为关闭");
+      const auto oversell_item =
+          items.create(xiaotu::gen::ItemRow{.code = "P003", .name = "负库存商品"});
+      make_doc("PUR_IN", oversell_item.id, q(1), 100);
+      bool oversell_rejected = false;
+      try {
+        make_doc("SAL_OUT", oversell_item.id, q(2), 200);
+      } catch (const xiaotu::AppError& error) {
+        oversell_rejected = error.code() == "STOCK_INSUFFICIENT";
+      }
+      check(oversell_rejected, "负库存关闭时超库存出库应被拒绝");
+      auto setting = settings.load();
+      setting.allow_negative_stock = true;
+      settings.update(setting);
+      make_doc("SAL_OUT", oversell_item.id, q(2), 200);
+      check(balance_of(oversell_item.id).qty == -q(1), "开启负库存后结存应为 -1");
+      setting.allow_negative_stock = false;
+      settings.update(setting);
+      bool negative_blocked_again = false;
+      try {
+        db.write([&](sqlite3* conn) {
+          xiaotu::Stmt update(conn, "UPDATE stock_balance SET qty = -1 WHERE item_id = ?;");
+          update.bind(1, oversell_item.id).run();
+        });
+      } catch (const xiaotu::AppError&) {
+        negative_blocked_again = true;
+      }
+      check(negative_blocked_again, "负库存关回后触发器应继续拒绝负结存");
 
       // 信用额度：卡在销售出库审核，默认提示不拦、确认后放行并写审计；reject 模式硬拦。
       xiaotu::gen::CustomerService credit_customers(db);

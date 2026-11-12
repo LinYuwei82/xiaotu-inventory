@@ -8,21 +8,26 @@
 namespace xiaotu {
 namespace {
 
-nlohmann::json to_json(const CompanySettings& company) {
+nlohmann::json to_json(const SystemSettings& settings) {
   return nlohmann::json{
-      {"name", company.name},
-      {"phone", company.phone},
-      {"address", company.address},
+      {"company", nlohmann::json{{"name", settings.company.name},
+                                 {"phone", settings.company.phone},
+                                 {"address", settings.company.address}}},
+      {"allow_negative_stock", settings.allow_negative_stock},
   };
 }
 
-CompanySettings from_json(const nlohmann::json& body) {
-  const auto company = body.value("company", nlohmann::json::object());
-  CompanySettings input;
-  input.name = company.value("name", std::string{});
-  input.phone = company.value("phone", std::string{});
-  input.address = company.value("address", std::string{});
-  return input;
+// 只覆盖请求里出现的字段，避免旧客户端只提交公司抬头时把开关重置。
+void merge_json(const nlohmann::json& body, SystemSettings& settings) {
+  if (body.contains("company")) {
+    const auto company = body.value("company", nlohmann::json::object());
+    settings.company.name = company.value("name", settings.company.name);
+    settings.company.phone = company.value("phone", settings.company.phone);
+    settings.company.address = company.value("address", settings.company.address);
+  }
+  if (body.contains("allow_negative_stock")) {
+    settings.allow_negative_stock = body.value("allow_negative_stock", false);
+  }
 }
 
 }  // namespace
@@ -31,15 +36,15 @@ void register_setting_routes(httplib::Server& server, Services& services) {
   server.Get("/api/settings",
              guard("setting.read",
                    [&services](const httplib::Request&, httplib::Response& res) {
-                     json_ok(res, nlohmann::json{{"company", to_json(services.settings.company())}});
+                     json_ok(res, to_json(services.settings.load()));
                    }));
 
   server.Put("/api/settings",
              guard("setting.write",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const CompanySettings updated =
-                         services.settings.update_company(from_json(json_body(req)));
-                     json_ok(res, nlohmann::json{{"company", to_json(updated)}});
+                     SystemSettings input = services.settings.load();
+                     merge_json(json_body(req), input);
+                     json_ok(res, to_json(services.settings.update(input)));
                    }));
 }
 

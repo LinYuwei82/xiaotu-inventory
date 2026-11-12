@@ -5342,6 +5342,11 @@
           <label class="field"><span>公司名称</span><input type="text" maxlength="100" data-field="name" ${writable ? "" : "disabled"} /></label>
           <label class="field"><span>联系电话</span><input type="text" maxlength="50" data-field="phone" ${writable ? "" : "disabled"} /></label>
           <label class="field"><span>公司地址</span><input type="text" maxlength="200" data-field="address" ${writable ? "" : "disabled"} /></label>
+          <div class="field">
+            <span>允许负库存出库</span>
+            <label class="inline-check"><input type="checkbox" data-field="allow_negative_stock" ${writable ? "" : "disabled"} /> <span>开启后出库可把结存做成负数</span></label>
+            <span class="page-sub" data-role="negative-state"></span>
+          </div>
           <div class="form-actions">
             ${writable ? '<button class="btn primary" type="submit">保存</button>' : '<span class="page-sub">当前角色只读</span>'}
           </div>
@@ -5356,6 +5361,13 @@
 
     const form = mount.querySelector('[data-role="form"]');
     const input = (name) => form.querySelector('[data-field="' + name + '"]');
+    const negativeState = mount.querySelector('[data-role="negative-state"]');
+
+    function renderNegativeState() {
+      negativeState.textContent = input("allow_negative_stock").checked
+        ? "当前：开启（出库超库存会形成负结存）"
+        : "当前：关闭（出库超库存会被拒绝）";
+    }
 
     try {
       const data = await api("GET", "/api/settings");
@@ -5363,10 +5375,14 @@
       input("name").value = company.name || "";
       input("phone").value = company.phone || "";
       input("address").value = company.address || "";
+      input("allow_negative_stock").checked = data.allow_negative_stock === true;
+      renderNegativeState();
     } catch (error) {
       showNotice(error.message, "error");
       return;
     }
+
+    input("allow_negative_stock").addEventListener("change", renderNegativeState);
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -5378,7 +5394,9 @@
             phone: input("phone").value.trim(),
             address: input("address").value.trim(),
           },
+          allow_negative_stock: input("allow_negative_stock").checked,
         });
+        renderNegativeState();
         showNotice("系统参数已保存", "ok");
       } catch (error) {
         showNotice(error.message, "error");

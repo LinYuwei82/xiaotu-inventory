@@ -225,12 +225,19 @@ BalanceState read_balance(sqlite3* conn, std::int64_t warehouse_id, std::int64_t
 // 所有结存写入的唯一出口：同一事务内先算后写，数量或金额为负直接拒绝。
 // 正常出库/反审核仍由 ensure_available / REVERSE_WOULD_NEGATIVE 给出更具体的
 // 提示；这里是最后的兜底，覆盖盘点、成本调整和将来新增的写入路径。
+// 负库存开关：按 app_setting 的显式 '1' 放行数量为负；任何其他值都按拒绝处理。
+bool allow_negative_stock(sqlite3* conn) {
+  Stmt stmt(conn, "SELECT value FROM app_setting WHERE key = 'allow_negative_stock';");
+  return stmt.step() && stmt.text(0) == "1";
+}
+
 void apply_balance_delta(sqlite3* conn, std::int64_t warehouse_id, std::int64_t item_id,
                          std::int64_t delta_qty, std::int64_t delta_amount) {
   const BalanceState current = read_balance(conn, warehouse_id, item_id);
   const std::int64_t next_qty = current.qty + delta_qty;
   const std::int64_t next_amount = current.amount + delta_amount;
-  if (next_qty < 0 || next_amount < 0) {
+  // 数量为负是否允许由系统参数决定；金额为负始终拒绝（负库存只放行数量）。
+  if ((next_qty < 0 && !allow_negative_stock(conn)) || next_amount < 0) {
     std::string code;
     std::string name;
     Stmt item(conn, "SELECT code, name FROM item WHERE id = ?;");
@@ -318,12 +325,13 @@ void ensure_available(sqlite3* conn, std::int64_t warehouse_id, std::int64_t ite
                                           qty_text(need));
 }
 
+// 负库存开关：按 app_setting 的显式 '1' 放行；任何其他值都按拒绝处理。
 void apply_in_or_out(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
                      std::int64_t line_id, std::int64_t warehouse_id, const std::string& biz_time,
                      const DocLineInput& line) {
   const BalanceState balance = read_balance(conn, warehouse_id, line.item_id);
   const bool outgoing = definition.stock_mode == StockMode::Out;
-  if (outgoing) {
+  if (outgoing && !allow_negative_stock(conn)) {
     ensure_available(conn, warehouse_id, line.item_id, line.qty);
   }
 

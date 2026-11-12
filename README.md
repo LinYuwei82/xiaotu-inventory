@@ -561,6 +561,7 @@ struct DocumentDefinition {
 
 - 页面「系统参数」（`/api/settings`，权限 `setting.read` / `setting.write`）：只开放公司名称、联系电话、公司地址三个键，落在 v22 的 `app_setting` 键值表；operator 可改、viewer 只读、admin 通配。Audit 记 `entity=setting`，每个变化的键一条，detail 为 `{"from":"…","to":"…"}`。
 - 打印消费：三个值作为打印模板占位符 `{{company_name}}`、`{{company_phone}}`、`{{company_address}}`；模板抬头为空时默认打印公司名称，电话与地址由模板按需组合。
+- 负库存开关 `allow_negative_stock`（默认关）：关闭时出库超库存由应用层 `ensure_available` 与数据库触发器双重拒绝；开启后允许数量为负，金额仍不允许为负。v23 把 v14 的两个触发器改为读取该键，只有显式 `1` 才放行，键缺失或为其他值一律拒绝，默认路径不存在绕过；修改写审计。
 - 固定口径（页面只读展示、后端没有可改实现）：单据编号为「前缀 + YYYYMMDD + 4 位序号」，前缀按单据类型硬编码（如 `XSCK`/`CGRK`），本版**不提供配置**；日期固定 `YYYY-MM-DD`；金额固定人民币元 2 位小数；数量小数位跟随商品单位（0–4 位）。
 - 页面「关于与诊断」（`/api/diagnostics`，登录即可看，无写权限）：应用版本、schema 版本与迁移条数、edition（full/社区版）、构建 profile、编译器与编译时间、数据目录、数据库文件大小、监听地址、当前用户与角色；不返回口令、密钥或会话令牌。页面提供「复制诊断信息」，按 `标签：值` 逐行复制。
 

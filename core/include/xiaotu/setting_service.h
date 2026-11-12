@@ -13,17 +13,23 @@ struct CompanySettings {
   std::string address;
 };
 
-// 系统参数只开放少量本来就该由用户维护、且有代码消费的键；
+// 系统参数：只开放少量本来就该由用户维护、且有代码消费的键。
+struct SystemSettings {
+  CompanySettings company;
+  bool allow_negative_stock = false;
+};
+
 // 键白名单写死在实现里，避免演进成任意配置表。
 class SettingService {
  public:
   explicit SettingService(Db& db) : db_(db) {}
 
   CompanySettings company() const;
+  SystemSettings load() const;
 
-  // 校验长度后整体保存；只有值发生变化的键写审计
+  // 校验后保存公司抬头与负库存开关；只有值发生变化的键写审计
   // （action=update、entity=setting、entity_no=键名，detail 记录 from/to）。
-  CompanySettings update_company(const CompanySettings& input);
+  SystemSettings update(const SystemSettings& input);
 
  private:
   Db& db_;
