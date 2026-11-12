@@ -396,6 +396,66 @@ std::vector<PurchaseItemSummaryRow> ReportService::purchase_summary_by_item(
   return rows;
 }
 
+std::vector<OtherFlowSummaryRow> ReportService::other_flow_summary(
+    const ReportFilter& filter) const {
+  // 只统计已审核的其他出入库单据：被反审核的单据连同其回冲行一起排除。
+  std::map<std::string, OtherFlowSummaryRow> grouped;
+  db_.read([&](sqlite3* conn) {
+    Stmt stmt(conn,
+              "SELECT h.biz_category,"
+              " SUM(CASE WHEN l.qty > 0 THEN l.qty ELSE 0 END),"
+              " SUM(CASE WHEN l.qty > 0 THEN l.amount_cents ELSE 0 END),"
+              " SUM(CASE WHEN l.qty < 0 THEN -l.qty ELSE 0 END),"
+              " SUM(CASE WHEN l.qty < 0 THEN -l.amount_cents ELSE 0 END)"
+              " FROM stock_ledger l"
+              " JOIN doc_header h ON h.id = l.doc_id"
+              " WHERE h.doc_type IN ('OTH_IN', 'OTH_OUT') AND h.status = 'APPROVED'"
+              "   AND (? = '' OR substr(l.biz_time, 1, 10) >= ?)"
+              "   AND (? = '' OR substr(l.biz_time, 1, 10) <= ?)"
+              "   AND (? = 0 OR l.warehouse_id = ?)"
+              "   AND (? = '' OR COALESCE(h.biz_category, '') = ?)"
+              " GROUP BY h.biz_category;");
+    stmt.bind(1, filter.from)
+        .bind(2, filter.from)
+        .bind(3, filter.to)
+        .bind(4, filter.to)
+        .bind(5, filter.warehouse_id)
+        .bind(6, filter.warehouse_id)
+        .bind(7, filter.biz_category)
+        .bind(8, filter.biz_category);
+    while (stmt.step()) {
+      OtherFlowSummaryRow row;
+      row.category = stmt.text(0);
+      row.in_qty = stmt.i64(1);
+      row.in_amount_cents = stmt.i64(2);
+      row.out_qty = stmt.i64(3);
+      row.out_amount_cents = stmt.i64(4);
+      grouped[row.category] = std::move(row);
+    }
+  });
+  // 固定顺序：赠品、期初、领用、报损、其他，保证页面与导出稳定。
+  auto rank = [](const std::string& category) {
+    if (category == "GIFT") return 0;
+    if (category == "OPENING") return 1;
+    if (category == "USAGE") return 2;
+    if (category == "LOSS") return 3;
+    if (category == "OTHER") return 4;
+    return 5;
+  };
+  std::vector<OtherFlowSummaryRow> rows;
+  rows.reserve(grouped.size());
+  for (auto& [category, row] : grouped) {
+    rows.push_back(std::move(row));
+  }
+  std::sort(rows.begin(), rows.end(), [&](const OtherFlowSummaryRow& left,
+                                          const OtherFlowSummaryRow& right) {
+    const int left_rank = rank(left.category);
+    const int right_rank = rank(right.category);
+    return left_rank != right_rank ? left_rank < right_rank : left.category < right.category;
+  });
+  return rows;
+}
+
 std::vector<AgingRow> ReportService::ar_ap_aging(int direction, std::string_view as_of) const {
   std::vector<AgingRow> rows;
   db_.read([&](sqlite3* conn) {

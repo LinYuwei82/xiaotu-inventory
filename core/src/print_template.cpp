@@ -160,6 +160,14 @@ std::vector<PrintTargetDef> make_targets() {
       column_def("avg_price_cents", "均价（元）", "MONEY", "RIGHT", 22),
   };
 
+  const std::vector<PrintColumnDef> other_flow_columns = {
+      column_def("category", "业务类型", "TEXT", "LEFT", 36),
+      column_def("in_qty", "入库数量", "INTEGER", "RIGHT", 34),
+      column_def("in_amount_cents", "入库金额（元）", "MONEY", "RIGHT", 36),
+      column_def("out_qty", "出库数量", "INTEGER", "RIGHT", 34),
+      column_def("out_amount_cents", "出库金额（元）", "MONEY", "RIGHT", 36),
+  };
+
   const std::vector<PrintColumnDef> cost_adjust_columns = {
       column_def("item_code", "商品编码", "TEXT", "LEFT", 24),
       column_def("item_name", "商品", "TEXT", "LEFT", 36),
@@ -190,6 +198,7 @@ std::vector<PrintTargetDef> make_targets() {
       {"REPORT", "purchase-detail", "采购明细", purchase_detail_columns},
       {"REPORT", "purchase-summary-supplier", "采购汇总（按供应商）", purchase_supplier_columns},
       {"REPORT", "purchase-summary-item", "采购汇总（按商品）", purchase_item_columns},
+      {"REPORT", "other-flow-summary", "其他出入库汇总", other_flow_columns},
       {"REPORT", "ar-ap-aging", "应收应付余额与账龄", aging_columns},
       {"REPORT", "statement", "对账单", statement_columns},
       {"REPORT", "fund-ledger", "资金流水", fund_ledger_columns},

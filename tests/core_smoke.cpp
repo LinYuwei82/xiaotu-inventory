@@ -1046,7 +1046,7 @@ int main() {
 
       // 打印模板：列白名单、默认唯一、软删除回退与乐观锁。
       xiaotu::PrintTemplateService templates(db);
-      check(xiaotu::print_targets().size() == 22, "打印目标应包含 11 种单据与 11 张报表");
+      check(xiaotu::print_targets().size() == 23, "打印目标应包含 11 种单据与 12 张报表");
 
       // 成本调整单：仓库与原因在明细行，只改结存金额；反审核不能把金额冲成负数。
       const auto adjust_item = items.create(
@@ -1493,6 +1493,20 @@ int main() {
       check(usage_ledger.size() == 1 && usage_ledger.front().biz_category == "USAGE" &&
                 usage_ledger.front().biz_type == "OTH_OUT",
             "库存流水应能按业务类型筛选");
+
+      xiaotu::ReportFilter other_filter;
+      other_filter.from = kMonthStart;
+      other_filter.to = kToday;
+      other_filter.biz_category = "GIFT";
+      const auto gift_summary = reports.other_flow_summary(other_filter);
+      check(gift_summary.size() == 1 && gift_summary[0].in_qty == q(4) &&
+                gift_summary[0].in_amount_cents == 1000 && gift_summary[0].out_qty == 0,
+            "其他出入库汇总应按业务类型归集赠品入库");
+      other_filter.biz_category = "USAGE";
+      const auto usage_summary = reports.other_flow_summary(other_filter);
+      check(usage_summary.size() == 1 && usage_summary[0].out_qty == q(1) &&
+                usage_summary[0].out_amount_cents > 0,
+            "其他出入库汇总应归集领用出库且出库金额取绝对值");
       other_balance = balance_of(other.id);
       check(other_balance.qty == q(3) && other_balance.amount_cents == 750,
             "其他出库应按移动加权平均结转成本，忽略录入单价");

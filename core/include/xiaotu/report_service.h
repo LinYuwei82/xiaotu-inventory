@@ -140,6 +140,15 @@ struct PurchaseItemSummaryRow {
   std::int64_t avg_price_cents = 0;
 };
 
+// 其他出入库按业务类型汇总：入库与出库分列，出库数量与金额取绝对值。
+struct OtherFlowSummaryRow {
+  std::string category;  // GIFT / USAGE / LOSS / OPENING / OTHER
+  std::int64_t in_qty = 0;
+  std::int64_t in_amount_cents = 0;
+  std::int64_t out_qty = 0;
+  std::int64_t out_amount_cents = 0;
+};
+
 struct ReportFilter {
   std::string from;  // 含（YYYY-MM-DD），空表示不限
   std::string to;    // 含（YYYY-MM-DD），空表示不限
@@ -167,6 +176,7 @@ class ReportService {
       const ReportFilter& filter) const;
   std::vector<PurchaseItemSummaryRow> purchase_summary_by_item(
       const ReportFilter& filter) const;
+  std::vector<OtherFlowSummaryRow> other_flow_summary(const ReportFilter& filter) const;
   std::vector<AgingRow> ar_ap_aging(int direction, std::string_view as_of) const;
 
   // 往来对账单：期初 + 期间单据 - 期间核销 = 期末；只读，不落表。

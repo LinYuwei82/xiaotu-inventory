@@ -2388,6 +2388,30 @@
       </div>
       <div class="card">
         <div class="card-head">
+          <h3>其他出入库汇总</h3>
+          <span class="toolbar">
+            <button class="btn small" data-role="export-other-flow">导出 CSV</button>
+            <button class="btn small" data-role="excel-other-flow">导出 Excel</button>
+            <button class="btn small" data-role="print-other-flow">打印</button>
+            <button class="btn small" data-role="pdf-other-flow">导出 PDF</button>
+          </span>
+        </div>
+        <p class="page-sub">期间与页首一致；只统计已审核单据，出库数量与金额取绝对值</p>
+        <div class="toolbar">
+          <select data-role="other-flow-category">
+            <option value="">全部业务类型</option>
+            <option value="GIFT">赠品</option>
+            <option value="USAGE">领用</option>
+            <option value="LOSS">报损</option>
+            <option value="OPENING">期初</option>
+            <option value="OTHER">其他</option>
+          </select>
+          <select data-role="other-flow-warehouse"></select>
+        </div>
+        <table class="table" data-role="other-flow"></table>
+      </div>
+      <div class="card">
+        <div class="card-head">
           <h3>应收应付余额与账龄</h3>
           <button class="btn small" data-role="export-aging">导出 CSV</button>
           <button class="btn small" data-role="excel-aging">导出 Excel</button>
@@ -2418,6 +2442,9 @@
     const purchaseWarehouseSelect = mount.querySelector('[data-role="purchase-warehouse"]');
     const purchaseDetailTable = mount.querySelector('[data-role="purchase-detail"]');
     const purchaseSummaryTable = mount.querySelector('[data-role="purchase-summary"]');
+    const otherFlowCategorySelect = mount.querySelector('[data-role="other-flow-category"]');
+    const otherFlowWarehouseSelect = mount.querySelector('[data-role="other-flow-warehouse"]');
+    const otherFlowTable = mount.querySelector('[data-role="other-flow"]');
 
     function emptyRow(text, colspan) {
       return `<tbody><tr><td class="empty" colspan="${colspan}">${text}</td></tr></tbody>`;
@@ -2448,6 +2475,18 @@
         "&item_id=" + encodeURIComponent(purchaseItemSelect.value || "0") +
         "&warehouse_id=" + encodeURIComponent(purchaseWarehouseSelect.value || "0")
       );
+    }
+
+    // 其他出入库汇总按业务类型与仓库筛选，导出与打印共用。
+    function otherFlowQuery() {
+      let query = periodQuery();
+      if (otherFlowWarehouseSelect.value) {
+        query += "&warehouse_id=" + encodeURIComponent(otherFlowWarehouseSelect.value);
+      }
+      if (otherFlowCategorySelect.value) {
+        query += "&biz_category=" + encodeURIComponent(otherFlowCategorySelect.value);
+      }
+      return query;
     }
 
     // 保留上次选择，避免刷新后筛选条件被重置。
@@ -2488,6 +2527,7 @@
       fillSelect(purchaseSupplierSelect, suppliers, "全部供应商", (row) => row.code + " " + row.name);
       fillSelect(purchaseItemSelect, items, "全部商品", (row) => row.code + " " + row.name);
       fillSelect(purchaseWarehouseSelect, warehouses, "全部仓库", (row) => row.code + " " + row.name);
+      fillSelect(otherFlowWarehouseSelect, warehouses, "全部仓库", (row) => row.code + " " + row.name);
       const fundQuery =
         period + "&account_id=" + encodeURIComponent(fundAccountSelect.value || "0");
       const purchaseQ = purchaseQuery();
@@ -2502,6 +2542,7 @@
         fundBalances,
         purchaseDetail,
         purchaseSummary,
+        otherFlow,
       ] = await Promise.all([
         api("GET", "/api/reports/stock-balance"),
         api("GET", "/api/reports/stock-ledger" + ledgerQuery() + "&limit=500"),
@@ -2516,6 +2557,7 @@
           "GET",
           "/api/reports/purchase-summary" + purchaseQ + "&by=" + purchaseBySelect.value
         ),
+        api("GET", "/api/reports/other-flow-summary" + otherFlowQuery()),
       ]);
 
       fundLedgerTable.innerHTML = !fundLedger.length
@@ -2724,6 +2766,22 @@
                  </tr>`
                )
                .join("")}</tbody>`;
+
+      otherFlowTable.innerHTML = !otherFlow.length
+        ? emptyRow("该期间无其他出入库", 5)
+        : `<thead><tr><th>业务类型</th><th>入库数量</th><th>入库金额（元）</th>
+             <th>出库数量</th><th>出库金额（元）</th></tr></thead>
+           <tbody>${otherFlow
+             .map(
+               (row) => `<tr>
+                 <td>${escapeHtml(bizCategoryText(row.category) || row.category)}</td>
+                 <td>${qtyText(row.in_qty)}</td>
+                 <td>${money(row.in_amount_cents)}</td>
+                 <td>${qtyText(row.out_qty)}</td>
+                 <td>${money(row.out_amount_cents)}</td>
+               </tr>`
+             )
+             .join("")}</tbody>`;
     }
 
     function wireExport(role, pathFn) {
@@ -2757,6 +2815,10 @@
         "&by=" +
         purchaseBySelect.value +
         "&format=csv"
+    );
+    wireExport(
+      "export-other-flow",
+      () => "/api/reports/other-flow-summary" + otherFlowQuery() + "&format=csv"
     );
     wireExport(
       "export-aging",
@@ -2803,6 +2865,10 @@
         "&by=" +
         purchaseBySelect.value +
         "&format=xlsx"
+    );
+    wireExcel(
+      "excel-other-flow",
+      () => "/api/reports/other-flow-summary" + otherFlowQuery() + "&format=xlsx"
     );
     wireExcel(
       "excel-aging",
@@ -2859,6 +2925,11 @@
         purchaseQuery()
     );
     wirePrint(
+      "print-other-flow",
+      () =>
+        "/api/print/render?target_type=REPORT&target_key=other-flow-summary" + otherFlowQuery()
+    );
+    wirePrint(
       "print-aging",
       () =>
         "/api/print/render?target_type=REPORT&target_key=ar-ap-aging&direction=" +
@@ -2882,6 +2953,8 @@
     purchaseSupplierSelect.addEventListener("change", reload);
     purchaseItemSelect.addEventListener("change", reload);
     purchaseWarehouseSelect.addEventListener("change", reload);
+    otherFlowCategorySelect.addEventListener("change", reload);
+    otherFlowWarehouseSelect.addEventListener("change", reload);
     await reload();
   }
 

@@ -424,6 +424,21 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
     return;
   }
 
+  if (target.key == "other-flow-summary") {
+    render.subtitle = period_label(filter.from, filter.to) + "；" +
+                      dimension_label(filter.warehouse_id, "仓库") + "；业务类型 " +
+                      (filter.biz_category.empty() ? std::string("全部")
+                                                   : stock_biz_category_label(filter.biz_category));
+    for (const auto& row : services.reports.other_flow_summary(filter)) {
+      render.rows.push_back({{"category", stock_biz_category_label(row.category)},
+                             {"in_qty", qty_text(row.in_qty)},
+                             {"in_amount_cents", row.in_amount_cents},
+                             {"out_qty", qty_text(row.out_qty)},
+                             {"out_amount_cents", row.out_amount_cents}});
+    }
+    return;
+  }
+
   if (target.key == "fund-ledger") {
     const std::int64_t account_id = param_i64(req, "account_id", 0);
     const std::string from = param_text(req, "from");
