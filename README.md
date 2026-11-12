@@ -288,11 +288,13 @@ struct DocumentDefinition {
 
 ### 报表导出与打印
 
-- 六张报表（库存余额、库存流水、收发明细、进销存汇总、销售毛利、应收应付账龄）都支持导出 CSV：在接口后加 `?format=csv`，
-  或直接点报表卡片右上角的「导出 CSV」。导出跟随页面当前筛选条件。
+- 六张报表（库存余额、库存流水、收发明细、进销存汇总、销售毛利、应收应付账龄）都支持导出 CSV：
+  在接口后加 `?format=csv`，或直接点报表卡片右上角的「导出 CSV」。导出跟随页面当前筛选条件。
 - 进销存汇总按商品跨仓库汇总期初 + 入库 − 出库 = 期末，数量与金额双口径（`/api/reports/inventory-summary`）。
 - 销售毛利按商品汇总销售收入、销售成本与毛利（`/api/reports/sales-profit`）：收入取单据金额（退货红字），
   成本取审核写入的库存流水，已反审核单据不计入。
+- 六张报表同样支持 `?format=xlsx` 导出 Excel（卡片右上角「导出 Excel」）：服务端直接生成最小 OOXML 工作簿，
+  不引入三方库；表头加粗，金额写为两位小数的数值单元格，可直接求和。对账单也支持 `?format=xlsx`。
 - CSV 为带 BOM 的 UTF-8，Excel 直接打开不乱码；金额以元为单位、两位小数，由整数分按
   `1 元 = 100 分` 换算，文件头部附金额说明，不使用浮点。
 - 报表页「打印」使用浏览器打印（`window.print()`）；单机版 WKWebView 通过原生桥接打开系统打印面板。
@@ -316,7 +318,7 @@ struct DocumentDefinition {
 - 单据支持草稿态：存草稿只写单据与明细、不写库存流水，审核时才进单事务；反审核为整单反向。
 - 数量按整数件（精度策略见方案 Q4），无多单位、批次、序列号、价格体系。
 - 成本按移动加权平均，暂不支持其他计价方式。
-- 无 Excel 导出（报表支持 CSV 与浏览器打印），无 PDF 输出与自定义打印模板。
+- 无 PDF 输出与自定义打印模板（打印走系统打印面板，可另存为 PDF）。
 - 无请求幂等键（`request_id`）与 CSRF token；当前依赖一次性 token + HttpOnly Cookie + `SameSite=Lax`。
 - 未接入 vcpkg 时依赖 `third_party/` 内嵌头文件；接入 vcpkg 后 `vcpkg.json` 会自动生效。
 
@@ -345,4 +347,4 @@ tools/package/make_dmg.sh
 
 - 技术方案：`docs/进销存技术方案.md`
 - 数据库结构：`core/src/migrations.cpp`（v7）
-- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`
+- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`

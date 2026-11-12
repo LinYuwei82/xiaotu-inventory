@@ -12,6 +12,7 @@
 #include "xiaotu/models.h"
 #include "xiaotu/report_service.h"
 #include "xiaotu/services.h"
+#include "xiaotu/xlsx.h"
 
 namespace xiaotu {
 namespace {
@@ -39,6 +40,10 @@ ReportFilter parse_filter(const httplib::Request& req) {
 
 bool csv_requested(const httplib::Request& req) {
   return req.has_param("format") && req.get_param_value("format") == "csv";
+}
+
+bool xlsx_requested(const httplib::Request& req) {
+  return req.has_param("format") && req.get_param_value("format") == "xlsx";
 }
 
 std::string csv_escape(const std::string& value) {
@@ -94,6 +99,21 @@ void csv_preamble(std::string& out, const std::string& title, const std::string&
 void send_csv(httplib::Response& res, const std::string& filename, const std::string& body) {
   res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
   res.set_content("\xEF\xBB\xBF" + body, "text/csv; charset=utf-8");
+}
+
+void xlsx_preamble(XlsxSheet& sheet, const std::string& title, const std::string& scope) {
+  sheet.add_text_row({"报表", title});
+  sheet.add_text_row({"筛选条件", scope});
+  sheet.add_text_row({"导出时间", now_text()});
+  sheet.add_text_row({"金额说明",
+                      "金额单位为元，由整数分按 1 元 = 100 分换算并保留两位小数，无浮点误差"});
+  sheet.add_text_row({});
+}
+
+void send_xlsx(httplib::Response& res, const std::string& filename, const std::string& body) {
+  res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+  res.set_content(body,
+                  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
 }
 
 std::string date_stamp() {
@@ -266,6 +286,23 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        send_csv(res, "stock-balance-" + date_stamp() + ".csv", csv);
                        return;
                      }
+                     if (xlsx_requested(req)) {
+                       XlsxSheet sheet("库存余额表");
+                       xlsx_preamble(sheet, "库存余额表", "全部仓库 / 全部商品");
+                       sheet.add_header_row({"商品编码", "商品名称", "单位", "仓库编码",
+                                             "仓库名称", "数量", "金额（元）"});
+                       for (const auto& row : rows) {
+                         sheet.add_row({XlsxCell::text(row.item_code),
+                                        XlsxCell::text(row.item_name),
+                                        XlsxCell::text(row.unit),
+                                        XlsxCell::text(row.warehouse_code),
+                                        XlsxCell::text(row.warehouse_name),
+                                        XlsxCell::integer(row.qty),
+                                        XlsxCell::money(row.amount_cents)});
+                       }
+                       send_xlsx(res, "stock-balance-" + date_stamp() + ".xlsx", sheet.build());
+                       return;
+                     }
                      nlohmann::json list = nlohmann::json::array();
                      for (const auto& row : rows) {
                        list.push_back(balance_to_json(row));
@@ -301,6 +338,34 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        send_csv(res, "inventory-summary-" + date_stamp() + ".csv", csv);
                        return;
                      }
+                     if (xlsx_requested(req)) {
+                       XlsxSheet sheet("进销存汇总");
+                       xlsx_preamble(sheet, "进销存汇总",
+                                     period_label(filter) + "；" +
+                                         dimension_label(filter.item_id, "商品") + "；" +
+                                         dimension_label(filter.warehouse_id, "仓库") +
+                                         "；按商品跨仓库汇总");
+                       sheet.add_header_row({"商品编码", "商品名称", "单位", "期初数量",
+                                             "期初金额（元）", "入库数量", "入库金额（元）",
+                                             "出库数量", "出库金额（元）", "期末数量",
+                                             "期末金额（元）"});
+                       for (const auto& row : rows) {
+                         sheet.add_row({XlsxCell::text(row.item_code),
+                                        XlsxCell::text(row.item_name),
+                                        XlsxCell::text(row.unit),
+                                        XlsxCell::integer(row.opening_qty),
+                                        XlsxCell::money(row.opening_amount_cents),
+                                        XlsxCell::integer(row.in_qty),
+                                        XlsxCell::money(row.in_amount_cents),
+                                        XlsxCell::integer(row.out_qty),
+                                        XlsxCell::money(row.out_amount_cents),
+                                        XlsxCell::integer(row.closing_qty),
+                                        XlsxCell::money(row.closing_amount_cents)});
+                       }
+                       send_xlsx(res, "inventory-summary-" + date_stamp() + ".xlsx",
+                                 sheet.build());
+                       return;
+                     }
                      nlohmann::json list = nlohmann::json::array();
                      for (const auto& row : rows) {
                        list.push_back(summary_to_json(row));
@@ -312,7 +377,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
              guard("stock.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      ReportFilter filter = parse_filter(req);
-                     if (csv_requested(req)) filter.limit = 100000;
+                     if (csv_requested(req) || xlsx_requested(req)) filter.limit = 100000;
                      const auto rows = services.reports.stock_ledger(filter);
                      if (csv_requested(req)) {
                        std::string csv;
@@ -328,6 +393,27 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                        std::to_string(row.qty), yuan(row.amount_cents)});
                        }
                        send_csv(res, "stock-ledger-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
+                     if (xlsx_requested(req)) {
+                       XlsxSheet sheet("库存流水明细");
+                       xlsx_preamble(sheet, "库存流水明细",
+                                     period_label(filter) + "；" +
+                                         dimension_label(filter.item_id, "商品") + "；" +
+                                         dimension_label(filter.warehouse_id, "仓库"));
+                       sheet.add_header_row({"时间", "类型", "单据号", "商品编码", "商品名称",
+                                             "仓库", "数量", "金额（元）"});
+                       for (const auto& row : rows) {
+                         sheet.add_row({XlsxCell::text(row.biz_time),
+                                        XlsxCell::text(row.biz_type),
+                                        XlsxCell::text(row.doc_no),
+                                        XlsxCell::text(row.item_code),
+                                        XlsxCell::text(row.item_name),
+                                        XlsxCell::text(row.warehouse_name),
+                                        XlsxCell::integer(row.qty),
+                                        XlsxCell::money(row.amount_cents)});
+                       }
+                       send_xlsx(res, "stock-ledger-" + date_stamp() + ".xlsx", sheet.build());
                        return;
                      }
                      nlohmann::json list = nlohmann::json::array();
@@ -359,6 +445,30 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                        yuan(row.in_amount_cents), yuan(row.out_amount_cents)});
                        }
                        send_csv(res, "goods-flow-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
+                     if (xlsx_requested(req)) {
+                       XlsxSheet sheet("收发明细");
+                       xlsx_preamble(sheet, "收发明细",
+                                     period_label(filter) + "；" +
+                                         dimension_label(filter.warehouse_id, "仓库"));
+                       sheet.add_header_row({"商品编码", "商品名称", "单位", "仓库编码",
+                                             "仓库名称", "期初数量", "收入数量", "发出数量",
+                                             "期末数量", "收入金额（元）", "发出金额（元）"});
+                       for (const auto& row : rows) {
+                         sheet.add_row({XlsxCell::text(row.item_code),
+                                        XlsxCell::text(row.item_name),
+                                        XlsxCell::text(row.unit),
+                                        XlsxCell::text(row.warehouse_code),
+                                        XlsxCell::text(row.warehouse_name),
+                                        XlsxCell::integer(row.opening_qty),
+                                        XlsxCell::integer(row.in_qty),
+                                        XlsxCell::integer(row.out_qty),
+                                        XlsxCell::integer(row.closing_qty),
+                                        XlsxCell::money(row.in_amount_cents),
+                                        XlsxCell::money(row.out_amount_cents)});
+                       }
+                       send_xlsx(res, "goods-flow-" + date_stamp() + ".xlsx", sheet.build());
                        return;
                      }
                      nlohmann::json list = nlohmann::json::array();
@@ -393,6 +503,33 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                        margin_text(row.revenue_cents, row.profit_cents)});
                        }
                        send_csv(res, "sales-profit-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
+                     if (xlsx_requested(req)) {
+                       XlsxSheet sheet("销售毛利");
+                       xlsx_preamble(sheet, "销售毛利",
+                                     period_label(filter) + "；" +
+                                         dimension_label(filter.item_id, "商品") + "；客户 " +
+                                         (filter.customer_id == 0
+                                              ? std::string("全部")
+                                              : "ID " + std::to_string(filter.customer_id)) +
+                                         "；收入取单据金额，成本取审核写入的库存流水，"
+                                         "已反审核单据不计入");
+                       sheet.add_header_row({"商品编码", "商品名称", "单位", "销售数量",
+                                             "销售收入（元）", "销售成本（元）", "毛利（元）",
+                                             "毛利率"});
+                       for (const auto& row : rows) {
+                         sheet.add_row({XlsxCell::text(row.item_code),
+                                        XlsxCell::text(row.item_name),
+                                        XlsxCell::text(row.unit),
+                                        XlsxCell::integer(row.qty),
+                                        XlsxCell::money(row.revenue_cents),
+                                        XlsxCell::money(row.cost_cents),
+                                        XlsxCell::money(row.profit_cents),
+                                        XlsxCell::text(
+                                            margin_text(row.revenue_cents, row.profit_cents))});
+                       }
+                       send_xlsx(res, "sales-profit-" + date_stamp() + ".xlsx", sheet.build());
                        return;
                      }
                      nlohmann::json list = nlohmann::json::array();
@@ -454,6 +591,47 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                 csv);
                        return;
                      }
+                     if (xlsx_requested(req)) {
+                       const std::string period = from.empty() && to.empty()
+                                                      ? "全部期间"
+                                                      : (from.empty() ? std::string("起始不限") : from) +
+                                                            " 至 " +
+                                                            (to.empty() ? std::string("截止不限") : to);
+                       const std::string partner =
+                           (result.partner_name.empty() ? std::string("未命名")
+                                                        : result.partner_name) +
+                           "（" + result.partner_key + "）";
+                       XlsxSheet sheet("对账单");
+                       xlsx_preamble(sheet, "对账单",
+                                     std::string("往来单位 ") + partner + "；方向 " +
+                                         (direction == -1 ? "应付" : "应收") + "；期间 " + period +
+                                         "；仅统计 v7 迁移后审核的单据，已反审核单据不计入");
+                       sheet.add_header_row({"日期", "类型", "单号", "摘要", "增加（元）",
+                                             "减少（元）", "余额（元）"});
+                       sheet.add_row({XlsxCell::text("期初余额"), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::money(result.opening_cents)});
+                       for (const auto& line : result.lines) {
+                         sheet.add_row({XlsxCell::text(line.date),
+                                        XlsxCell::text(statement_kind_label(result, line)),
+                                        XlsxCell::text(line.doc_no),
+                                        XlsxCell::text(statement_summary(result, line)),
+                                        XlsxCell::money(line.increase_cents),
+                                        XlsxCell::money(line.decrease_cents),
+                                        XlsxCell::money(line.balance_cents)});
+                       }
+                       sheet.add_row({XlsxCell::text("本期合计"), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::money(result.increase_cents),
+                                      XlsxCell::money(result.decrease_cents),
+                                      XlsxCell::money(result.closing_cents)});
+                       send_xlsx(res,
+                                 std::string("statement-") + (direction == -1 ? "ap" : "ar") + "-" +
+                                     date_stamp() + ".xlsx",
+                                 sheet.build());
+                       return;
+                     }
                      nlohmann::json body = statement_to_json(result);
                      body["data_scope"] = kArApScope;
                      json_ok(res, body);
@@ -489,6 +667,30 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                        yuan(row.d61_90_cents), yuan(row.d90_plus_cents)});
                        }
                        send_csv(res, "ar-ap-aging-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
+                     if (xlsx_requested(req)) {
+                       XlsxSheet sheet("应收应付余额与账龄");
+                       xlsx_preamble(sheet, "应收应付余额与账龄",
+                                     std::string("方向 ") + (direction == -1 ? "应付" : "应收") +
+                                         "；截止日 " + as_of +
+                                         "；仅统计 v7 迁移后审核的单据");
+                       sheet.add_header_row({"往来单位", "方向", "合计（元）", "未到期（元）",
+                                             "1-30 天（元）", "31-60 天（元）", "61-90 天（元）",
+                                             "90 天以上（元）"});
+                       for (const auto& row : rows) {
+                         sheet.add_row(
+                             {XlsxCell::text(row.partner_name.empty() ? row.partner_key
+                                                                      : row.partner_name),
+                              XlsxCell::text(row.direction == -1 ? "应付" : "应收"),
+                              XlsxCell::money(row.total_cents),
+                              XlsxCell::money(row.not_due_cents),
+                              XlsxCell::money(row.d1_30_cents),
+                              XlsxCell::money(row.d31_60_cents),
+                              XlsxCell::money(row.d61_90_cents),
+                              XlsxCell::money(row.d90_plus_cents)});
+                       }
+                       send_xlsx(res, "ar-ap-aging-" + date_stamp() + ".xlsx", sheet.build());
                        return;
                      }
                      nlohmann::json list = nlohmann::json::array();

@@ -112,6 +112,50 @@
     }
   }
 
+  // xlsx 是二进制，单机版桥接用 base64 传回原生保存，浏览器走 Blob 下载。
+  function toBase64(bytes) {
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
+  async function downloadXlsx(path) {
+    const response = await fetch(API_BASE + path, { credentials: "include" });
+    if (!response.ok) {
+      let message = "导出失败（HTTP " + response.status + "）";
+      try {
+        const payload = await response.json();
+        if (payload && payload.message) message = payload.message;
+      } catch (error) {
+        /* 非 JSON 响应，保留默认提示 */
+      }
+      throw new Error(message);
+    }
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = /filename="([^"]+)"/.exec(disposition);
+    const filename = match ? match[1] : "report.xlsx";
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const handlers = window.webkit && window.webkit.messageHandlers;
+    if (handlers && handlers.xiaotuExport) {
+      handlers.xiaotuExport.postMessage({ filename, contentBase64: toBase64(bytes) });
+      return;
+    }
+    const blob = new Blob([bytes], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
   // ---------- 通用 CRUD 页面（供 codegen 生成的页面调用） ----------
 
   async function crudPage(mount, def) {
@@ -761,6 +805,7 @@
         <div class="card-head">
           <h3>库存余额表</h3>
           <button class="btn small" data-role="export-balance">导出 CSV</button>
+          <button class="btn small" data-role="excel-balance">导出 Excel</button>
         </div>
         <table class="table" data-role="balances"></table>
       </div>
@@ -768,6 +813,7 @@
         <div class="card-head">
           <h3>库存流水明细</h3>
           <button class="btn small" data-role="export-ledger">导出 CSV</button>
+          <button class="btn small" data-role="excel-ledger">导出 Excel</button>
         </div>
         <table class="table" data-role="ledger"></table>
       </div>
@@ -775,6 +821,7 @@
         <div class="card-head">
           <h3>收发明细</h3>
           <button class="btn small" data-role="export-flows">导出 CSV</button>
+          <button class="btn small" data-role="excel-flows">导出 Excel</button>
         </div>
         <table class="table" data-role="flows"></table>
       </div>
@@ -782,6 +829,7 @@
         <div class="card-head">
           <h3>进销存汇总</h3>
           <button class="btn small" data-role="export-summary">导出 CSV</button>
+          <button class="btn small" data-role="excel-summary">导出 Excel</button>
         </div>
         <p class="page-sub">按商品跨仓库汇总：期初 + 入库 − 出库 = 期末，数量与金额双口径</p>
         <table class="table" data-role="summary"></table>
@@ -790,6 +838,7 @@
         <div class="card-head">
           <h3>销售毛利</h3>
           <button class="btn small" data-role="export-profit">导出 CSV</button>
+          <button class="btn small" data-role="excel-profit">导出 Excel</button>
         </div>
         <p class="page-sub">收入取单据金额，成本取审核写入的库存流水；已反审核单据不计入</p>
         <table class="table" data-role="profit"></table>
@@ -798,6 +847,7 @@
         <div class="card-head">
           <h3>应收应付余额与账龄</h3>
           <button class="btn small" data-role="export-aging">导出 CSV</button>
+          <button class="btn small" data-role="excel-aging">导出 Excel</button>
         </div>
         <p class="page-sub">统计范围：仅 v7 迁移后审核的单据，升级前已审核单据不计入往来与账龄；上方库存类报表不受影响</p>
         <table class="table" data-role="aging"></table>
@@ -983,6 +1033,30 @@
       () => "/api/reports/ar-ap-aging?direction=" + directionSelect.value + "&format=csv"
     );
 
+    function wireExcel(role, pathFn) {
+      mount.querySelector(`[data-role="${role}"]`).addEventListener("click", async () => {
+        try {
+          await downloadXlsx(pathFn());
+          showNotice("已导出 Excel", "ok");
+        } catch (error) {
+          showNotice(error.message, "error");
+        }
+      });
+    }
+
+    wireExcel("excel-balance", () => "/api/reports/stock-balance?format=xlsx");
+    wireExcel("excel-ledger", () => "/api/reports/stock-ledger" + periodQuery() + "&format=xlsx");
+    wireExcel("excel-flows", () => "/api/reports/goods-flow" + periodQuery() + "&format=xlsx");
+    wireExcel(
+      "excel-summary",
+      () => "/api/reports/inventory-summary" + periodQuery() + "&format=xlsx"
+    );
+    wireExcel("excel-profit", () => "/api/reports/sales-profit" + periodQuery() + "&format=xlsx");
+    wireExcel(
+      "excel-aging",
+      () => "/api/reports/ar-ap-aging?direction=" + directionSelect.value + "&format=xlsx"
+    );
+
     mount.querySelector('[data-role="print"]').addEventListener("click", () => {
       renderPrintHead();
       printPage();
@@ -1014,6 +1088,7 @@
           <input type="date" data-role="to" value="${today}" />
           <button class="btn" data-role="refresh">查询</button>
           <button class="btn" data-role="export">导出 CSV</button>
+          <button class="btn" data-role="excel">导出 Excel</button>
           <button class="btn" data-role="print">打印</button>
         </div>
       </div>
@@ -1153,6 +1228,18 @@
       try {
         await downloadCsv(queryPath() + "&format=csv");
         showNotice("已导出 CSV", "ok");
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+    mount.querySelector('[data-role="excel"]').addEventListener("click", async () => {
+      if (!partnerSelect.value) {
+        showNotice("请先选择往来单位", "error");
+        return;
+      }
+      try {
+        await downloadXlsx(queryPath() + "&format=xlsx");
+        showNotice("已导出 Excel", "ok");
       } catch (error) {
         showNotice(error.message, "error");
       }

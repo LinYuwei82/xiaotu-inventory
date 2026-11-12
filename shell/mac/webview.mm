@@ -39,12 +39,21 @@
   NSString* filename = [body[@"filename"] isKindOfClass:[NSString class]] ? body[@"filename"]
                                                                         : @"report.csv";
   NSString* content = [body[@"content"] isKindOfClass:[NSString class]] ? body[@"content"] : @"";
+  NSString* content_base64 =
+      [body[@"contentBase64"] isKindOfClass:[NSString class]] ? body[@"contentBase64"] : nil;
+  NSData* binary = content_base64 != nil
+                       ? [[NSData alloc] initWithBase64EncodedString:content_base64 options:0]
+                       : nil;
   NSSavePanel* panel = [NSSavePanel savePanel];
   panel.nameFieldStringValue = filename;
   panel.canCreateDirectories = YES;
   [panel beginSheetModalForWindow:self.window
                 completionHandler:^(NSModalResponse result) {
                   if (result != NSModalResponseOK || panel.URL == nil) {
+                    return;
+                  }
+                  if (binary != nil) {
+                    [binary writeToURL:panel.URL atomically:YES];
                     return;
                   }
                   [content writeToURL:panel.URL
