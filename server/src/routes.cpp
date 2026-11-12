@@ -19,6 +19,7 @@ void register_audit_routes(httplib::Server& server, Services& services);
 void register_finance_routes(httplib::Server& server, Services& services);
 void register_report_routes(httplib::Server& server, Services& services);
 void register_print_routes(httplib::Server& server, Services& services);
+void register_masterdata_routes(httplib::Server& server, Services& services);
 
 void register_all_routes(httplib::Server& server, Services& services) {
   gen::register_item_routes(server, services);
@@ -27,6 +28,7 @@ void register_all_routes(httplib::Server& server, Services& services) {
   gen::register_customer_routes(server, services);
   gen::register_unit_routes(server, services);
   gen::register_fund_account_routes(server, services);
+  register_masterdata_routes(server, services);
   register_document_routes(server, services);
   register_stock_routes(server, services);
   register_user_routes(server, services);

@@ -10,6 +10,7 @@ add_library(xiaotu_server STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/http_json.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/http_server.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/login_limiter.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/masterdata_routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/platform_paths.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/print_routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/report_routes.cpp"

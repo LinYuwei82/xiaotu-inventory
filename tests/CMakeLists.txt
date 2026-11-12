@@ -25,3 +25,8 @@ target_link_libraries(xiaotu_xlsx_smoke PRIVATE xiaotu_core Threads::Threads)
 
 add_test(NAME xlsx_smoke
          COMMAND xiaotu_xlsx_smoke "${CMAKE_CURRENT_SOURCE_DIR}/data")
+
+add_executable(xiaotu_masterdata_smoke "${CMAKE_CURRENT_SOURCE_DIR}/masterdata_smoke.cpp")
+target_link_libraries(xiaotu_masterdata_smoke PRIVATE xiaotu_server Threads::Threads)
+
+add_test(NAME masterdata_smoke COMMAND xiaotu_masterdata_smoke)

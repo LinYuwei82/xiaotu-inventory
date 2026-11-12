@@ -71,6 +71,7 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/backup.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/cost_recalc.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/log.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/masterdata_io.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/crud.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/db.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/doc_number.cpp"

@@ -13,6 +13,7 @@
 #include "xiaotu/http_json.h"
 #include "xiaotu/ids.h"
 #include "xiaotu/log.h"
+#include "xiaotu/masterdata_io.h"
 #include "xiaotu/permissions.h"
 #include "xiaotu/resources.h"
 #include "xiaotu/routes.h"
@@ -67,7 +68,9 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
       bootstrap_expire_(std::chrono::steady_clock::now() + std::chrono::minutes(10)),
       sessions_(services.db),
       server_(std::make_unique<httplib::Server>()) {
-  server_->set_payload_max_length(1U << 20U);
+  // 主数据导入按原始二进制上传，只给导入路径放宽到 5MB；
+  // 其它接口仍在 pre-routing 里按 1MB 拦截，避免整体放大请求体上限。
+  server_->set_payload_max_length(kImportMaxBytes);
   server_->set_read_timeout(15, 0);
   server_->set_write_timeout(15, 0);
   // 每个连接只处理一个请求（httplib 的计数为 0 表示一个都不处理，所以用 1）：
@@ -142,6 +145,13 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         const bool is_api = path.rfind("/api/", 0) == 0;
         if (!is_api) {
           return httplib::Server::HandlerResponse::Unhandled;
+        }
+        // 导入走原始二进制，其余 API 的请求体仍限制在 1MB。
+        const bool is_import =
+            path.size() > 7 && path.compare(path.size() - 7, 7, "/import") == 0;
+        if (!is_import && req.body.size() > (1U << 20U)) {
+          json_error(res, 413, "PAYLOAD_TOO_LARGE", "请求体超过 1MB 上限");
+          return httplib::Server::HandlerResponse::Handled;
         }
         if (path == "/api/health") {
           return httplib::Server::HandlerResponse::Unhandled;
