@@ -10,6 +10,7 @@ struct RequestContext {
   std::string user = "system";
   std::string role = "admin";
   std::string request_id;
+  std::string csrf;
 };
 
 RequestContext& current_context();

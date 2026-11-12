@@ -49,6 +49,17 @@ endif()
 set(SQLITE_SOURCE "${THIRD_PARTY}/sqlite/sqlite3.c")
 set_source_files_properties("${SQLITE_SOURCE}" PROPERTIES COMPILE_OPTIONS "-w")
 
+# Argon2 官方参考实现内嵌编译，不依赖系统库或包管理器。
+set(ARGON2_DIR "${THIRD_PARTY}/argon2")
+set(ARGON2_SOURCES
+  "${ARGON2_DIR}/src/argon2.c"
+  "${ARGON2_DIR}/src/core.c"
+  "${ARGON2_DIR}/src/encoding.c"
+  "${ARGON2_DIR}/src/ref.c"
+  "${ARGON2_DIR}/src/thread.c"
+  "${ARGON2_DIR}/src/blake2/blake2b.c")
+set_source_files_properties(${ARGON2_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+
 add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/audit.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/context.cpp"
@@ -64,6 +75,7 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/ids.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/migrations.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/money.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/password.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/permissions.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/print_template.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/report_service.cpp"
@@ -72,11 +84,19 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/user_service.cpp"
   ${XIAOTU_GENERATED_CORE_SOURCES}
   "${SQLITE_SOURCE}"
+  ${ARGON2_SOURCES}
   "${EMBEDDED_SOURCE}")
 
 target_include_directories(xiaotu_core
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
-  PUBLIC "${THIRD_PARTY}/sqlite")
+  PUBLIC "${THIRD_PARTY}/sqlite"
+  PRIVATE "${ARGON2_DIR}/include")
+
+find_package(Threads REQUIRED)
+target_link_libraries(xiaotu_core PRIVATE Threads::Threads)
+if(WIN32)
+  target_link_libraries(xiaotu_core PRIVATE bcrypt)
+endif()
 
 # 生成的能力表按这个宏选择生效版本，见 core/include/xiaotu/gen/edition_caps.h。
 target_compile_definitions(xiaotu_core PUBLIC

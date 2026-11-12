@@ -3,7 +3,7 @@
 macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 - 不带参数启动 = **单机版**：内嵌服务只监听 `127.0.0.1` 的随机端口，生成一次性 token，用系统 WKWebView 打开本地页面。
-- `--server` 启动 = **网络版**：监听 `0.0.0.0`，用浏览器访问（启动日志会输出带 token 的一次性访问链接）。
+- `--server` 启动 = **网络版**：监听 `0.0.0.0`，用浏览器访问；使用用户名与口令登录（首次需先给内置管理员设置口令）。
 
 当前 M2 收口中，已打通：**商品 / 单位 / 仓库 / 客户 / 供应商档案 → 采购入库、销售出库、采购退货、销售退货、其他入库、其他出库、调拨、盘点（草稿与反审核）→ 销售订单确认与转出库 → 库存余额与流水 → 应收应付台账与核销 → 往来对账单 → 七类报表导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志与 macOS `.dmg` 打包。成本重算已提供只读核对与差异清单，写回策略待确认。
 
@@ -42,7 +42,7 @@ brew install cmake ninja ccache
 ```
 
 Windows 只构建服务端与测试时另需 CMake 3.25+、Ninja、Visual Studio 2022 Build Tools（MSVC，C++20）；
-不需要 Xcode、ccache 或 vcpkg，`cpp-httplib`、`nlohmann/json`、SQLite 均已内嵌在 `third_party/`。
+不需要 Xcode、ccache 或 vcpkg，`cpp-httplib`、`nlohmann/json`、SQLite、Argon2 均已内嵌在 `third_party/`。
 
 ## 2. 构建
 
@@ -73,7 +73,7 @@ macOS 产物是 `.app` bundle（图标、Info.plist、前端资源都在 bundle 
 构建目标共三个：`xiaotu_core`（纯业务）、`xiaotu_server`（HTTP 服务与内嵌静态资源）、`xiaotu-inventory`（macOS WKWebView 壳）。
 Preset 对应关系：`macos-release` / `macos-dev`（构建名 `release` / `dev`）用于 macOS 全量构建；
 `windows-release` / `windows-dev` 用于 Windows，二者已设置 `XIAOTU_BUILD_SHELL=OFF`。
-依赖全部内嵌在 `third_party/`（SQLite amalgamation、cpp-httplib、nlohmann/json），构建不依赖网络；安装 vcpkg 后自动优先使用 vcpkg 版本。
+依赖全部内嵌在 `third_party/`（SQLite amalgamation、cpp-httplib、nlohmann/json、phc-winner-argon2 参考实现，均为 CC0 / Apache-2.0 / MIT 许可），构建不依赖网络；安装 vcpkg 后自动优先使用 vcpkg 版本。
 
 单机版壳默认构建。只做服务端 / 业务逻辑开发时，可在任意平台关闭：
 
@@ -121,7 +121,14 @@ ctest --preset windows-release
 .\build\windows\server\xiaotu-server.exe --server --port 8080 --data D:\xt-data
 ```
 
-浏览器打开启动日志里的「访问凭据」链接。前端开发态用 `windows-dev`：
+首次先设置管理员口令，再启动并用浏览器访问 `http://localhost:8080/` 登录：
+
+```powershell
+$env:XIAOTU_PASSWORD = '你的口令'
+.\build\windows\server\xiaotu-server.exe --data D:\xt-data --set-password admin
+```
+
+前端开发态用 `windows-dev`：
 
 ```powershell
 cmake --preset windows-dev
@@ -146,14 +153,27 @@ open ./build/release/shell/xiaotu-inventory.app
 
 ### 网络版
 
+首次启动前先给内置管理员设置口令（口令长度 8–128，经 Argon2id 散列存储）：
+
 ```bash
-./build/release/server/xiaotu-server --server --port 8080
+XIAOTU_PASSWORD='你的口令' ./build/release/server/xiaotu-server \
+  --data /tmp/xt-data --set-password admin
 ```
 
-macOS 的 `.app` 可执行文件也支持同样参数：
-`./build/release/shell/xiaotu-inventory.app/Contents/MacOS/xiaotu-inventory --server --port 8080`。
+然后启动服务：
 
-启动日志中的「访问凭据」链接即为一次性登录地址（10 分钟内有效、只能使用一次）。局域网其他机器访问时，把 URL 中的 `127.0.0.1` 换成本机 IP。
+```bash
+./build/release/server/xiaotu-server --server --port 8080 --data /tmp/xt-data
+```
+
+浏览器访问 `http://<本机 IP>:8080/`，用 `admin` 和新口令登录。局域网其他机器访问时把 IP 换成本机地址；若前面有 TLS 反向代理，带上 `X-Forwarded-Proto: https`，会话 Cookie 会自动加 `Secure`。
+
+登录安全现状：
+
+- 会话保存在内存，进程重启后需要重新登录（持久化会话待产品确认后再做）。
+- 登录失败按「来源 IP + 用户名」限流：5 分钟内连续 5 次失败后返回 `429`，成功登录即清零。
+- 会话 Cookie 为 `HttpOnly`、`SameSite=Strict`；写操作必须带登录响应里的 `csrf`，放在 `X-CSRF-Token` 请求头，否则返回 `403 CSRF_INVALID`。
+- 网络版禁用了启动 token 登录，只能用用户名与口令；单机版仍走一次性 token 自动登录。
 
 ### 开发态（前端不重新编译）
 
@@ -193,13 +213,15 @@ WebView 会打开 `http://127.0.0.1:5173/?api=http://127.0.0.1:<port>#t=<token>`
 等价的命令行验证（网络版）：
 
 ```bash
-./build/release/shell/xiaotu-inventory.app/Contents/MacOS/xiaotu-inventory --server --port 18080 --data /tmp/xt-data > /tmp/xt.log 2>&1 &
-TOKEN=$(grep -o '#t=[0-9a-f]*' /tmp/xt.log | head -1 | cut -d= -f2)
-curl -s -c /tmp/xt.cookies -H 'Content-Type: application/json' \
-  -d "{\"token\":\"$TOKEN\"}" http://127.0.0.1:18080/api/session
-curl -s -b /tmp/xt.cookies -H 'Content-Type: application/json' \
+XIAOTU_PASSWORD='AdminPassw0rd!' \
+  ./build/release/server/xiaotu-server --data /tmp/xt-data --set-password admin
+./build/release/server/xiaotu-server --server --port 18080 --data /tmp/xt-data > /tmp/xt.log 2>&1 &
+curl -s -c /tmp/xt.cookies -o /tmp/login.json -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"AdminPassw0rd!"}' http://127.0.0.1:18080/api/login
+CSRF=$(python3 -c 'import json;print(json.load(open("/tmp/login.json"))["csrf"])')
+curl -s -b /tmp/xt.cookies -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
   -d '{"code":"T001","name":"测试商品"}' http://127.0.0.1:18080/api/items
-curl -s -b /tmp/xt.cookies -H 'Content-Type: application/json' \
+curl -s -b /tmp/xt.cookies -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
   -d '{"doc_type":"PUR_IN","warehouse_id":1,"doc_date":"2026-11-12",
        "lines":[{"item_id":<上一步返回的 id>,"qty":5,"price_cents":1000}]}' \
   http://127.0.0.1:18080/api/documents
@@ -453,7 +475,7 @@ struct DocumentDefinition {
 
 ## 9. 已知限制与口径
 
-- 用户与角色：一次性 token 换取内置 `admin` 会话；已有 `admin` / `operator` / `viewer` 三角色与最小用户 CRUD（`/api/users`），口令登录、会话持久化、CSRF 与幂等键属于 M5，尚未实现。
+- 用户与角色：`admin` / `operator` / `viewer` 三角色与最小用户 CRUD（`/api/users`）；口令为 Argon2id 散列，网络版走口令登录并校验 CSRF、限制登录失败次数。会话持久化、按仓库数据权限与幂等键仍未实现。
 - 版本能力：`-DXIAOTU_EDITION=community` 构建社区版（当前已接 `max_users=1`），默认构建为全功能版；其余额度项随对应模块逐个接入。
 - 单据支持草稿态：存草稿只写单据与明细、不写库存流水，审核时才进单事务；反审核为整单反向。
 - 销售订单只做需求确认与转出库来源：确认不动库存、不写流水、不产生往来，只有转出的销售出库单才产生库存与应收。

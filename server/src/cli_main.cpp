@@ -35,6 +35,7 @@ struct Options {
   std::filesystem::path data_dir;
   bool backup = false;
   std::filesystem::path restore_from;
+  std::string set_password_user;
   bool show_help = false;
 };
 
@@ -47,6 +48,7 @@ void print_usage(const char* program) {
             << "  --data <目录>   数据目录，默认为系统应用数据目录\n"
             << "  --backup        立即生成一次数据库备份并退出\n"
             << "  --restore <文件> 用指定备份覆盖当前数据库并退出（先自动留安全备份）\n"
+            << "  --set-password <用户名> 用环境变量 XIAOTU_PASSWORD 设置该用户口令并退出\n"
             << "  --version       输出版本号\n"
             << "  --help          输出本帮助\n";
 }
@@ -65,6 +67,8 @@ Options parse_args(int argc, char** argv) {
       options.backup = true;
     } else if (arg == "--restore" && i + 1 < argc) {
       options.restore_from = argv[++i];
+    } else if (arg == "--set-password" && i + 1 < argc) {
+      options.set_password_user = argv[++i];
     } else if (arg == "--version") {
       std::cout << XIAOTU_VERSION << std::endl;
       std::exit(0);
@@ -156,6 +160,21 @@ int main(int argc, char** argv) {
     xiaotu::log_info("数据库结构版本 v" + std::to_string(db.schema_version()));
 
     xiaotu::Services services(db);
+    if (!options.set_password_user.empty()) {
+      const char* password = std::getenv("XIAOTU_PASSWORD");
+      if (password == nullptr || *password == '\0') {
+        throw xiaotu::AppError("BAD_ARGUMENT",
+                               "请通过环境变量 XIAOTU_PASSWORD 提供新口令");
+      }
+      const xiaotu::UserRow user =
+          services.users.find_by_username(options.set_password_user);
+      services.users.set_password(user.id, password);
+      std::cout << "口令已更新: " << user.username << std::endl;
+      xiaotu::log_info("更新用户口令 " + user.username);
+      xiaotu::shutdown_logging();
+      return 0;
+    }
+
     const std::string token = xiaotu::random_hex(32);
     xiaotu::ServerInfo info{
         .mode = options.server ? "server" : "local",
@@ -201,10 +220,14 @@ int main(int argc, char** argv) {
     const int port = http.bind("0.0.0.0", options.port);
     xiaotu::log_info("监听 0.0.0.0:" + std::to_string(port));
     http.serve_async();
-    std::cout << "服务地址: http://127.0.0.1:" << port << "/\n"
-              << "访问凭据（10 分钟内有效，仅可使用一次）:\n  "
-              << local_url("http://127.0.0.1:" + std::to_string(port), token) << "\n"
-              << "局域网访问时，把 127.0.0.1 换成本机 IP。" << std::endl;
+    std::cout << "服务地址: http://0.0.0.0:" << port << "/\n"
+              << "局域网访问时，把 0.0.0.0 换成本机 IP；使用用户名与口令登录。" << std::endl;
+    if (!services.users.has_password(1)) {
+      std::cout << "警告: 内置管理员尚未设置口令。请先执行（服务可先停止）:\n"
+                << "  XIAOTU_PASSWORD=<新口令> " << argv[0]
+                << " --data <数据目录> --set-password admin" << std::endl;
+      xiaotu::log_warn("内置管理员尚未设置口令");
+    }
 
     while (!g_stop) {
       std::this_thread::sleep_for(std::chrono::milliseconds(200));

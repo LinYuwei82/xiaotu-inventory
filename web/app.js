@@ -11,6 +11,7 @@
   const state = {
     current: null,
     pages: [],
+    csrf: "",
   };
 
   const main = document.getElementById("main");
@@ -37,6 +38,9 @@
 
   async function api(method, path, body) {
     const options = { method, credentials: "include", headers: {} };
+    if (state.csrf && method !== "GET") {
+      options.headers["X-CSRF-Token"] = state.csrf;
+    }
     if (body !== undefined) {
       options.headers["Content-Type"] = "application/json";
       options.body = JSON.stringify(body);
@@ -2460,14 +2464,48 @@
     });
   }
 
+  function renderLogin(message) {
+    nav.innerHTML = "";
+    document.getElementById("mode-label").textContent = "请登录";
+    document.getElementById("health").textContent = "";
+    notice.hidden = true;
+    main.innerHTML = `
+      <div class="login-card">
+        <h2>登录 小兔进销存</h2>
+        <p class="hint">${escapeHtml(message || "请输入用户名与口令")}</p>
+        <form data-role="login-form">
+          <label>用户名<input name="username" autocomplete="username" required /></label>
+          <label>口令<input name="password" type="password" autocomplete="current-password" required /></label>
+          <button class="btn" type="submit">登录</button>
+        </form>
+      </div>`;
+    const form = main.querySelector("form");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        const result = await api("POST", "/api/login", {
+          username: form.username.value.trim(),
+          password: form.password.value,
+        });
+        state.csrf = result.csrf || "";
+        await bootstrap();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+  }
+
   async function bootstrap() {
     try {
       const hash = location.hash || "";
       const match = /(?:^#|&)t=([0-9a-f]+)/.exec(hash);
       if (match) {
-        await api("POST", "/api/session", { token: match[1] });
+        const session = await api("POST", "/api/session", { token: match[1] });
+        state.csrf = session.csrf || "";
         history.replaceState(null, "", location.pathname + location.search);
       }
+      const me = await api("GET", "/api/me");
+      state.csrf = me.csrf || state.csrf;
 
       const health = await api("GET", "/api/health");
       document.getElementById("mode-label").textContent =
@@ -2506,10 +2544,7 @@
       mountPage(all[0]);
     } catch (error) {
       if (error.status === 401) {
-        showNotice(
-          "未获得访问凭据。请通过启动程序时输出的带 #t= 的链接打开，或在网络版中使用该链接登录。",
-          "error"
-        );
+        renderLogin("请使用用户名与口令登录");
       } else {
         showNotice("加载失败: " + error.message, "error");
       }

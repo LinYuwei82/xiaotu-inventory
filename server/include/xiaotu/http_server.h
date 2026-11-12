@@ -7,6 +7,7 @@
 #include <string>
 #include <thread>
 
+#include "xiaotu/login_limiter.h"
 #include "xiaotu/services.h"
 #include "xiaotu/session_store.h"
 
@@ -52,6 +53,7 @@ class HttpServer {
   bool bootstrap_used_ = false;
 
   SessionStore sessions_;
+  LoginLimiter login_limiter_;
   std::unique_ptr<httplib::Server> server_;
   std::thread thread_;
   std::atomic<bool> serving_{false};

@@ -18,8 +18,7 @@
 namespace xiaotu {
 namespace {
 
-std::string cookie_value(const httplib::Request& req, const std::string& name) {
-  const std::string header = req.get_header_value("Cookie");
+std::string cookie_value(const httplib::Request& req, const std::string& name) {  const std::string header = req.get_header_value("Cookie");
   std::size_t offset = 0;
   while (offset < header.size()) {
     const std::size_t end = header.find(';', offset);
@@ -42,6 +41,19 @@ std::string cookie_value(const httplib::Request& req, const std::string& name) {
     offset = end + 1;
   }
   return {};
+}
+
+bool state_changing(const std::string& method) {
+  return method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH";
+}
+
+// 反向代理终结 TLS 时按 X-Forwarded-Proto 决定是否加 Secure。
+std::string cookie_attributes(const httplib::Request& req) {
+  std::string attributes = "; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800";
+  if (req.get_header_value("X-Forwarded-Proto") == "https") {
+    attributes += "; Secure";
+  }
+  return attributes;
 }
 
 }  // namespace
@@ -86,7 +98,8 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         const auto session = sessions_.get(sid);
         current_context() = RequestContext{session ? session->user : std::string{},
                                            session ? session->role : std::string{},
-                                           random_hex(8)};
+                                           random_hex(8),
+                                           session ? session->csrf : std::string{}};
 
         // 单机版只接受来自 127.0.0.1 的请求，防御 DNS rebinding。
         if (info_.mode == "local") {
@@ -124,8 +137,17 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         if (path == "/api/session" && req.method == "POST") {
           return httplib::Server::HandlerResponse::Unhandled;
         }
+        if (path == "/api/login" && req.method == "POST") {
+          return httplib::Server::HandlerResponse::Unhandled;
+        }
         if (!session.has_value()) {
           json_error(res, 401, "UNAUTHORIZED", "未登录或会话已过期");
+          return httplib::Server::HandlerResponse::Handled;
+        }
+        // Cookie 会话的写操作必须带同步令牌，防止跨站表单直接调用 API。
+        if (state_changing(req.method) &&
+            !constant_time_equals(req.get_header_value("X-CSRF-Token"), session->csrf)) {
+          json_error(res, 403, "CSRF_INVALID", "请求缺少有效的 CSRF 令牌");
           return httplib::Server::HandlerResponse::Handled;
         }
         return httplib::Server::HandlerResponse::Unhandled;
@@ -143,33 +165,80 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     json_ok(res, body);
   });
 
-  // 一次性 token 换会话：单机由壳层带 #t=，网络版由启动日志输出的链接携带。
+  server_->Get("/api/me", [this](const httplib::Request&, httplib::Response& res) {
+    const auto& context = current_context();
+    nlohmann::json body;
+    body["user"] = context.user;
+    body["role"] = context.role;
+    body["csrf"] = context.csrf;
+    json_ok(res, body);
+  });
+
+  // 一次性 token 换会话：仅单机版使用；网络版必须口令登录。
   server_->Post("/api/session", [this](const httplib::Request& req, httplib::Response& res) {
+    if (info_.mode != "local") {
+      json_error(res, 403, "FORBIDDEN", "网络版请使用用户名与口令登录");
+      return;
+    }
     const auto body = json_body(req);
     const std::string token = body.value("token", std::string{});
     if (!consume_bootstrap_token(token)) {
       json_error(res, 401, "UNAUTHORIZED", "访问凭据无效或已过期");
       return;
     }
-    // 一次性 token 直接绑定内置管理员；口令登录在 M5 接入。
     const UserRow admin = services_.users.find_by_username("admin");
     if (!admin.active) {
       json_error(res, 403, "USER_DISABLED", "内置管理员已停用");
       return;
     }
-    const std::string sid = sessions_.create(admin.id, admin.username, admin.role);
-    res.set_header("Set-Cookie", "sid=" + sid + "; Path=/; HttpOnly; SameSite=Lax");
+    const CreatedSession session =
+        sessions_.create(admin.id, admin.username, admin.role);
+    res.set_header("Set-Cookie", "sid=" + session.id + cookie_attributes(req));
     nlohmann::json result;
     result["ok"] = true;
     result["user"] = admin.username;
     result["role"] = admin.role;
+    result["csrf"] = session.csrf;
+    json_ok(res, result);
+  });
+
+  // 口令登录：失败计数按来源 IP + 用户名限流，成功即清零。
+  server_->Post("/api/login", [this](const httplib::Request& req, httplib::Response& res) {
+    const auto body = json_body(req);
+    const std::string username = body.value("username", std::string{});
+    const std::string password = body.value("password", std::string{});
+    const std::string key = req.remote_addr + "|" + username;
+    if (login_limiter_.blocked(key)) {
+      res.set_header("Retry-After", "300");
+      json_error(res, 429, "TOO_MANY_ATTEMPTS", "登录失败次数过多，请 5 分钟后再试");
+      return;
+    }
+    UserRow user;
+    try {
+      user = services_.users.authenticate(username, password);
+    } catch (const AppError& error) {
+      if (error.code() != "INVALID_CREDENTIALS") {
+        throw;
+      }
+      login_limiter_.record_failure(key);
+      json_error(res, 401, "INVALID_CREDENTIALS", "用户名或口令错误");
+      return;
+    }
+    login_limiter_.reset(key);
+    const CreatedSession session = sessions_.create(user.id, user.username, user.role);
+    res.set_header("Set-Cookie", "sid=" + session.id + cookie_attributes(req));
+    nlohmann::json result;
+    result["ok"] = true;
+    result["user"] = user.username;
+    result["role"] = user.role;
+    result["csrf"] = session.csrf;
     json_ok(res, result);
   });
 
   server_->Post("/api/session/logout", [this](const httplib::Request& req,
                                               httplib::Response& res) {
     sessions_.erase(cookie_value(req, "sid"));
-    res.set_header("Set-Cookie", "sid=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax");
+    res.set_header("Set-Cookie", "sid=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict");
     nlohmann::json body;
     body["ok"] = true;
     json_ok(res, body);

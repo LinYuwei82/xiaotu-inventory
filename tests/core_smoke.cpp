@@ -20,6 +20,7 @@
 #include "xiaotu/gen/customer_service.h"
 #include "xiaotu/gen/item_service.h"
 #include "xiaotu/log.h"
+#include "xiaotu/password.h"
 #include "xiaotu/gen/supplier_service.h"
 #include "xiaotu/gen/unit_service.h"
 #include "xiaotu/gen/warehouse_service.h"
@@ -91,12 +92,18 @@ int main() {
       check(users.count_active() == 1, "内置用户应计入活跃用户");
 
       const auto operator_user = users.create(
-          xiaotu::UserInput{.username = "op1", .display_name = "操作员一", .role = "operator"});
+          xiaotu::UserInput{.username = "op1",
+                            .display_name = "操作员一",
+                            .role = "operator",
+                            .password = "Passw0rd!"});
       check(operator_user.id > 0 && operator_user.role == "operator", "应能创建操作员");
 
       bool duplicate_user_rejected = false;
       try {
-        users.create(xiaotu::UserInput{.username = "op1", .display_name = "重复", .role = "viewer"});
+        users.create(xiaotu::UserInput{.username = "op1",
+                                       .display_name = "重复",
+                                       .role = "viewer",
+                                       .password = "Passw0rd!"});
       } catch (const xiaotu::AppError& error) {
         duplicate_user_rejected = error.code() == "DUPLICATE_CODE";
       }
@@ -104,7 +111,8 @@ int main() {
 
       bool bad_role_rejected = false;
       try {
-        users.create(xiaotu::UserInput{.username = "ghost1", .role = "ghost"});
+        users.create(xiaotu::UserInput{.username = "ghost1", .role = "ghost",
+                                       .password = "Passw0rd!"});
       } catch (const xiaotu::AppError& error) {
         bad_role_rejected = error.code() == "INVALID_ROLE";
       }
@@ -141,6 +149,40 @@ int main() {
         admin_demote_rejected = error.code() == "USER_PROTECTED";
       }
       check(admin_demote_rejected, "内置管理员不应被降级");
+
+      // 口令：Argon2id 散列、校验与登录失败统一错误。
+      const std::string hashed = xiaotu::hash_password("s3cret-pass");
+      check(hashed.rfind("$argon2id$", 0) == 0, "口令应使用 Argon2id 散列");
+      check(xiaotu::verify_password(hashed, "s3cret-pass"), "正确口令应校验通过");
+      check(!xiaotu::verify_password(hashed, "wrong-pass"), "错误口令应校验失败");
+      check(!xiaotu::verify_password("", "s3cret-pass"), "空散列不应校验通过");
+      check(!xiaotu::password_acceptable("short"), "少于 8 位的口令应被拒绝");
+
+      const auto auth_user = users.create(xiaotu::UserInput{.username = "auth1",
+                                                           .display_name = "登录测试",
+                                                           .role = "operator",
+                                                           .password = "Passw0rd!"});
+      check(users.has_password(auth_user.id), "新建用户应存有口令散列");
+      const auto logged_in = users.authenticate("auth1", "Passw0rd!");
+      check(logged_in.id == auth_user.id, "口令登录应返回对应用户");
+      bool wrong_login_rejected = false;
+      try {
+        users.authenticate("auth1", "bad-password");
+      } catch (const xiaotu::AppError& error) {
+        wrong_login_rejected = error.code() == "INVALID_CREDENTIALS";
+      }
+      check(wrong_login_rejected, "错误口令应统一返回 INVALID_CREDENTIALS");
+
+      users.set_password(auth_user.id, "NewPassw0rd!");
+      check(users.authenticate("auth1", "NewPassw0rd!").id == auth_user.id,
+            "改口令后新口令应可登录");
+      bool old_password_rejected = false;
+      try {
+        users.authenticate("auth1", "Passw0rd!");
+      } catch (const xiaotu::AppError&) {
+        old_password_rejected = true;
+      }
+      check(old_password_rejected, "旧口令在改密后应失效");
 
       // 版本能力：代码与构建参数一致，未登记能力默认不开放。
       const auto& edition = xiaotu::EditionPolicy::instance();

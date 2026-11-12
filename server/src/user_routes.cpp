@@ -28,6 +28,7 @@ UserInput from_json(const nlohmann::json& body) {
   input.display_name = body.value("display_name", std::string{});
   input.role = body.value("role", std::string{"viewer"});
   input.active = body.value("active", true);
+  input.password = body.value("password", std::string{});
   return input;
 }
 
