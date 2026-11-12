@@ -28,4 +28,24 @@ void audit_write(sqlite3* conn, std::string_view action, std::string_view entity
 
 std::vector<AuditRow> audit_recent(Db& db, int limit = 100);
 
+// 查询条件：日期用 YYYY-MM-DD，空串表示不限；entity_id 为 0 表示不限。
+struct AuditFilter {
+  std::string from;
+  std::string to;
+  std::string entity;
+  std::int64_t entity_id = 0;
+  std::string actor;
+  int page = 1;
+  int page_size = 50;
+};
+
+struct AuditPage {
+  std::vector<AuditRow> rows;
+  std::int64_t total = 0;
+  int page = 1;
+  int page_size = 50;
+};
+
+AuditPage audit_query(Db& db, const AuditFilter& filter);
+
 }  // namespace xiaotu

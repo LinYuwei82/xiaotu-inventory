@@ -2567,6 +2567,153 @@
     await reload();
   }
 
+  // ---------- 审计日志 ----------
+
+  const AUDIT_ENTITIES = [
+    ["", "全部对象"],
+    ["document", "单据"],
+    ["item", "商品"],
+    ["unit", "计量单位"],
+    ["warehouse", "仓库"],
+    ["customer", "客户"],
+    ["supplier", "供应商"],
+    ["settlement", "核销单"],
+    ["print_template", "打印模板"],
+    ["user", "用户"],
+  ];
+
+  const AUDIT_ACTIONS = {
+    create: "新建",
+    update: "修改",
+    delete: "删除",
+    save_draft: "存草稿",
+    update_draft: "修改草稿",
+    delete_draft: "删除草稿",
+    approve: "审核",
+    reverse: "反审核",
+    convert_order: "订单转出库",
+    close_order: "关闭订单",
+    set_password: "重置口令",
+  };
+
+  function auditEntityLabel(code) {
+    const found = AUDIT_ENTITIES.find(([value]) => value === code);
+    return found ? found[1] : code;
+  }
+
+  async function auditPage(mount) {
+    let page = 1;
+    let pages = 1;
+    const pageSize = 50;
+
+    const entityOptions = AUDIT_ENTITIES.map(
+      ([value, label]) => `<option value="${value}">${label}</option>`
+    ).join("");
+
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>审计日志</h2>
+          <p class="page-sub">只读记录：谁在何时对什么对象做了什么</p>
+        </div>
+      </div>
+      <div class="card">
+        <form class="grid-form" data-role="filters">
+          <label class="field"><span>开始日期</span><input type="date" data-field="from" /></label>
+          <label class="field"><span>结束日期</span><input type="date" data-field="to" /></label>
+          <label class="field"><span>对象类型</span><select data-field="entity">${entityOptions}</select></label>
+          <label class="field"><span>对象 id</span><input type="number" min="0" step="1" data-field="entity_id" /></label>
+          <label class="field"><span>操作人</span><input type="text" data-field="actor" placeholder="用户名" /></label>
+          <div class="form-actions">
+            <button class="btn primary" type="submit">查询</button>
+            <button class="btn" type="button" data-role="reset">重置</button>
+          </div>
+        </form>
+      </div>
+      <div class="card">
+        <table class="table" data-role="table"></table>
+        <div class="form-actions">
+          <button class="btn" type="button" data-role="prev">上一页</button>
+          <span class="page-sub" data-role="page-info"></span>
+          <button class="btn" type="button" data-role="next">下一页</button>
+        </div>
+      </div>`;
+
+    const form = mount.querySelector('[data-role="filters"]');
+    const table = mount.querySelector('[data-role="table"]');
+    const info = mount.querySelector('[data-role="page-info"]');
+    const prevButton = mount.querySelector('[data-role="prev"]');
+    const nextButton = mount.querySelector('[data-role="next"]');
+
+    const field = (name) => form.querySelector('[data-field="' + name + '"]');
+
+    async function reload() {
+      const params = new URLSearchParams();
+      for (const name of ["from", "to", "entity", "entity_id", "actor"]) {
+        const value = field(name).value.trim();
+        if (value) params.set(name, value);
+      }
+      params.set("page", String(page));
+      params.set("page_size", String(pageSize));
+      try {
+        const result = await api("GET", "/api/audit-logs?" + params.toString());
+        const total = Number(result.total || 0);
+        pages = Math.max(1, Math.ceil(total / Number(result.page_size || pageSize)));
+        info.textContent = "第 " + result.page + " / " + pages + " 页 · 共 " + total + " 条";
+        prevButton.disabled = result.page <= 1;
+        nextButton.disabled = result.page >= pages;
+        if (!result.items.length) {
+          table.innerHTML = '<tbody><tr><td class="empty">没有符合条件的记录</td></tr></tbody>';
+          return;
+        }
+        table.innerHTML = `<thead><tr><th>时间</th><th>操作人</th><th>对象</th><th>对象 id</th><th>动作</th><th>摘要</th></tr></thead><tbody>${result.items
+          .map(
+            (row) => `<tr>
+              <td>${escapeHtml(row.at)}</td>
+              <td>${escapeHtml(row.actor)}</td>
+              <td>${escapeHtml(auditEntityLabel(row.entity))}${
+              row.entity_no ? " " + escapeHtml(row.entity_no) : ""
+            }</td>
+              <td>${row.entity_id || "—"}</td>
+              <td>${escapeHtml(AUDIT_ACTIONS[row.action] || row.action)}</td>
+              <td>${escapeHtml(row.detail || "—")}</td>
+            </tr>`
+          )
+          .join("")}</tbody>`;
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      page = 1;
+      reload();
+    });
+    mount.querySelector('[data-role="reset"]').addEventListener("click", () => {
+      for (const name of ["from", "to", "entity_id", "actor"]) {
+        field(name).value = "";
+      }
+      field("entity").value = "";
+      page = 1;
+      reload();
+    });
+    prevButton.addEventListener("click", () => {
+      if (page > 1) {
+        page -= 1;
+        reload();
+      }
+    });
+    nextButton.addEventListener("click", () => {
+      if (page < pages) {
+        page += 1;
+        reload();
+      }
+    });
+
+    await reload();
+  }
+
   // ---------- 导航与启动 ----------
 
   const FIXED_PAGES = [
@@ -2694,6 +2841,7 @@
     { key: "print-templates", title: "打印模板", render: printTemplatePage },
     { key: "reports", title: "报表", render: reportPage },
     { key: "users", title: "用户", permission: "user.read", render: userPage },
+    { key: "audit", title: "审计日志", permission: "audit.read", render: auditPage },
   ];
 
   function mountPage(page) {
