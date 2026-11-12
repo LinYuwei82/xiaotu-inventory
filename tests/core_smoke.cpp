@@ -1147,6 +1147,69 @@ int main() {
             "并发后应保留 3 张已审核、5 张未动的草稿");
       check(draft_entries == 0, "被拒绝的草稿不应留下应收记录");
 
+      // 并发验收：同一张已审核出库单被 8 个线程同时反审核，只能回滚一次。
+      auto reverse_item =
+          items.create(xiaotu::gen::ItemRow{.code = "CC2", .name = "并发反审核商品"});
+      make_doc("PUR_IN", reverse_item.id, 10, 100);
+      xiaotu::DocInput reverse_sale;
+      reverse_sale.doc_type = "SAL_OUT";
+      reverse_sale.warehouse_id = warehouse_list.at(0).id;
+      reverse_sale.doc_date = "2026-11-12";
+      reverse_sale.lines.push_back(
+          xiaotu::DocLineInput{.item_id = reverse_item.id, .qty = 4, .price_cents = 500});
+      const auto reverse_doc = documents.save_and_approve(reverse_sale);
+      check(balance_of(reverse_item.id).qty == 6, "反审核前库存应为 6");
+
+      std::latch reverse_start(1);
+      std::atomic<int> reversed{0};
+      std::atomic<int> reverse_rejected{0};
+      std::atomic<int> reverse_unexpected{0};
+      std::vector<std::thread> reverse_threads;
+      reverse_threads.reserve(8);
+      for (int index = 0; index < 8; ++index) {
+        reverse_threads.emplace_back([&]() {
+          reverse_start.wait();
+          try {
+            documents.reverse(reverse_doc.id);
+            ++reversed;
+          } catch (const xiaotu::AppError& error) {
+            if (error.code() == "INVALID_STATUS") {
+              ++reverse_rejected;
+            } else {
+              ++reverse_unexpected;
+            }
+          }
+        });
+      }
+      reverse_start.count_down();
+      for (auto& thread : reverse_threads) {
+        thread.join();
+      }
+
+      check(reversed.load() == 1, "并发反审核应只有一次成功");
+      check(reverse_rejected.load() == 7, "其余 7 次应因单据已作废被拒绝");
+      check(reverse_unexpected.load() == 0, "并发反审核不应出现其他错误");
+      const auto reverse_balance = balance_of(reverse_item.id);
+      check(reverse_balance.qty == 10 && reverse_balance.amount_cents == 1000,
+            "并发反审核后库存应只回滚一次");
+      check(stock.ledger(reverse_item.id).size() == 3,
+            "并发反审核后应只有 1 条入库、1 条出库与 1 条 REVERSE");
+
+      std::int64_t reverse_entries = 0;
+      std::string reverse_entry_status;
+      db.read([&](sqlite3* conn) {
+        xiaotu::Stmt stmt(conn,
+                          "SELECT COUNT(*), COALESCE(MAX(status), '') FROM ar_ap_entry"
+                          " WHERE doc_id = ?;");
+        stmt.bind(1, reverse_doc.id);
+        if (stmt.step()) {
+          reverse_entries = stmt.i64(0);
+          reverse_entry_status = stmt.text(1);
+        }
+      });
+      check(reverse_entries == 1 && reverse_entry_status == "VOIDED",
+            "并发反审核后应收应只有一条且为 VOIDED");
+
       // 成本重算只读核对：健康数据应无差异，篡改账面金额后应报出差异。
       xiaotu::CostRecalcService cost_recalc(db);
       const auto healthy = cost_recalc.recalculate();
