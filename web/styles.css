@@ -360,6 +360,21 @@ main {
   padding: 24px 0;
 }
 
+/* 审计摘要可能很长：允许折行，避免把表格撑破。 */
+.table td.audit-detail {
+  white-space: normal;
+  vertical-align: top;
+}
+
+.audit-detail-text {
+  display: block;
+  max-width: 520px;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
 .table .actions {
   width: 1%;
   text-align: right;

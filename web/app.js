@@ -5058,14 +5058,26 @@
   const AUDIT_ENTITIES = [
     ["", "全部对象"],
     ["document", "单据"],
+    ["doc_header", "单据（信用额度）"],
     ["item", "商品"],
+    ["item_category", "商品分类"],
     ["unit", "计量单位"],
     ["warehouse", "仓库"],
     ["customer", "客户"],
     ["supplier", "供应商"],
+    ["employee", "职员"],
     ["settlement", "核销单"],
+    ["fund_account", "资金账户"],
     ["print_template", "打印模板"],
     ["user", "用户"],
+    ["auth", "登录"],
+    ["report", "报表"],
+    ["database", "数据库"],
+    ["setting", "系统参数"],
+    ["opening_stock", "库存期初"],
+    ["opening_receivable", "应收期初"],
+    ["opening_payable", "应付期初"],
+    ["opening_fund", "资金期初"],
   ];
 
   const AUDIT_ACTIONS = {
@@ -5080,11 +5092,111 @@
     convert_order: "订单转出库",
     close_order: "关闭订单",
     set_password: "重置口令",
+    login: "登录",
+    login_failed: "登录失败",
+    export: "导出",
+    backup: "备份",
+    restore: "恢复",
+    import: "导入",
+    credit_over_limit: "超信用额度",
+    role_change: "角色变更",
+  };
+
+  const AUDIT_ROLES = { admin: "管理员", operator: "操作员", viewer: "只读" };
+
+  const AUDIT_SETTING_KEYS = {
+    company_name: "公司名称",
+    company_phone: "联系电话",
+    company_address: "公司地址",
   };
 
   function auditEntityLabel(code) {
     const found = AUDIT_ENTITIES.find(([value]) => value === code);
     return found ? found[1] : code;
+  }
+
+  function auditActionLabel(row) {
+    if (row.action === "reverse") {
+      return row.entity === "settlement" ? "反核销" : "反审核";
+    }
+    return AUDIT_ACTIONS[row.action] || row.action;
+  }
+
+  function auditRoleLabel(code) {
+    return AUDIT_ROLES[code] || code || "—";
+  }
+
+  function auditMoney(cents) {
+    const value = Number(cents || 0) / 100;
+    return (
+      value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) +
+      " 元"
+    );
+  }
+
+  function auditHasValue(value) {
+    return value !== undefined && value !== null && String(value).trim() !== "";
+  }
+
+  // 摘要只做展示层翻译：detail 仍按后端写入的 JSON/纯文本保存，
+  // 未知结构或解析失败一律原样显示，不吞内容也不报错。
+  function auditDetailText(row, accountNames) {
+    const raw = row.detail || "";
+    if (!raw) {
+      return row.action === "reverse" ? "红字回冲" : "—";
+    }
+    let data = null;
+    try {
+      data = JSON.parse(raw);
+    } catch (error) {
+      return raw;
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
+      return raw;
+    }
+    if (data.doc_type && ["approve", "save_draft", "update_draft"].includes(row.action)) {
+      const parts = [bizTypeText(data.doc_type)];
+      if (auditHasValue(data.qty)) parts.push("数量 " + data.qty);
+      if (auditHasValue(data.amount_cents)) parts.push("金额 " + auditMoney(data.amount_cents));
+      return parts.join(" · ");
+    }
+    if (row.action === "convert_order" && data.out_doc_no) {
+      return (
+        "转出库 " + data.out_doc_no + (auditHasValue(data.qty) ? " · 数量 " + data.qty : "")
+      );
+    }
+    if (row.entity === "settlement" && row.action === "create") {
+      const parts = [Number(data.direction) === -1 ? "付款" : "收款"];
+      if (auditHasValue(data.amount_cents)) parts.push("金额 " + auditMoney(data.amount_cents));
+      if (auditHasValue(data.account_id)) {
+        const id = Number(data.account_id);
+        const name = id > 0 ? accountNames.get(id) : "";
+        parts.push("账户 " + (name || (id > 0 ? "#" + id : "未指定")));
+      }
+      return parts.join(" · ");
+    }
+    if (row.entity === "settlement" && row.action === "reverse") {
+      return "原单 " + (data.reverses || "—") + "（红字冲回）";
+    }
+    if (row.entity === "user") {
+      if (row.action === "role_change") {
+        return "角色从 " + auditRoleLabel(data.from) + " 改为 " + auditRoleLabel(data.to);
+      }
+      if (row.action === "create" || row.action === "update") {
+        const parts = [];
+        if (auditHasValue(data.role)) parts.push("角色 " + auditRoleLabel(data.role));
+        if (typeof data.active === "boolean") parts.push(data.active ? "启用" : "停用");
+        return parts.length ? parts.join(" · ") : raw;
+      }
+      return raw;
+    }
+    if (row.entity === "setting" && row.action === "update") {
+      const label = AUDIT_SETTING_KEYS[row.entity_no] || row.entity_no || "参数";
+      const from = auditHasValue(data.from) ? data.from : "未设置";
+      const to = auditHasValue(data.to) ? data.to : "未设置";
+      return label + "从 " + from + " 改为 " + to;
+    }
+    return raw;
   }
 
   async function auditPage(mount) {
@@ -5133,6 +5245,17 @@
 
     const field = (name) => form.querySelector('[data-field="' + name + '"]');
 
+    // 核销审计只存 account_id，页面尽量换成账户名；没有权限或取不到时退回 #id。
+    const accountNames = new Map();
+    api("GET", "/api/fund-accounts")
+      .then((result) => {
+        const rows = Array.isArray(result) ? result : result.rows || [];
+        for (const account of rows) {
+          accountNames.set(Number(account.id), account.name || account.code || "#" + account.id);
+        }
+      })
+      .catch(() => {});
+
     async function reload() {
       const params = new URLSearchParams();
       for (const name of ["from", "to", "entity", "entity_id", "actor"]) {
@@ -5161,8 +5284,10 @@
               row.entity_no ? " " + escapeHtml(row.entity_no) : ""
             }</td>
               <td>${row.entity_id || "—"}</td>
-              <td>${escapeHtml(AUDIT_ACTIONS[row.action] || row.action)}</td>
-              <td>${escapeHtml(row.detail || "—")}</td>
+              <td>${escapeHtml(auditActionLabel(row))}</td>
+              <td class="audit-detail"><span class="audit-detail-text">${escapeHtml(
+                auditDetailText(row, accountNames)
+              )}</span></td>
             </tr>`
           )
           .join("")}</tbody>`;
