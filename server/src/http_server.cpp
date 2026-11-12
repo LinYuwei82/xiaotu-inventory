@@ -2,6 +2,7 @@
 
 #include <httplib.h>
 
+#include <chrono>
 #include <exception>
 #include <string>
 #include <utility>
@@ -67,7 +68,11 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
   server_->set_payload_max_length(1U << 20U);
   server_->set_read_timeout(15, 0);
   server_->set_write_timeout(15, 0);
-  server_->set_keep_alive_max_count(100);
+  // 每个连接只处理一个请求（httplib 的计数为 0 表示一个都不处理，所以用 1）：
+  // httplib 的线程池按连接占用线程，空闲长连接会把工作线程占到 keep-alive 超时
+  // （默认 5s）为止；浏览器每个页面会开多条连接，用户一多新请求就要排队数秒。
+  // 关掉复用后线程只在处理请求时被占用，局域网新建连接的开销远小于排队等待。
+  server_->set_keep_alive_max_count(1);
 
   // 访问日志只记录方法、路径、状态与请求标识；查询串、Cookie 与请求体不落盘。
   server_->set_logger([](const httplib::Request& req, const httplib::Response& res) {
