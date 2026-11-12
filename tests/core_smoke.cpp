@@ -75,7 +75,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 15, "迁移后 schema 版本应为 15");
+      check(db.schema_version() == 16, "迁移后 schema 版本应为 16");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -1461,10 +1461,13 @@ int main() {
       other_in.warehouse_id = warehouse_list.at(0).id;
       other_in.doc_date = kToday;
       other_in.partner = "备注：受赠样品";
+      other_in.biz_category = "GIFT";
       other_in.lines.push_back(
           xiaotu::DocLineInput{.item_id = other.id, .qty = q(4), .price_cents = 250});
       const auto other_in_doc = documents.save_and_approve(other_in);
       check(other_in_doc.doc_no.rfind("QTRK", 0) == 0, "其他入库单号应以 QTRK 开头");
+      check(documents.detail(other_in_doc.id).biz_category == "GIFT",
+            "其他入库应保存业务类型");
       auto other_balance = balance_of(other.id);
       check(other_balance.qty == q(4) && other_balance.amount_cents == 1000,
             "其他入库应按录入单价入账");
@@ -1474,10 +1477,15 @@ int main() {
       other_out.warehouse_id = warehouse_list.at(0).id;
       other_out.doc_date = kToday;
       other_out.partner = "备注：领用";
+      other_out.biz_category = "USAGE";
       other_out.lines.push_back(
           xiaotu::DocLineInput{.item_id = other.id, .qty = q(1), .price_cents = 9999});
       const auto other_out_doc = documents.save_and_approve(other_out);
       check(other_out_doc.doc_no.rfind("QTCK", 0) == 0, "其他出库单号应以 QTCK 开头");
+      check(documents.detail(other_out_doc.id).biz_category == "USAGE",
+            "其他出库应保存业务类型");
+      check(documents.list("OTH_IN").front().biz_category == "GIFT",
+            "其他入库列表应返回业务类型");
       other_balance = balance_of(other.id);
       check(other_balance.qty == q(3) && other_balance.amount_cents == 750,
             "其他出库应按移动加权平均结转成本，忽略录入单价");
@@ -1506,6 +1514,63 @@ int main() {
       }
       check(other_out_rejected, "其他出库库存不足应整单拒绝");
       check(balance_of(other.id).qty == q(3), "被拒绝的其他出库不应改变库存");
+
+      // 业务类型方向限制：期初只入库、领用只出库；未选默认归入其他；非其他单据忽略。
+      bool opening_out_rejected = false;
+      try {
+        xiaotu::DocInput invalid = other_out;
+        invalid.biz_category = "OPENING";
+        documents.save_and_approve(invalid);
+      } catch (const xiaotu::AppError& error) {
+        opening_out_rejected = error.code() == "INVALID_INPUT";
+      }
+      check(opening_out_rejected, "其他出库不允许期初业务类型");
+
+      bool usage_in_rejected = false;
+      try {
+        xiaotu::DocInput invalid = other_in;
+        invalid.biz_category = "USAGE";
+        documents.save_and_approve(invalid);
+      } catch (const xiaotu::AppError& error) {
+        usage_in_rejected = error.code() == "INVALID_INPUT";
+      }
+      check(usage_in_rejected, "其他入库不允许领用业务类型");
+
+      bool loss_out_allowed = false;
+      try {
+        xiaotu::DocInput invalid = other_out;
+        invalid.biz_category = "LOSS";
+        const auto loss_doc = documents.save_and_approve(invalid);
+        loss_out_allowed = documents.detail(loss_doc.id).biz_category == "LOSS";
+        documents.reverse(loss_doc.id);
+      } catch (const xiaotu::AppError&) {
+        loss_out_allowed = false;
+      }
+      check(loss_out_allowed, "其他出库应允许报损业务类型");
+      check(balance_of(other.id).qty == q(3), "反审核报损后库存应回到 3 件");
+
+      xiaotu::DocInput default_category;
+      default_category.doc_type = "OTH_IN";
+      default_category.warehouse_id = warehouse_list.at(0).id;
+      default_category.doc_date = kToday;
+      default_category.lines.push_back(
+          xiaotu::DocLineInput{.item_id = other.id, .qty = q(1), .price_cents = 100});
+      const auto default_draft = documents.save_draft(default_category);
+      check(documents.detail(default_draft.id).biz_category == "OTHER",
+            "其他入库未选业务类型时应归入其他");
+      documents.delete_draft(default_draft.id);
+
+      xiaotu::DocInput non_other_draft;
+      non_other_draft.doc_type = "PUR_IN";
+      non_other_draft.warehouse_id = warehouse_list.at(0).id;
+      non_other_draft.doc_date = kToday;
+      non_other_draft.biz_category = "LOSS";
+      non_other_draft.lines.push_back(
+          xiaotu::DocLineInput{.item_id = other.id, .qty = q(1), .price_cents = 100});
+      const auto non_other_created = documents.save_draft(non_other_draft);
+      check(documents.detail(non_other_created.id).biz_category.empty(),
+            "非其他出入库单据应忽略业务类型");
+      documents.delete_draft(non_other_created.id);
 
       // 并发验收：8 张草稿同时审核、库存只够 3 张，必须恰好成功 3 张且不超卖。
       auto concurrent =

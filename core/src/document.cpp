@@ -428,9 +428,29 @@ struct ValidatedDoc {
   std::string doc_date;
   std::string biz_time;
   std::string partner;
+  std::string biz_category;
   std::int64_t total_qty = 0;
   std::int64_t total_amount = 0;
 };
+
+// 其他出入库的业务类型白名单：赠品两方向通用，期初只入库，领用与报损只出库；
+// 其他单据一律清空，避免旧客户端误传脏值。
+std::string normalize_biz_category(const DocumentDefinition& definition,
+                                   const std::string& value) {
+  const bool inbound = definition.doc_type == "OTH_IN";
+  const bool outbound = definition.doc_type == "OTH_OUT";
+  if (!inbound && !outbound) return {};
+  const std::string category = value.empty() ? "OTHER" : value;
+  const bool allowed = category == "GIFT" || category == "OTHER" ||
+                       (inbound && category == "OPENING") ||
+                       (outbound && (category == "USAGE" || category == "LOSS"));
+  if (!allowed) {
+    throw AppError("INVALID_INPUT",
+                   inbound ? "其他入库的业务类型只能是赠品、期初或其他"
+                           : "其他出库的业务类型只能是赠品、领用、报损或其他");
+  }
+  return category;
+}
 
 ValidatedDoc validate_document(sqlite3* conn, const DocInput& input,
                                const DocumentDefinition& definition, bool require_lines) {
@@ -460,6 +480,7 @@ ValidatedDoc validate_document(sqlite3* conn, const DocInput& input,
   }
   validated.biz_time = validated.doc_date + " " + now_text().substr(11);
   validated.partner = input.partner;
+  validated.biz_category = normalize_biz_category(definition, input.biz_category);
 
   // 引用了档案时以档案名称为准，并校验其可用性。
   if (input.partner_id != 0) {
@@ -581,9 +602,10 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
   if (approved) {
     Stmt header(conn,
                 "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id,"
-                " target_warehouse_id, partner_id, customer_id, customer, status, order_status,"
-                " total_qty, total_amount_cents, created_at, created_by, approved_at, approved_by)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?);");
+                " target_warehouse_id, partner_id, customer_id, customer, biz_category,"
+                " status, order_status, total_qty, total_amount_cents, created_at, created_by,"
+                " approved_at, approved_by)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?);");
     header.bind(1, id)
         .bind(2, doc_no)
         .bind(3, doc_type)
@@ -593,22 +615,24 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
         .bind(7, supplier_id)
         .bind(8, customer_id)
         .bind(9, validated.partner)
-        .bind(10, order_status)
-        .bind(11, validated.total_qty)
-        .bind(12, validated.total_amount)
-        .bind(13, stamp.at)
-        .bind(14, stamp.by)
-        .bind(15, stamp.at)
-        .bind(16, stamp.by)
+        .bind(10, validated.biz_category)
+        .bind(11, order_status)
+        .bind(12, validated.total_qty)
+        .bind(13, validated.total_amount)
+        .bind(14, stamp.at)
+        .bind(15, stamp.by)
+        .bind(16, stamp.at)
+        .bind(17, stamp.by)
         .run();
     return;
   }
 
   Stmt header(conn,
               "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id,"
-              " target_warehouse_id, partner_id, customer_id, customer, status, order_status,"
-              " total_qty, total_amount_cents, created_at, created_by, approved_at, approved_by)"
-              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, NULL, NULL);");
+              " target_warehouse_id, partner_id, customer_id, customer, biz_category,"
+              " status, order_status, total_qty, total_amount_cents, created_at, created_by,"
+              " approved_at, approved_by)"
+              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, NULL, NULL);");
   header.bind(1, id)
       .bind(2, doc_no)
       .bind(3, doc_type)
@@ -618,11 +642,12 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
       .bind(7, supplier_id)
       .bind(8, customer_id)
       .bind(9, validated.partner)
-      .bind(10, order_status)
-      .bind(11, validated.total_qty)
-      .bind(12, validated.total_amount)
-      .bind(13, stamp.at)
-      .bind(14, stamp.by)
+      .bind(10, validated.biz_category)
+      .bind(11, order_status)
+      .bind(12, validated.total_qty)
+      .bind(13, validated.total_amount)
+      .bind(14, stamp.at)
+      .bind(15, stamp.by)
       .run();
 }
 
@@ -849,7 +874,7 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
     const ValidatedDoc validated = validate_document(conn, input, *definition, false);
     Stmt update(conn,
                 "UPDATE doc_header SET doc_date = ?, warehouse_id = ?, target_warehouse_id = ?,"
-                " partner_id = ?, customer_id = ?, customer = ?, total_qty = ?,"
+                " partner_id = ?, customer_id = ?, customer = ?, biz_category = ?, total_qty = ?,"
                 " total_amount_cents = ? WHERE id = ?;");
     const std::int64_t supplier_id =
         definition->partner_kind == PartnerKind::Supplier ? input.partner_id : 0;
@@ -861,9 +886,10 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
         .bind(4, supplier_id)
         .bind(5, customer_id)
         .bind(6, validated.partner)
-        .bind(7, validated.total_qty)
-        .bind(8, validated.total_amount)
-        .bind(9, doc_id)
+        .bind(7, validated.biz_category)
+        .bind(8, validated.total_qty)
+        .bind(9, validated.total_amount)
+        .bind(10, doc_id)
         .run();
 
     Stmt clear(conn, "DELETE FROM doc_line WHERE doc_id = ?;");
@@ -909,7 +935,7 @@ void DocumentEngine::approve(std::int64_t doc_id) {
     {
       Stmt header(conn,
                   "SELECT doc_type, status, warehouse_id, doc_date, customer, partner_id, doc_no,"
-                  " target_warehouse_id, customer_id FROM doc_header WHERE id = ?;");
+                  " target_warehouse_id, customer_id, biz_category FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
@@ -923,6 +949,7 @@ void DocumentEngine::approve(std::int64_t doc_id) {
       doc_no = header.text(6);
       input.target_warehouse_id = header.i64(7);
       customer_id = header.i64(8);
+      input.biz_category = header.text(9);
     }
     if (status != "DRAFT") {
       throw AppError("INVALID_STATUS", "只有草稿可以审核");
@@ -987,7 +1014,7 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
       Stmt header(conn,
                   "SELECT id, doc_no, doc_type, doc_date, warehouse_id, target_warehouse_id,"
                   " partner_id, customer_id, customer, status, order_status, total_qty,"
-                  " total_amount_cents FROM doc_header WHERE id = ?;");
+                  " total_amount_cents, biz_category FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
@@ -1005,6 +1032,7 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
       detail.order_status = header.text(10);
       detail.total_qty = header.i64(11);
       detail.total_amount_cents = header.i64(12);
+      detail.biz_category = header.text(13);
       const DocumentDefinition* definition = find_document_definition(detail.doc_type);
       detail.partner_id = definition != nullptr && definition->partner_kind == PartnerKind::Customer
                               ? customer_id
@@ -1040,7 +1068,8 @@ std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limi
     Stmt stmt(conn,
               "SELECT h.id, h.doc_no, h.doc_date, w.name, h.customer, h.total_qty,"
               " h.total_amount_cents, h.status, h.order_status, h.created_at,"
-              " COALESCE((SELECT SUM(converted_qty) FROM doc_line WHERE doc_id = h.id), 0)"
+              " COALESCE((SELECT SUM(converted_qty) FROM doc_line WHERE doc_id = h.id), 0),"
+              " h.biz_category"
               " FROM doc_header h JOIN warehouse w ON w.id = h.warehouse_id"
               " WHERE h.doc_type = ? ORDER BY h.id DESC LIMIT ?;");
     stmt.bind(1, doc_type).bind(2, static_cast<std::int64_t>(limit));
@@ -1057,6 +1086,7 @@ std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limi
       summary.order_status = stmt.text(8);
       summary.created_at = stmt.text(9);
       summary.converted_qty = stmt.i64(10);
+      summary.biz_category = stmt.text(11);
       documents.push_back(std::move(summary));
     }
   });

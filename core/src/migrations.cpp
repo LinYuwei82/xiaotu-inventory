@@ -627,6 +627,14 @@ WHERE biz_type = 'REVERSE' AND qty <> 0
   AND doc_id IN (SELECT id FROM doc_header WHERE doc_type = 'STK_CNT');
 )SQL";
 
+// v16：其他出入库的业务类型。历史单据不猜业务含义，统一归入「其他」，
+// 保证报表按类型归集时既不漏统计也不出现空值；非其他出入库单据保持空串。
+constexpr const char* kV16 = R"SQL(
+ALTER TABLE doc_header ADD COLUMN biz_category TEXT NOT NULL DEFAULT '';
+UPDATE doc_header SET biz_category = 'OTHER'
+WHERE doc_type IN ('OTH_IN', 'OTH_OUT') AND biz_category = '';
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -657,6 +665,7 @@ const std::vector<Migration>& all_migrations() {
       {13, "v13_cost_adjust", kV13},
       {14, "v14_stock_balance_non_negative", kV14},
       {15, "v15_stocktake_ledger_direction", kV15},
+      {16, "v16_document_biz_category", kV16},
   };
   return migrations;
 }

@@ -48,6 +48,7 @@ struct DocSummary {
   std::string doc_date;
   std::string warehouse_name;
   std::string customer;
+  std::string biz_category;  // 其他出入库的业务类型，其余单据为空
   std::int64_t total_qty = 0;
   std::int64_t converted_qty = 0;  // 订单累计已下推数量，用于列表展示部分完成状态
   std::int64_t total_amount_cents = 0;

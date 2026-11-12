@@ -52,6 +52,7 @@ nlohmann::json summary_to_json(const DocSummary& summary) {
       {"doc_date", summary.doc_date},
       {"warehouse_name", summary.warehouse_name},
       {"customer", summary.customer},
+      {"biz_category", summary.biz_category},
       {"total_qty", qty_text(summary.total_qty)},
       {"converted_qty", qty_text(summary.converted_qty)},
       {"total_amount_cents", summary.total_amount_cents},
@@ -86,6 +87,7 @@ nlohmann::json detail_to_json(const DocDetail& detail) {
       {"target_warehouse_id", detail.target_warehouse_id},
       {"partner_id", detail.partner_id},
       {"partner", detail.partner},
+      {"biz_category", detail.biz_category},
       {"status", detail.status},
       {"order_status", detail.order_status},
       {"total_qty", qty_text(detail.total_qty)},
@@ -102,6 +104,7 @@ DocInput input_from_json(const nlohmann::json& body) {
   input.target_warehouse_id = body.value("target_warehouse_id", std::int64_t{0});
   input.partner_id = body.value("partner_id", std::int64_t{0});
   input.partner = body.value("partner", std::string{});
+  input.biz_category = body.value("biz_category", std::string{});
   if (body.contains("lines") && body["lines"].is_array()) {
     for (const auto& item : body["lines"]) {
       DocLineInput line;
