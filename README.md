@@ -185,6 +185,8 @@ dir = "/var/log/xiaotu"
 
 浏览器访问 `http://<本机 IP>:8080/`，用 `admin` 和新口令登录。局域网其他机器访问时把 IP 换成本机地址；若前面有 TLS 反向代理，带上 `X-Forwarded-Proto: https`，会话 Cookie 会自动加 `Secure`。
 
+并发能力有可复现的压测脚本与结论：`tools/loadtest/mixed_load.py` 模拟 10–30 个用户混合读写，核对单据号与库存一致性，方法与实测数据见 [docs/并发压测.md](docs/并发压测.md)。
+
 登录安全现状：
 
 - 会话保存在内存，进程重启后需要重新登录（持久化会话待产品确认后再做）。
@@ -570,13 +572,13 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 
 #### 构建缓存
 
-平台未公开缓存字段的 YAML 写法，因此不在 `.workflow/MasterPipeline.yml` 里手写，改在可视化编排里填：
+构建缓存是**平台侧配置**：网页上填的值只存在平台，不会提交回仓库，`.workflow/MasterPipeline.yml` 因此没有缓存字段。在可视化编排里设置：
 
 1. 打开流水线 → 编辑 → `linux_verify` 任务 → **构建缓存**；
-2. 填两项：`~/.cache/ccache`（ccache 编译缓存）和 `build/ci-linux`（CMake 构建目录）；
-3. 保存，平台会把配置写回 yml。
+2. 填两项：`$HOME/.cache/ccache`（ccache 编译缓存）和 `build/ci-linux`（CMake 构建目录）；
+3. 保存。**不要写 `~/.cache/ccache`**：多数 CI 缓存实现不展开波浪号，会建出字面名为 `~` 的目录而永不命中；`check.sh` 打印 `CCACHE_DIR` 的解析结果与仓库根目录下是否存在字面 `~` 目录，可据此判断。
 
-规则：只有构建成功才回传缓存，默认 30 天失效；命中后日志里的 ccache 命中率会明显上升。`check.sh` 已固定 `CCACHE_DIR`/`CCACHE_BASEDIR` 并打印命中情况；若缓存中的 CMake 生成器与本次检测到的生成器不一致，脚本会清空 `build/ci-linux` 重新配置。
+`check.sh` 里 `CCACHE_DIR` 的默认值就是 `$HOME/.cache/ccache`，与平台要填的路径对应。规则：只有构建成功才回传缓存，默认 30 天失效；命中后日志里的 ccache 命中率会明显上升。若缓存中的 CMake 生成器与本次检测到的生成器不一致，脚本会清空 `build/ci-linux` 重新配置。
 
 #### 失败排查
 

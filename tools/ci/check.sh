@@ -47,6 +47,22 @@ print_toolchain() {
 
 print_ccache_stats() {
   command -v ccache >/dev/null 2>&1 || return 0
+  if [[ -n "${CCACHE_DIR:-}" ]]; then
+    echo "    CCACHE_DIR=$CCACHE_DIR"
+    # CI 缓存服务通常不展开 ~，填 ~/.cache/ccache 会建出字面名为 ~ 的目录。
+    case "$CCACHE_DIR" in
+      "~"|"~/"*)
+        echo "    警告: CCACHE_DIR 以 ~ 开头，平台缓存不会展开波浪号，实际会落到字面 ~ 目录；" >&2
+        echo "          请改用 \$HOME/.cache/ccache 或绝对路径。" >&2
+        ;;
+    esac
+  else
+    echo "    CCACHE_DIR=未设置（ccache 使用默认目录）"
+  fi
+  # 平台若已按字面 ~ 建了目录，这里能直接看出来。
+  if [[ -d "$ROOT/~" ]]; then
+    echo "    警告: 仓库根目录下存在字面的 ~ 目录，说明缓存路径的波浪号没有被展开。" >&2
+  fi
   ccache -s 2>/dev/null | grep -E 'Hits|Misses|hit rate|Cache size' || true
 }
 

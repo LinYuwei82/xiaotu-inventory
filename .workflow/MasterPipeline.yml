@@ -33,10 +33,13 @@ stages:
           name: linux_verify
           displayName: Linux 构建、测试与校验
           gccVersion: '10.3'
-          # 构建缓存不在 YAML 里手写（平台未公开字段名），
-          # 在「流水线 → 编辑 → linux_verify 任务 → 构建缓存」填：
-          #   ~/.cache/ccache   （ccache 编译缓存，命中后大幅缩短重复编译）
-          #   build/ci-linux    （CMake 构建目录，增量编译）
+          # 构建缓存是平台侧配置，不会回写到本文件，仓库这份 yml 里没有缓存字段。
+          # 平台「构建缓存」填的两项与 check.sh 的取值一一对应：
+          #   $HOME/.cache/ccache  ← check.sh 里 CCACHE_DIR 的默认值（别写 ~，见下）
+          #   build/ci-linux       ← check.sh 的 Linux 构建目录
+          # 注意：多数 CI 缓存实现不会展开波浪号，填 ~/.cache/ccache 会建出字面
+          # 名为 ~ 的目录而永不命中；请填 $HOME/.cache/ccache 或绝对路径。
+          # check.sh 每次都会打印 CCACHE_DIR 的解析结果，便于对照平台配置。
           commands:
             # 镜像只保证 GCC 与常规工具；CMake 缺失时用 pip 安装到用户目录。
             - export PATH="$HOME/.local/bin:$PATH"
