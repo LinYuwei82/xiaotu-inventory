@@ -18,6 +18,7 @@
 #include "xiaotu/gen/warehouse_service.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/permissions.h"
+#include "xiaotu/settlement_service.h"
 #include "xiaotu/stock_service.h"
 #include "xiaotu/user_service.h"
 
@@ -499,6 +500,95 @@ int main() {
       const auto ap_rows = finance.entries(-1, "S:" + std::to_string(supplier.id));
       check(ap_rows.size() == 1 && ap_rows.at(0).amount_cents == 1000,
             "采购入库应生成应付记录");
+
+      // 核销：部分核销、多单合并、超额/重复拒绝、撤销用反向记录。
+      xiaotu::SettlementService settlements(db);
+      const auto sale_a = [&] {
+        xiaotu::DocInput doc;
+        doc.doc_type = "SAL_OUT";
+        doc.warehouse_id = warehouse_list.at(0).id;
+        doc.doc_date = "2026-11-12";
+        doc.partner_id = customer.id;
+        doc.lines.push_back(
+            xiaotu::DocLineInput{.item_id = sales_item.id, .qty = 3, .price_cents = 1000});
+        return documents.save_and_approve(doc);
+      }();
+      xiaotu::DocInput sale_b_input;
+      sale_b_input.doc_type = "SAL_OUT";
+      sale_b_input.warehouse_id = warehouse_list.at(0).id;
+      sale_b_input.doc_date = "2026-11-12";
+      sale_b_input.partner_id = customer.id;
+      sale_b_input.lines.push_back(
+          xiaotu::DocLineInput{.item_id = sales_item.id, .qty = 2, .price_cents = 1000});
+      const auto sale_b = documents.save_and_approve(sale_b_input);
+
+      const auto entry_of = [&](std::int64_t doc_id) {
+        for (const auto& row : finance.entries(1, customer_key)) {
+          if (row.doc_id == doc_id) return row;
+        }
+        throw xiaotu::AppError("TEST", "找不到往来记录");
+      };
+      const auto entry_a = entry_of(sale_a.id);
+      const auto entry_b = entry_of(sale_b.id);
+      check(entry_a.amount_cents == 3000 && entry_b.amount_cents == 2000, "两笔应收金额应正确");
+
+      const auto first_settlement = settlements.create(
+          1, customer_key, 1000, {{entry_a.id, 1000}}, "2026-11-12", "部分收款");
+      check(first_settlement.settle_no.rfind("HX20261112-", 0) == 0, "核销单号应按日期生成");
+      auto after_partial = entry_of(sale_a.id);
+      check(after_partial.settled_cents == 1000 && after_partial.outstanding_cents == 2000 &&
+                after_partial.status == "PARTIAL",
+            "部分核销后应剩 2000 分未核销");
+
+      bool over_settle_rejected = false;
+      try {
+        settlements.create(1, customer_key, 3000, {{entry_a.id, 3000}}, "2026-11-12", "");
+      } catch (const xiaotu::AppError& error) {
+        over_settle_rejected = error.code() == "SETTLE_OVER";
+      }
+      check(over_settle_rejected, "超额核销应被拒绝");
+
+      bool duplicate_allocation_rejected = false;
+      try {
+        settlements.create(1, customer_key, 200,
+                           {{entry_a.id, 100}, {entry_a.id, 100}}, "2026-11-12", "");
+      } catch (const xiaotu::AppError& error) {
+        duplicate_allocation_rejected = error.code() == "INVALID_INPUT";
+      }
+      check(duplicate_allocation_rejected, "同一单据重复分摊应被拒绝");
+
+      bool cross_partner_rejected = false;
+      try {
+        settlements.create(1, "C:999999", 100, {{entry_a.id, 100}}, "2026-11-12", "");
+      } catch (const xiaotu::AppError& error) {
+        cross_partner_rejected = error.code() == "INVALID_INPUT";
+      }
+      check(cross_partner_rejected, "跨往来单位核销应被拒绝");
+
+      const auto merged = settlements.create(1, customer_key, 3500,
+                                             {{entry_a.id, 2000}, {entry_b.id, 1500}},
+                                             "2026-11-12", "合并收款");
+      check(merged.amount_cents == 3500, "一次核销多张单应成功");
+      check(entry_of(sale_a.id).status == "SETTLED", "第一张单应核销完毕");
+      check(entry_of(sale_b.id).settled_cents == 1500 && entry_of(sale_b.id).status == "PARTIAL",
+            "第二张单应部分核销");
+
+      settlements.reverse(first_settlement.id);
+      const auto after_settle_reverse = entry_of(sale_a.id);
+      check(after_settle_reverse.settled_cents == 2000 &&
+                after_settle_reverse.outstanding_cents == 1000,
+            "撤销核销后已核销金额应回退");
+
+      bool double_settle_reverse_rejected = false;
+      try {
+        settlements.reverse(first_settlement.id);
+      } catch (const xiaotu::AppError& error) {
+        double_settle_reverse_rejected = error.code() == "INVALID_STATUS";
+      }
+      check(double_settle_reverse_rejected, "同一核销不能重复撤销");
+
+      const auto settlement_rows = settlements.list(1, customer_key);
+      check(settlement_rows.size() == 3, "应有核销、合并核销与撤销三条记录");
 
       // 采购退货：先入库再退货，以及入库后部分退货。
       auto returned = items.create(xiaotu::gen::ItemRow{.code = "R001", .name = "退货商品"});

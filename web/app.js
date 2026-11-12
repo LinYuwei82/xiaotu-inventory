@@ -582,16 +582,27 @@
       </div>
       <div class="card">
         <table class="table" data-role="rows"></table>
+      </div>
+      <div class="card">
+        <h3>核销记录</h3>
+        <table class="table" data-role="settlements"></table>
       </div>`;
     const directionSelect = mount.querySelector('[data-role="direction"]');
     const rowsTable = mount.querySelector('[data-role="rows"]');
+    const settlementsTable = mount.querySelector('[data-role="settlements"]');
+    let entries = [];
 
     async function reload() {
-      const rows = await api("GET", "/api/ar-ap?direction=" + directionSelect.value);
+      const direction = directionSelect.value;
+      const [rows, settlements] = await Promise.all([
+        api("GET", "/api/ar-ap?direction=" + direction),
+        api("GET", "/api/settlements?direction=" + direction),
+      ]);
+      entries = rows;
       rowsTable.innerHTML = !rows.length
         ? '<tbody><tr><td class="empty">暂无记录</td></tr></tbody>'
         : `<thead><tr><th>单号</th><th>类型</th><th>往来单位</th><th>日期</th>
-             <th>金额（元）</th><th>已核销</th><th>未核销</th><th>状态</th></tr></thead>
+             <th>金额（元）</th><th>已核销</th><th>未核销</th><th>状态</th><th></th></tr></thead>
            <tbody>${rows
              .map(
                (row) => `<tr>
@@ -603,10 +614,76 @@
                  <td>${money(row.settled_cents)}</td>
                  <td>${money(row.outstanding_cents)}</td>
                  <td>${escapeHtml(row.status)}</td>
+                 <td>${
+                   row.outstanding_cents !== 0 && row.status !== "VOIDED"
+                     ? `<button class="btn small" data-settle="${row.id}">核销</button>`
+                     : ""
+                 }</td>
                </tr>`
              )
              .join("")}</tbody>`;
+      settlementsTable.innerHTML = !settlements.length
+        ? '<tbody><tr><td class="empty">暂无核销</td></tr></tbody>'
+        : `<thead><tr><th>核销单号</th><th>往来单位</th><th>日期</th>
+             <th>金额（元）</th><th>备注</th><th></th></tr></thead>
+           <tbody>${settlements
+             .map(
+               (row, index) => `<tr>
+                 <td>${escapeHtml(row.settle_no)}</td>
+                 <td>${escapeHtml(row.partner_name || "未指定")}</td>
+                 <td>${escapeHtml(row.settled_on)}</td>
+                 <td>${money(row.amount_cents)}</td>
+                 <td>${escapeHtml(row.note)}</td>
+                 <td>${
+                   row.reverses_id === 0 && row.amount_cents > 0
+                     ? `<button class="btn small" data-reverse="${index}">撤销</button>`
+                     : ""
+                 }</td>
+               </tr>`
+             )
+             .join("")}</tbody>`;
+      settlements.forEach((row, index) => {
+        const button = settlementsTable.querySelector(`[data-reverse="${index}"]`);
+        if (!button) return;
+        button.addEventListener("click", async () => {
+          if (!window.confirm(`撤销核销 ${row.settle_no}？`)) return;
+          try {
+            await api("POST", `/api/settlements/${row.id}/reverse`, {});
+            await reload();
+          } catch (error) {
+            window.alert(error.message);
+          }
+        });
+      });
     }
+
+    rowsTable.addEventListener("click", async (event) => {
+      const button = event.target.closest("[data-settle]");
+      if (!button) return;
+      const entry = entries.find((row) => String(row.id) === button.dataset.settle);
+      if (!entry) return;
+      const defaultAmount = (Math.abs(entry.outstanding_cents) / 100).toFixed(2);
+      const input = window.prompt("本次核销金额（元）", defaultAmount);
+      if (input === null) return;
+      const yuan = Number(input);
+      if (!Number.isFinite(yuan) || yuan <= 0) {
+        window.alert("请输入大于 0 的金额");
+        return;
+      }
+      const cents = Math.round(yuan * 100) * Math.sign(entry.outstanding_cents);
+      try {
+        await api("POST", "/api/settlements", {
+          direction: Number(directionSelect.value),
+          partner_key: entry.partner_key,
+          amount_cents: cents,
+          allocations: [{ entry_id: entry.id, amount_cents: cents }],
+          note: "",
+        });
+        await reload();
+      } catch (error) {
+        window.alert(error.message);
+      }
+    });
 
     mount.querySelector('[data-role="refresh"]').addEventListener("click", reload);
     directionSelect.addEventListener("change", reload);

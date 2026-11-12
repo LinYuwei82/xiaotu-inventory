@@ -62,6 +62,7 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/migrations.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/money.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/permissions.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/settlement_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/stock_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/user_service.cpp"
   ${XIAOTU_GENERATED_CORE_SOURCES}
