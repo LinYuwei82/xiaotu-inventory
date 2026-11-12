@@ -15,7 +15,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 ## 0. 数据库结构版本
 
-当前 schema 为 **v13**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
+当前 schema 为 **v14**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -32,6 +32,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v11 | 数量改为 4 位定点整数（×10000），`unit.qty_decimals` 控制单位精度，重建 `doc_line` 允许盘点实盘为 0 |
 | v12 | 资金账户 `fund_account`；`settlement` 增加账户、结算方式与经办人，老记录 `account_id=0` 表示未指定 |
 | v13 | 成本调整单：重建 `doc_line`（明细行仓库、调整金额、调整原因，允许 `qty=0`）与 `stock_ledger`（金额非零）；`cost.adjust` 作为成本调整单审核 / 反审核的写权限，不写 `app_role_permission` 种子行，仅由 admin 的 `*` 覆盖 |
+| v14 | `stock_balance` 增加两个非负触发器（`BEFORE INSERT` 与 `BEFORE UPDATE OF qty, amount_cents`）；不重建表、不改历史数据，历史负结存留给盘点单修正 |
 
 ## 1. 环境要求
 
@@ -412,7 +413,7 @@ struct DocumentDefinition {
 };
 ```
 
-`DocumentEngine::save_and_approve` 在一个写事务内完成：校验 → 取单据号 → 写主子表 → 按定义生成库存流水与余额 → 执行 `on_approve`。`reverse` 反向写流水、回滚余额、置为 `VOIDED`，**不删除原流水**。库存与往来都按定义条件执行，`affects_stock=false` / `finance_direction=0` 的单据天然不产生副作用。
+`DocumentEngine::save_and_approve` 在一个写事务内完成：校验 → 取单据号 → 写主子表 → 按定义生成库存流水与余额 → 执行 `on_approve`。`reverse` 反向写流水、回滚余额、置为 `VOIDED`，**不删除原流水**；反审核入库类单据前会按 (仓库, 商品) 校验下游是否已消耗，撤回后结存不能为负，否则整单拒绝（`REVERSE_WOULD_NEGATIVE`），撤不回就不撤回。库存与往来都按定义条件执行，`affects_stock=false` / `finance_direction=0` 的单据天然不产生副作用。
 
 已内置九种单据：
 
@@ -434,7 +435,7 @@ struct DocumentDefinition {
 
 销售订单状态：`DRAFT` 草稿 → `APPROVED + CONFIRMED` 已确认 → `APPROVED + CONVERTED` 已转出库 / `APPROVED + CLOSED` 已关闭。转出库在单事务内校验「已转 + 本次 ≤ 订单数量」，超量拒绝（`ORDER_QTY_EXCEEDED`），并生成正式销售出库单；反审核出库单会释放对应订单数量。
 
-当前库存策略：出库类单据（销售出库、采购退货、销售订单转出库）审核 / 转出前校验可用库存，不足则整单拒绝（`STOCK_INSUFFICIENT`）并回滚事务，不产生负数结存或半途写入。
+当前库存策略：出库类单据（销售出库、采购退货、销售订单转出库）审核 / 转出前校验可用库存，不足则整单拒绝（`STOCK_INSUFFICIENT`）并回滚事务，不产生负数结存或半途写入。反审核入库类单据（含盘点盘盈、调拨入库腿、销售退货）同样先校验撤回后结存是否非负，已被下游消耗则拒绝（`REVERSE_WOULD_NEGATIVE`）。
 
 ## 8. 横切逻辑
 
@@ -659,5 +660,5 @@ Linux 上该脚本等价于 CI：使用 `linux-ci` preset（`XIAOTU_BUILD_SHELL=
 
 - 用户手册（面向使用者）：`docs/用户手册.md`
 - 技术方案：`docs/进销存技术方案.md`
-- 数据库结构：`core/src/migrations.cpp`（v13）
+- 数据库结构：`core/src/migrations.cpp`（v14）
 - API：`/api/health`、`/api/session`、`/api/items`、`/api/items/import`、`/api/items/export`、`/api/items/template`、`/api/warehouses`、`/api/suppliers`、`/api/suppliers/import`、`/api/suppliers/export`、`/api/suppliers/template`、`/api/customers`、`/api/customers/import`、`/api/customers/export`、`/api/customers/template`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/fund-ledger`、`/api/reports/fund-balances`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/cost-adjustments/drafts`、`/api/fund-accounts`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`、`/api/stock/cost-recalc`
