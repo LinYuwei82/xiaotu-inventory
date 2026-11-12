@@ -20,6 +20,22 @@
   const nav = document.getElementById("nav");
   const notice = document.getElementById("notice");
 
+  // 录入页注册「是否有未保存内容」；只有注册过的页面才会拦导航与关闭窗口。
+  let unsavedGuard = null;
+
+  function setUnsavedGuard(guard) {
+    unsavedGuard = guard;
+  }
+
+  function hasUnsaved() {
+    return Boolean(unsavedGuard && unsavedGuard());
+  }
+
+  function confirmLeavePage() {
+    if (!hasUnsaved()) return true;
+    return window.confirm("当前单据还有未保存的内容，确定离开吗？");
+  }
+
   function escapeHtml(value) {
     return String(value === null || value === undefined ? "" : value).replace(
       /[&<>"']/g,
@@ -585,6 +601,8 @@
     let items = [];
     let documents = [];
     let editingId = 0;
+    // 录入页的脏标记：任一字段变动即置脏，保存成功、重置或切换单据后清除。
+    let dirty = false;
 
     mount.innerHTML = `
       <div class="page-head">
@@ -806,6 +824,7 @@
 
     function resetForm() {
       editingId = 0;
+      dirty = false;
       mount.querySelector('[data-role="cancel-edit"]').hidden = true;
       form.querySelector('[data-role="partner"]').value = "";
       if (partnerSelect) partnerSelect.value = "";
@@ -913,6 +932,7 @@
           ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
           : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
         for (const line of detail.lines) addLine(line);
+        dirty = false;
         mount.querySelector('[data-role="cancel-edit"]').hidden = false;
         form.scrollIntoView({ behavior: "smooth", block: "start" });
         showNotice("正在编辑草稿 " + detail.doc_no, "ok");
@@ -920,6 +940,15 @@
         showNotice(error.message, "error");
       }
     }
+
+    // 只有真正录过内容才拦：任一输入/选择变动即置脏，离开前确认一次。
+    form.addEventListener("input", () => {
+      dirty = true;
+    });
+    form.addEventListener("change", () => {
+      dirty = true;
+    });
+    setUnsavedGuard(() => dirty);
 
     mount.querySelector('[data-role="add-line"]').addEventListener("click", () => addLine());
     mount.querySelector('[data-role="refresh"]').addEventListener("click", () => reload());
@@ -3505,35 +3534,58 @@
     }
   }
 
-  // 页面路由：#/<key>。key 用固定英文短名，和 nav 的 data-key 一致。
+  // 页面路由：#/<key>。key 与 nav 的 data-key 一致；只排除空白与斜杠这类
+  // 结构性非法字符，点号、中文等交给 encodeURIComponent/decodeURIComponent。
   function hashPageKey() {
-    const match = /^#\/([A-Za-z0-9_-]+)$/.exec(location.hash || "");
-    return match ? match[1] : "";
+    const hash = location.hash || "";
+    if (!hash.startsWith("#/")) return "";
+    const raw = hash.slice(2);
+    if (!raw) return "";
+    let key = raw;
+    try {
+      key = decodeURIComponent(raw);
+    } catch (error) {
+      return "";
+    }
+    if (/[\s/]/.test(key)) return "";
+    return key;
   }
 
   function replaceHash(key) {
-    history.replaceState(null, "", key ? "#/" + key : location.pathname + location.search);
+    const target = key
+      ? "#/" + encodeURIComponent(key)
+      : location.pathname + location.search;
+    history.replaceState(null, "", target);
   }
 
   function handleHashChange() {
     const pages = state.allPages;
     if (!pages.length) return;
     const page = pages.find((item) => item.key === hashPageKey());
+    if (page && page.key === state.current) return;
+    if (!confirmLeavePage()) {
+      // 返回/前进已经改了 hash，取消时把地址还原到当前页。
+      replaceHash(state.current);
+      return;
+    }
     if (!page) {
       const fallback = pages[0];
       replaceHash(fallback.key);
       if (fallback.key !== state.current) mountPage(fallback);
       return;
     }
-    if (page.key !== state.current) mountPage(page);
+    mountPage(page);
   }
 
   function goToPage(page) {
     if (page.key === state.current) return;
-    location.hash = "#/" + page.key;
+    if (!confirmLeavePage()) return;
+    location.hash = "#/" + encodeURIComponent(page.key);
   }
 
   function mountPage(page, options) {
+    // 离开旧页后重新注册：列表页、报表页不设防，只有录入页会自己再注册。
+    setUnsavedGuard(null);
     const persist = !options || options.persist !== false;
     state.current = page.key;
     if (page.group) expandGroup(page.group);
@@ -3654,7 +3706,7 @@
         all[0];
       if (initial) {
         if (hashKey !== initial.key) replaceHash(initial.key);
-        mountPage(initial, { persist: false });
+        mountPage(initial);
       }
     } catch (error) {
       if (error.status === 401) {
@@ -3666,5 +3718,11 @@
   }
 
   window.addEventListener("hashchange", handleHashChange);
+  // 关闭窗口或刷新时，用原生提示兜住未保存的录入。
+  window.addEventListener("beforeunload", (event) => {
+    if (!hasUnsaved()) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
   bootstrap();
 })();
