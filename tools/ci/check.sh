@@ -13,11 +13,50 @@ if [[ "${1:-}" == "--quick" ]]; then
   QUICK=1
 fi
 
+# ccache 目录显式落在 $HOME 下，便于 Gitee Go 的「构建缓存」按路径挂载。
+# CCACHE_BASEDIR 让不同工作区路径之间的缓存可以复用。
+if command -v ccache >/dev/null 2>&1; then
+  # Linux（含 Gitee Go）固定缓存目录，便于平台按路径挂载；macOS 沿用 ccache 默认目录。
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    export CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/ccache}"
+    mkdir -p "$CCACHE_DIR"
+  fi
+  export CCACHE_BASEDIR="$ROOT"
+  export CCACHE_COMPILERCHECK=content
+  export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-500M}"
+fi
+
+print_toolchain() {
+  echo "==> 工具链"
+  echo "    系统: $(uname -srm)"
+  if command -v cmake >/dev/null 2>&1; then
+    echo "    cmake: $(cmake --version | head -n 1)"
+  else
+    echo "    cmake: 缺失（Gitee Go 侧需先安装，见 README CI 章节）"
+    exit 1
+  fi
+  local tool
+  for tool in ninja make ccache gcc g++; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      echo "    $tool: $(command -v "$tool")"
+    else
+      echo "    $tool: 缺失"
+    fi
+  done
+}
+
+print_ccache_stats() {
+  command -v ccache >/dev/null 2>&1 || return 0
+  ccache -s 2>/dev/null | grep -E 'Hits|Misses|hit rate|Cache size' || true
+}
+
+print_toolchain
+
 case "$(uname -s)" in
   Darwin)
     echo "==> 构建 release（macOS 全量，含壳）"
     cmake --preset macos-release
-    cmake --build --preset release
+    cmake --build --preset release --parallel
 
     echo "==> 运行 ctest"
     ctest --test-dir build/release --output-on-failure
@@ -25,7 +64,7 @@ case "$(uname -s)" in
     if [[ "$QUICK" -eq 0 ]]; then
       echo "==> 构建 windows-release（XIAOTU_BUILD_SHELL=OFF）"
       cmake --preset windows-release
-      cmake --build --preset windows-release
+      cmake --build --preset windows-release --parallel
       echo "==> 运行 windows-release ctest"
       ctest --test-dir build/windows --output-on-failure
     fi
@@ -35,12 +74,34 @@ case "$(uname -s)" in
     # Ninja 缺失时降级为 Unix Makefiles，避免把构建工具当成运行环境的前提。
     echo "==> 构建 Linux（XIAOTU_BUILD_SHELL=OFF）"
     GENERATOR=()
+    GENERATOR_NAME="Unix Makefiles"
     if command -v ninja >/dev/null 2>&1; then
       GENERATOR=(-G Ninja)
+      GENERATOR_NAME="Ninja"
     fi
-    cmake -S . -B build/ci-linux "${GENERATOR[@]}" \
+    echo "    生成器: $GENERATOR_NAME"
+
+    # 构建目录可能来自平台缓存；生成器变化时 CMake 会拒绝复用，先清空重来。
+    if [[ -f build/ci-linux/CMakeCache.txt ]]; then
+      CACHED_GENERATOR="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' build/ci-linux/CMakeCache.txt)"
+      if [[ -n "$CACHED_GENERATOR" && "$CACHED_GENERATOR" != "$GENERATOR_NAME" ]]; then
+        echo "    缓存中的生成器为 $CACHED_GENERATOR，与当前 $GENERATOR_NAME 不一致，清空 build/ci-linux" >&2
+        rm -rf build/ci-linux
+      fi
+    fi
+
+    LAUNCHER=()
+    if command -v ccache >/dev/null 2>&1; then
+      LAUNCHER=(
+        -DCMAKE_C_COMPILER_LAUNCHER=ccache
+        -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      )
+      echo "    ccache: 已启用（$CCACHE_DIR）"
+    fi
+
+    cmake -S . -B build/ci-linux "${GENERATOR[@]}" "${LAUNCHER[@]}" \
       -DXIAOTU_BUILD_SHELL=OFF -DCMAKE_BUILD_TYPE=Release
-    cmake --build build/ci-linux
+    cmake --build build/ci-linux --parallel
 
     echo "==> 运行 ctest"
     ctest --test-dir build/ci-linux --output-on-failure
@@ -50,6 +111,9 @@ case "$(uname -s)" in
     exit 1
     ;;
 esac
+
+echo "==> ccache 命中情况"
+print_ccache_stats
 
 echo "==> 校验代码生成物"
 PYTHON="${XIAOTU_PYTHON:-$ROOT/tools/codegen/.venv/bin/python}"

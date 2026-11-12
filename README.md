@@ -529,14 +529,57 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 
 ### CI
 
-- 执行平台为 **Gitee Go**。流水线文件是仓库根目录的 `.workflow/MasterPipeline.yml`，监听 `main` 推送；检查逻辑仍只来自 `tools/ci/check.sh`。
-- **首次必须在 Gitee 网页「新建流水线 → 选择模板/自定义 → 保存」**：平台会自行向仓库提交 `.workflow/MasterPipeline.yml`、`BranchPipeline.yml`、`PRPipeline.yml`。仓库里已放好 `MasterPipeline.yml` 的内容，创建后若被平台覆盖，用仓库版本替换即可；不要把「提交了 yml」当成已开通。
-- Linux 任务（`build@gcc` 10.3，Ubuntu 20.04 基础镜像）：`XIAOTU_BUILD_SHELL=OFF` 构建、`ctest`、`generate.py --check`、平台代码泄漏检查。
-- 镜像工具不保证齐全：`check.sh` 在缺少 Ninja 时自动降级为 Unix Makefiles；CMake 缺失时流水线先用 `pip install --user cmake`，若镜像不允许联网安装，需要在平台命令里改用 `apt-get`/自备镜像，或放回本地执行。
-- Gitee Go 云端只有 Linux 运行器，没有 macOS/Windows：macOS 全量构建（含 WKWebView 壳）与 Windows MSVC 构建在本地执行；需要自动门禁时用 Gitee Go 自建主机组接入对应机器。
-- 免费额度：单个仓库 200 分钟（永久有效），个人/组织每月 1000 核分（2C4G 约折 500 分钟）。超出按平台计费规则购买，不在文档里估算本项目的分钟数。
-- 平台泄漏检查（`tools/ci/check_platform_leaks.sh`）：`core/` 禁止出现 Apple 条件编译、框架或 WebView 引用；`server/` 只允许 `cli_main.cpp` 在 `#if defined(__APPLE__)` 内引用 WebView 壳。
+#### 平台与边界
+
+- 执行平台为 **Gitee Go**，流水线文件是仓库根目录的 `.workflow/MasterPipeline.yml`；检查逻辑只来自 `tools/ci/check.sh`，Gitee Go 侧不复制步骤。
+- 云端只有 **Linux 运行器**（`build@gcc` 10.3，Ubuntu 20.04 基础镜像）。**macOS 全量构建（含 WKWebView 壳）和 Windows MSVC 构建不在云端覆盖**，仍需本地执行；需要自动门禁时接 Gitee Go 自建主机组，把对应机器挂进来。
+- 首次开通必须在网页「新建流水线 → 可视化编排 → 保存」：平台会向仓库提交 `.workflow/` 下的标准文件。仓库里的 `MasterPipeline.yml` 已按平台格式写好，若被平台覆盖，用仓库版本替换即可；不要把「提交了 yml」当成已开通。
 - 原 GitHub Actions 工作流已删除，避免两套流水线重复维护。
+
+#### 触发规则
+
+| 事件 | 是否触发 |
+| --- | --- |
+| 推送到 `main` | 是 |
+| 指向 `main` 的 PR（创建、更新、评论） | 是 |
+| 其他分支推送、Tag、PR 合并产生的推送 | 否（PR 合并后落在 `main` 上，按上一行触发） |
+
+`strategy.blocking: true` 开启阻塞构建：上一次没跑完时，下一次排队等待，不并行消耗核分。
+
+#### 耗时与免费额度
+
+- 单次构建耗时以 Gitee Go 构建记录为准，不在文档里估算。本项目编译目标 60 余个，`ctest` 单测约 1 秒，主要时间在编译与链接。
+- 免费额度：**单仓库一次性 200 分钟** + **个人/组织每月 1000 核分**；2C4G 任务按每分钟 2 核分折算，约等于每月 500 分钟。实际扣减以平台构建记录为准。
+
+#### 构建缓存
+
+平台未公开缓存字段的 YAML 写法，因此不在 `.workflow/MasterPipeline.yml` 里手写，改在可视化编排里填：
+
+1. 打开流水线 → 编辑 → `linux_verify` 任务 → **构建缓存**；
+2. 填两项：`~/.cache/ccache`（ccache 编译缓存）和 `build/ci-linux`（CMake 构建目录）；
+3. 保存，平台会把配置写回 yml。
+
+规则：只有构建成功才回传缓存，默认 30 天失效；命中后日志里的 ccache 命中率会明显上升。`check.sh` 已固定 `CCACHE_DIR`/`CCACHE_BASEDIR` 并打印命中情况；若缓存中的 CMake 生成器与本次检测到的生成器不一致，脚本会清空 `build/ci-linux` 重新配置。
+
+#### 失败排查
+
+1. 先看日志开头的「工具链」块：`cmake`、`ninja`、`make`、`ccache` 的实际路径与版本，以及最终选用的生成器。
+2. `cmake: 缺失` → 镜像没预装且 `pip install --user cmake` 失败（无外网）。改用镜像自带 CMake，或接自建主机组。
+3. 日志出现 `生成器: Unix Makefiles` 说明镜像里没有 `ninja`，脚本已自动降级，构建应照常通过；此时若失败，看是否缺 `make`。
+4. 编译或测试失败：本地执行 `bash tools/ci/check.sh` 复现，检查内容与云端一致。
+5. `generate.py --check` 失败：本地重新生成后提交，见「代码生成器」章节。
+6. 流水线没被触发：确认目标分支是 `main`；「任务等待中」是阻塞构建在排队，等上一条结束即可。
+
+#### 本地复现
+
+```bash
+bash tools/ci/check.sh           # 全量（macOS 含 windows-release）
+bash tools/ci/check.sh --quick   # macOS 跳过 windows-release
+```
+
+Linux 上该脚本等价于 CI：`XIAOTU_BUILD_SHELL=OFF` 配置构建、`ctest`、`generate.py --check`、平台代码泄漏检查。
+
+平台泄漏检查（`tools/ci/check_platform_leaks.sh`）：`core/` 禁止出现 Apple 条件编译、框架或 WebView 引用；`server/` 只允许 `cli_main.cpp` 在 `#if defined(__APPLE__)` 内引用 WebView 壳。
 
 ## 12. 参考
 

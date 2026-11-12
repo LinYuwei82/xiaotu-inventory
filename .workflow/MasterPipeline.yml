@@ -4,11 +4,23 @@ name: ci
 
 displayName: 小兔进销存 CI
 
+# 只在和 main 有关的变更上跑：
+#   push  → 推送到 main
+#   pr    → 指向 main 的 Pull Request（含 PR 更新与评论触发）
+# 其他分支推送不触发，避免占用免费核分。
 triggers:
   push:
     branches:
       precise:
         - main
+  pr:
+    branches:
+      precise:
+        - main
+
+# 同一条流水线一次只跑一条构建，后来的排队等待，不并行消耗核分。
+strategy:
+  blocking: true
 
 stages:
   - stage:
@@ -21,9 +33,14 @@ stages:
           name: linux_verify
           displayName: Linux 构建、测试与校验
           gccVersion: '10.3'
+          # 构建缓存不在 YAML 里手写（平台未公开字段名），
+          # 在「流水线 → 编辑 → linux_verify 任务 → 构建缓存」填：
+          #   ~/.cache/ccache   （ccache 编译缓存，命中后大幅缩短重复编译）
+          #   build/ci-linux    （CMake 构建目录，增量编译）
           commands:
             # 镜像只保证 GCC 与常规工具；CMake 缺失时用 pip 安装到用户目录。
             - export PATH="$HOME/.local/bin:$PATH"
             - command -v cmake >/dev/null 2>&1 || python3 -m pip install --user cmake
-            # Ninja 不是硬依赖，check.sh 会自行降级为 Unix Makefiles。
+            # 检查逻辑只在本脚本里，Gitee Go 侧不复制步骤。
+            # 脚本会打印系统、cmake/ninja/make/ccache 的实际版本与生成器选择。
             - bash tools/ci/check.sh
