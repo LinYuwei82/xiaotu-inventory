@@ -410,7 +410,9 @@ void render_document(Services& services, const PrintTargetDef& target, const htt
     items[row.id] = row;
   }
   std::string warehouse_name;
+  std::map<std::int64_t, std::string> warehouse_names;
   for (const auto& row : services.warehouse.list()) {
+    warehouse_names[row.id] = row.name;
     if (row.id == detail.warehouse_id) warehouse_name = row.name;
   }
 
@@ -421,6 +423,19 @@ void render_document(Services& services, const PrintTargetDef& target, const htt
     const std::string name = found == items.end() ? std::string{} : found->second.name;
     const std::string spec = found == items.end() ? std::string{} : found->second.spec;
     const std::string unit = found == items.end() ? std::string{} : found->second.unit;
+    if (detail.doc_type == "CST_ADJ") {
+      const auto wh = warehouse_names.find(line.warehouse_id);
+      render.rows.push_back({{"line_no", ++line_no},
+                             {"item_code", code},
+                             {"item_name", name},
+                             {"spec", spec},
+                             {"unit", unit},
+                             {"warehouse", wh == warehouse_names.end() ? std::string{}
+                                                                       : wh->second},
+                             {"adjust_cents", line.adjust_cents},
+                             {"adjust_reason", line.adjust_reason}});
+      continue;
+    }
     render.rows.push_back({{"line_no", ++line_no},
                            {"item_code", code},
                            {"item_name", name},
@@ -431,13 +446,15 @@ void render_document(Services& services, const PrintTargetDef& target, const htt
                            {"amount_cents", mul_qty_price(line.qty, line.price_cents)}});
   }
 
+  const std::string header_warehouse =
+      detail.doc_type == "CST_ADJ" ? std::string("按明细行") : warehouse_name;
   render.subtitle = "单号 " + detail.doc_no + "；日期 " + detail.doc_date + "；仓库 " +
-                    (warehouse_name.empty() ? "—" : warehouse_name) + "；状态 " +
+                    (header_warehouse.empty() ? "—" : header_warehouse) + "；状态 " +
                     doc_status_label(detail.status);
   render.header_fields = nlohmann::json::array({
       {{"label", "单号"}, {"value", detail.doc_no}},
       {{"label", "日期"}, {"value", detail.doc_date}},
-      {{"label", "仓库"}, {"value", warehouse_name}},
+      {{"label", "仓库"}, {"value", header_warehouse}},
       {{"label", "往来单位"}, {"value", detail.partner}},
       {{"label", "状态"}, {"value", doc_status_label(detail.status)}},
   });

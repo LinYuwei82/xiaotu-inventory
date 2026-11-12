@@ -69,7 +69,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 12, "迁移后 schema 版本应为 12");
+      check(db.schema_version() == 13, "迁移后 schema 版本应为 13");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -97,6 +97,12 @@ int main() {
             "只读角色应能查看打印模板");
       check(!xiaotu::role_has_permission("viewer", "print.template.write"),
             "只读角色不应能修改打印模板");
+      check(xiaotu::role_has_permission("admin", "cost.adjust"),
+            "成本调整审核应只由管理员通配覆盖");
+      check(!xiaotu::role_has_permission("operator", "cost.adjust"),
+            "操作员不应能审核成本调整单");
+      check(!xiaotu::role_has_permission("viewer", "cost.adjust"),
+            "只读角色不应能审核成本调整单");
 
       xiaotu::UserService users(db);
       const auto seeded_users = users.list();
@@ -947,7 +953,81 @@ int main() {
 
       // 打印模板：列白名单、默认唯一、软删除回退与乐观锁。
       xiaotu::PrintTemplateService templates(db);
-      check(xiaotu::print_targets().size() == 17, "打印目标应包含 9 种单据与 8 张报表");
+      check(xiaotu::print_targets().size() == 18, "打印目标应包含 10 种单据与 8 张报表");
+
+      // 成本调整单：仓库与原因在明细行，只改结存金额；反审核不能把金额冲成负数。
+      const auto adjust_item = items.create(
+          xiaotu::gen::ItemRow{.code = "ADJ001", .name = "成本调整测试", .unit_id = 1});
+      make_doc("PUR_IN", adjust_item.id, q(10), 1000);
+      const std::int64_t adjust_wh = warehouse_list.at(0).id;
+
+      xiaotu::DocInput adjust;
+      adjust.doc_type = "CST_ADJ";
+      adjust.doc_date = "2026-11-12";
+      adjust.lines.push_back(xiaotu::DocLineInput{.item_id = adjust_item.id,
+                                                  .qty = 0,
+                                                  .price_cents = 0,
+                                                  .warehouse_id = adjust_wh,
+                                                  .adjust_cents = 500,
+                                                  .adjust_reason = "运费分摊"});
+      // 表头不传仓库（前端传 0），草稿也应取明细行仓库，不能撞 warehouse 外键。
+      const auto adjust_draft_doc = documents.save_draft(adjust);
+      check(documents.detail(adjust_draft_doc.id).warehouse_id == adjust_wh,
+            "成本调整草稿的表头仓库应取明细行仓库");
+      documents.delete_draft(adjust_draft_doc.id);
+      const auto adjust_doc = documents.save_and_approve(adjust);
+      check(adjust_doc.doc_no.rfind("CBTZ", 0) == 0, "成本调整单号应以 CBTZ 开头");
+      auto adjust_balance = balance_of(adjust_item.id);
+      check(adjust_balance.qty == q(10) && adjust_balance.amount_cents == 10500,
+            "成本调整不应改变数量，只增加结存金额");
+      const auto adjust_detail = documents.detail(adjust_doc.id);
+      check(adjust_detail.lines.at(0).warehouse_id == adjust_wh &&
+                adjust_detail.lines.at(0).adjust_reason == "运费分摊",
+            "成本调整单应逐行保存仓库与原因");
+      documents.reverse(adjust_doc.id);
+      check(balance_of(adjust_item.id).amount_cents == 10000, "反审核成本调整应回退金额");
+
+      bool negative_adjust_rejected = false;
+      try {
+        xiaotu::DocInput negative = adjust;
+        negative.lines.at(0).adjust_cents = -10001;
+        documents.save_and_approve(negative);
+      } catch (const xiaotu::AppError& error) {
+        negative_adjust_rejected = error.code() == "INVALID_INPUT";
+      }
+      check(negative_adjust_rejected, "调整后结存金额为负应被拒绝");
+
+      const auto empty_item = items.create(
+          xiaotu::gen::ItemRow{.code = "ADJ002", .name = "零库存商品", .unit_id = 1});
+      bool zero_stock_rejected = false;
+      try {
+        xiaotu::DocInput zero_adjust = adjust;
+        zero_adjust.lines.at(0).item_id = empty_item.id;
+        zero_adjust.lines.at(0).adjust_cents = 100;
+        documents.save_and_approve(zero_adjust);
+      } catch (const xiaotu::AppError& error) {
+        zero_stock_rejected = error.code() == "INVALID_INPUT";
+      }
+      check(zero_stock_rejected, "零库存商品不允许留下结存金额");
+
+      // 调整金额已被后续出库结转后，反审核调整单会让金额变负，必须拒绝。
+      xiaotu::DocInput adjust_later = adjust;
+      adjust_later.lines.at(0).adjust_cents = 1000;
+      const auto adjust_later_doc = documents.save_and_approve(adjust_later);
+      const auto consume_doc = make_doc("OTH_OUT", adjust_item.id, q(10), 0);
+      bool cost_reverse_rejected = false;
+      try {
+        documents.reverse(adjust_later_doc.id);
+      } catch (const xiaotu::AppError& error) {
+        cost_reverse_rejected = error.code() == "REVERSE_WOULD_NEGATIVE";
+      }
+      check(cost_reverse_rejected, "反审核会使结存金额为负时应拒绝");
+      documents.reverse(consume_doc.id);
+      documents.reverse(adjust_later_doc.id);
+      check(balance_of(adjust_item.id).amount_cents == 10000, "处理后续业务后可正常反审核");
+
+      items.remove(adjust_item.id);
+      items.remove(empty_item.id);
 
       check(xiaotu::find_print_target("DOC", "OTH_IN") != nullptr,
             "其他入库应登记为打印目标");

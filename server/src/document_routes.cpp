@@ -4,13 +4,26 @@
 #include <string>
 
 #include "xiaotu/document.h"
+#include "xiaotu/context.h"
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
+#include "xiaotu/permissions.h"
 #include "xiaotu/qty.h"
 #include "xiaotu/services.h"
 
 namespace xiaotu {
 namespace {
+
+// 成本调整单的审核 / 反审核用 cost.adjust；路由先做 document.write 粗筛，
+// 这里再按单据类型补一次权限校验。起草与改草稿仍走 document.write，
+// 等于「操作员提申请、管理员批」。
+void require_doc_audit(const std::string& doc_type) {
+  const DocumentDefinition* definition = find_document_definition(doc_type);
+  if (definition != nullptr && definition->write_permission != "document.write" &&
+      !role_has_permission(current_context().role, definition->write_permission)) {
+    throw AppError("FORBIDDEN", "没有权限执行该操作");
+  }
+}
 
 // 数量按十进制字符串传入（如 "12.3456"），避免 JSON 数字被解析成浮点。
 // 兼容旧客户端：整数数字按「单位个数」理解，浮点数字直接拒绝。
@@ -58,6 +71,9 @@ nlohmann::json detail_to_json(const DocDetail& detail) {
         {"converted_qty", qty_text(line.converted_qty)},
         {"remaining_qty", qty_text(line.qty - line.converted_qty)},
         {"source_order_line_id", line.source_order_line_id},
+        {"warehouse_id", line.warehouse_id},
+        {"adjust_cents", line.adjust_cents},
+        {"adjust_reason", line.adjust_reason},
     });
   }
   return nlohmann::json{
@@ -93,6 +109,9 @@ DocInput input_from_json(const nlohmann::json& body) {
         line.qty = parse_qty_field(item["qty"]);
       }
       line.price_cents = item.value("price_cents", std::int64_t{0});
+      line.warehouse_id = item.value("warehouse_id", std::int64_t{0});
+      line.adjust_cents = item.value("adjust_cents", std::int64_t{0});
+      line.adjust_reason = item.value("adjust_reason", std::string{});
       input.lines.push_back(line);
     }
   }
@@ -128,6 +147,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
                       const nlohmann::json body = json_body(req);
                       const DocInput input = input_from_json(body);
                       const bool draft = body.value("save_as_draft", false);
+                      if (!draft) require_doc_audit(input.doc_type);
                       const auto created =
                           draft ? services.docs.save_draft(input)
                                 : services.docs.save_and_approve(input);
@@ -141,7 +161,8 @@ void register_document_routes(httplib::Server& server, Services& services) {
              guard("document.write",
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      const auto id = std::stoll(req.matches[1].str());
-                     services.docs.update_draft(id, input_from_json(json_body(req)));
+                     const DocInput input = input_from_json(json_body(req));
+                     services.docs.update_draft(id, input);
                      json_ok(res, detail_to_json(services.docs.detail(id)));
                    }));
 
@@ -159,6 +180,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
               guard("document.write",
                     [&services](const httplib::Request& req, httplib::Response& res) {
                       const auto id = std::stoll(req.matches[1].str());
+                      require_doc_audit(services.docs.detail(id).doc_type);
                       services.docs.approve(id);
                       json_ok(res, detail_to_json(services.docs.detail(id)));
                     }));
@@ -167,6 +189,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
               guard("document.write",
                     [&services](const httplib::Request& req, httplib::Response& res) {
                       const auto id = std::stoll(req.matches[1].str());
+                      require_doc_audit(services.docs.detail(id).doc_type);
                       services.docs.reverse(id);
                       nlohmann::json body;
                       body["ok"] = true;
@@ -194,6 +217,55 @@ void register_document_routes(httplib::Server& server, Services& services) {
                       json_ok(res, nlohmann::json{{"doc_id", conversion.doc_id},
                                                   {"doc_no", conversion.doc_no},
                                                   {"order_status", conversion.order_status}});
+                    }));
+
+  // 成本重算页「仅金额差异」一键生成草稿：金额以服务端重算结果为准，客户端只传商品与仓库。
+  server.Post("/api/cost-adjustments/drafts",
+              guard("document.write",
+                    [&services](const httplib::Request& req, httplib::Response& res) {
+                      const nlohmann::json body = json_body(req);
+                      if (!body.contains("lines") || !body["lines"].is_array() ||
+                          body["lines"].empty()) {
+                        throw AppError("INVALID_INPUT", "请选择要生成调整单的差异行");
+                      }
+                      DocInput input;
+                      input.doc_type = "CST_ADJ";
+                      for (const auto& item : body["lines"]) {
+                        const std::int64_t item_id =
+                            item.value("item_id", std::int64_t{0});
+                        const std::int64_t warehouse_id =
+                            item.value("warehouse_id", std::int64_t{0});
+                        const auto result =
+                            services.cost_recalc.recalculate(item_id, warehouse_id);
+                        const CostRecalcRow* found = nullptr;
+                        for (const auto& row : result.differences) {
+                          if (row.item_id == item_id && row.warehouse_id == warehouse_id) {
+                            found = &row;
+                            break;
+                          }
+                        }
+                        if (found == nullptr) {
+                          throw AppError("NO_DIFFERENCE", "该商品与仓库没有成本差异");
+                        }
+                        if (found->qty_diff != 0) {
+                          throw AppError("QTY_DIFF", "数量差异请使用盘点单处理");
+                        }
+                        if (found->amount_diff_cents == 0) {
+                          throw AppError("NO_DIFFERENCE", "该商品与仓库没有金额差异");
+                        }
+                        DocLineInput line;
+                        line.item_id = item_id;
+                        line.qty = 0;
+                        line.price_cents = 0;
+                        line.warehouse_id = warehouse_id;
+                        line.adjust_cents = found->amount_diff_cents;
+                        line.adjust_reason =
+                            item.value("reason", std::string("成本重算差异"));
+                        input.lines.push_back(line);
+                      }
+                      const auto created = services.docs.save_draft(input);
+                      json_ok(res, nlohmann::json{{"id", created.id},
+                                                  {"doc_no", created.doc_no}});
                     }));
 
   server.Post(R"(/api/documents/(\d+)/close)",

@@ -29,6 +29,9 @@ struct DocLineInput {
   std::int64_t price_cents = 0;  // 单价（分）
   std::int64_t id = 0;           // doc_line 主键，详情返回时使用
   std::int64_t converted_qty = 0;        // 订单行累计已转出数量（定点整数）
+  std::int64_t warehouse_id = 0;         // 成本调整单按行指定仓库；其他单据为 0
+  std::int64_t adjust_cents = 0;         // 成本调整金额（分），可正可负
+  std::string adjust_reason;             // 成本调整原因，仅成本调整单使用
   std::int64_t source_order_line_id = 0;  // 出库行来源订单行
 };
 

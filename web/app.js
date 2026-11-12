@@ -86,6 +86,23 @@
     return String(value === null || value === undefined ? "" : value).startsWith("-");
   }
 
+  function bizTypeText(value) {
+    return (
+      {
+        PUR_IN: "采购入库",
+        PUR_RET: "采购退货",
+        SAL_OUT: "销售出库",
+        SAL_RET: "销售退货",
+        OTH_IN: "其他入库",
+        OTH_OUT: "其他出库",
+        STK_TRF: "调拨出库",
+        STK_TRF_IN: "调拨入库",
+        STK_CNT: "盘点调整",
+        CST_ADJ: "成本调整",
+      }[value] || (String(value).startsWith("REVERSE") ? "反审核回冲" : value)
+    );
+  }
+
   function showNotice(message, kind) {
     notice.textContent = message;
     notice.className = "notice" + (kind ? " " + kind : "");
@@ -562,6 +579,7 @@
 
   async function documentPage(mount, config) {
     const docType = config.docType;
+    const costAdjust = !!config.costAdjust;
     let warehouses = [];
     let items = [];
     let documents = [];
@@ -578,7 +596,7 @@
       <div class="card">
         <form class="doc-form" data-role="form">
           <div class="doc-head">
-            <label class="field"><span>${config.twoWarehouse ? "调出仓库" : "仓库"}</span>
+            <label class="field" ${costAdjust ? "hidden" : ""}><span>${config.twoWarehouse ? "调出仓库" : "仓库"}</span>
               <select data-role="warehouse" required></select>
             </label>
             <label class="field" ${config.twoWarehouse ? "" : "hidden"}><span>调入仓库</span>
@@ -587,7 +605,7 @@
             <label class="field"><span>单据日期</span>
               <input type="date" data-role="date" required />
             </label>
-            <label class="field"><span>${escapeHtml(config.partnerLabel)}</span>
+            <label class="field" ${costAdjust ? "hidden" : ""}><span>${escapeHtml(config.partnerLabel)}</span>
               <input type="text" data-role="partner" placeholder="${escapeHtml(
                 config.partnerPlaceholder
               )}" ${config.partnerApi ? "hidden" : ""} />
@@ -616,6 +634,9 @@
     const documentsTable = mount.querySelector('[data-role="documents"]');
 
     dateInput.value = new Date().toISOString().slice(0, 10);
+    if (costAdjust && !can("cost.adjust")) {
+      mount.querySelector('[data-role="submit"]').hidden = true;
+    }
 
     function itemOptions(selected) {
       return items
@@ -628,8 +649,37 @@
         .join("");
     }
 
+    function warehouseOptions(selected) {
+      return warehouses
+        .filter((warehouse) => warehouse.status)
+        .map(
+          (warehouse) =>
+            `<option value="${warehouse.id}" ${
+              String(warehouse.id) === String(selected) ? "selected" : ""
+            }>${escapeHtml(warehouse.code + " " + warehouse.name)}</option>`
+        )
+        .join("");
+    }
+
     function addLine(line) {
       const row = document.createElement("tr");
+      if (costAdjust) {
+        row.innerHTML = `
+          <td><select data-role="item">${itemOptions(line ? line.item_id : undefined)}</select></td>
+          <td><select data-role="line-warehouse">${warehouseOptions(
+            line ? line.warehouse_id : undefined
+          )}</select></td>
+          <td><input type="text" inputmode="decimal" value="0.00" data-role="adjust" /></td>
+          <td><input type="text" placeholder="调整原因" data-role="reason" /></td>
+          <td class="actions"><button class="link danger" type="button" data-role="remove">移除</button></td>`;
+        linesTable.querySelector("tbody").appendChild(row);
+        row.querySelector('[data-role="remove"]').addEventListener("click", () => row.remove());
+        if (line) {
+          row.querySelector('[data-role="adjust"]').value = (line.adjust_cents / 100).toFixed(2);
+          row.querySelector('[data-role="reason"]').value = line.adjust_reason || "";
+        }
+        return;
+      }
       row.innerHTML = `
         <td><select data-role="item">${itemOptions(line ? line.item_id : undefined)}</select></td>
         <td><input type="text" inputmode="decimal" value="1" data-role="qty" /></td>
@@ -653,7 +703,9 @@
     }
 
     function resetLines() {
-      linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+      linesTable.innerHTML = costAdjust
+        ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
+        : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
       addLine();
     }
 
@@ -663,6 +715,11 @@
 
     function actionsFor(doc) {
       const print = '<button class="link" data-role="print">打印</button>';
+      if (costAdjust && !can("cost.adjust")) {
+        return doc.status === "DRAFT"
+          ? print + '<button class="link" data-role="edit">编辑</button>'
+          : print;
+      }
       if (doc.status === "DRAFT") {
         return (
           print +
@@ -694,7 +751,7 @@
               <td>${escapeHtml(doc.doc_date)}</td>
               <td>${escapeHtml(doc.warehouse_name)}</td>
               <td>${escapeHtml(doc.customer || "—")}</td>
-              <td>${qtyText(doc.total_qty)}</td>
+              <td>${costAdjust ? "—" : qtyText(doc.total_qty)}</td>
               <td>${money(doc.total_amount_cents)}</td>
               <td>${statusLabel(doc.status)}</td>
               <td class="actions">${actionsFor(doc)}</td>
@@ -759,6 +816,29 @@
       const lines = [];
       for (const row of linesTable.querySelectorAll("tbody tr")) {
         const itemId = Number(row.querySelector('[data-role="item"]').value);
+        if (costAdjust) {
+          const warehouseId = Number(row.querySelector('[data-role="line-warehouse"]').value);
+          const adjustText = row.querySelector('[data-role="adjust"]').value.trim();
+          const adjust = Math.round(Number(adjustText) * 100);
+          const reason = row.querySelector('[data-role="reason"]').value.trim();
+          if (!itemId || !warehouseId || !adjustText || !Number.isFinite(adjust) || adjust === 0) {
+            showNotice("请检查明细行的商品、仓库与调整金额", "error");
+            return null;
+          }
+          if (!reason) {
+            showNotice("请填写调整原因", "error");
+            return null;
+          }
+          lines.push({
+            item_id: itemId,
+            qty: "0",
+            price_cents: 0,
+            warehouse_id: warehouseId,
+            adjust_cents: adjust,
+            adjust_reason: reason,
+          });
+          continue;
+        }
         const qty = parseQty(
           row.querySelector('[data-role="qty"]').value,
           docType === "STK_CNT"
@@ -785,7 +865,7 @@
       const partnerOption = usePartnerSelect ? partnerSelect.selectedOptions[0] : null;
       const body = {
         doc_type: docType,
-        warehouse_id: Number(warehouseSelect.value),
+        warehouse_id: costAdjust ? 0 : Number(warehouseSelect.value),
         target_warehouse_id: config.twoWarehouse ? Number(targetWarehouseSelect.value) : 0,
         doc_date: dateInput.value,
         partner_id: usePartnerSelect ? Number(partnerSelect.value || 0) : 0,
@@ -828,7 +908,9 @@
         if (partnerSelect && !partnerSelect.hidden) {
           partnerSelect.value = detail.partner_id ? String(detail.partner_id) : "";
         }
-        linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+        linesTable.innerHTML = costAdjust
+          ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
+          : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
         for (const line of detail.lines) addLine(line);
         mount.querySelector('[data-role="cancel-edit"]').hidden = false;
         form.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1833,7 +1915,7 @@
              .map(
                (row) => `<tr>
                  <td>${escapeHtml(row.biz_time)}</td>
-                 <td>${escapeHtml(row.biz_type)}</td>
+                 <td>${escapeHtml(bizTypeText(row.biz_type))}</td>
                  <td>${escapeHtml(row.doc_no)}</td>
                  <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
                  <td>${escapeHtml(row.warehouse_name)}</td>
@@ -2682,7 +2764,7 @@
              .map(
                (row) => `<tr>
                  <td>${escapeHtml(row.biz_time)}</td>
-                 <td>${escapeHtml(row.biz_type)}</td>
+                 <td>${escapeHtml(bizTypeText(row.biz_type))}</td>
                  <td>${escapeHtml(row.doc_no)}</td>
                  <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
                  <td>${escapeHtml(row.warehouse_name)}</td>
@@ -2710,23 +2792,49 @@
         }
         recalcTable.innerHTML = `
           <thead><tr><th>商品</th><th>仓库</th><th>账面数量</th><th>重算数量</th><th>数量差</th>
-            <th>账面金额（元）</th><th>重算金额（元）</th><th>金额差（元）</th></tr></thead>
+            <th>账面金额（元）</th><th>重算金额（元）</th><th>金额差（元）</th><th>处理</th></tr></thead>
           <tbody>${result.differences
-            .map(
-              (row) => `<tr>
+            .map((row) => {
+              const qtyDiff = qtyText(row.qty_diff) !== "0";
+              const action = qtyDiff
+                ? '<span class="page-sub">请用盘点单</span>'
+                : can("document.write")
+                ? `<button class="btn small" data-adjust-draft="${row.item_id}|${row.warehouse_id}">生成调整草稿</button>`
+                : "";
+              return `<tr>
                 <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
                 <td>${escapeHtml(row.warehouse_name)}</td>
                 <td class="${qtyIsNegative(row.book_qty) ? "negative" : ""}">${qtyText(row.book_qty)}</td>
                 <td class="${qtyIsNegative(row.replay_qty) ? "negative" : ""}">${qtyText(row.replay_qty)}</td>
-                <td class="${qtyText(row.qty_diff) !== "0" ? "negative" : ""}">${qtyText(row.qty_diff)}</td>
+                <td class="${qtyDiff ? "negative" : ""}">${qtyText(row.qty_diff)}</td>
                 <td>${money(row.book_amount_cents)}</td>
                 <td>${money(row.replay_amount_cents)}</td>
                 <td class="${row.amount_diff_cents !== 0 ? "negative" : ""}">${money(
                   row.amount_diff_cents
                 )}</td>
-              </tr>`
-            )
+                <td>${action}</td>
+              </tr>`;
+            })
             .join("")}</tbody>`;
+        recalcTable.querySelectorAll("[data-adjust-draft]").forEach((button) => {
+          button.addEventListener("click", async () => {
+            const [itemId, warehouseId] = button.dataset.adjustDraft.split("|");
+            try {
+              const created = await api("POST", "/api/cost-adjustments/drafts", {
+                lines: [
+                  {
+                    item_id: Number(itemId),
+                    warehouse_id: Number(warehouseId),
+                    reason: "成本重算差异",
+                  },
+                ],
+              });
+              showNotice("已生成成本调整草稿 " + (created.doc_no || ""), "ok");
+            } catch (error) {
+              showNotice(error.message, "error");
+            }
+          });
+        });
       } catch (error) {
         showNotice(error.message, "error");
       }
@@ -3236,6 +3344,20 @@
           partnerLabel: "备注",
           partnerPlaceholder: "可选",
           docLabel: "盘点",
+        }),
+    },
+    {
+      key: "cost-adjust",
+      title: "成本调整",
+      render: (mount) =>
+        documentPage(mount, {
+          docType: "CST_ADJ",
+          title: "成本调整单",
+          subtitle: "只调整结存金额、不改数量；仓库与原因逐行填写，审核权限仅管理员",
+          partnerLabel: "备注",
+          partnerPlaceholder: "（不适用）",
+          docLabel: "成本调整",
+          costAdjust: true,
         }),
     },
     {

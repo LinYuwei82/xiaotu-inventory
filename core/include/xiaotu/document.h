@@ -17,6 +17,7 @@ enum class StockMode {
   Out,        // 出库
   Transfer,   // 调拨：源仓出、目标仓入，两侧同一事务
   Stocktake,  // 盘点：按实盘数与账面数的差额生成调整流水
+  CostAdjust, // 成本调整：不改数量，只调整结存金额
 };
 enum class PriceSource { Manual };
 
@@ -48,6 +49,9 @@ struct DocumentDefinition {
   // 审核 / 反审核的附加动作（往来账、库存占用等），M0 为空。
   std::function<void(sqlite3*, std::int64_t)> on_approve;
   std::function<void(sqlite3*, std::int64_t)> on_reverse;
+  // 审核 / 反审核（含保存并审核）需要的权限码；成本调整单单独用 cost.adjust，
+  // 起草、改草稿与删除草稿仍走 document.write。
+  std::string write_permission = "document.write";
 };
 
 const std::vector<DocumentDefinition>& document_definitions();

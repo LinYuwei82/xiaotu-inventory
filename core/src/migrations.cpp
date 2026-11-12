@@ -538,6 +538,64 @@ ALTER TABLE settlement ADD COLUMN operator   TEXT    NOT NULL DEFAULT '';
 CREATE INDEX idx_settlement_account_date ON settlement(account_id, settled_on, id);
 )SQL";
 
+// v13：成本调整单。仓库与调整原因下沉到明细行；
+// stock_ledger 允许「数量 0、金额非 0」的调整流水，因此两张表都重建。
+constexpr const char* kV13 = R"SQL(
+CREATE TABLE doc_line_v13 (
+  id                   INTEGER PRIMARY KEY,
+  doc_id               INTEGER NOT NULL REFERENCES doc_header(id),
+  line_no              INTEGER NOT NULL,
+  item_id              INTEGER NOT NULL REFERENCES item(id),
+  qty                  INTEGER NOT NULL,
+  price_cents          INTEGER NOT NULL,
+  amount_cents         INTEGER NOT NULL,
+  converted_qty        INTEGER NOT NULL DEFAULT 0,
+  source_order_line_id INTEGER NOT NULL DEFAULT 0,
+  warehouse_id         INTEGER NOT NULL DEFAULT 0,
+  adjust_cents         INTEGER NOT NULL DEFAULT 0,
+  adjust_reason        TEXT    NOT NULL DEFAULT '',
+  CHECK (qty >= 0),
+  CHECK (price_cents >= 0),
+  CHECK (amount_cents >= 0),
+  CHECK (warehouse_id >= 0)
+);
+INSERT INTO doc_line_v13 (id, doc_id, line_no, item_id, qty, price_cents, amount_cents,
+                          converted_qty, source_order_line_id, warehouse_id,
+                          adjust_cents, adjust_reason)
+SELECT id, doc_id, line_no, item_id, qty, price_cents, amount_cents,
+       converted_qty, source_order_line_id, 0, 0, ''
+FROM doc_line;
+DROP TABLE doc_line;
+ALTER TABLE doc_line_v13 RENAME TO doc_line;
+CREATE UNIQUE INDEX uk_doc_line_no ON doc_line(doc_id, line_no);
+CREATE INDEX idx_doc_line_item ON doc_line(item_id);
+CREATE INDEX idx_doc_line_source_order ON doc_line(source_order_line_id);
+
+CREATE TABLE stock_ledger_v13 (
+  id           INTEGER PRIMARY KEY,
+  doc_id       INTEGER NOT NULL,
+  doc_line_id  INTEGER NOT NULL,
+  biz_type     TEXT    NOT NULL,
+  biz_time     TEXT    NOT NULL,
+  warehouse_id INTEGER NOT NULL REFERENCES warehouse(id),
+  item_id      INTEGER NOT NULL REFERENCES item(id),
+  qty          INTEGER NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  created_at   TEXT    NOT NULL,
+  CHECK (amount_cents <> 0)
+);
+INSERT INTO stock_ledger_v13 (id, doc_id, doc_line_id, biz_type, biz_time, warehouse_id,
+                              item_id, qty, amount_cents, created_at)
+SELECT id, doc_id, doc_line_id, biz_type, biz_time, warehouse_id,
+       item_id, qty, amount_cents, created_at
+FROM stock_ledger;
+DROP TABLE stock_ledger;
+ALTER TABLE stock_ledger_v13 RENAME TO stock_ledger;
+CREATE INDEX idx_stock_ledger_item_wh_time ON stock_ledger(item_id, warehouse_id, biz_time, id);
+CREATE INDEX idx_stock_ledger_doc ON stock_ledger(doc_id);
+CREATE UNIQUE INDEX uk_stock_ledger_doc_line ON stock_ledger(doc_line_id, biz_type);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -565,6 +623,7 @@ const std::vector<Migration>& all_migrations() {
       {10, "v10_session", kV10},
       {11, "v11_decimal_qty", kV11},
       {12, "v12_fund_account", kV12},
+      {13, "v13_cost_adjust", kV13},
   };
   return migrations;
 }

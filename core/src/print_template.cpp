@@ -129,6 +129,16 @@ std::vector<PrintTargetDef> make_targets() {
       column_def("balance_cents", "余额（元）", "MONEY", "RIGHT", 18),
   };
 
+  const std::vector<PrintColumnDef> cost_adjust_columns = {
+      column_def("item_code", "商品编码", "TEXT", "LEFT", 24),
+      column_def("item_name", "商品", "TEXT", "LEFT", 36),
+      column_def("spec", "规格", "TEXT", "LEFT", 22),
+      column_def("unit", "单位", "TEXT", "CENTER", 12),
+      column_def("warehouse", "仓库", "TEXT", "LEFT", 22),
+      column_def("adjust_cents", "调整金额（元）", "MONEY", "RIGHT", 20),
+      column_def("adjust_reason", "调整原因", "TEXT", "LEFT", 44),
+  };
+
   return {
       {"DOC", "SAL_OUT", "销售出库单", doc_columns},
       {"DOC", "PUR_IN", "采购入库单", doc_columns},
@@ -139,6 +149,7 @@ std::vector<PrintTargetDef> make_targets() {
       {"DOC", "OTH_IN", "其他入库单", doc_columns},
       {"DOC", "OTH_OUT", "其他出库单", doc_columns},
       {"DOC", "SAL_ORDER", "销售订单", doc_columns},
+      {"DOC", "CST_ADJ", "成本调整单", cost_adjust_columns},
       {"REPORT", "stock-balance", "库存余额表", balance_columns},
       {"REPORT", "stock-ledger", "库存流水明细", ledger_columns},
       {"REPORT", "goods-flow", "收发明细", flow_columns},
