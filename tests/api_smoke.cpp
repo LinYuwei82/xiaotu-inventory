@@ -80,7 +80,14 @@ void run_server_mode(const std::filesystem::path& dir) {
   services.users.set_password(1, "Passw0rd!");
 
   xiaotu::HttpServer http(
-      services, xiaotu::ServerInfo{.mode = "server", .app_name = "小兔进销存", .version = "test"}, "");
+      services,
+      xiaotu::ServerInfo{.mode = "server",
+                         .app_name = "小兔进销存",
+                         .version = "test",
+                         .data_dir = dir.string(),
+                         .database_path = (dir / "app.db").string(),
+                         .listen_host = "127.0.0.1"},
+      "");
   const int port = http.bind("127.0.0.1", 0);
   http.serve_async();
   httplib::Client client("127.0.0.1", port);
@@ -166,6 +173,25 @@ void run_server_mode(const std::filesystem::path& dir) {
           "模板抬头为空时应默认打印公司名称");
   }
 
+  // 诊断信息：只读、无敏感字段、数值与当前库一致。
+  const auto diagnostic = client.Get("/api/diagnostics");
+  check(diagnostic && diagnostic->status == 200, "诊断信息应返回 200");
+  if (diagnostic) {
+    const auto data = nlohmann::json::parse(diagnostic->body);
+    check(data.value("schema_version", 0) == 22, "诊断信息里的 schema 应为 22");
+    check(data.value("migrations", 0) == 22, "诊断信息里的迁移条数应为 22");
+    check(data.value("mode", "") == "server", "网络版诊断信息 mode 应为 server");
+    check(!data.value("data_dir", "").empty(), "诊断信息应包含数据目录");
+    check(data.value("database_bytes", 0LL) > 0, "诊断信息应包含大于 0 的数据库大小");
+    check(data.value("listen", "").rfind("127.0.0.1:", 0) == 0, "诊断信息应包含监听地址");
+    check(data.value("user", "") == "admin" && data.value("role", "") == "admin",
+          "诊断信息应包含当前用户与角色");
+    check(data.contains("build") && data["build"].contains("compiler"),
+          "诊断信息应包含编译器与构建时间");
+    check(!data.contains("password") && !data.contains("token") && !data.contains("csrf"),
+          "诊断信息不应包含口令、令牌或 CSRF");
+  }
+
   http.stop();
 }
 
@@ -178,7 +204,12 @@ void run_local_mode(const std::filesystem::path& dir) {
   xiaotu::Services services(db);
 
   xiaotu::HttpServer http(
-      services, xiaotu::ServerInfo{.mode = "local", .app_name = "小兔进销存", .version = "test"},
+      services,
+      xiaotu::ServerInfo{.mode = "local",
+                         .app_name = "小兔进销存",
+                         .version = "test",
+                         .data_dir = dir.string(),
+                         .database_path = (dir / "app.db").string()},
       "local-smoke-token");
   const int port = http.bind("127.0.0.1", 0);
   http.serve_async();
@@ -201,6 +232,15 @@ void run_local_mode(const std::filesystem::path& dir) {
   check(me && me->status == 200, "单机版登录后 /api/me 应返回 200");
   const auto items = client.Get("/api/items");
   check(items && items->status == 200, "单机版主数据列表应返回 200");
+
+  const auto diagnostic = client.Get("/api/diagnostics");
+  check(diagnostic && diagnostic->status == 200, "单机版诊断信息应返回 200");
+  if (diagnostic) {
+    const auto data = nlohmann::json::parse(diagnostic->body);
+    check(data.value("mode", "") == "local", "单机版诊断信息 mode 应为 local");
+    check(data.value("user", "") == "admin", "单机版诊断信息应包含当前用户");
+    check(!data.value("listen", "").empty(), "单机版诊断信息应包含自动分配的监听地址");
+  }
 
   http.stop();
 }

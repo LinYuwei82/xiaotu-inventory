@@ -24,6 +24,10 @@ struct ServerInfo {
   // 启动时检测到的数据目录风险提示（如位于 iCloud / OneDrive 同步目录），
   // 空串表示正常；前端在 /api/health 里读取后显示横幅。
   std::string data_dir_warning;
+  // 诊断页展示用：数据目录、数据库文件与监听地址；不包含口令或密钥。
+  std::string data_dir;
+  std::string database_path;
+  std::string listen_host;  // 单机版为空，监听 127.0.0.1 的自动端口
 };
 
 // HTTP 外壳：只负责认证、路由注册与生命周期，业务全部在 Services 内。

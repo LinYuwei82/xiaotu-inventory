@@ -314,6 +314,9 @@ int main(int argc, char** argv) {
         .app_name = "小兔进销存",
         .version = XIAOTU_VERSION,
         .data_dir_warning = data_dir_warning,
+        .data_dir = data_dir.string(),
+        .database_path = database_path.string(),
+        .listen_host = options.server ? listen : std::string{},
     };
     xiaotu::HttpServer http(services, info, token);
 

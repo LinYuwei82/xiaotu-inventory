@@ -4,7 +4,9 @@
 
 #include <chrono>
 #include <exception>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <utility>
 
 #include "xiaotu/audit.h"
@@ -15,6 +17,7 @@
 #include "xiaotu/ids.h"
 #include "xiaotu/log.h"
 #include "xiaotu/masterdata_io.h"
+#include "xiaotu/migrations.h"
 #include "xiaotu/permissions.h"
 #include "xiaotu/resources.h"
 #include "xiaotu/routes.h"
@@ -246,6 +249,48 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     body["schema_version"] = services_.db.schema_version();
     body["embedded_resources"] = resources::count();
     body["data_dir_warning"] = info_.data_dir_warning;
+    json_ok(res, body);
+  });
+
+  // 关于与诊断：只读，任何已登录角色都能看；不返回口令、密钥、会话令牌。
+  server_->Get("/api/diagnostics", [this](const httplib::Request&, httplib::Response& res) {
+    std::uintmax_t database_bytes = 0;
+    if (!info_.database_path.empty()) {
+      std::error_code ignored;
+      database_bytes = std::filesystem::file_size(info_.database_path, ignored);
+      if (ignored) {
+        database_bytes = 0;
+      }
+    }
+    const std::string listen =
+        info_.mode == "server"
+            ? (info_.listen_host.empty() ? std::string("127.0.0.1") : info_.listen_host) +
+                  ":" + std::to_string(port_)
+            : "127.0.0.1:" + std::to_string(port_);
+
+    nlohmann::json body;
+    body["app"] = info_.app_name;
+    body["version"] = info_.version;
+    body["mode"] = info_.mode;
+    body["edition"] = {{"code", std::string(EditionPolicy::instance().code())},
+                       {"label", std::string(EditionPolicy::instance().label())}};
+    body["schema_version"] = services_.db.schema_version();
+    body["migrations"] = all_migrations().size();
+    body["build"] = {{"compiler", __VERSION__},
+                     {"date", __DATE__},
+                     {"time", __TIME__},
+                     {"standard", std::to_string(__cplusplus)},
+#ifdef NDEBUG
+                     {"profile", "release"}};
+#else
+                     {"profile", "debug"}};
+#endif
+    body["data_dir"] = info_.data_dir;
+    body["database_path"] = info_.database_path;
+    body["database_bytes"] = database_bytes;
+    body["listen"] = listen;
+    body["user"] = current_context().user;
+    body["role"] = current_context().role;
     json_ok(res, body);
   });
 

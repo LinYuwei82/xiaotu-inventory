@@ -5261,6 +5261,77 @@
     });
   }
 
+  // ---------- 关于与诊断 ----------
+
+  function formatBytes(bytes) {
+    const value = Number(bytes || 0);
+    if (value < 1024) return value + " B";
+    if (value < 1024 * 1024) return (value / 1024).toFixed(1) + " KB";
+    if (value < 1024 * 1024 * 1024) return (value / 1024 / 1024).toFixed(1) + " MB";
+    return (value / 1024 / 1024 / 1024).toFixed(2) + " GB";
+  }
+
+  async function aboutPage(mount) {
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>关于与诊断</h2>
+          <p class="page-sub">只读信息，可直接复制贴给维护人员；不包含口令、密钥或会话令牌</p>
+        </div>
+        <button class="btn" type="button" data-role="copy">复制诊断信息</button>
+      </div>
+      <div class="card" data-role="body">正在读取…</div>`;
+
+    const body = mount.querySelector('[data-role="body"]');
+    let diagnosticText = "";
+    try {
+      const data = await api("GET", "/api/diagnostics");
+      const mode = data.mode === "local" ? "单机版" : "网络版";
+      const edition = data.edition || {};
+      const build = data.build || {};
+      const rows = [
+        ["应用", `${data.app} ${data.version}`],
+        ["运行形态", `${mode}（${edition.label || edition.code || "—"} / ${edition.code || "—"}）`],
+        ["schema", `v${data.schema_version}，迁移 ${data.migrations} 条`],
+        ["构建", `${build.profile || "—"} · ${build.compiler || "—"}`],
+        ["构建时间", `${build.date || "—"} ${build.time || "—"}`],
+        ["数据目录", data.data_dir || "—"],
+        ["数据库文件", `${data.database_path || "—"}（${formatBytes(data.database_bytes)}）`],
+        ["监听", data.listen || "—"],
+        ["当前用户", `${data.user || "—"}（${data.role || "—"}）`],
+      ];
+      body.innerHTML = `<table class="table"><tbody>${rows
+        .map(
+          ([label, value]) =>
+            `<tr><th style="width: 120px">${escapeHtml(label)}</th><td>${escapeHtml(
+              value
+            )}</td></tr>`
+        )
+        .join("")}</tbody></table>`;
+      diagnosticText = rows.map(([label, value]) => `${label}：${value}`).join("\n");
+    } catch (error) {
+      body.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+    }
+
+    mount.querySelector('[data-role="copy"]').addEventListener("click", async () => {
+      if (!diagnosticText) {
+        showNotice("诊断信息尚未读取成功", "error");
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(diagnosticText);
+      } catch (error) {
+        const area = document.createElement("textarea");
+        area.value = diagnosticText;
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand("copy");
+        area.remove();
+      }
+      showNotice("诊断信息已复制", "ok");
+    });
+  }
+
   // ---------- 导航与启动 ----------
 
   // 二级导航：组只影响展示，页面 key 与权限判定不变。
@@ -5567,6 +5638,7 @@
       permission: "setting.read",
       render: settingPage,
     },
+    { key: "about", title: "关于与诊断", group: "system", render: aboutPage },
   ];
 
   // 导航状态：手风琴只记住一个展开组；页面 key 供下次打开回到原页。
