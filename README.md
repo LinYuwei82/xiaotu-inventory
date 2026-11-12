@@ -500,10 +500,15 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 
 ### CI
 
-- 执行平台为 **GitHub Actions**（`.github/workflows/ci.yml`）：macOS 跑全量构建、`ctest`、代码生成校验与平台代码泄漏检查；Windows 跑 `XIAOTU_BUILD_SHELL=OFF` 构建与 `ctest`。
-- Gitee 是主库，GitHub 为镜像。镜像与 SSH 密钥未接通前工作流不会自动触发，用 `tools/ci/check.sh` 在本地执行同一套检查；`--quick` 跳过 Windows 构建。
-- 若后续改用 Gitee Go，直接以 `tools/ci/check.sh` 作为唯一入口，不再复制步骤。
+- 执行平台为 **Gitee Go**，配置在 `.workflow/ci.yml`，向 `main` 推送时触发。
+- 唯一检查入口是 `tools/ci/check.sh`，Gitee Go 只负责准备 CMake/Ninja 并调用它，不复制检查逻辑。
+- Linux 任务（`build@gcc` 10.3，Ubuntu 基础镜像）：以 `XIAOTU_BUILD_SHELL=OFF` 配置构建、跑 `ctest`、`generate.py --check`、平台代码泄漏检查。
+- Gitee Go 云端只提供 Linux 构建镜像，**没有 macOS 与 Windows 运行器**：
+  - macOS 全量构建（含 WKWebView 壳）与 Windows MSVC 构建需在本地执行，命令见上文；
+  - 需要自动门禁时，可在 Gitee Go 用自建主机组接入 Mac/Windows 机器，再调用同一脚本；这不属于免费云端额度。
+- 免费额度：单个仓库 200 分钟、单个企业/组织每月 1000 分钟构建时长，超出需按平台规则购买。
 - 平台泄漏检查（`tools/ci/check_platform_leaks.sh`）：`core/` 禁止出现 Apple 条件编译、框架或 WebView 引用；`server/` 只允许 `cli_main.cpp` 在 `#if defined(__APPLE__)` 内引用 WebView 壳。
+- 原 GitHub Actions 工作流已删除，避免两套流水线重复维护。
 
 ## 12. 参考
 

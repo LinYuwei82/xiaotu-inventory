@@ -1,0 +1,27 @@
+version: '1.0'
+
+name: ci
+
+displayName: 小兔进销存 CI
+
+triggers:
+  push:
+    branches:
+      precise:
+        - main
+
+stages:
+  - stage:
+      name: verify
+      displayName: 编译与测试
+      strategy: naturally
+      trigger: auto
+      steps:
+        - step: build@gcc
+          name: linux_verify
+          displayName: Linux 构建、测试与校验
+          gccVersion: '10.3'
+          commands:
+            - python3 -m pip install --user --upgrade pip cmake ninja
+            - export PATH="$HOME/.local/bin:$PATH"
+            - bash tools/ci/check.sh
