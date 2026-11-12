@@ -1491,6 +1491,27 @@ int main() {
       check(std::filesystem::exists(log_dir / "app.log.1"), "日志超限应滚动出 app.log.1");
       std::filesystem::remove_all(log_dir);
 
+      // 入库被后续出库消耗后，反审核必须拒绝，避免结存数量为负。
+      // 放在全部报表/列表断言之后，避免新增单据影响前面的统计口径。
+      auto claimed =
+          items.create(xiaotu::gen::ItemRow{.code = "P002", .name = "已消耗商品"});
+      const auto claimed_in = make_doc("PUR_IN", claimed.id, q(10), 300);
+      make_doc("SAL_OUT", claimed.id, q(8), 500);
+      bool reverse_blocked = false;
+      std::string reverse_message;
+      try {
+        documents.reverse(claimed_in.id);
+      } catch (const xiaotu::AppError& error) {
+        reverse_blocked = error.code() == "REVERSE_WOULD_NEGATIVE";
+        reverse_message = error.what();
+      }
+      check(reverse_blocked, "入库已被后续出库消耗时反审核应拒绝");
+      check(reverse_message.find("结存数量") != std::string::npos,
+            "反审核拒绝原因应说明结存数量会为负");
+      check(balance_of(claimed.id).qty == q(2), "反审核被拒后库存不应变化");
+      check(documents.detail(claimed_in.id).status == "APPROVED",
+            "反审核被拒后单据应保持已审核");
+
       // 备份与恢复：快照可校验，恢复后 schema 一致，覆盖前留安全备份。
       const auto backup_root =
           std::filesystem::temp_directory_path() / "xiaotu-backup-smoke";

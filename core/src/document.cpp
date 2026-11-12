@@ -1066,6 +1066,32 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
       }
     }
 
+    // 入库类单据（采购入库、销售退货、其他入库、调拨入库腿、盘盈）反审核会扣回库存。
+    // 如果这批货已被后续出库消耗，直接回退会把结存扣成负数，必须在写流水前拒绝。
+    {
+      std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> inbound;
+      for (const LedgerRow& row : rows) {
+        if (row.qty > 0) inbound[{row.warehouse_id, row.item_id}] += row.qty;
+      }
+      for (const auto& [key, qty] : inbound) {
+        const BalanceState balance = read_balance(conn, key.first, key.second);
+        if (balance.qty - qty < 0) {
+          std::string code;
+          std::string name;
+          Stmt item(conn, "SELECT code, name FROM item WHERE id = ?;");
+          item.bind(1, key.second);
+          if (item.step()) {
+            code = item.text(0);
+            name = item.text(1);
+          }
+          throw AppError("REVERSE_WOULD_NEGATIVE",
+                         "反审核会使结存数量为负：" + code + " " + name + " 当前结存 " +
+                             qty_text(balance.qty) + "，需撤回 " + qty_text(qty) +
+                             "；请先处理后续出库");
+        }
+      }
+    }
+
     for (const LedgerRow& row : rows) {
       // 单腿单据沿用 REVERSE；调拨的入库腿追加独立类型，避免同一明细行的唯一索引冲突。
       const std::string reverse_type =
