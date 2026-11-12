@@ -14,3 +14,8 @@ add_executable(xiaotu_session_smoke "${CMAKE_CURRENT_SOURCE_DIR}/session_smoke.c
 target_link_libraries(xiaotu_session_smoke PRIVATE xiaotu_server Threads::Threads)
 
 add_test(NAME session_smoke COMMAND xiaotu_session_smoke)
+
+add_executable(xiaotu_platform_paths_smoke "${CMAKE_CURRENT_SOURCE_DIR}/platform_paths_smoke.cpp")
+target_link_libraries(xiaotu_platform_paths_smoke PRIVATE xiaotu_server Threads::Threads)
+
+add_test(NAME platform_paths_smoke COMMAND xiaotu_platform_paths_smoke)
