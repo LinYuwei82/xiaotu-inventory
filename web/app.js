@@ -203,6 +203,11 @@
   }
 
   function bizTypeText(value) {
+    const text = String(value);
+    if (text === "REVERSE") return "反审核回冲";
+    if (text.endsWith("_REVERSE")) {
+      return bizTypeText(text.slice(0, -"_REVERSE".length)) + "回冲";
+    }
     return (
       {
         PUR_IN: "采购入库",
@@ -213,9 +218,11 @@
         OTH_OUT: "其他出库",
         STK_TRF: "调拨出库",
         STK_TRF_IN: "调拨入库",
+        STK_CNT_IN: "盘盈",
+        STK_CNT_OUT: "盘亏",
         STK_CNT: "盘点调整",
         CST_ADJ: "成本调整",
-      }[value] || (String(value).startsWith("REVERSE") ? "反审核回冲" : value)
+      }[text] || text
     );
   }
 
@@ -2249,6 +2256,11 @@
       <div class="card">
         <div class="card-head">
           <h3>库存流水明细</h3>
+          <select data-role="ledger-flow">
+            <option value="">全部方向</option>
+            <option value="in">仅入库</option>
+            <option value="out">仅出库</option>
+          </select>
           <button class="btn small" data-role="export-ledger">导出 CSV</button>
           <button class="btn small" data-role="excel-ledger">导出 Excel</button>
           <button class="btn small" data-role="print-ledger">打印</button>
@@ -2340,6 +2352,7 @@
     const directionSelect = mount.querySelector('[data-role="direction"]');
     const balancesTable = mount.querySelector('[data-role="balances"]');
     const ledgerTable = mount.querySelector('[data-role="ledger"]');
+    const ledgerFlowSelect = mount.querySelector('[data-role="ledger-flow"]');
     const flowsTable = mount.querySelector('[data-role="flows"]');
     const summaryTable = mount.querySelector('[data-role="summary"]');
     const profitTable = mount.querySelector('[data-role="profit"]');
@@ -2362,6 +2375,13 @@
       return (
         "?from=" + encodeURIComponent(fromInput.value) + "&to=" + encodeURIComponent(toInput.value)
       );
+    }
+
+    // 库存流水明细按出入库方向筛选，导出与打印共用。
+    function ledgerQuery() {
+      return ledgerFlowSelect.value
+        ? periodQuery() + "&flow=" + ledgerFlowSelect.value
+        : periodQuery();
     }
 
     // 采购明细与采购汇总共用期间与供应商 / 商品 / 仓库筛选。
@@ -2428,7 +2448,7 @@
         purchaseSummary,
       ] = await Promise.all([
         api("GET", "/api/reports/stock-balance"),
-        api("GET", "/api/reports/stock-ledger" + period + "&limit=500"),
+        api("GET", "/api/reports/stock-ledger" + ledgerQuery() + "&limit=500"),
         api("GET", "/api/reports/goods-flow" + period),
         api("GET", "/api/reports/inventory-summary" + period),
         api("GET", "/api/reports/sales-profit" + period),
@@ -2661,7 +2681,7 @@
     }
 
     wireExport("export-balance", () => "/api/reports/stock-balance?format=csv");
-    wireExport("export-ledger", () => "/api/reports/stock-ledger" + periodQuery() + "&format=csv");
+    wireExport("export-ledger", () => "/api/reports/stock-ledger" + ledgerQuery() + "&format=csv");
     wireExport("export-flows", () => "/api/reports/goods-flow" + periodQuery() + "&format=csv");
     wireExport(
       "export-summary",
@@ -2707,7 +2727,7 @@
     }
 
     wireExcel("excel-balance", () => "/api/reports/stock-balance?format=xlsx");
-    wireExcel("excel-ledger", () => "/api/reports/stock-ledger" + periodQuery() + "&format=xlsx");
+    wireExcel("excel-ledger", () => "/api/reports/stock-ledger" + ledgerQuery() + "&format=xlsx");
     wireExcel("excel-flows", () => "/api/reports/goods-flow" + periodQuery() + "&format=xlsx");
     wireExcel(
       "excel-summary",
@@ -2752,7 +2772,7 @@
       "print-ledger",
       () =>
         "/api/print/render?target_type=REPORT&target_key=stock-ledger" +
-        periodQuery() +
+        ledgerQuery() +
         "&limit=100000"
     );
     wirePrint(
@@ -2799,6 +2819,7 @@
     mount.querySelector('[data-role="refresh"]').addEventListener("click", reload);
     directionSelect.addEventListener("change", reload);
     fundAccountSelect.addEventListener("change", reload);
+    ledgerFlowSelect.addEventListener("change", reload);
     purchaseBySelect.addEventListener("change", reload);
     purchaseSupplierSelect.addEventListener("change", reload);
     purchaseItemSelect.addEventListener("change", reload);
@@ -3417,7 +3438,14 @@
         <table class="table" data-role="balances"></table>
       </div>
       <div class="card">
-        <h3>库存流水</h3>
+        <div class="card-head">
+          <h3>库存流水</h3>
+          <select data-role="flow">
+            <option value="">全部方向</option>
+            <option value="in">仅入库</option>
+            <option value="out">仅出库</option>
+          </select>
+        </div>
         <table class="table" data-role="ledger"></table>
       </div>
       <div class="card">
@@ -3432,6 +3460,7 @@
 
     const balancesTable = mount.querySelector('[data-role="balances"]');
     const ledgerTable = mount.querySelector('[data-role="ledger"]');
+    const ledgerFlowSelect = mount.querySelector('[data-role="flow"]');
     const recalcTable = mount.querySelector('[data-role="recalc"]');
     const recalcSummary = mount.querySelector('[data-role="recalc-summary"]');
 
@@ -3455,10 +3484,16 @@
              )
              .join("")}</tbody>`;
 
-      ledgerTable.innerHTML = !ledger.length
+      const visibleLedger = ledger.filter((row) => {
+        if (!ledgerFlowSelect.value) return true;
+        return ledgerFlowSelect.value === "in"
+          ? Number(row.qty) > 0
+          : Number(row.qty) < 0;
+      });
+      ledgerTable.innerHTML = !visibleLedger.length
         ? '<tbody><tr><td class="empty">暂无流水</td></tr></tbody>'
         : `<thead><tr><th>时间</th><th>类型</th><th>单据号</th><th>商品</th><th>仓库</th><th>数量</th><th>金额（元）</th></tr></thead>
-           <tbody>${ledger
+           <tbody>${visibleLedger
              .map(
                (row) => `<tr>
                  <td>${escapeHtml(row.biz_time)}</td>
@@ -3474,6 +3509,7 @@
     }
 
     mount.querySelector('[data-role="refresh"]').addEventListener("click", () => reload());
+    ledgerFlowSelect.addEventListener("change", () => reload());
     mount.querySelector('[data-role="recalc"]').addEventListener("click", async () => {
       try {
         const result = await api(

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "xiaotu/error.h"
@@ -293,6 +294,35 @@ std::string doc_type_label(const std::string& doc_type) {
   return doc_type;
 }
 
+// 库存流水的类型标签：盘盈/盘亏与各种 *_REVERSE 统一转成中文，导出与页面口径一致。
+std::string stock_biz_label(const std::string& biz_type) {
+  if (biz_type == "REVERSE") return "反审核回冲";
+  constexpr std::string_view kReverse = "_REVERSE";
+  if (biz_type.size() > kReverse.size() &&
+      biz_type.compare(biz_type.size() - kReverse.size(), kReverse.size(), kReverse) == 0) {
+    return stock_biz_label(biz_type.substr(0, biz_type.size() - kReverse.size())) + "回冲";
+  }
+  if (biz_type == "PUR_IN") return "采购入库";
+  if (biz_type == "PUR_RET") return "采购退货";
+  if (biz_type == "SAL_OUT") return "销售出库";
+  if (biz_type == "SAL_RET") return "销售退货";
+  if (biz_type == "OTH_IN") return "其他入库";
+  if (biz_type == "OTH_OUT") return "其他出库";
+  if (biz_type == "STK_TRF") return "调拨出库";
+  if (biz_type == "STK_TRF_IN") return "调拨入库";
+  if (biz_type == "STK_CNT_IN") return "盘盈";
+  if (biz_type == "STK_CNT_OUT") return "盘亏";
+  if (biz_type == "STK_CNT") return "盘点调整";
+  if (biz_type == "CST_ADJ") return "成本调整";
+  return biz_type;
+}
+
+std::string qty_direction_label(int direction) {
+  if (direction > 0) return "入库";
+  if (direction < 0) return "出库";
+  return "全部";
+}
+
 std::string statement_kind_label(const StatementResult& result, const StatementLine& line) {
   if (line.kind == "DOC") return "单据";
   return result.direction == -1 ? "付款" : "收款";
@@ -443,19 +473,25 @@ void register_report_routes(httplib::Server& server, Services& services) {
              guard("stock.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      ReportFilter filter = parse_filter(req);
+                     const std::string flow =
+                         req.has_param("flow") ? req.get_param_value("flow") : "";
+                     if (flow == "in") filter.qty_direction = 1;
+                     if (flow == "out") filter.qty_direction = -1;
                      if (csv_requested(req) || xlsx_requested(req)) filter.limit = 100000;
                      const auto rows = services.reports.stock_ledger(filter);
+                     const std::string scope =
+                         period_label(filter) + "；" +
+                         dimension_label(filter.item_id, "商品") + "；" +
+                         dimension_label(filter.warehouse_id, "仓库") + "；方向 " +
+                         qty_direction_label(filter.qty_direction);
                      if (csv_requested(req)) {
                        std::string csv;
-                       csv_preamble(csv, "库存流水明细",
-                                    period_label(filter) + "；" +
-                                        dimension_label(filter.item_id, "商品") + "；" +
-                                        dimension_label(filter.warehouse_id, "仓库"));
+                       csv_preamble(csv, "库存流水明细", scope);
                        csv_row(csv, {"时间", "类型", "单据号", "商品编码", "商品名称", "仓库",
                                      "数量", "金额（元）"});
                        for (const auto& row : rows) {
-                         csv_row(csv, {row.biz_time, row.biz_type, row.doc_no, row.item_code,
-                                       row.item_name, row.warehouse_name,
+                         csv_row(csv, {row.biz_time, stock_biz_label(row.biz_type), row.doc_no,
+                                       row.item_code, row.item_name, row.warehouse_name,
                                        qty_text(row.qty), yuan(row.amount_cents)});
                        }
                        send_csv(res, "stock-ledger-" + date_stamp() + ".csv", csv);
@@ -463,15 +499,12 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      }
                      if (xlsx_requested(req)) {
                        XlsxSheet sheet("库存流水明细");
-                       xlsx_preamble(sheet, "库存流水明细",
-                                     period_label(filter) + "；" +
-                                         dimension_label(filter.item_id, "商品") + "；" +
-                                         dimension_label(filter.warehouse_id, "仓库"));
+                       xlsx_preamble(sheet, "库存流水明细", scope);
                        sheet.add_header_row({"时间", "类型", "单据号", "商品编码", "商品名称",
                                              "仓库", "数量", "金额（元）"});
                        for (const auto& row : rows) {
                          sheet.add_row({XlsxCell::text(row.biz_time),
-                                        XlsxCell::text(row.biz_type),
+                                        XlsxCell::text(stock_biz_label(row.biz_type)),
                                         XlsxCell::text(row.doc_no),
                                         XlsxCell::text(row.item_code),
                                         XlsxCell::text(row.item_name),

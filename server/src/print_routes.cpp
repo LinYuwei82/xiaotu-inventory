@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -163,6 +164,35 @@ std::string doc_type_label(const std::string& doc_type) {
   return doc_type;
 }
 
+// 库存流水类型标签：盘盈/盘亏与各种 *_REVERSE 统一转中文。
+std::string stock_biz_label(const std::string& biz_type) {
+  if (biz_type == "REVERSE") return "反审核回冲";
+  constexpr std::string_view kReverse = "_REVERSE";
+  if (biz_type.size() > kReverse.size() &&
+      biz_type.compare(biz_type.size() - kReverse.size(), kReverse.size(), kReverse) == 0) {
+    return stock_biz_label(biz_type.substr(0, biz_type.size() - kReverse.size())) + "回冲";
+  }
+  if (biz_type == "PUR_IN") return "采购入库";
+  if (biz_type == "PUR_RET") return "采购退货";
+  if (biz_type == "SAL_OUT") return "销售出库";
+  if (biz_type == "SAL_RET") return "销售退货";
+  if (biz_type == "OTH_IN") return "其他入库";
+  if (biz_type == "OTH_OUT") return "其他出库";
+  if (biz_type == "STK_TRF") return "调拨出库";
+  if (biz_type == "STK_TRF_IN") return "调拨入库";
+  if (biz_type == "STK_CNT_IN") return "盘盈";
+  if (biz_type == "STK_CNT_OUT") return "盘亏";
+  if (biz_type == "STK_CNT") return "盘点调整";
+  if (biz_type == "CST_ADJ") return "成本调整";
+  return biz_type;
+}
+
+std::string qty_direction_label(int direction) {
+  if (direction > 0) return "入库";
+  if (direction < 0) return "出库";
+  return "全部";
+}
+
 std::string doc_status_label(const std::string& status) {
   if (status == "DRAFT") return "草稿";
   if (status == "APPROVED") return "已审核";
@@ -202,6 +232,9 @@ ReportFilter report_filter(const httplib::Request& req) {
   filter.warehouse_id = param_i64(req, "warehouse_id", 0);
   filter.customer_id = param_i64(req, "customer_id", 0);
   filter.supplier_id = param_i64(req, "supplier_id", 0);
+  const std::string flow = param_text(req, "flow");
+  if (flow == "in") filter.qty_direction = 1;
+  if (flow == "out") filter.qty_direction = -1;
   filter.limit = static_cast<int>(param_i64(req, "limit", 100000));
   return filter;
 }
@@ -236,10 +269,11 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
   if (target.key == "stock-ledger") {
     render.subtitle = period_label(filter.from, filter.to) + "；" +
                       dimension_label(filter.item_id, "商品") + "；" +
-                      dimension_label(filter.warehouse_id, "仓库");
+                      dimension_label(filter.warehouse_id, "仓库") + "；方向 " +
+                      qty_direction_label(filter.qty_direction);
     for (const auto& row : services.reports.stock_ledger(filter)) {
       render.rows.push_back({{"biz_time", row.biz_time},
-                             {"biz_type", row.biz_type},
+                             {"biz_type", stock_biz_label(row.biz_type)},
                              {"doc_no", row.doc_no},
                              {"item_code", row.item_code},
                              {"item_name", row.item_name},

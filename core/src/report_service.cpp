@@ -141,6 +141,7 @@ std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& fil
               "   AND (? = '' OR substr(l.biz_time, 1, 10) <= ?)"
               "   AND (? = 0 OR l.item_id = ?)"
               "   AND (? = 0 OR l.warehouse_id = ?)"
+              "   AND (? = 0 OR l.qty * ? > 0)"
               " ORDER BY l.id DESC LIMIT ?;");
     stmt.bind(1, filter.from)
         .bind(2, filter.from)
@@ -150,7 +151,9 @@ std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& fil
         .bind(6, filter.item_id)
         .bind(7, filter.warehouse_id)
         .bind(8, filter.warehouse_id)
-        .bind(9, static_cast<std::int64_t>(filter.limit));
+        .bind(9, static_cast<std::int64_t>(filter.qty_direction))
+        .bind(10, static_cast<std::int64_t>(filter.qty_direction))
+        .bind(11, static_cast<std::int64_t>(filter.limit));
     while (stmt.step()) {
       LedgerDetailRow row;
       row.id = stmt.i64(0);

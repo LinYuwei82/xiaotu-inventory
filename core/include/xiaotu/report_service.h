@@ -146,6 +146,7 @@ struct ReportFilter {
   std::int64_t warehouse_id = 0;
   std::int64_t customer_id = 0;
   std::int64_t supplier_id = 0;
+  int qty_direction = 0;  // 1 只看入库（qty>0）/ -1 只看出库（qty<0）/ 0 全部
   int limit = 500;
 };
 
