@@ -1558,22 +1558,56 @@
         salesperson_id: salesDoc ? Number(salespersonSelect.value || 0) : 0,
         lines,
       };
-      try {
+      const submit = async (confirmCredit) => {
         if (editingId) {
-          await api("PUT", "/api/documents/" + editingId, body);
-          if (!draft) await api("POST", "/api/documents/" + editingId + "/approve");
-          showNotice(draft ? "草稿已保存" : "已保存并审核", "ok");
-        } else {
-          const result = await api("POST", "/api/documents", {
+          await api("PUT", "/api/documents/" + editingId, {
             ...body,
-            save_as_draft: draft,
+            confirm_credit: confirmCredit,
           });
-          showNotice((draft ? "已存为草稿：" : "已保存并审核：") + result.doc_no, "ok");
+          if (!draft) {
+            await api(
+              "POST",
+              "/api/documents/" + editingId + "/approve" +
+                (confirmCredit ? "?confirm_credit=1" : "")
+            );
+          }
+          return null;
         }
+        return api("POST", "/api/documents", {
+          ...body,
+          save_as_draft: draft,
+          confirm_credit: confirmCredit,
+        });
+      };
+      const finish = async (result) => {
+        showNotice(
+          result
+            ? (draft ? "已存为草稿：" : "已保存并审核：") + result.doc_no
+            : draft
+              ? "草稿已保存"
+              : "已保存并审核",
+          "ok"
+        );
         resetForm();
         await reload();
+      };
+      try {
+        await finish(await submit(false));
       } catch (error) {
-        showNotice(error.message, "error");
+        if (error.code !== "CREDIT_LIMIT_WARNING") {
+          showNotice(error.message, "error");
+          return;
+        }
+        const ok = await askConfirm(error.message + "。仍要继续审核吗？", {
+          okText: "继续出库",
+          cancelText: "取消",
+        });
+        if (!ok) return;
+        try {
+          await finish(await submit(true));
+        } catch (retryError) {
+          showNotice(retryError.message, "error");
+        }
       }
     }
 

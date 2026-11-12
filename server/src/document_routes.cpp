@@ -156,10 +156,11 @@ void register_document_routes(httplib::Server& server, Services& services) {
                       const nlohmann::json body = json_body(req);
                       const DocInput input = input_from_json(body);
                       const bool draft = body.value("save_as_draft", false);
+                      const bool confirm_credit = body.value("confirm_credit", false);
                       if (!draft) require_doc_audit(input.doc_type);
                       const auto created =
                           draft ? services.docs.save_draft(input)
-                                : services.docs.save_and_approve(input);
+                                : services.docs.save_and_approve(input, confirm_credit);
                       nlohmann::json result;
                       result["id"] = created.id;
                       result["doc_no"] = created.doc_no;
@@ -190,7 +191,10 @@ void register_document_routes(httplib::Server& server, Services& services) {
                     [&services](const httplib::Request& req, httplib::Response& res) {
                       const auto id = std::stoll(req.matches[1].str());
                       require_doc_audit(services.docs.detail(id).doc_type);
-                      services.docs.approve(id);
+                      const bool confirm_credit =
+                          req.has_param("confirm_credit") &&
+                          req.get_param_value("confirm_credit") == "1";
+                      services.docs.approve(id, confirm_credit);
                       json_ok(res, detail_to_json(services.docs.detail(id)));
                     }));
 

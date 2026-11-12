@@ -27,6 +27,7 @@
 #include "xiaotu/password.h"
 #include "xiaotu/gen/supplier_service.h"
 #include "xiaotu/gen/unit_service.h"
+#include "xiaotu/gen/customer_service.h"
 #include "xiaotu/gen/employee_service.h"
 #include "xiaotu/gen/warehouse_service.h"
 #include "xiaotu/item_category.h"
@@ -77,7 +78,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 18, "迁移后 schema 版本应为 18");
+      check(db.schema_version() == 19, "迁移后 schema 版本应为 19");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -2083,6 +2084,67 @@ int main() {
       check(negative_message.find("不能为负") != std::string::npos,
             "负结存错误应说明数量/金额不能为负");
       check(balance_of(claimed.id).qty == q(2), "负结存写入被拒后库存不应变化");
+
+      // 信用额度：卡在销售出库审核，默认提示不拦、确认后放行并写审计；reject 模式硬拦。
+      xiaotu::gen::CustomerService credit_customers(db);
+      const auto credit_customer =
+          credit_customers.create(xiaotu::gen::CustomerRow{.code = "C-CREDIT",
+                                                           .name = "额度客户",
+                                                           .credit_limit_cents = 100000});
+      auto credit_item = items.create(xiaotu::gen::ItemRow{.code = "CR001", .name = "额度商品"});
+      {
+        xiaotu::DocInput stock_in;
+        stock_in.doc_type = "OTH_IN";
+        stock_in.warehouse_id = warehouse_list.at(0).id;
+        stock_in.doc_date = kToday;
+        stock_in.partner = "期初";
+        stock_in.lines.push_back(
+            xiaotu::DocLineInput{.item_id = credit_item.id, .qty = q(100), .price_cents = 10000});
+        documents.save_and_approve(stock_in);
+      }
+      const auto credit_sale = [&](std::int64_t qty) {
+        xiaotu::DocInput sale;
+        sale.doc_type = "SAL_OUT";
+        sale.warehouse_id = warehouse_list.at(0).id;
+        sale.doc_date = kToday;
+        sale.partner_id = credit_customer.id;
+        sale.partner = credit_customer.name;
+        sale.lines.push_back(
+            xiaotu::DocLineInput{.item_id = credit_item.id, .qty = qty, .price_cents = 10000});
+        return sale;
+      };
+      documents.save_and_approve(credit_sale(q(8)));
+      bool credit_warning = false;
+      try {
+        documents.save_and_approve(credit_sale(q(3)));
+      } catch (const xiaotu::AppError& error) {
+        credit_warning = error.code() == "CREDIT_LIMIT_WARNING";
+        check(std::string(error.what()).find("超出 100.00") != std::string::npos,
+              "超额提示应带出超出金额");
+      }
+      check(credit_warning, "超过信用额度时应返回可确认的提示");
+      const auto confirmed = documents.save_and_approve(credit_sale(q(3)), true);
+      check(confirmed.id > 0, "二次确认后应允许继续出库");
+      {
+        std::int64_t audited = 0;
+        db.read([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn,
+                            "SELECT COUNT(*) FROM audit_log"
+                            " WHERE action = 'credit_over_limit' AND entity_id = ?;");
+          stmt.bind(1, confirmed.id);
+          if (stmt.step()) audited = stmt.i64(0);
+        });
+        check(audited == 1, "超额度放行应写审计日志");
+      }
+      documents.set_credit_limit_mode("reject");
+      bool credit_rejected = false;
+      try {
+        documents.save_and_approve(credit_sale(q(1)));
+      } catch (const xiaotu::AppError& error) {
+        credit_rejected = error.code() == "CREDIT_LIMIT_EXCEEDED";
+      }
+      check(credit_rejected, "reject 模式下超额应直接拒绝");
+      documents.set_credit_limit_mode("warn");
 
       // 备份与恢复：快照可校验，恢复后 schema 一致，覆盖前留安全备份。
       const auto backup_root =

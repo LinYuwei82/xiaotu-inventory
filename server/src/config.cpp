@@ -153,6 +153,17 @@ void assign(ConfigValues& values, const std::string& section, const std::string&
     values.log_dir = value;
     return;
   }
+  if (section == "sales" && key == "credit_limit_mode") {
+    std::string value = parse_string(raw, path, line_no);
+    for (char& ch : value) {
+      ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (value != "warn" && value != "reject") {
+      fail(path, line_no, "sales.credit_limit_mode 只能是 warn / reject");
+    }
+    values.credit_limit_mode = value;
+    return;
+  }
   fail(path, line_no, "未知配置项：" + qualified);
 }
 
@@ -180,7 +191,8 @@ ConfigValues load_config_file(const std::filesystem::path& path) {
         fail(path, line_no, "段名缺少右方括号");
       }
       section = trim(std::string_view(content).substr(1, content.size() - 2));
-      if (section != "server" && section != "storage" && section != "log") {
+      if (section != "server" && section != "storage" && section != "log" &&
+          section != "sales") {
         fail(path, line_no, "未知配置段：[" + section + "]");
       }
       continue;
@@ -190,7 +202,7 @@ ConfigValues load_config_file(const std::filesystem::path& path) {
       fail(path, line_no, "配置行缺少 =");
     }
     if (section.empty()) {
-      fail(path, line_no, "配置项必须写在 [server]、[storage]、[log] 段内");
+      fail(path, line_no, "配置项必须写在 [server]、[storage]、[log]、[sales] 段内");
     }
     assign(values, section, trim(content.substr(0, equal)), trim(content.substr(equal + 1)), path,
            line_no, seen);

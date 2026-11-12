@@ -16,6 +16,8 @@ struct CustomerRow {
   std::string name = "";
   std::string contact = "";
   std::string phone = "";
+  std::string tax_no = "";
+  std::int64_t credit_limit_cents = 0;
   std::string address = "";
   bool status = true;
 };

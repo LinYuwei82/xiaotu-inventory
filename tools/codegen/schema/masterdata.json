@@ -77,6 +77,8 @@
         { "name": "name", "label": "名称", "type": "string", "required": true, "unique": false, "in_list": true, "in_form": true },
         { "name": "contact", "label": "联系人", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true },
         { "name": "phone", "label": "电话", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true },
+        { "name": "tax_no", "label": "税号", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true, "default": "" },
+        { "name": "credit_limit_cents", "label": "信用额度（元）", "type": "int", "required": false, "unique": false, "in_list": true, "in_form": true, "default": 0, "min": 0, "scale": 100, "list_type": "money" },
         { "name": "address", "label": "地址", "type": "string", "required": false, "unique": false, "in_list": false, "in_form": true },
         { "name": "status", "label": "启用", "type": "bool", "required": false, "unique": false, "in_list": true, "in_form": true, "default": true }
       ]
@@ -95,6 +97,7 @@
         { "name": "name", "label": "名称", "type": "string", "required": true, "unique": false, "in_list": true, "in_form": true },
         { "name": "contact", "label": "联系人", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true },
         { "name": "phone", "label": "电话", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true },
+        { "name": "tax_no", "label": "税号", "type": "string", "required": false, "unique": false, "in_list": true, "in_form": true, "default": "" },
         { "name": "address", "label": "地址", "type": "string", "required": false, "unique": false, "in_list": false, "in_form": true },
         { "name": "status", "label": "启用", "type": "bool", "required": false, "unique": false, "in_list": true, "in_form": true, "default": true }
       ]

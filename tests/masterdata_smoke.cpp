@@ -38,10 +38,13 @@ std::string item_xlsx(const std::vector<std::vector<std::string>>& rows) {
 
 std::string partner_xlsx(bool supplier, const std::vector<std::vector<std::string>>& rows) {
   xiaotu::XlsxSheet sheet(supplier ? "供应商" : "客户");
-  sheet.add_header_row({"编码", "名称", "联系人", "电话", "地址", "启用"});
-  for (const auto& row : rows) {
-    sheet.add_text_row({row[0], row[1], row[2], row[3], row[4], row[5]});
+  if (supplier) {
+    sheet.add_header_row({"编码", "名称", "联系人", "电话", "税号", "地址", "启用"});
+  } else {
+    sheet.add_header_row(
+        {"编码", "名称", "联系人", "电话", "税号", "信用额度（元）", "地址", "启用"});
   }
+  for (const auto& row : rows) sheet.add_text_row(row);
   return sheet.build();
 }
 
@@ -188,12 +191,12 @@ int main() {
     // 6. 供应商 / 客户：新增 + 空单元格保持原值。
     report = xiaotu::import_master(
         db, xiaotu::MasterKind::Supplier,
-        partner_xlsx(true, {{"S001", "供应商甲", "张三", "13800138000", "上海", "是"}}),
+        partner_xlsx(true, {{"S001", "供应商甲", "张三", "13800138000", "91310000X", "上海", "是"}}),
         "suppliers.xlsx");
     check(report.ok() && report.outcome.inserted == 1, "供应商应新增 1 条");
     report = xiaotu::import_master(
         db, xiaotu::MasterKind::Supplier,
-        partner_xlsx(true, {{"S001", "供应商甲（新）", "", "", "", ""}}), "suppliers.xlsx");
+        partner_xlsx(true, {{"S001", "供应商甲（新）", "", "", "", "", ""}}), "suppliers.xlsx");
     check(report.ok() && report.outcome.updated == 1, "供应商应更新 1 条");
     {
       const auto suppliers = xiaotu::export_master(db, xiaotu::MasterKind::Supplier);
@@ -203,18 +206,22 @@ int main() {
         check((*row)[1] == "供应商甲（新）", "供应商名称应更新");
         check((*row)[2] == "张三", "联系人留空应保持原值");
         check((*row)[3] == "13800138000", "电话留空应保持原值");
-        check((*row)[4] == "上海", "地址留空应保持原值");
+        check((*row)[4] == "91310000X", "税号留空应保持原值");
+        check((*row)[5] == "上海", "地址留空应保持原值");
       }
     }
 
     report = xiaotu::import_master(
         db, xiaotu::MasterKind::Customer,
-        partner_xlsx(false, {{"C001", "客户甲", "", "", "", "否"}}), "customers.xlsx");
+        partner_xlsx(false, {{"C001", "客户甲", "", "", "91310000Y", "5000.00", "", "否"}}),
+        "customers.xlsx");
     check(report.ok() && report.outcome.inserted == 1, "客户应新增 1 条");
     {
       const auto customers = xiaotu::export_master(db, xiaotu::MasterKind::Customer);
       const auto* row = find_row(customers, "C001");
-      check(row != nullptr && (*row)[5] == "否", "客户的启用状态应为否");
+      check(row != nullptr && (*row)[4] == "91310000Y", "客户税号应导入");
+      check(row != nullptr && (*row)[5] == "5000.00", "信用额度应按元导出");
+      check(row != nullptr && (*row)[7] == "否", "客户的启用状态应为否");
     }
 
     // 7. 超大文件直接拒绝。

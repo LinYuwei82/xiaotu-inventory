@@ -4,6 +4,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "xiaotu/db.h"
@@ -131,13 +132,16 @@ class DocumentEngine {
 
   explicit DocumentEngine(Db& db) : db_(db) {}
 
-  Created save_and_approve(const DocInput& input);
+  // config.toml [sales] credit_limit_mode：warn（默认）/ reject。
+  void set_credit_limit_mode(std::string mode) { credit_limit_mode_ = std::move(mode); }
+
+  Created save_and_approve(const DocInput& input, bool confirm_credit = false);
   // 草稿：只写单据与明细，不动库存流水。
   Created save_draft(const DocInput& input);
   void update_draft(std::int64_t doc_id, const DocInput& input);
   void delete_draft(std::int64_t doc_id);
   // 审核草稿：在写事务内校验并生成库存流水。
-  void approve(std::int64_t doc_id);
+  void approve(std::int64_t doc_id, bool confirm_credit = false);
   DocDetail detail(std::int64_t doc_id);
   std::vector<DocSummary> list(std::string_view doc_type, int limit = 100);
   void reverse(std::int64_t doc_id);
@@ -148,6 +152,7 @@ class DocumentEngine {
 
  private:
   Db& db_;
+  std::string credit_limit_mode_ = "warn";
 };
 
 }  // namespace xiaotu

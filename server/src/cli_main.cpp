@@ -244,6 +244,7 @@ int main(int argc, char** argv) {
     xiaotu::log_info("数据库结构版本 v" + std::to_string(db.schema_version()));
 
     xiaotu::Services services(db);
+    services.docs.set_credit_limit_mode(file_config.credit_limit_mode.value_or("warn"));
     if (!options.set_password_user.empty()) {
       const char* password = std::getenv("XIAOTU_PASSWORD");
       if (password == nullptr || *password == '\0') {

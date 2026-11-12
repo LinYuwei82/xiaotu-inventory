@@ -14,6 +14,8 @@ struct ConfigValues {
   std::optional<std::string> data_dir;  // [storage] data_dir
   std::optional<std::string> log_level; // [log] level
   std::optional<std::string> log_dir;   // [log] dir
+  // [sales] credit_limit_mode：warn（默认，提示并二次确认后放行）/ reject（硬拦）。
+  std::optional<std::string> credit_limit_mode;
 };
 
 // 读取 config.toml。只支持本程序需要的 TOML 子集：

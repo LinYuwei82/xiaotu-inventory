@@ -20,6 +20,8 @@ nlohmann::json to_json(const CustomerRow& row) {
       {"name", row.name},
       {"contact", row.contact},
       {"phone", row.phone},
+      {"tax_no", row.tax_no},
+      {"credit_limit_cents", row.credit_limit_cents},
       {"address", row.address},
       {"status", row.status},
   };
@@ -31,6 +33,8 @@ CustomerRow from_json(const nlohmann::json& body) {
   row.name = body.value("name", "");
   row.contact = body.value("contact", "");
   row.phone = body.value("phone", "");
+  row.tax_no = body.value("tax_no", "");
+  row.credit_limit_cents = body.value("credit_limit_cents", 0);
   row.address = body.value("address", "");
   row.status = body.value("status", true);
   return row;

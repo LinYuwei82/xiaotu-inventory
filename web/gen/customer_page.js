@@ -16,6 +16,8 @@
       { key: "name", label: "名称", type: "string" },
       { key: "contact", label: "联系人", type: "string" },
       { key: "phone", label: "电话", type: "string" },
+      { key: "tax_no", label: "税号", type: "string" },
+      { key: "credit_limit_cents", label: "信用额度（元）", type: "money" },
       { key: "status", label: "启用", type: "bool" },
     ],
     fields: [
@@ -23,6 +25,8 @@
       { key: "name", label: "名称", type: "string", required: true, default: "" },
       { key: "contact", label: "联系人", type: "string", required: false, default: "" },
       { key: "phone", label: "电话", type: "string", required: false, default: "" },
+      { key: "tax_no", label: "税号", type: "string", required: false, default: "" },
+      { key: "credit_limit_cents", label: "信用额度（元）", type: "int", required: false, default: 0, min: 0, scale: 100 },
       { key: "address", label: "地址", type: "string", required: false, default: "" },
       { key: "status", label: "启用", type: "bool", required: false, default: true },
     ],

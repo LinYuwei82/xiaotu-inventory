@@ -16,6 +16,7 @@ struct SupplierRow {
   std::string name = "";
   std::string contact = "";
   std::string phone = "";
+  std::string tax_no = "";
   std::string address = "";
   bool status = true;
 };

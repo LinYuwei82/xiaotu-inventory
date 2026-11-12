@@ -707,6 +707,16 @@ INSERT INTO app_role_permission (role_id, permission) VALUES
   (3, 'employee.read');
 )SQL";
 
+// v19：客户/供应商税号与客户信用额度。额度存整数分，0 表示不限制（最常见的新客户
+// 场景），负数由服务层拒绝；是否硬拦由 config.toml 的 [sales] credit_limit_mode 决定。
+constexpr const char* kV19 = R"SQL(
+ALTER TABLE customer ADD COLUMN tax_no TEXT NOT NULL DEFAULT '';
+ALTER TABLE customer ADD COLUMN credit_limit_cents INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE supplier ADD COLUMN tax_no TEXT NOT NULL DEFAULT '';
+CREATE INDEX idx_customer_tax_no ON customer(tax_no) WHERE tax_no <> '';
+CREATE INDEX idx_supplier_tax_no ON supplier(tax_no) WHERE tax_no <> '';
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -740,6 +750,7 @@ const std::vector<Migration>& all_migrations() {
       {16, "v16_document_biz_category", kV16},
       {17, "v17_item_category_barcode_tax", kV17},
       {18, "v18_employee_salesperson", kV18},
+      {19, "v19_partner_tax_no_credit_limit", kV19},
   };
   return migrations;
 }

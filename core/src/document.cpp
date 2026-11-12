@@ -3,6 +3,7 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <map>
 #include <string>
 #include <utility>
@@ -439,6 +440,51 @@ bool is_sales_document(const std::string& doc_type) {
   return doc_type == "SAL_ORDER" || doc_type == "SAL_OUT" || doc_type == "SAL_RET";
 }
 
+std::string cents_text(std::int64_t cents) {
+  char buffer[48];
+  std::snprintf(buffer, sizeof(buffer), "%lld.%02lld", static_cast<long long>(cents / 100),
+                static_cast<long long>(cents % 100));
+  return std::string(buffer);
+}
+
+// 信用额度卡在销售出库审核（产生应收的那一刻），只做客户侧。
+// 额度 0 视为不限制；mode=warn 时首次返回 CREDIT_LIMIT_WARNING 由界面二次确认，
+// 确认后放行并写审计；mode=reject 直接拒绝。
+void enforce_credit_limit(sqlite3* conn, const DocumentDefinition& definition,
+                          const DocInput& input, const ValidatedDoc& validated,
+                          std::int64_t doc_id, bool confirm_credit, const std::string& mode) {
+  if (definition.doc_type != "SAL_OUT" || input.partner_id <= 0) return;
+  std::int64_t limit = 0;
+  {
+    Stmt stmt(conn, "SELECT credit_limit_cents FROM customer WHERE id = ? AND is_deleted = 0;");
+    stmt.bind(1, input.partner_id);
+    if (!stmt.step()) return;
+    limit = stmt.i64(0);
+  }
+  if (limit <= 0) return;
+  std::int64_t used = 0;
+  {
+    Stmt stmt(conn,
+              "SELECT COALESCE(SUM(amount_cents - settled_cents), 0) FROM ar_ap_entry"
+              " WHERE direction = 1 AND status IN ('OPEN', 'PARTIAL') AND partner_id = ?;");
+    stmt.bind(1, input.partner_id);
+    if (stmt.step()) used = stmt.i64(0);
+  }
+  const std::int64_t after = used + validated.total_amount;
+  if (after <= limit) return;
+  const std::string detail = "客户 " + validated.partner + " 信用额度 " + cents_text(limit) +
+                             "，已占用 " + cents_text(used) + "，本次 " +
+                             cents_text(validated.total_amount) + "，超出 " +
+                             cents_text(after - limit);
+  if (mode == "reject") {
+    throw AppError("CREDIT_LIMIT_EXCEEDED", "超出客户信用额度：" + detail);
+  }
+  if (!confirm_credit) {
+    throw AppError("CREDIT_LIMIT_WARNING", "超出客户信用额度：" + detail);
+  }
+  audit_write(conn, "credit_over_limit", "doc_header", doc_id, "", detail);
+}
+
 // 其他出入库的业务类型白名单：赠品两方向通用，期初只入库，领用与报损只出库；
 // 其他单据一律清空，避免旧客户端误传脏值。
 std::string normalize_biz_category(const DocumentDefinition& definition,
@@ -818,7 +864,8 @@ void release_order_conversions(sqlite3* conn, std::int64_t doc_id) {
 
 }  // namespace
 
-DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input) {
+DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input,
+                                                         bool confirm_credit) {
   const DocumentDefinition* definition = find_document_definition(input.doc_type);
   if (definition == nullptr) {
     throw AppError("UNKNOWN_DOC_TYPE", "未知单据类型: " + input.doc_type);
@@ -828,6 +875,8 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input) 
   db_.write([&](sqlite3* conn) {
     const ValidatedDoc validated = validate_document(conn, input, *definition, true);
     created.id = next_id();
+    enforce_credit_limit(conn, *definition, input, validated, created.id, confirm_credit,
+                         credit_limit_mode_);
     created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
     insert_header(conn, created.id, created.doc_no, definition->doc_type,
                   definition->partner_kind, input, header_warehouse_id(*definition, input),
@@ -956,7 +1005,7 @@ void DocumentEngine::delete_draft(std::int64_t doc_id) {
   });
 }
 
-void DocumentEngine::approve(std::int64_t doc_id) {
+void DocumentEngine::approve(std::int64_t doc_id, bool confirm_credit) {
   db_.write([&](sqlite3* conn) {
     DocInput input;
     std::string status;
@@ -1012,6 +1061,8 @@ void DocumentEngine::approve(std::int64_t doc_id) {
     }
 
     const ValidatedDoc validated = validate_document(conn, input, *definition, true);
+    enforce_credit_limit(conn, *definition, input, validated, doc_id, confirm_credit,
+                         credit_limit_mode_);
     if (definition->affects_stock) {
       apply_stock_moves(conn, *definition, doc_id, input.warehouse_id,
                         input.target_warehouse_id, validated.biz_time, input.lines, line_ids);

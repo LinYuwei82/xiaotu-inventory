@@ -29,7 +29,10 @@ namespace {
 
 constexpr const char* kItemColumns[] = {"商品编码", "商品名称", "规格", "计量单位",
                                         "分类路径", "条码",   "税率%", "启用"};
-constexpr const char* kPartnerColumns[] = {"编码", "名称", "联系人", "电话", "地址", "启用"};
+constexpr const char* kSupplierColumns[] = {"编码", "名称", "联系人", "电话",
+                                            "税号", "地址", "启用"};
+constexpr const char* kCustomerColumns[] = {"编码", "名称", "联系人", "电话", "税号",
+                                            "信用额度（元）", "地址", "启用"};
 
 bool is_yes(const std::string& value) {
   std::string lower;
@@ -77,6 +80,8 @@ struct ItemRecord {
 struct PartnerRecord {
   gen::SupplierRow row;
   bool deleted = false;
+  std::string tax_no;
+  std::int64_t credit_limit_cents = 0;
 };
 
 std::vector<ItemRecord> load_items(Db& db) {
@@ -104,11 +109,13 @@ std::vector<ItemRecord> load_items(Db& db) {
   return records;
 }
 
-std::vector<PartnerRecord> load_partners(Db& db, const char* table) {
+std::vector<PartnerRecord> load_partners(Db& db, const char* table, bool with_credit) {
   std::vector<PartnerRecord> records;
   db.read([&](sqlite3* conn) {
-    Stmt stmt(conn, "SELECT id, code, name, contact, phone, address, status, is_deleted FROM " +
-                        std::string(table) + " ORDER BY code;");
+    Stmt stmt(conn,
+              "SELECT id, code, name, contact, phone, address, status, is_deleted, tax_no" +
+                  std::string(with_credit ? ", credit_limit_cents" : "") + " FROM " +
+                  std::string(table) + " ORDER BY code;");
     while (stmt.step()) {
       PartnerRecord record;
       record.row.id = stmt.i64(0);
@@ -119,6 +126,9 @@ std::vector<PartnerRecord> load_partners(Db& db, const char* table) {
       record.row.address = stmt.text(5);
       record.row.status = stmt.i64(6) != 0;
       record.deleted = stmt.i64(7) != 0;
+      record.tax_no = stmt.text(8);
+      record.row.tax_no = record.tax_no;
+      if (with_credit) record.credit_limit_cents = stmt.i64(9);
       records.push_back(std::move(record));
     }
   });
@@ -221,9 +231,9 @@ CategoryLookup load_categories(Db& db) {
   return lookup;
 }
 
-// 税率按百分数录入（13、13.5、13.00），换成整数万分比；不经过浮点。
-bool parse_tax_bp(const std::string& text, std::int64_t* bp) {
-  if (text.empty()) return false;
+// 百分数与金额都按「最多两位小数的十进制」解析，换成整数（万分比 / 分），不经过浮点。
+bool parse_scaled_decimal(const std::string& text, std::int64_t scale, std::int64_t* value) {
+  if (text.empty() || scale <= 0) return false;
   std::size_t index = 0;
   while (index < text.size() && std::isspace(static_cast<unsigned char>(text[index]))) ++index;
   std::string whole;
@@ -247,13 +257,21 @@ bool parse_tax_bp(const std::string& text, std::int64_t* bp) {
   if (fraction.size() > 2) return false;
   while (fraction.size() < 2) fraction.push_back('0');
   try {
-    const std::int64_t value = std::stoll(whole) * 100 + std::stoll(fraction);
-    if (value < 0 || value > 10000) return false;
-    *bp = value;
+    const std::int64_t amount = std::stoll(whole) * scale + std::stoll(fraction) * (scale / 100);
+    if (amount < 0) return false;
+    *value = amount;
     return true;
   } catch (...) {
     return false;
   }
+}
+
+bool parse_tax_bp(const std::string& text, std::int64_t* bp) {
+  return parse_scaled_decimal(text, 100, bp);
+}
+
+bool parse_money_cents(const std::string& text, std::int64_t* cents) {
+  return parse_scaled_decimal(text, 100, cents);
 }
 
 struct PartnerPlan {
@@ -266,6 +284,11 @@ struct PartnerPlan {
   std::string contact;
   bool has_phone = false;
   std::string phone;
+  bool has_tax_no = false;
+  std::string tax_no;
+  bool has_credit = false;
+  std::int64_t credit_limit_cents = 0;
+  std::int64_t current_credit_limit_cents = 0;
   bool has_address = false;
   std::string address;
   bool has_status = false;
@@ -280,6 +303,7 @@ gen::CustomerRow as_customer(const gen::SupplierRow& source) {
   row.name = source.name;
   row.contact = source.contact;
   row.phone = source.phone;
+  row.tax_no = source.tax_no;
   row.address = source.address;
   row.status = source.status;
   return row;
@@ -400,7 +424,7 @@ std::vector<ItemPlan> validate_items(const SheetTable& table, const ColumnMap& c
     const std::string tax = columns.cell(sheet_row, "税率%");
     if (!tax.empty()) {
       std::int64_t bp = 0;
-      if (!parse_tax_bp(tax, &bp)) {
+      if (!parse_tax_bp(tax, &bp) || bp > 10000) {
         reject_row(issues, plan.row, "税率%", "应为 0–100 的百分数，最多两位小数");
       } else {
         plan.has_tax = true;
@@ -438,6 +462,7 @@ std::vector<PartnerPlan> validate_partners(const SheetTable& table, const Column
           reject_row(issues, plan.row, "编码", "编码已被已删除的档案占用，请改用其它编码");
         } else {
           plan.current = &found->second->row;
+          plan.current_credit_limit_cents = found->second->credit_limit_cents;
         }
       }
     }
@@ -461,6 +486,21 @@ std::vector<PartnerPlan> validate_partners(const SheetTable& table, const Column
     if (!phone.empty()) {
       plan.has_phone = true;
       plan.phone = phone;
+    }
+    const std::string tax_no = columns.cell(sheet_row, "税号");
+    if (!tax_no.empty()) {
+      plan.has_tax_no = true;
+      plan.tax_no = tax_no;
+    }
+    const std::string credit = columns.cell(sheet_row, "信用额度（元）");
+    if (!credit.empty()) {
+      std::int64_t cents = 0;
+      if (!parse_money_cents(credit, &cents)) {
+        reject_row(issues, plan.row, "信用额度（元）", "应为不小于 0 的金额，最多两位小数");
+      } else {
+        plan.has_credit = true;
+        plan.credit_limit_cents = cents;
+      }
     }
     const std::string address = columns.cell(sheet_row, "地址");
     if (!address.empty()) {
@@ -532,7 +572,10 @@ std::vector<std::string> master_columns(MasterKind kind) {
   if (kind == MasterKind::Item) {
     return std::vector<std::string>(std::begin(kItemColumns), std::end(kItemColumns));
   }
-  return std::vector<std::string>(std::begin(kPartnerColumns), std::end(kPartnerColumns));
+  if (kind == MasterKind::Supplier) {
+    return std::vector<std::string>(std::begin(kSupplierColumns), std::end(kSupplierColumns));
+  }
+  return std::vector<std::string>(std::begin(kCustomerColumns), std::end(kCustomerColumns));
 }
 
 std::vector<std::string> master_required_columns(MasterKind kind) {
@@ -545,6 +588,10 @@ std::string format_tax_bp(std::int64_t bp) {
   std::snprintf(buffer, sizeof(buffer), "%lld.%02lld",
                 static_cast<long long>(bp / 100), static_cast<long long>(bp % 100));
   return std::string(buffer);
+}
+
+std::string money_text(std::int64_t cents) {
+  return format_tax_bp(cents);
 }
 
 MasterExport export_master(Db& db, MasterKind kind) {
@@ -569,14 +616,15 @@ MasterExport export_master(Db& db, MasterKind kind) {
   if (kind == MasterKind::Supplier) {
     gen::SupplierDao dao(db);
     for (const auto& row : dao.list()) {
-      result.rows.push_back({row.code, row.name, row.contact, row.phone, row.address,
+      result.rows.push_back({row.code, row.name, row.contact, row.phone, row.tax_no, row.address,
                              row.status ? "是" : "否"});
     }
     return result;
   }
   gen::CustomerDao dao(db);
   for (const auto& row : dao.list()) {
-    result.rows.push_back({row.code, row.name, row.contact, row.phone, row.address,
+    result.rows.push_back({row.code, row.name, row.contact, row.phone, row.tax_no,
+                           money_text(row.credit_limit_cents), row.address,
                            row.status ? "是" : "否"});
   }
   return result;
@@ -643,7 +691,7 @@ ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
   }
 
   const char* table_name = kind == MasterKind::Supplier ? "supplier" : "customer";
-  const auto records = load_partners(db, table_name);
+  const auto records = load_partners(db, table_name, kind == MasterKind::Customer);
   auto plans = validate_partners(table, columns, records, report.issues, label);
   if (!report.ok()) return report;
 
@@ -662,6 +710,7 @@ ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
       if (plan.has_name) row.name = plan.name;
       if (plan.has_contact) row.contact = plan.contact;
       if (plan.has_phone) row.phone = plan.phone;
+      if (plan.has_tax_no) row.tax_no = plan.tax_no;
       if (plan.has_address) row.address = plan.address;
       if (plan.has_status) row.status = plan.status;
       if (plan.current != nullptr) {
@@ -669,6 +718,8 @@ ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
           gen::SupplierDao::update(conn, row);
         } else {
           gen::CustomerRow customer = as_customer(row);
+          customer.credit_limit_cents =
+              plan.has_credit ? plan.credit_limit_cents : plan.current_credit_limit_cents;
           gen::CustomerDao::update(conn, customer);
         }
         ++report.outcome.updated;
@@ -677,6 +728,7 @@ ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
           gen::SupplierDao::insert(conn, row);
         } else {
           gen::CustomerRow customer = as_customer(row);
+          if (plan.has_credit) customer.credit_limit_cents = plan.credit_limit_cents;
           gen::CustomerDao::insert(conn, customer);
         }
         ++report.outcome.inserted;

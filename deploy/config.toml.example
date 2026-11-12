@@ -17,3 +17,7 @@ data_dir = "/var/lib/xiaotu"
 level = "info"
 # 日志目录：app.log 按 5MB 滚动，保留 app.log.1–app.log.3
 dir = "/var/log/xiaotu"
+
+[sales]
+# 客户信用额度超额行为：warn 提示并二次确认后放行（写审计）；reject 直接拒绝
+credit_limit_mode = "warn"

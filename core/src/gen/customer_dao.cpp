@@ -21,8 +21,10 @@ CustomerRow read_row(Stmt& stmt) {
   row.name = stmt.text(2);
   row.contact = stmt.text(3);
   row.phone = stmt.text(4);
-  row.address = stmt.text(5);
-  row.status = stmt.i64(6) != 0;
+  row.tax_no = stmt.text(5);
+  row.credit_limit_cents = stmt.i64(6);
+  row.address = stmt.text(7);
+  row.status = stmt.i64(8) != 0;
   return row;
 }
 
@@ -32,7 +34,7 @@ std::vector<CustomerRow> CustomerDao::list() {
   std::vector<CustomerRow> rows;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
-              "SELECT id, code, name, contact, phone, address, status FROM customer WHERE is_deleted = 0"
+              "SELECT id, code, name, contact, phone, tax_no, credit_limit_cents, address, status FROM customer WHERE is_deleted = 0"
               " ORDER BY code;");
     while (stmt.step()) {
       rows.push_back(read_row(stmt));
@@ -45,7 +47,7 @@ std::optional<CustomerRow> CustomerDao::find(std::int64_t id) {
   std::optional<CustomerRow> result;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
-              "SELECT id, code, name, contact, phone, address, status FROM customer"
+              "SELECT id, code, name, contact, phone, tax_no, credit_limit_cents, address, status FROM customer"
               " WHERE id = ? AND is_deleted = 0;");
     stmt.bind(1, id);
     if (stmt.step()) {
@@ -59,15 +61,17 @@ void CustomerDao::insert(sqlite3* conn, CustomerRow& row) {
   row.id = next_id();
   const AuditStamp stamp = audit_stamp();
   Stmt stmt(conn,
-            "INSERT INTO customer (id, code, name, contact, phone, address, status, "
+            "INSERT INTO customer (id, code, name, contact, phone, tax_no, credit_limit_cents, address, status, "
             " is_deleted, created_at, created_by, updated_at, updated_by)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?,  0, ?, ?, ?, ?);");
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,  0, ?, ?, ?, ?);");
   int index = 1;
   stmt.bind(index++, row.id);
   stmt.bind(index++, row.code);
   stmt.bind(index++, row.name);
   stmt.bind(index++, row.contact);
   stmt.bind(index++, row.phone);
+  stmt.bind(index++, row.tax_no);
+  stmt.bind(index++, row.credit_limit_cents);
   stmt.bind(index++, row.address);
   stmt.bind(index++, static_cast<std::int64_t>(row.status ? 1 : 0));
   stmt.bind(index++, stamp.at);
@@ -80,7 +84,7 @@ void CustomerDao::insert(sqlite3* conn, CustomerRow& row) {
 void CustomerDao::update(sqlite3* conn, const CustomerRow& row) {
   const AuditStamp stamp = audit_stamp();
   Stmt stmt(conn,
-            "UPDATE customer SET code = ?, name = ?, contact = ?, phone = ?, address = ?, status = ?, "
+            "UPDATE customer SET code = ?, name = ?, contact = ?, phone = ?, tax_no = ?, credit_limit_cents = ?, address = ?, status = ?, "
             " updated_at = ?, updated_by = ?"
             " WHERE id = ? AND is_deleted = 0;");
   int index = 1;
@@ -88,6 +92,8 @@ void CustomerDao::update(sqlite3* conn, const CustomerRow& row) {
   stmt.bind(index++, row.name);
   stmt.bind(index++, row.contact);
   stmt.bind(index++, row.phone);
+  stmt.bind(index++, row.tax_no);
+  stmt.bind(index++, row.credit_limit_cents);
   stmt.bind(index++, row.address);
   stmt.bind(index++, static_cast<std::int64_t>(row.status ? 1 : 0));
   stmt.bind(index++, stamp.at);
