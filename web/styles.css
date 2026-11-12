@@ -176,6 +176,35 @@ main {
   color: var(--ok);
 }
 
+/* 页内确认层：单机版 WKWebView 不处理 window.confirm，这里自己画一层。 */
+.confirm-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.confirm-box {
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 18px 20px;
+  width: min(360px, calc(100vw - 48px));
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.25);
+}
+
+.confirm-text {
+  margin: 0 0 16px;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .page-head {
   display: flex;
   align-items: flex-start;

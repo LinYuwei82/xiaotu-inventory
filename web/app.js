@@ -31,9 +31,73 @@
     return Boolean(unsavedGuard && unsavedGuard());
   }
 
-  function confirmLeavePage() {
+  // WKWebView 没有实现 WKUIDelegate 的 confirm 面板，window.confirm 会静默返回
+  // false；离开确认改用页内确认层，不依赖浏览器原生对话框。
+  let confirmDialogOpen = false;
+
+  function askConfirm(message, options) {
+    const okText = (options && options.okText) || "确定";
+    const cancelText = (options && options.cancelText) || "取消";
+    if (confirmDialogOpen) return Promise.resolve(false);
+    confirmDialogOpen = true;
+    return new Promise((resolve) => {
+      const mask = document.createElement("div");
+      mask.className = "confirm-mask";
+      const box = document.createElement("div");
+      box.className = "confirm-box";
+      box.setAttribute("role", "dialog");
+      box.setAttribute("aria-modal", "true");
+      const text = document.createElement("p");
+      text.className = "confirm-text";
+      text.textContent = message;
+      const actions = document.createElement("div");
+      actions.className = "confirm-actions";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "btn";
+      cancel.textContent = cancelText;
+      const ok = document.createElement("button");
+      ok.type = "button";
+      ok.className = "btn primary";
+      ok.textContent = okText;
+      actions.append(cancel, ok);
+      box.append(text, actions);
+      mask.append(box);
+
+      const previous = document.activeElement;
+      function close(result) {
+        document.removeEventListener("keydown", onKey, true);
+        mask.remove();
+        confirmDialogOpen = false;
+        if (previous && previous.focus) previous.focus();
+        resolve(result);
+      }
+      function onKey(event) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          close(false);
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          close(true);
+        }
+      }
+      cancel.addEventListener("click", () => close(false));
+      ok.addEventListener("click", () => close(true));
+      mask.addEventListener("click", (event) => {
+        if (event.target === mask) close(false);
+      });
+      document.addEventListener("keydown", onKey, true);
+      document.body.appendChild(mask);
+      ok.focus();
+    });
+  }
+
+  async function confirmLeavePage() {
     if (!hasUnsaved()) return true;
-    return window.confirm("当前单据还有未保存的内容，确定离开吗？");
+    return askConfirm("当前单据还有未保存的内容，离开后这些内容会丢失。", {
+      okText: "离开",
+      cancelText: "留在此页",
+    });
   }
 
   function escapeHtml(value) {
@@ -3558,12 +3622,18 @@
     history.replaceState(null, "", target);
   }
 
-  function handleHashChange() {
+  let routeToken = 0;
+
+  async function handleHashChange() {
     const pages = state.allPages;
     if (!pages.length) return;
+    const token = ++routeToken;
     const page = pages.find((item) => item.key === hashPageKey());
     if (page && page.key === state.current) return;
-    if (!confirmLeavePage()) {
+    const leave = await confirmLeavePage();
+    // 等待确认期间又有新的跳转，交给最新一次处理。
+    if (token !== routeToken) return;
+    if (!leave) {
       // 返回/前进已经改了 hash，取消时把地址还原到当前页。
       replaceHash(state.current);
       return;
@@ -3577,9 +3647,9 @@
     mountPage(page);
   }
 
-  function goToPage(page) {
+  async function goToPage(page) {
     if (page.key === state.current) return;
-    if (!confirmLeavePage()) return;
+    if (!(await confirmLeavePage())) return;
     location.hash = "#/" + encodeURIComponent(page.key);
   }
 
@@ -3718,7 +3788,8 @@
   }
 
   window.addEventListener("hashchange", handleHashChange);
-  // 关闭窗口或刷新时，用原生提示兜住未保存的录入。
+  // 关闭窗口或刷新时的浏览器原生提示。只对 --server 的普通浏览器有效；
+  // 单机版 WKWebView 不执行 beforeunload，关窗不会弹确认，需在文档中注明。
   window.addEventListener("beforeunload", (event) => {
     if (!hasUnsaved()) return;
     event.preventDefault();

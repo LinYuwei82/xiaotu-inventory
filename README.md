@@ -520,7 +520,7 @@ struct DocumentDefinition {
 - 成本按移动加权平均，暂不支持其他计价方式；成本重算保持**只读核对**（`/api/stock/cost-recalc` 与库存页「成本重算核对」），不静默写回。金额差异可一键生成成本调整单草稿（`POST /api/cost-adjustments/drafts`）后人工审核，数量差异引导去做盘点；调整单反审核若会使结存金额为负则拒绝，需先处理后续出库或调整。
 - 无内置 PDF 导出与针式打印模板：当前通过系统打印面板「另存为 PDF」，A4 / 针式两种尺寸的输出属于 M4。
 - Windows 只构建服务端与测试，没有 GUI 壳（`XIAOTU_BUILD_SHELL=OFF`），界面通过浏览器访问。
-- 导航使用 `#/<key>` 路由：**刷新保页**在单机版与网络版都有效；**前进 / 后退**只在 `--server` 的浏览器里有效，单机版 WKWebView 没有后退入口。单机版有意不开 `allowsBackForwardNavigationGestures`、也不加后退 / 前进菜单项：侧栏已经是完整导航路径，录入页的脏标记会拦住误跳，横扫手势还会和明细表的横向滚动冲突。
+- 导航使用 `#/<key>` 路由：**刷新保页**在单机版与网络版都有效；**前进 / 后退**只在 `--server` 的浏览器里有效，单机版 WKWebView 没有后退入口。单机版有意不开 `allowsBackForwardNavigationGestures`、也不加后退 / 前进菜单项：侧栏已经是完整导航路径，录入页的脏标记会拦住误跳，横扫手势还会和明细表的横向滚动冲突。未保存离开确认是页内自绘的确认层，不依赖 `window.confirm`（WKWebView 未实现对应面板）；单机版直接关闭窗口不会拦（WKWebView 不执行 `beforeunload`），网络版浏览器会提示，单机版请先保存再关窗。
 - 无 Developer ID 证书，`.dmg` 为 ad-hoc 签名且未公证，Gatekeeper 会拦截首次打开，处理方式见第 10 节。
 - 应收应付与账龄只统计 v7 迁移之后审核的单据，升级前已审核单据不计入，详见「应收应付统计口径」。
 - 未接入 vcpkg 时依赖 `third_party/` 内嵌头文件；接入 vcpkg 后 `vcpkg.json` 会自动生效。
