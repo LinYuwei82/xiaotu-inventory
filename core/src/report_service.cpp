@@ -2,11 +2,59 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "xiaotu/db.h"
 
 namespace xiaotu {
+namespace {
+
+// 往来档案名称：优先按 partner_key 前缀查档案，查不到再回落到台账上的名称快照。
+std::string archive_name(sqlite3* conn, const std::string& partner_key) {
+  const char* table = nullptr;
+  if (partner_key.rfind("C:", 0) == 0) {
+    table = "customer";
+  } else if (partner_key.rfind("S:", 0) == 0) {
+    table = "supplier";
+  }
+  if (table != nullptr && partner_key.size() > 2) {
+    const std::string id = partner_key.substr(2);
+    const bool numeric =
+        !id.empty() && std::all_of(id.begin(), id.end(), [](char ch) { return ch >= '0' && ch <= '9'; });
+    if (numeric) {
+      Stmt stmt(conn, std::string("SELECT name FROM ") + table + " WHERE id = ?;");
+      stmt.bind(1, std::stoll(id));
+      if (stmt.step()) return stmt.text(0);
+    }
+  }
+  return {};
+}
+
+std::string ledger_name(sqlite3* conn, const std::string& partner_key) {
+  Stmt entry(conn,
+             "SELECT partner_name FROM ar_ap_entry WHERE partner_key = ?"
+             " ORDER BY id DESC LIMIT 1;");
+  entry.bind(1, partner_key);
+  if (entry.step()) return entry.text(0);
+  Stmt settlement(conn,
+                  "SELECT partner_name FROM settlement WHERE partner_key = ?"
+                  " ORDER BY id DESC LIMIT 1;");
+  settlement.bind(1, partner_key);
+  if (settlement.step()) return settlement.text(0);
+  return {};
+}
+
+struct StatementRaw {
+  std::string date;
+  std::int64_t id = 0;
+  int rank = 0;  // 同一天先列单据，再列核销
+  StatementLine line;
+};
+
+}  // namespace
 
 std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& filter) const {
   std::vector<LedgerDetailRow> rows;
@@ -150,6 +198,116 @@ std::vector<AgingRow> ReportService::ar_ap_aging(int direction, std::string_view
     }
   });
   return rows;
+}
+
+StatementResult ReportService::partner_statement(std::string_view partner_key, int direction,
+                                                 std::string_view from,
+                                                 std::string_view to) const {
+  StatementResult result;
+  result.partner_key = std::string(partner_key);
+  result.direction = direction == -1 ? -1 : 1;
+  result.from = std::string(from);
+  result.to = std::string(to);
+
+  const std::string from_text = result.from;
+  const std::string to_text = result.to;
+  db_.read([&](sqlite3* conn) {
+    result.partner_name = archive_name(conn, result.partner_key);
+    if (result.partner_name.empty()) {
+      result.partner_name = ledger_name(conn, result.partner_key);
+    }
+
+    // 期初：期间开始前的单据金额减去已核销金额（含撤销产生的负数记录）。
+    Stmt opening(conn,
+                 "SELECT COALESCE((SELECT SUM(amount_cents) FROM ar_ap_entry"
+                 "                 WHERE partner_key = ? AND direction = ?"
+                 "                   AND status <> 'VOIDED' AND biz_date < ?), 0)"
+                 "     - COALESCE((SELECT SUM(amount_cents) FROM settlement"
+                 "                 WHERE partner_key = ? AND direction = ?"
+                 "                   AND settled_on < ?), 0);");
+    opening.bind(1, result.partner_key)
+        .bind(2, static_cast<std::int64_t>(result.direction))
+        .bind(3, from_text)
+        .bind(4, result.partner_key)
+        .bind(5, static_cast<std::int64_t>(result.direction))
+        .bind(6, from_text);
+    if (opening.step()) result.opening_cents = opening.i64(0);
+
+    std::vector<StatementRaw> raw;
+    {
+      Stmt stmt(conn,
+                "SELECT id, biz_date, doc_no, doc_type, amount_cents FROM ar_ap_entry"
+                " WHERE partner_key = ? AND direction = ? AND status <> 'VOIDED'"
+                "   AND (? = '' OR biz_date >= ?)"
+                "   AND (? = '' OR biz_date <= ?)"
+                " ORDER BY biz_date, id;");
+      stmt.bind(1, result.partner_key)
+          .bind(2, static_cast<std::int64_t>(result.direction))
+          .bind(3, from_text)
+          .bind(4, from_text)
+          .bind(5, to_text)
+          .bind(6, to_text);
+      while (stmt.step()) {
+        StatementRaw row;
+        row.id = stmt.i64(0);
+        row.date = stmt.text(1);
+        row.rank = 0;
+        row.line.date = row.date;
+        row.line.kind = "DOC";
+        row.line.doc_no = stmt.text(2);
+        row.line.doc_type = stmt.text(3);
+        const std::int64_t delta = stmt.i64(4);
+        if (delta >= 0) row.line.increase_cents = delta;
+        else row.line.decrease_cents = -delta;
+        raw.push_back(std::move(row));
+      }
+    }
+    {
+      Stmt stmt(conn,
+                "SELECT id, settled_on, settle_no, amount_cents, reverses_id, note FROM settlement"
+                " WHERE partner_key = ? AND direction = ?"
+                "   AND (? = '' OR settled_on >= ?)"
+                "   AND (? = '' OR settled_on <= ?)"
+                " ORDER BY settled_on, id;");
+      stmt.bind(1, result.partner_key)
+          .bind(2, static_cast<std::int64_t>(result.direction))
+          .bind(3, from_text)
+          .bind(4, from_text)
+          .bind(5, to_text)
+          .bind(6, to_text);
+      while (stmt.step()) {
+        StatementRaw row;
+        row.id = stmt.i64(0);
+        row.date = stmt.text(1);
+        row.rank = 1;
+        row.line.date = row.date;
+        row.line.kind = "SETTLE";
+        row.line.doc_no = stmt.text(2);
+        row.line.note = stmt.text(5);
+        const std::int64_t delta = -stmt.i64(3);
+        if (delta >= 0) row.line.increase_cents = delta;
+        else row.line.decrease_cents = -delta;
+        raw.push_back(std::move(row));
+      }
+    }
+
+    std::stable_sort(raw.begin(), raw.end(), [](const StatementRaw& a, const StatementRaw& b) {
+      if (a.date != b.date) return a.date < b.date;
+      if (a.rank != b.rank) return a.rank < b.rank;
+      return a.id < b.id;
+    });
+
+    std::int64_t balance = result.opening_cents;
+    for (auto& row : raw) {
+      balance += row.line.increase_cents - row.line.decrease_cents;
+      row.line.balance_cents = balance;
+      result.increase_cents += row.line.increase_cents;
+      result.decrease_cents += row.line.decrease_cents;
+      result.lines.push_back(std::move(row.line));
+    }
+    result.closing_cents = balance;
+  });
+  return result;
 }
 
 }  // namespace xiaotu

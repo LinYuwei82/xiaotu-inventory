@@ -618,6 +618,30 @@ int main() {
       check(aging.front().not_due_cents == expected_ar && aging.front().d90_plus_cents == 0,
             "截止日当天到期的记录应全部落在未到期桶");
 
+      // 对账单：期初 + 单据 - 核销 = 期末，且期末与台账未核销余额一致。
+      const auto statement =
+          reports.partner_statement(customer_key, 1, "2026-11-01", "2026-11-30");
+      check(statement.partner_name == "测试客户档案", "对账单应取客户档案名称");
+      check(statement.opening_cents == 0, "11-01 起期初应为 0");
+      check(statement.increase_cents == 6000, "本期增加应为两笔应收加核销撤销 6000 分");
+      check(statement.decrease_cents == 6500, "本期减少应为退货与两笔核销 6500 分");
+      check(statement.closing_cents == -500, "期末余额应为 -500 分");
+      check(statement.lines.size() == 6, "对账单应列出 3 笔单据与 3 笔核销");
+      std::int64_t statement_outstanding = 0;
+      for (const auto& row : finance.entries(1, customer_key)) {
+        if (row.status != "VOIDED") statement_outstanding += row.outstanding_cents;
+      }
+      check(statement.closing_cents == statement_outstanding,
+            "对账单期末应等于台账未核销余额");
+      check(statement.lines.back().balance_cents == statement.closing_cents,
+            "最后一行的余额应为期末余额");
+
+      const auto later_statement =
+          reports.partner_statement(customer_key, 1, "2026-11-13", "");
+      check(later_statement.opening_cents == -500 && later_statement.lines.empty() &&
+                later_statement.closing_cents == -500,
+            "期间之外的发生额应全部计入下一期期初");
+
       // 采购退货：先入库再退货，以及入库后部分退货。
       auto returned = items.create(xiaotu::gen::ItemRow{.code = "R001", .name = "退货商品"});
       make_doc("PUR_IN", returned.id, 10, 1000);

@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "xiaotu/error.h"
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
 #include "xiaotu/models.h"
@@ -155,6 +156,53 @@ nlohmann::json aging_to_json(const AgingRow& row) {
   };
 }
 
+std::string doc_type_label(const std::string& doc_type) {
+  if (doc_type == "SAL_OUT") return "销售出库";
+  if (doc_type == "SAL_RET") return "销售退货";
+  if (doc_type == "PUR_IN") return "采购入库";
+  if (doc_type == "PUR_RET") return "采购退货";
+  return doc_type;
+}
+
+std::string statement_kind_label(const StatementResult& result, const StatementLine& line) {
+  if (line.kind == "DOC") return "单据";
+  return result.direction == -1 ? "付款" : "收款";
+}
+
+std::string statement_summary(const StatementResult& result, const StatementLine& line) {
+  if (line.kind == "DOC") return doc_type_label(line.doc_type);
+  if (!line.note.empty()) return line.note;
+  return statement_kind_label(result, line);
+}
+
+nlohmann::json statement_to_json(const StatementResult& result) {
+  nlohmann::json lines = nlohmann::json::array();
+  for (const auto& line : result.lines) {
+    lines.push_back(nlohmann::json{
+        {"date", line.date},
+        {"kind", line.kind},
+        {"kind_label", statement_kind_label(result, line)},
+        {"doc_no", line.doc_no},
+        {"summary", statement_summary(result, line)},
+        {"increase_cents", line.increase_cents},
+        {"decrease_cents", line.decrease_cents},
+        {"balance_cents", line.balance_cents},
+    });
+  }
+  return nlohmann::json{
+      {"partner_key", result.partner_key},
+      {"partner_name", result.partner_name},
+      {"direction", result.direction},
+      {"from", result.from},
+      {"to", result.to},
+      {"opening_cents", result.opening_cents},
+      {"increase_cents", result.increase_cents},
+      {"decrease_cents", result.decrease_cents},
+      {"closing_cents", result.closing_cents},
+      {"lines", lines},
+  };
+}
+
 }  // namespace
 
 void register_report_routes(httplib::Server& server, Services& services) {
@@ -240,6 +288,63 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        list.push_back(flow_to_json(row));
                      }
                      json_ok(res, list);
+                   }));
+
+  server.Get("/api/reports/statement",
+             guard("finance.read",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     const std::string partner_key =
+                         req.has_param("partner_key") ? req.get_param_value("partner_key") : "";
+                     if (partner_key.empty()) {
+                       throw AppError("INVALID_INPUT", "请指定往来单位");
+                     }
+                     int direction = partner_key.rfind("S:", 0) == 0 ? -1 : 1;
+                     if (req.has_param("direction")) {
+                       const std::string value = req.get_param_value("direction");
+                       direction = value == "-1" || value == "AP" ? -1 : 1;
+                     }
+                     const std::string from =
+                         req.has_param("from") ? req.get_param_value("from") : "";
+                     const std::string to = req.has_param("to") ? req.get_param_value("to") : "";
+                     const StatementResult result =
+                         services.reports.partner_statement(partner_key, direction, from, to);
+                     res.set_header(kArApScopeHeader, kArApScope);
+                     if (csv_requested(req)) {
+                       const std::string period = from.empty() && to.empty()
+                                                      ? "全部期间"
+                                                      : (from.empty() ? std::string("起始不限") : from) +
+                                                            " 至 " +
+                                                            (to.empty() ? std::string("截止不限") : to);
+                       const std::string partner =
+                           (result.partner_name.empty() ? std::string("未命名")
+                                                        : result.partner_name) +
+                           "（" + result.partner_key + "）";
+                       std::string csv;
+                       csv_preamble(csv, "对账单",
+                                    std::string("往来单位 ") + partner + "；方向 " +
+                                        (direction == -1 ? "应付" : "应收") + "；期间 " + period +
+                                        "；仅统计 v7 迁移后审核的单据，已反审核单据不计入");
+                       csv_row(csv, {"日期", "类型", "单号", "摘要", "增加（元）", "减少（元）",
+                                     "余额（元）"});
+                       csv_row(csv, {"期初余额", "", "", "", "", "",
+                                     yuan(result.opening_cents)});
+                       for (const auto& line : result.lines) {
+                         csv_row(csv, {line.date, statement_kind_label(result, line),
+                                       line.doc_no, statement_summary(result, line),
+                                       yuan(line.increase_cents), yuan(line.decrease_cents),
+                                       yuan(line.balance_cents)});
+                       }
+                       csv_row(csv, {"本期合计", "", "", "", yuan(result.increase_cents),
+                                     yuan(result.decrease_cents), yuan(result.closing_cents)});
+                       send_csv(res,
+                                std::string("statement-") + (direction == -1 ? "ap" : "ar") + "-" +
+                                    date_stamp() + ".csv",
+                                csv);
+                       return;
+                     }
+                     nlohmann::json body = statement_to_json(result);
+                     body["data_scope"] = kArApScope;
+                     json_ok(res, body);
                    }));
 
   server.Get("/api/reports/ar-ap-aging",

@@ -5,7 +5,7 @@ macOS 优先的进销存软件骨架：**一套 C++20 代码，两种运行形�
 - 不带参数启动 = **单机版**：内嵌服务只监听 `127.0.0.1` 的随机端口，生成一次性 token，用系统 WKWebView 打开本地页面。
 - `--server` 启动 = **网络版**：监听 `0.0.0.0`，用浏览器访问（启动日志会输出带 token 的一次性访问链接）。
 
-当前为 M0 骨架，已打通：**新建商品 → 采购入库 / 销售出库 / 退货 / 调拨 / 盘点（含草稿与反审核）→ 查看库存与流水**，并具备内置 `admin` 用户、最小角色权限、审计日志、供应商/客户档案、应收应付台账与核销、四张只读报表。
+当前为 M0 骨架，已打通：**新建商品 → 采购入库 / 销售出库 / 退货 / 调拨 / 盘点（含草稿与反审核）→ 查看库存与流水**，并具备内置 `admin` 用户、最小角色权限、审计日志、供应商/客户档案、应收应付台账与核销、往来对账单、四张只读报表。
 
 ## 1. 环境要求
 
@@ -281,7 +281,7 @@ struct DocumentDefinition {
 
 `ar_ap_entry` 只在单据审核时写入。v7 迁移为历史销售单按名称回填了 `customer_id`，但**不会为升级前已审核的单据补建往来记录**。因此：
 
-- 应收应付台账（`/api/ar-ap`）、核销（`/api/settlements`）与账龄（`/api/reports/ar-ap-aging`）仅统计 **v7 迁移之后审核的单据**；升级前已审核单据不计入往来余额与账龄。
+- 应收应付台账（`/api/ar-ap`）、核销（`/api/settlements`）、账龄（`/api/reports/ar-ap-aging`）与对账单（`/api/reports/statement`）仅统计 **v7 迁移之后审核的单据**；升级前已审核单据不计入往来余额与账龄。
 - 上述接口在响应头返回 `X-Xiaotu-Data-Scope: ar_ap_since_v7`，返回体结构不变。
 - 库存余额、库存流水、收发明细直接基于 `stock_ledger`，**不受影响**。
 - 需要全量历史往来时，目前只能通过单据反审核后重新审核来生成台账，或后续单独做期初往来录入。
@@ -295,6 +295,16 @@ struct DocumentDefinition {
 - 报表页「打印」使用浏览器打印（`window.print()`）；单机版 WKWebView 通过原生桥接打开系统打印面板。
   打印视图含单位名称、报表名、筛选区间与打印时间，表头在跨页时重复（`thead` 重复）。
 - 导出与查看同权限（`stock.read` / `finance.read`），不额外开放写权限。
+
+### 往来对账单
+
+- 页面「对账单」按往来单位输出期间对账单：期初 + 期间单据 − 期间核销 = 期末，逐行累计余额。
+- 接口：`GET /api/reports/statement?partner_key=C:<客户 id>&direction=1&from=YYYY-MM-DD&to=YYYY-MM-DD`；
+  权限码 `finance.read`，只读、不落表、无写权限。`direction` 省略时按 key 前缀推断（`C:` 应收、`S:` 应付）。
+- 数据来源与账龄一致：单据取 `ar_ap_entry`（作废单据不计入），核销取 `settlement`（撤销产生的负数记录计入）。
+  同样受 v7 统计口径限制，响应头带 `X-Xiaotu-Data-Scope`。
+- 支持 `?format=csv` 导出（带 BOM 的 UTF-8、金额按元两位小数）与打印视图（含单位名称、报表名、
+  往来单位、筛选区间与打印时间，表头跨页重复）。
 
 ## 9. M0 已知限制（对应方案待确认项）
 
@@ -332,4 +342,4 @@ tools/package/make_dmg.sh
 
 - 技术方案：`docs/进销存技术方案.md`
 - 数据库结构：`core/src/migrations.cpp`（v7）
-- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/ar-ap-aging`（报表接口加 `?format=csv` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`
+- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`

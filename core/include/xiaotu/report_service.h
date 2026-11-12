@@ -49,6 +49,31 @@ struct AgingRow {
   std::int64_t d90_plus_cents = 0;
 };
 
+// 对账单明细行：单据与核销记录合并后按日期排序，余额逐行累计。
+struct StatementLine {
+  std::string date;
+  std::string kind;  // DOC 单据 / SETTLE 核销
+  std::string doc_no;
+  std::string doc_type;  // 单据类型（kind=DOC 时有效）
+  std::string note;      // 核销备注（kind=SETTLE 时有效）
+  std::int64_t increase_cents = 0;  // 应收/应付增加
+  std::int64_t decrease_cents = 0;  // 应收/应付减少
+  std::int64_t balance_cents = 0;
+};
+
+struct StatementResult {
+  std::string partner_key;
+  std::string partner_name;
+  int direction = 1;  // 1 应收 / -1 应付
+  std::string from;
+  std::string to;
+  std::int64_t opening_cents = 0;
+  std::int64_t increase_cents = 0;
+  std::int64_t decrease_cents = 0;
+  std::int64_t closing_cents = 0;
+  std::vector<StatementLine> lines;
+};
+
 struct ReportFilter {
   std::string from;  // 含（YYYY-MM-DD），空表示不限
   std::string to;    // 含（YYYY-MM-DD），空表示不限
@@ -65,6 +90,10 @@ class ReportService {
   std::vector<LedgerDetailRow> stock_ledger(const ReportFilter& filter) const;
   std::vector<GoodsFlowRow> goods_flow(const ReportFilter& filter) const;
   std::vector<AgingRow> ar_ap_aging(int direction, std::string_view as_of) const;
+
+  // 往来对账单：期初 + 期间单据 - 期间核销 = 期末；只读，不落表。
+  StatementResult partner_statement(std::string_view partner_key, int direction,
+                                    std::string_view from, std::string_view to) const;
 
  private:
   Db& db_;
