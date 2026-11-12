@@ -1252,6 +1252,95 @@ int main() {
       }
       check(closed_rejected, "关闭后应拒绝转出");
 
+      // 采购订单：确认不动库存/往来，下推生成采购入库，支持分批与改价。
+      auto purchase_item =
+          items.create(xiaotu::gen::ItemRow{.code = "PO001", .name = "采购订单商品"});
+      auto ap_entries = [&](std::int64_t doc_id) {
+        std::int64_t count = 0;
+        db.read([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn, "SELECT COUNT(*) FROM ar_ap_entry WHERE doc_id = ?;");
+          stmt.bind(1, doc_id);
+          if (stmt.step()) count = stmt.i64(0);
+        });
+        return count;
+      };
+
+      xiaotu::DocInput purchase_order_input;
+      purchase_order_input.doc_type = "PUR_ORDER";
+      purchase_order_input.warehouse_id = warehouse_list.at(0).id;
+      purchase_order_input.doc_date = "2026-11-12";
+      purchase_order_input.partner = "订单供应商";
+      purchase_order_input.lines.push_back(
+          {.item_id = purchase_item.id, .qty = q(10), .price_cents = 800});
+      const auto purchase_order = documents.save_and_approve(purchase_order_input);
+      check(purchase_order.doc_no.rfind("CGDD", 0) == 0, "采购订单单号应以 CGDD 开头");
+      auto purchase_detail = documents.detail(purchase_order.id);
+      check(purchase_detail.order_status == "CONFIRMED", "采购订单确认后应为 CONFIRMED");
+      check(balance_of(purchase_item.id).qty == 0, "采购订单确认不应改变库存");
+      check(stock.ledger(purchase_item.id).empty(), "采购订单确认不应写库存流水");
+      check(ap_entries(purchase_order.id) == 0, "采购订单确认不应产生应付");
+      const std::int64_t purchase_line_id = purchase_detail.lines.at(0).id;
+
+      xiaotu::OrderConvertInput purchase_convert;
+      purchase_convert.lines.push_back(
+          {.order_line_id = purchase_line_id, .qty = q(4), .price_cents = 900});
+      const auto first_receipt = documents.convert_order(purchase_order.id, purchase_convert);
+      check(first_receipt.doc_no.rfind("CGRK", 0) == 0, "下推应生成采购入库单");
+      purchase_detail = documents.detail(purchase_order.id);
+      check(purchase_detail.order_status == "CONFIRMED" &&
+                purchase_detail.lines.at(0).converted_qty == q(4),
+            "部分入库后订单应保持 CONFIRMED 且累计 4 件");
+      check(balance_of(purchase_item.id).qty == q(4), "采购入库应增加库存");
+      check(balance_of(purchase_item.id).amount_cents == 3600,
+            "下推单价覆盖应只影响入库单金额（4 × 900）");
+      check(ap_entries(first_receipt.doc_id) == 1, "采购入库应生成应付");
+      check(documents.detail(purchase_order.id).total_amount_cents == 8000,
+            "下推改价不应回写订单金额");
+
+      purchase_convert.lines.at(0).qty = q(7);
+      purchase_convert.lines.at(0).price_cents = -1;
+      bool purchase_exceeded = false;
+      try {
+        documents.convert_order(purchase_order.id, purchase_convert);
+      } catch (const xiaotu::AppError& error) {
+        purchase_exceeded = error.code() == "ORDER_QTY_EXCEEDED";
+      }
+      check(purchase_exceeded, "采购累计入库超过订单数量应拒绝");
+      check(balance_of(purchase_item.id).qty == q(4), "超量拒绝后库存不应变化");
+
+      purchase_convert.lines.at(0).qty = q(6);
+      const auto second_receipt = documents.convert_order(purchase_order.id, purchase_convert);
+      check(second_receipt.order_status == "CONVERTED", "全部入库后订单应为 CONVERTED");
+      check(balance_of(purchase_item.id).qty == q(10), "两次入库应累计到订单数量");
+      check(balance_of(purchase_item.id).amount_cents == 8400,
+            "第二次应按订单原价 800 入库");
+      bool purchase_no_more = false;
+      try {
+        documents.convert_order(purchase_order.id, purchase_convert);
+      } catch (const xiaotu::AppError& error) {
+        purchase_no_more = error.code() == "INVALID_STATUS";
+      }
+      check(purchase_no_more, "已全部入库的订单应拒绝继续下推");
+
+      documents.reverse(first_receipt.doc_id);
+      purchase_detail = documents.detail(purchase_order.id);
+      check(purchase_detail.order_status == "CONFIRMED" &&
+                purchase_detail.lines.at(0).converted_qty == q(6),
+            "反审核入库单应释放对应订单数量");
+      check(balance_of(purchase_item.id).qty == q(6), "反审核后库存应回到 6 件");
+
+      documents.close_order(purchase_order.id);
+      check(documents.detail(purchase_order.id).order_status == "CLOSED",
+            "部分入库的采购订单应可手工关闭");
+      purchase_convert.lines.at(0).qty = q(1);
+      bool purchase_closed_rejected = false;
+      try {
+        documents.convert_order(purchase_order.id, purchase_convert);
+      } catch (const xiaotu::AppError& error) {
+        purchase_closed_rejected = error.code() == "INVALID_STATUS";
+      }
+      check(purchase_closed_rejected, "关闭后的采购订单应拒绝下推");
+
       // 其他入库/出库：入库按手工单价，出库按移动加权平均，且不产生往来。
       auto other = items.create(xiaotu::gen::ItemRow{.code = "O001", .name = "其他商品"});
       xiaotu::DocInput other_in;

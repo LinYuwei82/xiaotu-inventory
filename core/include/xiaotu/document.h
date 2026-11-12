@@ -46,6 +46,9 @@ struct DocumentDefinition {
   bool finance_red = false;  // 退货：红字冲销同方向
   PriceSource price_source = PriceSource::Manual;
   CostHook cost_hook;
+  // 订单类单据的下推目标（如 SAL_ORDER -> SAL_OUT、PUR_ORDER -> PUR_IN）；
+  // 交易单据留空。
+  std::string order_converts_to;
   // 审核 / 反审核的附加动作（往来账、库存占用等），M0 为空。
   std::function<void(sqlite3*, std::int64_t)> on_approve;
   std::function<void(sqlite3*, std::int64_t)> on_reverse;
@@ -90,10 +93,12 @@ struct DocDetail {
   std::vector<DocLineInput> lines;
 };
 
-// 销售订单转出库：按订单行分配本次转出数量。
+// 订单下推：按订单行分配本次数量，可覆盖单价（只影响生成的单据）。
 struct OrderConvertLine {
   std::int64_t order_line_id = 0;
   std::int64_t qty = 0;
+  // <0 表示沿用订单单价；>=0 时覆盖本次下推单价，不回写订单。
+  std::int64_t price_cents = -1;
 };
 
 struct OrderConvertInput {

@@ -142,6 +142,23 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .cost_hook = nullptr,
           .on_approve = nullptr,
           .on_reverse = nullptr,
+          .order_converts_to = "SAL_OUT",
+      },
+      // 采购订单：只做需求确认与转入库来源，不占库存、不写流水、不产生往来。
+      DocumentDefinition{
+          .doc_type = "PUR_ORDER",
+          .doc_no_prefix = "CGDD",
+          .stock_mode = StockMode::None,
+          .affects_stock = false,
+          .role = DocumentRole::Order,
+          .partner_kind = PartnerKind::Supplier,
+          .finance_direction = 0,
+          .finance_red = false,
+          .price_source = PriceSource::Manual,
+          .cost_hook = nullptr,
+          .on_approve = nullptr,
+          .on_reverse = nullptr,
+          .order_converts_to = "PUR_IN",
       },
       // 其他入库：按录入单价增加库存金额，不绑定往来单位、不产生应收应付。
       DocumentDefinition{
@@ -1172,7 +1189,7 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
 OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
                                               const OrderConvertInput& input) {
   if (input.lines.empty()) {
-    throw AppError("INVALID_INPUT", "请选择要转出的订单行");
+    throw AppError("INVALID_INPUT", "请选择要下推的订单行");
   }
 
   OrderConversion result;
@@ -1181,13 +1198,14 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
     std::string status;
     std::string order_status;
     std::string order_no;
-    std::string customer;
+    std::string partner_name;
     std::int64_t warehouse_id = 0;
     std::int64_t customer_id = 0;
+    std::int64_t supplier_id = 0;
     {
       Stmt header(conn,
                   "SELECT doc_type, status, order_status, doc_no, warehouse_id, customer_id,"
-                  " customer FROM doc_header WHERE id = ?;");
+                  " partner_id, customer FROM doc_header WHERE id = ?;");
       header.bind(1, order_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "订单不存在");
@@ -1198,20 +1216,24 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
       order_no = header.text(3);
       warehouse_id = header.i64(4);
       customer_id = header.i64(5);
-      customer = header.text(6);
+      supplier_id = header.i64(6);
+      partner_name = header.text(7);
     }
     const DocumentDefinition* order_definition = find_document_definition(doc_type);
     if (order_definition == nullptr || order_definition->role != DocumentRole::Order) {
-      throw AppError("INVALID_INPUT", "该单据不是销售订单");
+      throw AppError("INVALID_INPUT", "该单据不是订单");
+    }
+    if (order_definition->order_converts_to.empty()) {
+      throw AppError("INVALID_INPUT", "该订单未配置下推目标");
     }
     if (status != "APPROVED") {
-      throw AppError("INVALID_STATUS", "只有已确认的订单可以转出库");
+      throw AppError("INVALID_STATUS", "只有已确认的订单可以下推");
     }
     if (order_status == "CONVERTED") {
-      throw AppError("INVALID_STATUS", "订单已全部转出");
+      throw AppError("INVALID_STATUS", "订单已全部下推");
     }
     if (order_status == "CLOSED") {
-      throw AppError("INVALID_STATUS", "订单已关闭，不能再转出");
+      throw AppError("INVALID_STATUS", "订单已关闭，不能再下推");
     }
     if (order_status != "CONFIRMED") {
       throw AppError("INVALID_STATUS", "请先确认订单");
@@ -1236,12 +1258,21 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
       }
     }
 
-    DocInput outbound;
-    outbound.doc_type = "SAL_OUT";
-    outbound.warehouse_id = input.warehouse_id > 0 ? input.warehouse_id : warehouse_id;
-    outbound.doc_date = input.doc_date;
-    outbound.partner_id = customer_id;
-    outbound.partner = customer;
+    const DocumentDefinition* downstream_definition =
+        find_document_definition(order_definition->order_converts_to);
+    if (downstream_definition == nullptr) {
+      throw AppError("UNKNOWN_DOC_TYPE",
+                     "下推目标单据定义缺失: " + order_definition->order_converts_to);
+    }
+
+    DocInput downstream;
+    downstream.doc_type = downstream_definition->doc_type;
+    downstream.warehouse_id = input.warehouse_id > 0 ? input.warehouse_id : warehouse_id;
+    downstream.doc_date = input.doc_date;
+    // 销售订单的往来方在 customer_id，采购订单在 partner_id；`customer` 列统一存名称快照。
+    downstream.partner_id = order_definition->partner_kind == PartnerKind::Customer ? customer_id
+                                                                                   : supplier_id;
+    downstream.partner = partner_name;
 
     std::vector<std::pair<std::int64_t, std::int64_t>> allocations;
     std::int64_t converted_total = 0;
@@ -1255,7 +1286,7 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
                                             std::to_string(allocation.order_line_id));
       }
       if (allocation.qty <= 0) {
-        throw AppError("INVALID_INPUT", "转出数量必须大于 0");
+        throw AppError("INVALID_INPUT", "下推数量必须大于 0");
       }
       if (std::find_if(allocations.begin(), allocations.end(),
                        [&](const auto& item) {
@@ -1265,32 +1296,32 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
       }
       if (found->converted_qty + allocation.qty > found->qty) {
         throw AppError("ORDER_QTY_EXCEEDED",
-                       "转出数量超过订单剩余数量：" + qty_text(allocation.qty) + " > " +
+                       "下推数量超过订单剩余数量：" + qty_text(allocation.qty) + " > " +
                            qty_text(found->qty - found->converted_qty));
       }
-      outbound.lines.push_back(DocLineInput{.item_id = found->item_id,
-                                            .qty = allocation.qty,
-                                            .price_cents = found->price_cents,
-                                            .source_order_line_id = found->id});
+      downstream.lines.push_back(DocLineInput{
+          .item_id = found->item_id,
+          .qty = allocation.qty,
+          .price_cents =
+              allocation.price_cents >= 0 ? allocation.price_cents : found->price_cents,
+          .source_order_line_id = found->id});
       allocations.emplace_back(allocation.order_line_id, allocation.qty);
       converted_total += allocation.qty;
     }
 
-    const DocumentDefinition* outbound_definition = find_document_definition("SAL_OUT");
-    if (outbound_definition == nullptr) {
-      throw AppError("UNKNOWN_DOC_TYPE", "销售出库定义缺失");
-    }
-    const ValidatedDoc validated = validate_document(conn, outbound, *outbound_definition, true);
+    const ValidatedDoc validated = validate_document(conn, downstream, *downstream_definition, true);
     result.doc_id = next_id();
-    result.doc_no = allocate_doc_no(conn, outbound_definition->doc_no_prefix, validated.doc_date);
-    insert_header(conn, result.doc_id, result.doc_no, outbound_definition->doc_type,
-                  outbound_definition->partner_kind, outbound,
-                  header_warehouse_id(*outbound_definition, outbound), validated, true, "");
+    result.doc_no =
+        allocate_doc_no(conn, downstream_definition->doc_no_prefix, validated.doc_date);
+    insert_header(conn, result.doc_id, result.doc_no, downstream_definition->doc_type,
+                  downstream_definition->partner_kind, downstream,
+                  header_warehouse_id(*downstream_definition, downstream), validated, true, "");
     const std::vector<std::int64_t> line_ids =
-        insert_lines(conn, result.doc_id, outbound.lines, false);
-    apply_stock_moves(conn, *outbound_definition, result.doc_id, outbound.warehouse_id,
-                      outbound.target_warehouse_id, validated.biz_time, outbound.lines, line_ids);
-    create_ar_ap_entry(conn, *outbound_definition, outbound, validated, result.doc_id,
+        insert_lines(conn, result.doc_id, downstream.lines, false);
+    apply_stock_moves(conn, *downstream_definition, result.doc_id, downstream.warehouse_id,
+                      downstream.target_warehouse_id, validated.biz_time, downstream.lines,
+                      line_ids);
+    create_ar_ap_entry(conn, *downstream_definition, downstream, validated, result.doc_id,
                        result.doc_no);
 
     for (const auto& allocation : allocations) {

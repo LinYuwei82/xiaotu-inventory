@@ -210,6 +210,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
                               .order_line_id = item.value("order_line_id", std::int64_t{0}),
                               .qty = item.contains("qty") ? parse_qty_field(item["qty"])
                                                           : std::int64_t{0},
+                              .price_cents = item.value("price_cents", std::int64_t{-1}),
                           });
                         }
                       }
