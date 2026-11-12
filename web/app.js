@@ -788,6 +788,14 @@
       </div>
       <div class="card">
         <div class="card-head">
+          <h3>销售毛利</h3>
+          <button class="btn small" data-role="export-profit">导出 CSV</button>
+        </div>
+        <p class="page-sub">收入取单据金额，成本取审核写入的库存流水；已反审核单据不计入</p>
+        <table class="table" data-role="profit"></table>
+      </div>
+      <div class="card">
+        <div class="card-head">
           <h3>应收应付余额与账龄</h3>
           <button class="btn small" data-role="export-aging">导出 CSV</button>
         </div>
@@ -803,6 +811,7 @@
     const ledgerTable = mount.querySelector('[data-role="ledger"]');
     const flowsTable = mount.querySelector('[data-role="flows"]');
     const summaryTable = mount.querySelector('[data-role="summary"]');
+    const profitTable = mount.querySelector('[data-role="profit"]');
     const agingTable = mount.querySelector('[data-role="aging"]');
 
     function emptyRow(text, colspan) {
@@ -821,18 +830,19 @@
         `；账龄方向 ${directionSelect.value === "-1" ? "应付" : "应收"}`;
       printHead.innerHTML = `
         <div><strong>单位名称：</strong>小兔进销存</div>
-        <div><strong>报表：</strong>库存余额表 / 库存流水明细 / 收发明细 / 进销存汇总 / 应收应付余额与账龄</div>
+        <div><strong>报表：</strong>库存余额表 / 库存流水明细 / 收发明细 / 进销存汇总 / 销售毛利 / 应收应付余额与账龄</div>
         <div><strong>筛选区间：</strong>${escapeHtml(scope)}</div>
         <div><strong>打印时间：</strong>${escapeHtml(new Date().toLocaleString("zh-CN", { hour12: false }))}</div>`;
     }
 
     async function reload() {
       const period = periodQuery();
-      const [balances, ledger, flows, summary, aging] = await Promise.all([
+      const [balances, ledger, flows, summary, profit, aging] = await Promise.all([
         api("GET", "/api/reports/stock-balance"),
         api("GET", "/api/reports/stock-ledger" + period + "&limit=500"),
         api("GET", "/api/reports/goods-flow" + period),
         api("GET", "/api/reports/inventory-summary" + period),
+        api("GET", "/api/reports/sales-profit" + period),
         api("GET", "/api/reports/ar-ap-aging?direction=" + directionSelect.value),
       ]);
       renderPrintHead();
@@ -908,6 +918,28 @@
              )
              .join("")}</tbody>`;
 
+      profitTable.innerHTML = !profit.length
+        ? emptyRow("该期间无销售", 7)
+        : `<thead><tr><th>商品编码</th><th>商品名称</th><th>数量</th><th>销售收入（元）</th>
+             <th>销售成本（元）</th><th>毛利（元）</th><th>毛利率</th></tr></thead>
+           <tbody>${profit
+             .map(
+               (row) => `<tr>
+                 <td>${escapeHtml(row.item_code)}</td>
+                 <td>${escapeHtml(row.item_name)}</td>
+                 <td>${row.qty}</td>
+                 <td>${money(row.revenue_cents)}</td>
+                 <td>${money(row.cost_cents)}</td>
+                 <td class="${row.profit_cents < 0 ? "negative" : ""}">${money(row.profit_cents)}</td>
+                 <td>${
+                   row.revenue_cents === 0
+                     ? "—"
+                     : ((row.profit_cents / row.revenue_cents) * 100).toFixed(1) + "%"
+                 }</td>
+               </tr>`
+             )
+             .join("")}</tbody>`;
+
       agingTable.innerHTML = !aging.length
         ? emptyRow("暂无未核销余额", 7)
         : `<thead><tr><th>往来单位</th><th>合计（元）</th><th>未到期</th><th>1-30 天</th>
@@ -945,6 +977,7 @@
       "export-summary",
       () => "/api/reports/inventory-summary" + periodQuery() + "&format=csv"
     );
+    wireExport("export-profit", () => "/api/reports/sales-profit" + periodQuery() + "&format=csv");
     wireExport(
       "export-aging",
       () => "/api/reports/ar-ap-aging?direction=" + directionSelect.value + "&format=csv"

@@ -2,6 +2,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,9 @@ ReportFilter parse_filter(const httplib::Request& req) {
   if (req.has_param("item_id")) filter.item_id = std::stoll(req.get_param_value("item_id"));
   if (req.has_param("warehouse_id")) {
     filter.warehouse_id = std::stoll(req.get_param_value("warehouse_id"));
+  }
+  if (req.has_param("customer_id")) {
+    filter.customer_id = std::stoll(req.get_param_value("customer_id"));
   }
   if (req.has_param("limit")) filter.limit = std::stoi(req.get_param_value("limit"));
   return filter;
@@ -170,6 +174,28 @@ nlohmann::json aging_to_json(const AgingRow& row) {
       {"d31_60_cents", row.d31_60_cents},
       {"d61_90_cents", row.d61_90_cents},
       {"d90_plus_cents", row.d90_plus_cents},
+  };
+}
+
+std::string margin_text(std::int64_t revenue_cents, std::int64_t profit_cents) {
+  if (revenue_cents == 0) return "—";
+  const double rate =
+      100.0 * static_cast<double>(profit_cents) / static_cast<double>(revenue_cents);
+  char buffer[32];
+  std::snprintf(buffer, sizeof(buffer), "%.1f%%", rate);
+  return buffer;
+}
+
+nlohmann::json profit_to_json(const SalesProfitRow& row) {
+  return nlohmann::json{
+      {"item_id", row.item_id},
+      {"item_code", row.item_code},
+      {"item_name", row.item_name},
+      {"unit", row.unit},
+      {"qty", row.qty},
+      {"revenue_cents", row.revenue_cents},
+      {"cost_cents", row.cost_cents},
+      {"profit_cents", row.profit_cents},
   };
 }
 
@@ -338,6 +364,40 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      nlohmann::json list = nlohmann::json::array();
                      for (const auto& row : rows) {
                        list.push_back(flow_to_json(row));
+                     }
+                     json_ok(res, list);
+                   }));
+
+  server.Get("/api/reports/sales-profit",
+             guard("finance.read",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     const ReportFilter filter = parse_filter(req);
+                     const auto rows = services.reports.sales_profit(filter);
+                     if (csv_requested(req)) {
+                       std::string csv;
+                       csv_preamble(csv, "销售毛利",
+                                    period_label(filter) + "；" +
+                                        dimension_label(filter.item_id, "商品") +
+                                        "；客户 " +
+                                        (filter.customer_id == 0
+                                             ? std::string("全部")
+                                             : "ID " + std::to_string(filter.customer_id)) +
+                                        "；收入取单据金额，成本取审核写入的库存流水，"
+                                        "已反审核单据不计入");
+                       csv_row(csv, {"商品编码", "商品名称", "单位", "销售数量",
+                                     "销售收入（元）", "销售成本（元）", "毛利（元）", "毛利率"});
+                       for (const auto& row : rows) {
+                         csv_row(csv, {row.item_code, row.item_name, row.unit,
+                                       std::to_string(row.qty), yuan(row.revenue_cents),
+                                       yuan(row.cost_cents), yuan(row.profit_cents),
+                                       margin_text(row.revenue_cents, row.profit_cents)});
+                       }
+                       send_csv(res, "sales-profit-" + date_stamp() + ".csv", csv);
+                       return;
+                     }
+                     nlohmann::json list = nlohmann::json::array();
+                     for (const auto& row : rows) {
+                       list.push_back(profit_to_json(row));
                      }
                      json_ok(res, list);
                    }));

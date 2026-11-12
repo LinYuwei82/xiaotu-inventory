@@ -288,9 +288,11 @@ struct DocumentDefinition {
 
 ### 报表导出与打印
 
-- 五张报表（库存余额、库存流水、收发明细、进销存汇总、应收应付账龄）都支持导出 CSV：在接口后加 `?format=csv`，
+- 六张报表（库存余额、库存流水、收发明细、进销存汇总、销售毛利、应收应付账龄）都支持导出 CSV：在接口后加 `?format=csv`，
   或直接点报表卡片右上角的「导出 CSV」。导出跟随页面当前筛选条件。
 - 进销存汇总按商品跨仓库汇总期初 + 入库 − 出库 = 期末，数量与金额双口径（`/api/reports/inventory-summary`）。
+- 销售毛利按商品汇总销售收入、销售成本与毛利（`/api/reports/sales-profit`）：收入取单据金额（退货红字），
+  成本取审核写入的库存流水，已反审核单据不计入。
 - CSV 为带 BOM 的 UTF-8，Excel 直接打开不乱码；金额以元为单位、两位小数，由整数分按
   `1 元 = 100 分` 换算，文件头部附金额说明，不使用浮点。
 - 报表页「打印」使用浏览器打印（`window.print()`）；单机版 WKWebView 通过原生桥接打开系统打印面板。
@@ -343,4 +345,4 @@ tools/package/make_dmg.sh
 
 - 技术方案：`docs/进销存技术方案.md`
 - 数据库结构：`core/src/migrations.cpp`（v7）
-- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`
+- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/stock/balances`、`/api/stock/ledger`

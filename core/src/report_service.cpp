@@ -214,6 +214,51 @@ std::vector<InventorySummaryRow> ReportService::inventory_summary(
   return rows;
 }
 
+std::vector<SalesProfitRow> ReportService::sales_profit(const ReportFilter& filter) const {
+  std::vector<SalesProfitRow> rows;
+  db_.read([&](sqlite3* conn) {
+    Stmt stmt(conn,
+              "SELECT i.id, i.code, i.name, i.unit,"
+              " SUM(CASE WHEN h.doc_type = 'SAL_RET' THEN -l.qty ELSE l.qty END) AS qty,"
+              " SUM(CASE WHEN h.doc_type = 'SAL_RET' THEN -l.qty * l.price_cents"
+              "          ELSE l.qty * l.price_cents END) AS revenue_cents,"
+              " -SUM(COALESCE(s.amount_cents, 0)) AS cost_cents"
+              " FROM doc_header h"
+              " JOIN doc_line l ON l.doc_id = h.id"
+              " JOIN item i ON i.id = l.item_id"
+              " LEFT JOIN stock_ledger s ON s.doc_id = h.id AND s.doc_line_id = l.id"
+              "   AND s.biz_type = h.doc_type"
+              " WHERE h.doc_type IN ('SAL_OUT', 'SAL_RET') AND h.status = 'APPROVED'"
+              "   AND (? = '' OR h.doc_date >= ?)"
+              "   AND (? = '' OR h.doc_date <= ?)"
+              "   AND (? = 0 OR l.item_id = ?)"
+              "   AND (? = 0 OR h.customer_id = ?)"
+              " GROUP BY i.id"
+              " ORDER BY i.code;");
+    stmt.bind(1, filter.from)
+        .bind(2, filter.from)
+        .bind(3, filter.to)
+        .bind(4, filter.to)
+        .bind(5, filter.item_id)
+        .bind(6, filter.item_id)
+        .bind(7, filter.customer_id)
+        .bind(8, filter.customer_id);
+    while (stmt.step()) {
+      SalesProfitRow row;
+      row.item_id = stmt.i64(0);
+      row.item_code = stmt.text(1);
+      row.item_name = stmt.text(2);
+      row.unit = stmt.text(3);
+      row.qty = stmt.i64(4);
+      row.revenue_cents = stmt.i64(5);
+      row.cost_cents = stmt.i64(6);
+      row.profit_cents = row.revenue_cents - row.cost_cents;
+      rows.push_back(std::move(row));
+    }
+  });
+  return rows;
+}
+
 std::vector<AgingRow> ReportService::ar_ap_aging(int direction, std::string_view as_of) const {
   std::vector<AgingRow> rows;
   db_.read([&](sqlite3* conn) {

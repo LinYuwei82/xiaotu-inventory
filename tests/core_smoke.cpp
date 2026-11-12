@@ -618,6 +618,15 @@ int main() {
                 balance_of(sales_item.id).amount_cents,
             "进销存汇总期末金额应等于库存余额金额");
 
+      // 销售毛利：收入取单据金额，成本取审核写入的库存流水；已反审核单据不计入。
+      const auto profits = reports.sales_profit(report_filter);
+      check(profits.size() == 1 && profits.front().item_id == sales_item.id,
+            "销售毛利应按商品返回一行");
+      // 成本取审核写入的流水：退货 +2000、两笔出库 3273 + 2182；已反审核的销售单不计入。
+      check(profits.front().qty == 4 && profits.front().revenue_cents == 3000 &&
+                profits.front().cost_cents == 3455 && profits.front().profit_cents == -455,
+            "销售毛利应为 4 件 / 收入 3000 / 成本 3455 / 毛利 -455 分");
+
       const auto aging = reports.ar_ap_aging(1, "2026-11-12");
       std::int64_t expected_ar = 0;
       for (const auto& row : finance.entries(1, customer_key)) {
