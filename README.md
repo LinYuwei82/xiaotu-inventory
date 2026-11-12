@@ -386,6 +386,14 @@ struct DocumentDefinition {
 
 权限点按九组登记：`item`、`unit`、`warehouse`、`supplier`、`customer`、`document`、`stock`、`finance`、`print.template`。未在 `app_role_permission` 声明的权限码默认拒绝；模板管理权限与出数数据权限相互独立。
 
+### 运行日志
+
+- 位置：默认 `<数据目录>/logs/app.log`，可用 `XIAOTU_LOG_DIR` 覆盖；启动失败时退回标准错误。
+- 级别：`XIAOTU_LOG_LEVEL=debug|info|warn|error`，默认 `info`。
+- 格式：`2026-11-12 18:26:36.101 [INFO] [tid:21467] 消息`，线程安全；单文件 5 MB，滚动保留 `app.log.1`～`app.log.3`。
+- 内容：启动版本/模式/数据目录、schema 版本、监听地址、HTTP 访问（方法、路径、状态、请求 id）与退出。
+- 敏感信息：访问日志不记录查询串、Cookie、请求体与访问凭据；权威操作留痕仍在数据库 `audit_log`，与运行日志职责分离。
+
 ### 应收应付统计口径
 
 `ar_ap_entry` 只在单据审核时写入。v7 迁移为历史销售单按名称回填了 `customer_id`，但**不会为升级前已审核的单据补建往来记录**。因此：
@@ -489,6 +497,13 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 ```
 
 涉及接口的改动另做一次接口冒烟；涉及迁移的改动必须纯增量、先发表结构设计，已发布迁移不得修改。一笔提交只做一件事，提交信息说明「为什么」。
+
+### CI
+
+- 执行平台为 **GitHub Actions**（`.github/workflows/ci.yml`）：macOS 跑全量构建、`ctest`、代码生成校验与平台代码泄漏检查；Windows 跑 `XIAOTU_BUILD_SHELL=OFF` 构建与 `ctest`。
+- Gitee 是主库，GitHub 为镜像。镜像与 SSH 密钥未接通前工作流不会自动触发，用 `tools/ci/check.sh` 在本地执行同一套检查；`--quick` 跳过 Windows 构建。
+- 若后续改用 Gitee Go，直接以 `tools/ci/check.sh` 作为唯一入口，不再复制步骤。
+- 平台泄漏检查（`tools/ci/check_platform_leaks.sh`）：`core/` 禁止出现 Apple 条件编译、框架或 WebView 引用；`server/` 只允许 `cli_main.cpp` 在 `#if defined(__APPLE__)` 内引用 WebView 壳。
 
 ## 12. 参考
 
