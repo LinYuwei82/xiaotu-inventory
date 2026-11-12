@@ -115,6 +115,21 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .on_approve = nullptr,
           .on_reverse = nullptr,
       },
+      // 销售订单：只做需求确认与转出库来源，不占库存、不写流水、不产生往来。
+      DocumentDefinition{
+          .doc_type = "SAL_ORDER",
+          .doc_no_prefix = "XSDD",
+          .stock_mode = StockMode::None,
+          .affects_stock = false,
+          .role = DocumentRole::Order,
+          .partner_kind = PartnerKind::Customer,
+          .finance_direction = 0,
+          .finance_red = false,
+          .price_source = PriceSource::Manual,
+          .cost_hook = nullptr,
+          .on_approve = nullptr,
+          .on_reverse = nullptr,
+      },
   };
   return definitions;
 }
@@ -367,7 +382,8 @@ std::vector<std::int64_t> insert_lines(sqlite3* conn, std::int64_t doc_id,
     const std::int64_t line_id = next_id();
     Stmt insert_line(conn,
                      "INSERT INTO doc_line (id, doc_id, line_no, item_id, qty, price_cents,"
-                     " amount_cents) VALUES (?, ?, ?, ?, ?, ?, ?);");
+                     " amount_cents, source_order_line_id)"
+                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?);");
     insert_line.bind(1, line_id)
         .bind(2, doc_id)
         .bind(3, line_no)
@@ -375,6 +391,7 @@ std::vector<std::int64_t> insert_lines(sqlite3* conn, std::int64_t doc_id,
         .bind(5, line.qty)
         .bind(6, line.price_cents)
         .bind(7, line.qty * line.price_cents)
+        .bind(8, line.source_order_line_id)
         .run();
     line_ids.push_back(line_id);
     ++line_no;
@@ -384,7 +401,7 @@ std::vector<std::int64_t> insert_lines(sqlite3* conn, std::int64_t doc_id,
 
 void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
                    std::string_view doc_type, PartnerKind partner_kind, const DocInput& input,
-                   const ValidatedDoc& validated, bool approved) {
+                   const ValidatedDoc& validated, bool approved, std::string_view order_status) {
   const AuditStamp stamp = audit_stamp();
   // 供应商写 partner_id，客户写 customer_id；两者互斥，partner 文本都保留快照。
   const std::int64_t supplier_id = partner_kind == PartnerKind::Supplier ? input.partner_id : 0;
@@ -392,9 +409,9 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
   if (approved) {
     Stmt header(conn,
                 "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id,"
-                " target_warehouse_id, partner_id, customer_id, customer, status, total_qty,"
-                " total_amount_cents, created_at, created_by, approved_at, approved_by)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?);");
+                " target_warehouse_id, partner_id, customer_id, customer, status, order_status,"
+                " total_qty, total_amount_cents, created_at, created_by, approved_at, approved_by)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?);");
     header.bind(1, id)
         .bind(2, doc_no)
         .bind(3, doc_type)
@@ -404,21 +421,22 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
         .bind(7, supplier_id)
         .bind(8, customer_id)
         .bind(9, validated.partner)
-        .bind(10, validated.total_qty)
-        .bind(11, validated.total_amount)
-        .bind(12, stamp.at)
-        .bind(13, stamp.by)
-        .bind(14, stamp.at)
-        .bind(15, stamp.by)
+        .bind(10, order_status)
+        .bind(11, validated.total_qty)
+        .bind(12, validated.total_amount)
+        .bind(13, stamp.at)
+        .bind(14, stamp.by)
+        .bind(15, stamp.at)
+        .bind(16, stamp.by)
         .run();
     return;
   }
 
   Stmt header(conn,
               "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id,"
-              " target_warehouse_id, partner_id, customer_id, customer, status, total_qty,"
-              " total_amount_cents, created_at, created_by, approved_at, approved_by)"
-              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, NULL, NULL);");
+              " target_warehouse_id, partner_id, customer_id, customer, status, order_status,"
+              " total_qty, total_amount_cents, created_at, created_by, approved_at, approved_by)"
+              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, NULL, NULL);");
   header.bind(1, id)
       .bind(2, doc_no)
       .bind(3, doc_type)
@@ -428,10 +446,11 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
       .bind(7, supplier_id)
       .bind(8, customer_id)
       .bind(9, validated.partner)
-      .bind(10, validated.total_qty)
-      .bind(11, validated.total_amount)
-      .bind(12, stamp.at)
-      .bind(13, stamp.by)
+      .bind(10, order_status)
+      .bind(11, validated.total_qty)
+      .bind(12, validated.total_amount)
+      .bind(13, stamp.at)
+      .bind(14, stamp.by)
       .run();
 }
 
@@ -516,6 +535,62 @@ void void_ar_ap_entry(sqlite3* conn, std::int64_t doc_id) {
   update.bind(1, entry_id).run();
 }
 
+// 反审核销售出库单时，把来源订单行的已转数量退回去；订单状态按剩余量重算。
+void release_order_conversions(sqlite3* conn, std::int64_t doc_id) {
+  struct Link {
+    std::int64_t order_line_id;
+    std::int64_t qty;
+  };
+  std::vector<Link> links;
+  {
+    Stmt stmt(conn,
+              "SELECT source_order_line_id, qty FROM doc_line"
+              " WHERE doc_id = ? AND source_order_line_id > 0;");
+    stmt.bind(1, doc_id);
+    while (stmt.step()) {
+      links.push_back(Link{stmt.i64(0), stmt.i64(1)});
+    }
+  }
+  std::vector<std::int64_t> order_ids;
+  for (const Link& link : links) {
+    {
+      Stmt dec(conn,
+               "UPDATE doc_line SET converted_qty = MAX(converted_qty - ?, 0) WHERE id = ?;");
+      dec.bind(1, link.qty).bind(2, link.order_line_id).run();
+    }
+    {
+      Stmt order(conn, "SELECT doc_id FROM doc_line WHERE id = ?;");
+      order.bind(1, link.order_line_id);
+      if (order.step()) {
+        const std::int64_t order_id = order.i64(0);
+        if (std::find(order_ids.begin(), order_ids.end(), order_id) == order_ids.end()) {
+          order_ids.push_back(order_id);
+        }
+      }
+    }
+  }
+  for (const std::int64_t order_id : order_ids) {
+    std::string order_status;
+    {
+      Stmt status(conn, "SELECT order_status FROM doc_header WHERE id = ?;");
+      status.bind(1, order_id);
+      if (!status.step()) continue;
+      order_status = status.text(0);
+    }
+    // 已关闭的订单保持关闭，只允许释放数量，不自动恢复可转状态。
+    if (order_status == "CLOSED") continue;
+    std::int64_t remaining = 0;
+    {
+      Stmt stmt(conn,
+                "SELECT COUNT(*) FROM doc_line WHERE doc_id = ? AND converted_qty < qty;");
+      stmt.bind(1, order_id);
+      if (stmt.step()) remaining = stmt.i64(0);
+    }
+    Stmt update(conn, "UPDATE doc_header SET order_status = ? WHERE id = ?;");
+    update.bind(1, remaining == 0 ? "CONVERTED" : "CONFIRMED").bind(2, order_id).run();
+  }
+}
+
 }  // namespace
 
 DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input) {
@@ -530,7 +605,8 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input) 
     created.id = next_id();
     created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
     insert_header(conn, created.id, created.doc_no, definition->doc_type,
-                  definition->partner_kind, input, validated, true);
+                  definition->partner_kind, input, validated, true,
+                  definition->role == DocumentRole::Order ? "CONFIRMED" : "");
     const std::vector<std::int64_t> line_ids = insert_lines(conn, created.id, input.lines);
     if (definition->affects_stock) {
       apply_stock_moves(conn, *definition, created.id, input.warehouse_id,
@@ -558,7 +634,7 @@ DocumentEngine::Created DocumentEngine::save_draft(const DocInput& input) {
     created.id = next_id();
     created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
     insert_header(conn, created.id, created.doc_no, definition->doc_type,
-                  definition->partner_kind, input, validated, false);
+                  definition->partner_kind, input, validated, false, "");
     insert_lines(conn, created.id, input.lines);
     audit_write(conn, "save_draft", "document", created.id, created.doc_no,
                 doc_detail(definition->doc_type, validated));
@@ -709,6 +785,11 @@ void DocumentEngine::approve(std::int64_t doc_id) {
         .bind(4, stamp.by)
         .bind(5, doc_id)
         .run();
+    if (definition->role == DocumentRole::Order) {
+      // 订单的「审核」即确认；确认后不可再改单，只能转出库或关闭。
+      Stmt confirm(conn, "UPDATE doc_header SET order_status = 'CONFIRMED' WHERE id = ?;");
+      confirm.bind(1, doc_id).run();
+    }
     if (definition->on_approve) {
       definition->on_approve(conn, doc_id);
     }
@@ -724,8 +805,8 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
     {
       Stmt header(conn,
                   "SELECT id, doc_no, doc_type, doc_date, warehouse_id, target_warehouse_id,"
-                  " partner_id, customer_id, customer, status, total_qty, total_amount_cents"
-                  " FROM doc_header WHERE id = ?;");
+                  " partner_id, customer_id, customer, status, order_status, total_qty,"
+                  " total_amount_cents FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
@@ -740,20 +821,25 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
       const std::int64_t customer_id = header.i64(7);
       detail.partner = header.text(8);
       detail.status = header.text(9);
-      detail.total_qty = header.i64(10);
-      detail.total_amount_cents = header.i64(11);
+      detail.order_status = header.text(10);
+      detail.total_qty = header.i64(11);
+      detail.total_amount_cents = header.i64(12);
       const DocumentDefinition* definition = find_document_definition(detail.doc_type);
       detail.partner_id = definition != nullptr && definition->partner_kind == PartnerKind::Customer
                               ? customer_id
                               : supplier_id;
     }
     Stmt lines(conn,
-               "SELECT item_id, qty, price_cents FROM doc_line WHERE doc_id = ? ORDER BY line_no;");
+               "SELECT id, item_id, qty, price_cents, converted_qty, source_order_line_id"
+               " FROM doc_line WHERE doc_id = ? ORDER BY line_no;");
     lines.bind(1, doc_id);
     while (lines.step()) {
-      detail.lines.push_back(DocLineInput{.item_id = lines.i64(0),
-                                          .qty = lines.i64(1),
-                                          .price_cents = lines.i64(2)});
+      detail.lines.push_back(DocLineInput{.item_id = lines.i64(1),
+                                          .qty = lines.i64(2),
+                                          .price_cents = lines.i64(3),
+                                          .id = lines.i64(0),
+                                          .converted_qty = lines.i64(4),
+                                          .source_order_line_id = lines.i64(5)});
     }
   });
   return detail;
@@ -768,7 +854,7 @@ std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limi
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
               "SELECT h.id, h.doc_no, h.doc_date, w.name, h.customer, h.total_qty,"
-              " h.total_amount_cents, h.status, h.created_at"
+              " h.total_amount_cents, h.status, h.order_status, h.created_at"
               " FROM doc_header h JOIN warehouse w ON w.id = h.warehouse_id"
               " WHERE h.doc_type = ? ORDER BY h.id DESC LIMIT ?;");
     stmt.bind(1, doc_type).bind(2, static_cast<std::int64_t>(limit));
@@ -782,7 +868,8 @@ std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limi
       summary.total_qty = stmt.i64(5);
       summary.total_amount_cents = stmt.i64(6);
       summary.status = stmt.text(7);
-      summary.created_at = stmt.text(8);
+      summary.order_status = stmt.text(8);
+      summary.created_at = stmt.text(9);
       documents.push_back(std::move(summary));
     }
   });
@@ -807,6 +894,10 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
     }
     if (status != "APPROVED") {
       throw AppError("INVALID_STATUS", "只有已审核的单据可以反审核");
+    }
+    const DocumentDefinition* reversed_definition = find_document_definition(doc_type);
+    if (reversed_definition != nullptr && reversed_definition->role == DocumentRole::Order) {
+      throw AppError("INVALID_STATUS", "订单不支持反审核，请使用关闭");
     }
     void_ar_ap_entry(conn, doc_id);
 
@@ -867,6 +958,7 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
 
     Stmt update(conn, "UPDATE doc_header SET status = 'VOIDED' WHERE id = ?;");
     update.bind(1, doc_id).run();
+    release_order_conversions(conn, doc_id);
 
     if (const DocumentDefinition* definition = find_document_definition(doc_type)) {
       if (definition->on_reverse) {
@@ -874,6 +966,189 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
       }
     }
     audit_write(conn, "reverse", "document", doc_id, doc_no);
+  });
+}
+
+OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
+                                              const OrderConvertInput& input) {
+  if (input.lines.empty()) {
+    throw AppError("INVALID_INPUT", "请选择要转出的订单行");
+  }
+
+  OrderConversion result;
+  db_.write([&](sqlite3* conn) {
+    std::string doc_type;
+    std::string status;
+    std::string order_status;
+    std::string order_no;
+    std::string customer;
+    std::int64_t warehouse_id = 0;
+    std::int64_t customer_id = 0;
+    {
+      Stmt header(conn,
+                  "SELECT doc_type, status, order_status, doc_no, warehouse_id, customer_id,"
+                  " customer FROM doc_header WHERE id = ?;");
+      header.bind(1, order_id);
+      if (!header.step()) {
+        throw AppError("NOT_FOUND", "订单不存在");
+      }
+      doc_type = header.text(0);
+      status = header.text(1);
+      order_status = header.text(2);
+      order_no = header.text(3);
+      warehouse_id = header.i64(4);
+      customer_id = header.i64(5);
+      customer = header.text(6);
+    }
+    const DocumentDefinition* order_definition = find_document_definition(doc_type);
+    if (order_definition == nullptr || order_definition->role != DocumentRole::Order) {
+      throw AppError("INVALID_INPUT", "该单据不是销售订单");
+    }
+    if (status != "APPROVED") {
+      throw AppError("INVALID_STATUS", "只有已确认的订单可以转出库");
+    }
+    if (order_status == "CONVERTED") {
+      throw AppError("INVALID_STATUS", "订单已全部转出");
+    }
+    if (order_status == "CLOSED") {
+      throw AppError("INVALID_STATUS", "订单已关闭，不能再转出");
+    }
+    if (order_status != "CONFIRMED") {
+      throw AppError("INVALID_STATUS", "请先确认订单");
+    }
+
+    struct OrderLine {
+      std::int64_t id;
+      std::int64_t item_id;
+      std::int64_t qty;
+      std::int64_t price_cents;
+      std::int64_t converted_qty;
+    };
+    std::vector<OrderLine> order_lines;
+    {
+      Stmt lines(conn,
+                 "SELECT id, item_id, qty, price_cents, converted_qty FROM doc_line"
+                 " WHERE doc_id = ? ORDER BY line_no;");
+      lines.bind(1, order_id);
+      while (lines.step()) {
+        order_lines.push_back(OrderLine{lines.i64(0), lines.i64(1), lines.i64(2), lines.i64(3),
+                                        lines.i64(4)});
+      }
+    }
+
+    DocInput outbound;
+    outbound.doc_type = "SAL_OUT";
+    outbound.warehouse_id = input.warehouse_id > 0 ? input.warehouse_id : warehouse_id;
+    outbound.doc_date = input.doc_date;
+    outbound.partner_id = customer_id;
+    outbound.partner = customer;
+
+    std::vector<std::pair<std::int64_t, std::int64_t>> allocations;
+    std::int64_t converted_total = 0;
+    for (const OrderConvertLine& allocation : input.lines) {
+      const auto found = std::find_if(order_lines.begin(), order_lines.end(),
+                                      [&](const OrderLine& line) {
+                                        return line.id == allocation.order_line_id;
+                                      });
+      if (found == order_lines.end()) {
+        throw AppError("INVALID_INPUT", "订单行不存在：" +
+                                            std::to_string(allocation.order_line_id));
+      }
+      if (allocation.qty <= 0) {
+        throw AppError("INVALID_INPUT", "转出数量必须大于 0");
+      }
+      if (std::find_if(allocations.begin(), allocations.end(),
+                       [&](const auto& item) {
+                         return item.first == allocation.order_line_id;
+                       }) != allocations.end()) {
+        throw AppError("INVALID_INPUT", "同一订单行不能重复提交");
+      }
+      if (found->converted_qty + allocation.qty > found->qty) {
+        throw AppError("ORDER_QTY_EXCEEDED",
+                       "转出数量超过订单剩余数量：" + std::to_string(allocation.qty) + " > " +
+                           std::to_string(found->qty - found->converted_qty));
+      }
+      outbound.lines.push_back(DocLineInput{.item_id = found->item_id,
+                                            .qty = allocation.qty,
+                                            .price_cents = found->price_cents,
+                                            .source_order_line_id = found->id});
+      allocations.emplace_back(allocation.order_line_id, allocation.qty);
+      converted_total += allocation.qty;
+    }
+
+    const DocumentDefinition* outbound_definition = find_document_definition("SAL_OUT");
+    if (outbound_definition == nullptr) {
+      throw AppError("UNKNOWN_DOC_TYPE", "销售出库定义缺失");
+    }
+    const ValidatedDoc validated = validate_document(conn, outbound, *outbound_definition, true);
+    result.doc_id = next_id();
+    result.doc_no = allocate_doc_no(conn, outbound_definition->doc_no_prefix, validated.doc_date);
+    insert_header(conn, result.doc_id, result.doc_no, outbound_definition->doc_type,
+                  outbound_definition->partner_kind, outbound, validated, true, "");
+    const std::vector<std::int64_t> line_ids =
+        insert_lines(conn, result.doc_id, outbound.lines);
+    apply_stock_moves(conn, *outbound_definition, result.doc_id, outbound.warehouse_id,
+                      outbound.target_warehouse_id, validated.biz_time, outbound.lines, line_ids);
+    create_ar_ap_entry(conn, *outbound_definition, outbound, validated, result.doc_id,
+                       result.doc_no);
+
+    for (const auto& allocation : allocations) {
+      Stmt increment(conn,
+                     "UPDATE doc_line SET converted_qty = converted_qty + ? WHERE id = ?;");
+      increment.bind(1, allocation.second).bind(2, allocation.first).run();
+    }
+    std::int64_t remaining = 0;
+    {
+      Stmt stmt(conn,
+                "SELECT COUNT(*) FROM doc_line WHERE doc_id = ? AND converted_qty < qty;");
+      stmt.bind(1, order_id);
+      if (stmt.step()) remaining = stmt.i64(0);
+    }
+    result.order_status = remaining == 0 ? "CONVERTED" : "CONFIRMED";
+    Stmt update(conn, "UPDATE doc_header SET order_status = ? WHERE id = ?;");
+    update.bind(1, result.order_status).bind(2, order_id).run();
+
+    audit_write(conn, "convert_order", "document", order_id, order_no,
+                "{\"out_doc_id\":" + std::to_string(result.doc_id) + ",\"out_doc_no\":\"" +
+                    result.doc_no + "\",\"qty\":" + std::to_string(converted_total) + "}");
+  });
+  return result;
+}
+
+void DocumentEngine::close_order(std::int64_t order_id) {
+  db_.write([&](sqlite3* conn) {
+    std::string doc_type;
+    std::string status;
+    std::string order_status;
+    std::string order_no;
+    {
+      Stmt header(conn,
+                  "SELECT doc_type, status, order_status, doc_no FROM doc_header WHERE id = ?;");
+      header.bind(1, order_id);
+      if (!header.step()) {
+        throw AppError("NOT_FOUND", "订单不存在");
+      }
+      doc_type = header.text(0);
+      status = header.text(1);
+      order_status = header.text(2);
+      order_no = header.text(3);
+    }
+    const DocumentDefinition* definition = find_document_definition(doc_type);
+    if (definition == nullptr || definition->role != DocumentRole::Order) {
+      throw AppError("INVALID_INPUT", "该单据不是销售订单");
+    }
+    if (status != "APPROVED") {
+      throw AppError("INVALID_STATUS", "只有已确认的订单可以关闭");
+    }
+    if (order_status == "CLOSED") {
+      return;
+    }
+    if (order_status == "CONVERTED") {
+      throw AppError("INVALID_STATUS", "订单已全部转出，无需关闭");
+    }
+    Stmt update(conn, "UPDATE doc_header SET order_status = 'CLOSED' WHERE id = ?;");
+    update.bind(1, order_id).run();
+    audit_write(conn, "close_order", "document", order_id, order_no);
   });
 }
 

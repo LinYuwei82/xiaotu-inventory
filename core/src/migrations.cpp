@@ -431,6 +431,15 @@ INSERT INTO app_role_permission (role_id, permission) VALUES
   (3, 'print.template.read');
 )SQL";
 
+// v9：销售订单。订单复用 doc_header/doc_line，只增加订单状态与转出库映射，
+// 不改旧表结构、不回填历史单据。
+constexpr const char* kV9 = R"SQL(
+ALTER TABLE doc_header ADD COLUMN order_status TEXT NOT NULL DEFAULT '';
+ALTER TABLE doc_line ADD COLUMN converted_qty INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doc_line ADD COLUMN source_order_line_id INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX idx_doc_line_source_order ON doc_line(source_order_line_id);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -454,6 +463,7 @@ const std::vector<Migration>& all_migrations() {
       {6, "v6_transfer_stocktake", kV6},
       {7, "v7_customer_finance", kV7},
       {8, "v8_print_template", kV8},
+      {9, "v9_sales_order", kV9},
   };
   return migrations;
 }

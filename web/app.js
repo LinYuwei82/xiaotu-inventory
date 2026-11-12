@@ -789,6 +789,387 @@
     await reload();
   }
 
+  // ---------- 销售订单 ----------
+
+  async function orderPage(mount) {
+    const docType = "SAL_ORDER";
+    let warehouses = [];
+    let items = [];
+    let customers = [];
+    let documents = [];
+    let editingId = 0;
+    let convertingId = 0;
+
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>销售订单</h2>
+          <p class="page-sub">只做需求确认与转出库来源，不占库存、不写流水、不产生往来</p>
+        </div>
+        <button class="btn" data-role="refresh">刷新</button>
+      </div>
+      <div class="card">
+        <form class="doc-form" data-role="form">
+          <div class="doc-head">
+            <label class="field"><span>预计出库仓</span>
+              <select data-role="warehouse" required></select>
+            </label>
+            <label class="field"><span>订单日期</span>
+              <input type="date" data-role="date" required />
+            </label>
+            <label class="field"><span>客户</span>
+              <select data-role="customer"></select>
+            </label>
+          </div>
+          <table class="table lines" data-role="lines"></table>
+          <div class="form-actions">
+            <button class="btn" type="button" data-role="add-line">添加明细行</button>
+            <button class="btn" type="button" data-role="save-draft">存为草稿</button>
+            <button class="btn primary" type="button" data-role="submit">保存并确认</button>
+            <button class="btn" type="button" data-role="cancel-edit" hidden>取消编辑</button>
+          </div>
+        </form>
+      </div>
+      <div class="card" data-role="convert-card" hidden>
+        <div class="card-head">
+          <h3>转出库</h3>
+          <span class="page-sub" data-role="convert-title"></span>
+        </div>
+        <div class="doc-head">
+          <label class="field"><span>出库仓库</span>
+            <select data-role="convert-warehouse"></select>
+          </label>
+          <label class="field"><span>出库日期</span>
+            <input type="date" data-role="convert-date" />
+          </label>
+        </div>
+        <table class="table" data-role="convert-lines"></table>
+        <div class="form-actions">
+          <button class="btn primary" type="button" data-role="convert-submit">确认转出</button>
+          <button class="btn" type="button" data-role="convert-cancel">取消</button>
+        </div>
+      </div>
+      <div class="card">
+        <table class="table" data-role="documents"></table>
+      </div>`;
+
+    const form = mount.querySelector('[data-role="form"]');
+    const warehouseSelect = mount.querySelector('[data-role="warehouse"]');
+    const dateInput = mount.querySelector('[data-role="date"]');
+    const customerSelect = mount.querySelector('[data-role="customer"]');
+    const linesTable = mount.querySelector('[data-role="lines"]');
+    const documentsTable = mount.querySelector('[data-role="documents"]');
+    const convertCard = mount.querySelector('[data-role="convert-card"]');
+    const convertTitle = mount.querySelector('[data-role="convert-title"]');
+    const convertWarehouse = mount.querySelector('[data-role="convert-warehouse"]');
+    const convertDate = mount.querySelector('[data-role="convert-date"]');
+    const convertLines = mount.querySelector('[data-role="convert-lines"]');
+
+    dateInput.value = new Date().toISOString().slice(0, 10);
+    convertDate.value = dateInput.value;
+
+    function itemLabel(itemId) {
+      const item = items.find((row) => row.id === itemId);
+      return item ? item.code + " " + item.name : String(itemId);
+    }
+
+    function itemOptions(selected) {
+      return items
+        .map(
+          (item) =>
+            `<option value="${item.id}" ${String(item.id) === String(selected) ? "selected" : ""}>${escapeHtml(
+              item.code + " " + item.name
+            )}</option>`
+        )
+        .join("");
+    }
+
+    function addLine(line) {
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td><select data-role="item">${itemOptions(line ? line.item_id : undefined)}</select></td>
+        <td><input type="number" min="1" step="1" value="1" data-role="qty" /></td>
+        <td><input type="number" min="0" step="0.01" value="0.00" data-role="price" /></td>
+        <td><input type="text" class="readonly" value="—" data-role="amount" disabled /></td>
+        <td class="actions"><button class="link danger" type="button" data-role="remove">移除</button></td>`;
+      linesTable.querySelector("tbody").appendChild(row);
+      row.querySelector('[data-role="remove"]').addEventListener("click", () => row.remove());
+      const recalc = () => {
+        const qty = Number(row.querySelector('[data-role="qty"]').value || 0);
+        const price = Number(row.querySelector('[data-role="price"]').value || 0);
+        row.querySelector('[data-role="amount"]').value = (qty * price).toFixed(2);
+      };
+      row.querySelector('[data-role="qty"]').addEventListener("input", recalc);
+      row.querySelector('[data-role="price"]').addEventListener("input", recalc);
+      if (line) {
+        row.querySelector('[data-role="qty"]').value = line.qty;
+        row.querySelector('[data-role="price"]').value = (line.price_cents / 100).toFixed(2);
+        recalc();
+      }
+    }
+
+    function resetLines() {
+      linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+      addLine();
+    }
+
+    function orderStatusLabel(doc) {
+      if (doc.status === "DRAFT") return "草稿";
+      if (doc.order_status === "CONVERTED") return "已转出库";
+      if (doc.order_status === "CLOSED") return "已关闭";
+      return "已确认";
+    }
+
+    function actionsFor(doc) {
+      if (doc.status === "DRAFT") {
+        return (
+          '<button class="link" data-role="approve">确认</button>' +
+          '<button class="link" data-role="edit">编辑</button>' +
+          '<button class="link danger" data-role="delete">删除</button>'
+        );
+      }
+      if (doc.order_status === "CONFIRMED") {
+        return (
+          '<button class="link" data-role="convert">转出库</button>' +
+          '<button class="link danger" data-role="close">关闭</button>'
+        );
+      }
+      return "—";
+    }
+
+    function renderDocuments() {
+      if (!documents.length) {
+        documentsTable.innerHTML =
+          '<tbody><tr><td class="empty">还没有销售订单</td></tr></tbody>';
+        return;
+      }
+      documentsTable.innerHTML = `
+        <thead><tr><th>订单号</th><th>日期</th><th>仓库</th><th>客户</th><th>数量</th>
+          <th>金额（元）</th><th>状态</th><th class="actions">操作</th></tr></thead>
+        <tbody>${documents
+          .map(
+            (doc) => `<tr data-id="${doc.id}">
+              <td>${escapeHtml(doc.doc_no)}</td>
+              <td>${escapeHtml(doc.doc_date)}</td>
+              <td>${escapeHtml(doc.warehouse_name)}</td>
+              <td>${escapeHtml(doc.customer || "—")}</td>
+              <td>${doc.total_qty}</td>
+              <td>${money(doc.total_amount_cents)}</td>
+              <td>${orderStatusLabel(doc)}</td>
+              <td class="actions">${actionsFor(doc)}</td>
+            </tr>`
+          )
+          .join("")}</tbody>`;
+    }
+
+    async function reload() {
+      const [warehouseList, itemList, docList, customerList] = await Promise.all([
+        api("GET", "/api/warehouses"),
+        api("GET", "/api/items"),
+        api("GET", "/api/documents?doc_type=" + docType),
+        api("GET", "/api/customers"),
+      ]);
+      warehouses = warehouseList;
+      items = itemList;
+      customers = customerList;
+      documents = docList;
+      const warehouseOptions = warehouses
+        .filter((warehouse) => warehouse.status)
+        .map(
+          (warehouse) =>
+            `<option value="${warehouse.id}">${escapeHtml(warehouse.code + " " + warehouse.name)}</option>`
+        )
+        .join("");
+      warehouseSelect.innerHTML = warehouseOptions;
+      convertWarehouse.innerHTML = warehouseOptions;
+      customerSelect.innerHTML =
+        '<option value="">（不指定）</option>' +
+        customers
+          .filter((customer) => customer.status)
+          .map(
+            (customer) =>
+              `<option value="${customer.id}" data-name="${escapeHtml(customer.name)}">${escapeHtml(
+                customer.code + " " + customer.name
+              )}</option>`
+          )
+          .join("");
+      renderDocuments();
+      if (!linesTable.querySelector("tbody") || !linesTable.querySelector("tbody").children.length) {
+        resetLines();
+      }
+    }
+
+    function resetForm() {
+      editingId = 0;
+      mount.querySelector('[data-role="cancel-edit"]').hidden = true;
+      customerSelect.value = "";
+      dateInput.value = new Date().toISOString().slice(0, 10);
+      resetLines();
+    }
+
+    function collectLines() {
+      const lines = [];
+      for (const row of linesTable.querySelectorAll("tbody tr")) {
+        const itemId = Number(row.querySelector('[data-role="item"]').value);
+        const qty = parseInt(row.querySelector('[data-role="qty"]').value, 10);
+        const price = Math.round(Number(row.querySelector('[data-role="price"]').value || 0) * 100);
+        if (!itemId || !qty || qty <= 0) {
+          showNotice("请检查明细行的商品与数量", "error");
+          return null;
+        }
+        lines.push({ item_id: itemId, qty, price_cents: price });
+      }
+      if (!lines.length) {
+        showNotice("请至少添加一行明细", "error");
+        return null;
+      }
+      return lines;
+    }
+
+    async function save(draft) {
+      const lines = collectLines();
+      if (!lines) return;
+      const option = customerSelect.selectedOptions[0];
+      const body = {
+        doc_type: docType,
+        warehouse_id: Number(warehouseSelect.value),
+        doc_date: dateInput.value,
+        partner_id: Number(customerSelect.value || 0),
+        partner: option && option.value ? option.dataset.name || "" : "",
+        lines,
+      };
+      try {
+        if (editingId) {
+          await api("PUT", "/api/documents/" + editingId, body);
+          if (!draft) await api("POST", "/api/documents/" + editingId + "/approve");
+          showNotice(draft ? "订单草稿已保存" : "订单已确认", "ok");
+        } else {
+          const result = await api("POST", "/api/documents", { ...body, save_as_draft: draft });
+          showNotice((draft ? "已存为草稿：" : "订单已确认：") + result.doc_no, "ok");
+        }
+        resetForm();
+        await reload();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    }
+
+    async function startEdit(doc) {
+      try {
+        const detail = await api("GET", "/api/documents/" + doc.id);
+        editingId = doc.id;
+        warehouseSelect.value = String(detail.warehouse_id);
+        dateInput.value = detail.doc_date;
+        customerSelect.value = detail.partner_id ? String(detail.partner_id) : "";
+        linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+        for (const line of detail.lines) addLine(line);
+        mount.querySelector('[data-role="cancel-edit"]').hidden = false;
+        form.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    }
+
+    async function openConvert(doc) {
+      try {
+        const detail = await api("GET", "/api/documents/" + doc.id);
+        convertingId = doc.id;
+        convertTitle.textContent = detail.doc_no + " · " + (detail.partner || "未指定客户");
+        convertWarehouse.value = String(detail.warehouse_id);
+        convertDate.value = new Date().toISOString().slice(0, 10);
+        convertLines.innerHTML = `
+          <thead><tr><th>商品</th><th>订单数量</th><th>已转</th><th>剩余</th><th>本次转出</th></tr></thead>
+          <tbody>${detail.lines
+            .map((line) => {
+              const remaining = line.qty - line.converted_qty;
+              return `<tr data-line-id="${line.id}">
+                <td>${escapeHtml(itemLabel(line.item_id))}</td>
+                <td>${line.qty}</td>
+                <td>${line.converted_qty}</td>
+                <td>${remaining}</td>
+                <td><input type="number" min="0" max="${remaining}" step="1"
+                  value="${remaining}" data-role="convert-qty" ${remaining <= 0 ? "disabled" : ""} /></td>
+              </tr>`;
+            })
+            .join("")}</tbody>`;
+        convertCard.hidden = false;
+        convertCard.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    }
+
+    async function submitConvert() {
+      const lines = [];
+      for (const row of convertLines.querySelectorAll("tbody tr")) {
+        const input = row.querySelector('[data-role="convert-qty"]');
+        const qty = parseInt(input.value || 0, 10);
+        if (qty > 0) lines.push({ order_line_id: Number(row.dataset.lineId), qty });
+      }
+      if (!lines.length) {
+        showNotice("请填写要转出的数量", "error");
+        return;
+      }
+      try {
+        const result = await api("POST", "/api/documents/" + convertingId + "/convert", {
+          warehouse_id: Number(convertWarehouse.value || 0),
+          doc_date: convertDate.value,
+          lines,
+        });
+        showNotice("已生成销售出库单：" + result.doc_no, "ok");
+        convertCard.hidden = true;
+        convertingId = 0;
+        await reload();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    }
+
+    mount.querySelector('[data-role="add-line"]').addEventListener("click", () => addLine());
+    mount.querySelector('[data-role="refresh"]').addEventListener("click", () => reload());
+    mount.querySelector('[data-role="cancel-edit"]').addEventListener("click", resetForm);
+    mount.querySelector('[data-role="save-draft"]').addEventListener("click", () => save(true));
+    mount.querySelector('[data-role="submit"]').addEventListener("click", () => save(false));
+    mount.querySelector('[data-role="convert-submit"]').addEventListener("click", submitConvert);
+    mount.querySelector('[data-role="convert-cancel"]').addEventListener("click", () => {
+      convertCard.hidden = true;
+      convertingId = 0;
+    });
+
+    documentsTable.addEventListener("click", async (event) => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      const id = Number(event.target.closest("tr").dataset.id);
+      try {
+        if (button.dataset.role === "approve") {
+          if (!confirm("确认订单后不可再改单，只能转出库或关闭。继续？")) return;
+          await api("POST", "/api/documents/" + id + "/approve");
+          showNotice("订单已确认", "ok");
+        } else if (button.dataset.role === "edit") {
+          await startEdit(documents.find((doc) => doc.id === id));
+          return;
+        } else if (button.dataset.role === "delete") {
+          if (!confirm("确认删除这张订单草稿？")) return;
+          await api("DELETE", "/api/documents/" + id);
+          if (editingId === id) resetForm();
+          showNotice("订单草稿已删除", "ok");
+        } else if (button.dataset.role === "convert") {
+          await openConvert(documents.find((doc) => doc.id === id));
+          return;
+        } else if (button.dataset.role === "close") {
+          if (!confirm("关闭后订单不能再转出，确认？")) return;
+          await api("POST", "/api/documents/" + id + "/close");
+          showNotice("订单已关闭", "ok");
+        }
+        await reload();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+
+    await reload();
+  }
+
   // ---------- 库存页面 ----------
 
   async function financePage(mount) {
@@ -1932,6 +2313,11 @@
           partnerApi: "/api/customers",
           docLabel: "销售退货",
         }),
+    },
+    {
+      key: "sales-orders",
+      title: "销售订单",
+      render: orderPage,
     },
     {
       key: "transfer",

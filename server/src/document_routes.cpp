@@ -21,6 +21,7 @@ nlohmann::json summary_to_json(const DocSummary& summary) {
       {"total_qty", summary.total_qty},
       {"total_amount_cents", summary.total_amount_cents},
       {"status", summary.status},
+      {"order_status", summary.order_status},
       {"created_at", summary.created_at},
   };
 }
@@ -29,9 +30,13 @@ nlohmann::json detail_to_json(const DocDetail& detail) {
   nlohmann::json lines = nlohmann::json::array();
   for (const auto& line : detail.lines) {
     lines.push_back(nlohmann::json{
+        {"id", line.id},
         {"item_id", line.item_id},
         {"qty", line.qty},
         {"price_cents", line.price_cents},
+        {"converted_qty", line.converted_qty},
+        {"remaining_qty", line.qty - line.converted_qty},
+        {"source_order_line_id", line.source_order_line_id},
     });
   }
   return nlohmann::json{
@@ -44,6 +49,7 @@ nlohmann::json detail_to_json(const DocDetail& detail) {
       {"partner_id", detail.partner_id},
       {"partner", detail.partner},
       {"status", detail.status},
+      {"order_status", detail.order_status},
       {"total_qty", detail.total_qty},
       {"total_amount_cents", detail.total_amount_cents},
       {"lines", lines},
@@ -142,6 +148,36 @@ void register_document_routes(httplib::Server& server, Services& services) {
                       nlohmann::json body;
                       body["ok"] = true;
                       json_ok(res, body);
+                    }));
+
+  server.Post(R"(/api/documents/(\d+)/convert)",
+              guard("document.write",
+                    [&services](const httplib::Request& req, httplib::Response& res) {
+                      const auto id = std::stoll(req.matches[1].str());
+                      const nlohmann::json body = json_body(req);
+                      OrderConvertInput input;
+                      input.warehouse_id = body.value("warehouse_id", std::int64_t{0});
+                      input.doc_date = body.value("doc_date", std::string{});
+                      if (body.contains("lines") && body["lines"].is_array()) {
+                        for (const auto& item : body["lines"]) {
+                          input.lines.push_back(OrderConvertLine{
+                              .order_line_id = item.value("order_line_id", std::int64_t{0}),
+                              .qty = item.value("qty", std::int64_t{0}),
+                          });
+                        }
+                      }
+                      const OrderConversion conversion = services.docs.convert_order(id, input);
+                      json_ok(res, nlohmann::json{{"doc_id", conversion.doc_id},
+                                                  {"doc_no", conversion.doc_no},
+                                                  {"order_status", conversion.order_status}});
+                    }));
+
+  server.Post(R"(/api/documents/(\d+)/close)",
+              guard("document.write",
+                    [&services](const httplib::Request& req, httplib::Response& res) {
+                      const auto id = std::stoll(req.matches[1].str());
+                      services.docs.close_order(id);
+                      json_ok(res, nlohmann::json{{"ok", true}});
                     }));
 }
 

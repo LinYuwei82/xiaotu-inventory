@@ -46,7 +46,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 8, "迁移后 schema 版本应为 8");
+      check(db.schema_version() == 9, "迁移后 schema 版本应为 9");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -940,6 +940,83 @@ int main() {
       candidate.columns.push_back(
           {.column_key = "biz_time", .position = 3, .visible = true});
       check(rejects(candidate), "同一模板重复列应拒绝");
+
+      // 销售订单：确认不动库存/流水，转出库受累计数量约束。
+      auto ordered = items.create(xiaotu::gen::ItemRow{.code = "SO001", .name = "订单商品"});
+      make_doc("PUR_IN", ordered.id, 10, 500);
+      const auto ordered_before = balance_of(ordered.id);
+      const auto ordered_ledger_before = stock.ledger(ordered.id).size();
+
+      xiaotu::DocInput order_input;
+      order_input.doc_type = "SAL_ORDER";
+      order_input.warehouse_id = warehouse_list.at(0).id;
+      order_input.doc_date = "2026-11-12";
+      order_input.partner = "订单客户";
+      order_input.lines.push_back(
+          {.item_id = ordered.id, .qty = 6, .price_cents = 1500});
+      const auto order = documents.save_and_approve(order_input);
+      check(order.doc_no.rfind("XSDD", 0) == 0, "销售订单单号应以 XSDD 开头");
+      auto order_detail = documents.detail(order.id);
+      check(order_detail.order_status == "CONFIRMED", "保存并确认后订单应为 CONFIRMED");
+      check(balance_of(ordered.id).qty == ordered_before.qty,
+            "订单确认不应改变库存数量");
+      check(balance_of(ordered.id).amount_cents == ordered_before.amount_cents,
+            "订单确认不应改变库存金额");
+      check(stock.ledger(ordered.id).size() == ordered_ledger_before,
+            "订单确认不应写库存流水");
+      check(documents.list("SAL_ORDER").at(0).order_status == "CONFIRMED",
+            "订单列表应返回 order_status");
+      const std::int64_t order_line_id = order_detail.lines.at(0).id;
+      check(order_detail.lines.at(0).qty - order_detail.lines.at(0).converted_qty == 6,
+            "订单行剩余数量应为 6");
+
+      xiaotu::OrderConvertInput convert;
+      convert.lines.push_back({.order_line_id = order_line_id, .qty = 4});
+      const auto partial = documents.convert_order(order.id, convert);
+      check(partial.doc_no.rfind("XSCK", 0) == 0, "转出库应生成销售出库单");
+      order_detail = documents.detail(order.id);
+      check(order_detail.order_status == "CONFIRMED" &&
+                order_detail.lines.at(0).converted_qty == 4,
+            "部分转出后订单应保持 CONFIRMED 且累计 4 件");
+      check(balance_of(ordered.id).qty == ordered_before.qty - 4,
+            "转出库应实际扣减库存");
+
+      convert.lines.at(0).qty = 3;
+      bool exceeded = false;
+      try {
+        documents.convert_order(order.id, convert);
+      } catch (const xiaotu::AppError& error) {
+        exceeded = error.code() == "ORDER_QTY_EXCEEDED";
+      }
+      check(exceeded, "累计转出超过订单数量应拒绝");
+
+      convert.lines.at(0).qty = 2;
+      const auto full = documents.convert_order(order.id, convert);
+      check(full.order_status == "CONVERTED", "全部转出后订单应为 CONVERTED");
+      bool no_more = false;
+      try {
+        documents.convert_order(order.id, convert);
+      } catch (const xiaotu::AppError& error) {
+        no_more = error.code() == "INVALID_STATUS";
+      }
+      check(no_more, "已全部转出的订单应拒绝继续转出");
+
+      documents.reverse(partial.doc_id);
+      order_detail = documents.detail(order.id);
+      check(order_detail.order_status == "CONFIRMED" &&
+                order_detail.lines.at(0).converted_qty == 2,
+            "反审核出库单应释放对应订单数量");
+
+      documents.close_order(order.id);
+      check(documents.detail(order.id).order_status == "CLOSED", "订单应可关闭");
+      bool closed_rejected = false;
+      convert.lines.at(0).qty = 1;
+      try {
+        documents.convert_order(order.id, convert);
+      } catch (const xiaotu::AppError& error) {
+        closed_rejected = error.code() == "INVALID_STATUS";
+      }
+      check(closed_rejected, "关闭后应拒绝转出");
 
     }
   } catch (const std::exception& error) {
