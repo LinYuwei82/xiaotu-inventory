@@ -129,6 +129,34 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .on_approve = nullptr,
           .on_reverse = nullptr,
       },
+      // 其他入库：按录入单价增加库存金额，不绑定往来单位、不产生应收应付。
+      DocumentDefinition{
+          .doc_type = "OTH_IN",
+          .doc_no_prefix = "QTRK",
+          .stock_mode = StockMode::In,
+          .affects_stock = true,
+          .partner_kind = PartnerKind::None,
+          .finance_direction = 0,
+          .finance_red = false,
+          .price_source = PriceSource::Manual,
+          .cost_hook = amount_by_unit_price,
+          .on_approve = nullptr,
+          .on_reverse = nullptr,
+      },
+      // 其他出库：按当前移动加权平均结转成本，出库前校验可用库存，不产生往来。
+      DocumentDefinition{
+          .doc_type = "OTH_OUT",
+          .doc_no_prefix = "QTCK",
+          .stock_mode = StockMode::Out,
+          .affects_stock = true,
+          .partner_kind = PartnerKind::None,
+          .finance_direction = 0,
+          .finance_red = false,
+          .price_source = PriceSource::Manual,
+          .cost_hook = moving_average_cost,
+          .on_approve = nullptr,
+          .on_reverse = nullptr,
+      },
   };
   return definitions;
 }

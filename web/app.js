@@ -2363,6 +2363,32 @@
         }),
     },
     {
+      key: "other-in",
+      title: "其他入库",
+      render: (mount) =>
+        documentPage(mount, {
+          docType: "OTH_IN",
+          title: "其他入库",
+          subtitle: "保存即审核：按录入单价增加库存，不产生应收应付",
+          partnerLabel: "备注",
+          partnerPlaceholder: "可选",
+          docLabel: "入库",
+        }),
+    },
+    {
+      key: "other-out",
+      title: "其他出库",
+      render: (mount) =>
+        documentPage(mount, {
+          docType: "OTH_OUT",
+          title: "其他出库",
+          subtitle: "保存即审核：按当前移动加权平均结转成本，不产生应收应付",
+          partnerLabel: "备注",
+          partnerPlaceholder: "可选",
+          docLabel: "出库",
+        }),
+    },
+    {
       key: "sales-orders",
       title: "销售订单",
       render: orderPage,

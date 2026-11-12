@@ -1019,6 +1019,59 @@ int main() {
       }
       check(closed_rejected, "关闭后应拒绝转出");
 
+      // 其他入库/出库：入库按手工单价，出库按移动加权平均，且不产生往来。
+      auto other = items.create(xiaotu::gen::ItemRow{.code = "O001", .name = "其他商品"});
+      xiaotu::DocInput other_in;
+      other_in.doc_type = "OTH_IN";
+      other_in.warehouse_id = warehouse_list.at(0).id;
+      other_in.doc_date = "2026-11-12";
+      other_in.partner = "备注：受赠样品";
+      other_in.lines.push_back(
+          xiaotu::DocLineInput{.item_id = other.id, .qty = 4, .price_cents = 250});
+      const auto other_in_doc = documents.save_and_approve(other_in);
+      check(other_in_doc.doc_no.rfind("QTRK", 0) == 0, "其他入库单号应以 QTRK 开头");
+      auto other_balance = balance_of(other.id);
+      check(other_balance.qty == 4 && other_balance.amount_cents == 1000,
+            "其他入库应按录入单价入账");
+
+      xiaotu::DocInput other_out;
+      other_out.doc_type = "OTH_OUT";
+      other_out.warehouse_id = warehouse_list.at(0).id;
+      other_out.doc_date = "2026-11-12";
+      other_out.partner = "备注：领用";
+      other_out.lines.push_back(
+          xiaotu::DocLineInput{.item_id = other.id, .qty = 1, .price_cents = 9999});
+      const auto other_out_doc = documents.save_and_approve(other_out);
+      check(other_out_doc.doc_no.rfind("QTCK", 0) == 0, "其他出库单号应以 QTCK 开头");
+      other_balance = balance_of(other.id);
+      check(other_balance.qty == 3 && other_balance.amount_cents == 750,
+            "其他出库应按移动加权平均结转成本，忽略录入单价");
+      check(stock.ledger(other.id).size() == 2, "其他出入库应各写一条库存流水");
+
+      std::int64_t other_entries = 0;
+      db.read([&](sqlite3* conn) {
+        xiaotu::Stmt stmt(conn,
+                          "SELECT COUNT(*) FROM ar_ap_entry WHERE doc_id IN (?, ?);");
+        stmt.bind(1, other_in_doc.id).bind(2, other_out_doc.id);
+        if (stmt.step()) other_entries = stmt.i64(0);
+      });
+      check(other_entries == 0, "其他出入库不应产生应收应付");
+
+      bool other_out_rejected = false;
+      try {
+        xiaotu::DocInput overdraw;
+        overdraw.doc_type = "OTH_OUT";
+        overdraw.warehouse_id = warehouse_list.at(0).id;
+        overdraw.doc_date = "2026-11-12";
+        overdraw.lines.push_back(
+            xiaotu::DocLineInput{.item_id = other.id, .qty = 4, .price_cents = 0});
+        documents.save_and_approve(overdraw);
+      } catch (const xiaotu::AppError& error) {
+        other_out_rejected = error.code() == "STOCK_INSUFFICIENT";
+      }
+      check(other_out_rejected, "其他出库库存不足应整单拒绝");
+      check(balance_of(other.id).qty == 3, "被拒绝的其他出库不应改变库存");
+
       // 成本重算只读核对：健康数据应无差异，篡改账面金额后应报出差异。
       xiaotu::CostRecalcService cost_recalc(db);
       const auto healthy = cost_recalc.recalculate();
