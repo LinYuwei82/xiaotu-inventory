@@ -112,26 +112,33 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
   server_->set_keep_alive_max_count(1);
 
   // 访问日志只记录方法、路径、状态与请求标识；查询串、Cookie 与请求体不落盘。
-  server_->set_logger([this](const httplib::Request& req, const httplib::Response& res) {
+  server_->set_logger([](const httplib::Request& req, const httplib::Response& res) {
     const auto& context = current_context();
     std::string line = req.method + " " + req.path + " " + std::to_string(res.status);
     if (!context.request_id.empty()) {
       line += " req=" + context.request_id;
     }
     log_message(LogLevel::Info, line);
-    // 导出成功的请求写入审计（format=csv|xlsx 与 /export 两类入口），
-    // 失败或被权限拦下的请求不记，避免审计里出现未真正导出的噪声。
-    if (res.status == 200 && is_export_request(req)) {
-      try {
-        const std::string detail = query_text(req);
-        services_.db.write([&](sqlite3* conn) {
-          audit_write(conn, "export", "report", 0, req.path, detail);
-        });
-      } catch (const std::exception& error) {
-        log_warn(std::string("导出审计写入失败: ") + error.what());
-      }
-    }
   });
+
+  // 导出成功的请求在响应写出之前落审计（httplib 的 post_routing 钩子在
+  // 响应行/头/体之前执行）：否则浏览器先收到 200、审计稍后才入库，
+  // 客户端立刻查询会数不到，进程异常退出时也可能丢掉这条审计。
+  // 失败或被权限拦下的请求不记；写审计失败只记日志，不改变已确定的响应。
+  server_->set_post_routing_handler(
+      [this](const httplib::Request& req, httplib::Response& res) {
+        if (res.status != 200 || !is_export_request(req)) {
+          return;
+        }
+        try {
+          const std::string detail = query_text(req);
+          services_.db.write([&](sqlite3* conn) {
+            audit_write(conn, "export", "report", 0, req.path, detail);
+          });
+        } catch (const std::exception& error) {
+          log_warn(std::string("导出审计写入失败: ") + error.what());
+        }
+      });
 
   server_->set_exception_handler([](const httplib::Request&, httplib::Response& res,
                                     std::exception_ptr ep) {
