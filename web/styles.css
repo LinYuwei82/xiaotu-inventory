@@ -176,6 +176,11 @@ main {
   color: var(--ok);
 }
 
+.notice.warn {
+  background: #fff4e5;
+  color: #a15c00;
+}
+
 /* 页内确认层：单机版 WKWebView 不处理 window.confirm，这里自己画一层。 */
 .confirm-mask {
   position: fixed;

@@ -5600,7 +5600,7 @@
       writeNavState("xiaotu.nav.group", page.group || "");
     }
     main.querySelectorAll(":scope > *").forEach((node) => {
-      if (node !== notice) node.remove();
+      if (node !== notice && node.id !== "data-warning") node.remove();
     });
     showNotice("");
     const container = document.createElement("section");
@@ -5662,6 +5662,16 @@
         health.mode === "local" ? "单机版" : "网络版";
       document.getElementById("health").textContent =
         "v" + health.version + " · schema v" + health.schema_version;
+      // 数据目录位于同步盘时由服务端给出提示，登录后常驻在页面顶部。
+      let warningNode = document.getElementById("data-warning");
+      if (!warningNode) {
+        warningNode = document.createElement("div");
+        warningNode.id = "data-warning";
+        warningNode.className = "notice warn";
+        main.prepend(warningNode);
+      }
+      warningNode.textContent = health.data_dir_warning || "";
+      warningNode.hidden = !health.data_dir_warning;
 
       const pages = await (await fetch(API_BASE + "/gen/pages.json")).json();
       state.pages = pages;
