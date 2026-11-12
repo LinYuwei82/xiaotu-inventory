@@ -9,7 +9,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 - 不带参数启动 = **单机版**：内嵌服务只监听 `127.0.0.1` 的随机端口，生成一次性 token，用系统 WKWebView 打开本地页面。
 - `--server` 启动 = **网络版**：监听 `0.0.0.0`，用浏览器访问；使用用户名与口令登录（首次需先给内置管理员设置口令）。
 
-当前 M2 收口中，已打通：**商品 / 单位 / 仓库 / 客户 / 供应商档案 → 采购入库、销售出库、采购退货、销售退货、其他入库、其他出库、调拨、盘点、成本调整（草稿与反审核）→ 销售订单确认与转出库 → 库存余额与流水 → 应收应付台账与核销 → 收付款单与资金账户 → 往来对账单 → 八类报表导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志与 macOS `.dmg` 打包。成本重算保持只读核对，差异通过成本调整单落账。
+当前 M2 收口中，已打通：**商品 / 单位 / 仓库 / 客户 / 供应商档案（支持 Excel 批量导入导出）→ 采购入库、销售出库、采购退货、销售退货、其他入库、其他出库、调拨、盘点、成本调整（草稿与反审核）→ 销售订单确认与转出库 → 库存余额与流水 → 应收应付台账与核销 → 收付款单与资金账户 → 往来对账单 → 八类报表导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志与 macOS `.dmg` 打包。成本重算保持只读核对，差异通过成本调整单落账。
 
 ## 0. 数据库结构版本
 
@@ -489,6 +489,24 @@ struct DocumentDefinition {
 - **打印**：卡片「打印」，经 `/api/print/render` 按当前模板输出；单机版 WKWebView 通过原生桥接打开系统打印面板，可另存为 PDF。
 - **权限**：导出与打印和查看同权限（`stock.read` / `finance.read`），不额外开放写权限。
 
+### 主数据批量导入导出
+
+商品、供应商、客户三张列表页支持 Excel 批量维护：
+
+- **导出当前全部**：`GET /api/items/export?format=xlsx|csv`（供应商/客户同理），第 1 行列头，无前言，导出的文件可直接改完再导回。
+- **下载模板**：`GET /api/items/template`，只有表头；列名用中文，导入按表头文字匹配，不依赖列顺序。
+- **导入**：`POST /api/items/import`，请求体是 `.xlsx` 原始二进制，文件名放 `X-File-Name`（`encodeURIComponent` 编码）。
+  仅接受真 xlsx（内部是 ZIP + deflate，已内嵌 miniz 只编 inflate）；CSV 不用于导入。
+- **重复策略（已定 A）**：按编码 upsert。编码存在则只覆盖非空单元格，**空单元格一律保持原值**；
+  「启用」留空不会改成启用，也不会把停用档案重新启用。同一文件内编码重复直接整批拒绝。
+- **事务与备份**：先全量校验，任何一行有错整批不写并返回「行号 + 列名 + 原因」；
+  校验通过后先 `VACUUM INTO` 备份到 `<数据目录>/backups`（文件名含 `pre-import-<表>`），备份失败即中止，
+  然后单事务写入；审计只记一条 `import`。
+- **上限**：5000 行 / 5MB。服务端只对 `/import` 放宽请求体，其它接口仍是 1MB。
+- **权限**：导入 `item.write` / `supplier.write` / `customer.write`；导出与模板 `*.read`。
+- **错误清单**：页面展示前 100 条，可下载完整 CSV（行号、列名、原因）。
+- **注意**：编码/电话建议在 Excel 里设为文本格式，否则前导零会被 Excel 丢掉。
+
 ### 自定义打印模板
 
 - 存储：v8 新增 `print_template`（纸张、方向、页边距、字号、页眉页脚、页码、默认标记、`version` 乐观锁、软删除与审计）和 `print_template_column`（列顺序、可见、宽度、对齐、字号、加粗）两张表。
@@ -602,7 +620,7 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 #### 失败排查
 
 1. 先看日志开头的「工具链」块：`cmake`、`ninja`、`make`、`ccache` 的实际路径与版本，以及最终选用的生成器。
-2. `cmake: 缺失` → 镜像没预装且 `pip install --user cmake` 失败（无外网）。改用镜像自带 CMake，或接自建主机组。
+2. `cmake: 缺失` → 镜像没预装 CMake。镜像基于 Ubuntu 20.04，自带的 CMake 可能是 3.16，低于项目要求的 3.25，所以流水线按版本判断：缺失或低于 3.25 时安装固定版本 `cmake==3.31.6`。安装失败通常是 pip 不可用或无外网，此时改用镜像自带的 3.25 以上版本，或接自建主机组。
 3. 日志出现 `生成器: Unix Makefiles` 说明镜像里没有 `ninja`，脚本已自动降级，构建应照常通过；此时若失败，看是否缺 `make`。
 4. 编译或测试失败：本地执行 `bash tools/ci/check.sh` 复现，检查内容与云端一致。
 5. `generate.py --check` 失败：本地重新生成后提交，见「代码生成器」章节。
@@ -624,4 +642,4 @@ Linux 上该脚本等价于 CI：`XIAOTU_BUILD_SHELL=OFF` 配置构建、`ctest`
 - 用户手册（面向使用者）：`docs/用户手册.md`
 - 技术方案：`docs/进销存技术方案.md`
 - 数据库结构：`core/src/migrations.cpp`（v13）
-- API：`/api/health`、`/api/session`、`/api/items`、`/api/warehouses`、`/api/suppliers`、`/api/customers`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/cost-adjustments/drafts`、`/api/fund-accounts`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`、`/api/stock/cost-recalc`
+- API：`/api/health`、`/api/session`、`/api/items`、`/api/items/import`、`/api/items/export`、`/api/items/template`、`/api/warehouses`、`/api/suppliers`、`/api/suppliers/import`、`/api/suppliers/export`、`/api/suppliers/template`、`/api/customers`、`/api/customers/import`、`/api/customers/export`、`/api/customers/template`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/cost-adjustments/drafts`、`/api/fund-accounts`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`、`/api/stock/cost-recalc`
