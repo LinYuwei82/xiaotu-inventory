@@ -230,6 +230,10 @@ WebView 会打开 `http://127.0.0.1:5173/?api=http://127.0.0.1:<port>#t=<token>`
 
 **仓库、数据库文件、构建产物都不要放在 iCloud Drive、OneDrive 等同步目录**：同步客户端会并发读写与整文件替换，SQLite 的锁在这些目录上不可靠，可能损坏数据库；构建产物被同步也会拖慢构建。推荐仓库放 `~/Developer/`。
 
+程序启动时会检测数据目录并给出提示：命中 iCloud Drive（`~/Library/Mobile Documents/`）或 OneDrive 时，控制台、日志与界面顶部都会显示告警和迁移指引；只告警不拦截。
+
+同一数据目录同一时间只允许一个实例运行（`<数据目录>/app.lock`，Windows 用命名互斥体、macOS 用 `flock`）。重复启动会提示已有实例的 PID 后直接退出；`--backup` 与 `--set-password` 属于维护命令，不参与该锁，`--restore` 仍要求停服。
+
 ### 备份与恢复
 
 - 迁移前自动备份：启动时若数据库版本低于代码内置版本，先用 `VACUUM INTO` 写 `<数据目录>/backups/app-<时间>-pre-v<旧版本>.db`；备份失败则中止迁移，不带着未备份的数据升级。

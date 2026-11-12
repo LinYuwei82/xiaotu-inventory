@@ -6,6 +6,7 @@
 #include <string>
 
 #include "xiaotu/error.h"
+#include "xiaotu/instance_lock.h"
 #include "xiaotu/platform_paths.h"
 
 namespace {
@@ -93,6 +94,35 @@ int main() {
   check(dir.parent_path().filename() == "Application Support",
         "macOS 应用数据目录应在 Application Support 下");
 #endif
+
+  // 同步目录识别：iCloud 与 OneDrive 路径应命中，普通目录不应误报。
+  const fs::path sync_root = fs::temp_directory_path() / "xiaotu-paths-smoke";
+  check(platform::sync_service_for(sync_root / "Library" / "Mobile Documents" /
+                                   "com~apple~CloudDocs" / "data") == "iCloud Drive",
+        "iCloud Drive 路径应被识别");
+  check(platform::sync_service_for(sync_root / "OneDrive" / "xiaotu") == "OneDrive",
+        "OneDrive 路径应被识别");
+  check(platform::sync_service_for(sync_root / "localdata").empty(),
+        "普通目录不应误报同步目录");
+
+  // 单实例锁：同一目录第二次获取应失败，持有者释放后可重新获取。
+  const fs::path lock_dir = fs::temp_directory_path() / "xiaotu-lock-smoke";
+  fs::create_directories(lock_dir);
+  {
+    xiaotu::InstanceLock first;
+    check(first.acquire(lock_dir), "首次获取单实例锁应成功");
+    xiaotu::InstanceLock second;
+    check(!second.acquire(lock_dir), "同一目录重复获取单实例锁应失败");
+    check(!second.holder_pid().empty(), "获取失败时应能读到持有者 PID");
+  }
+  {
+    xiaotu::InstanceLock again;
+    check(again.acquire(lock_dir), "释放后应能重新获取单实例锁");
+  }
+  {
+    std::error_code ignored;
+    fs::remove_all(lock_dir, ignored);
+  }
 
   if (g_failures != 0) {
     std::cerr << g_failures << " 项断言失败" << std::endl;

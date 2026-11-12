@@ -1,7 +1,10 @@
 #include "xiaotu/platform_paths.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 #include "xiaotu/error.h"
 
@@ -27,6 +30,27 @@ std::filesystem::path env_dir(const char* name) {
   return std::filesystem::path(value);
 }
 #endif
+
+// 统一成小写、正斜杠的绝对路径，便于做前缀与片段匹配。
+std::string normalized(const std::filesystem::path& dir) {
+  std::error_code ignored;
+  std::filesystem::path path = std::filesystem::weakly_canonical(dir, ignored);
+  if (ignored) {
+    path = std::filesystem::absolute(dir, ignored);
+  }
+  if (ignored) {
+    path = dir;
+  }
+  std::string text = path.generic_string();
+  std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return text;
+}
+
+bool contains(const std::string& text, const std::string& needle) {
+  return text.find(needle) != std::string::npos;
+}
 
 }  // namespace
 
@@ -63,6 +87,38 @@ std::filesystem::path app_data_dir() {
 #else
   return home_dir() / "Library" / "Application Support" / kAppId;
 #endif
+}
+
+std::string sync_service_for(const std::filesystem::path& dir) {
+  const std::string text = normalized(dir);
+  // iCloud Drive：目录一定在 ~/Library/Mobile Documents/ 下（含「桌面与文档」同步）。
+  if (contains(text, "/library/mobile documents/")) {
+    return "iCloud Drive";
+  }
+#if defined(_WIN32)
+  for (const char* name : {"OneDrive", "OneDriveConsumer", "OneDriveCommercial"}) {
+    const std::filesystem::path root = env_dir(name);
+    if (root.empty()) {
+      continue;
+    }
+    std::string root_text = normalized(root);
+    if (!root_text.empty() && root_text.back() == '/') {
+      root_text.pop_back();
+    }
+    if (!root_text.empty() &&
+        (text == root_text || text.rfind(root_text + "/", 0) == 0)) {
+      return "OneDrive";
+    }
+  }
+#endif
+  // 用户手工把目录建在 OneDrive 下时环境变量可能缺失，按路径片段兜底；
+  // 目录名恰为 OneDrive 的本地目录也会命中，属于可接受的误报（只告警不拦截）。
+  const bool ends_with_onedrive =
+      text.size() >= 9 && text.compare(text.size() - 9, 9, "/onedrive") == 0;
+  if (contains(text, "/onedrive/") || ends_with_onedrive) {
+    return "OneDrive";
+  }
+  return {};
 }
 
 }  // namespace xiaotu::platform

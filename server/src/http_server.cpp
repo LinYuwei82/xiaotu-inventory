@@ -194,6 +194,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     body["edition"] = std::string(EditionPolicy::instance().code());
     body["schema_version"] = services_.db.schema_version();
     body["embedded_resources"] = resources::count();
+    body["data_dir_warning"] = info_.data_dir_warning;
     json_ok(res, body);
   });
 

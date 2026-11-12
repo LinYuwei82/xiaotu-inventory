@@ -14,6 +14,7 @@
 #include "xiaotu/error.h"
 #include "xiaotu/http_server.h"
 #include "xiaotu/ids.h"
+#include "xiaotu/instance_lock.h"
 #include "xiaotu/log.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/permissions.h"
@@ -189,6 +190,33 @@ int main(int argc, char** argv) {
                      " 数据目录=" + data_dir.string() + " 监听=" +
                      (options.server ? listen + ":" + std::to_string(port) : "127.0.0.1:自动"));
 
+    // 同步目录检测：只告警不拦截，指引用户把数据目录迁回本地磁盘。
+    std::string data_dir_warning;
+    if (const std::string sync = xiaotu::platform::sync_service_for(data_dir); !sync.empty()) {
+      data_dir_warning = "数据目录位于 " + sync +
+                         " 同步目录内，多台设备同时打开可能损坏数据库；"
+                         "请退出程序后把数据目录迁到本地磁盘（默认 "
+                         "~/Library/Application Support/com.simem.xiaotu/）。";
+      xiaotu::log_warn(data_dir_warning);
+    }
+
+    // 单实例锁：同一数据目录只允许一个实例写库。--backup 允许运行中执行，
+    // --set-password 是停机维护命令，两者不参与锁；--restore 必须在停服时执行，
+    // 因此照常抢锁，抢不到就提示已有实例在运行。
+    const bool maintenance_only = options.backup || !options.set_password_user.empty();
+    xiaotu::InstanceLock instance_lock;
+    if (!maintenance_only && !instance_lock.acquire(data_dir)) {
+      std::cout << "已有小兔进销存实例在使用该数据目录"
+                << (instance_lock.holder_pid().empty()
+                        ? ""
+                        : "（PID " + instance_lock.holder_pid() + "）")
+                << "，本次启动已退出。如果确认没有其他实例，可删除锁文件后重试："
+                << instance_lock.lock_path().string() << std::endl;
+      xiaotu::log_warn("单实例锁被占用: " + instance_lock.lock_path().string());
+      xiaotu::shutdown_logging();
+      return 0;
+    }
+
     std::cout << "小兔进销存 " << XIAOTU_VERSION << " (" << xiaotu::platform::name()
               << (options.server ? " / 网络版" : " / 单机版") << ")\n"
               << "配置:     " << config_path.string()
@@ -200,6 +228,9 @@ int main(int argc, char** argv) {
               << "监听:     "
               << (options.server ? listen + ":" + std::to_string(port) : std::string("127.0.0.1:自动端口"))
               << std::endl;
+    if (!data_dir_warning.empty()) {
+      std::cout << "警告: " << data_dir_warning << std::endl;
+    }
 
     if (!options.restore_from.empty()) {
       if (options.backup) {
@@ -265,6 +296,7 @@ int main(int argc, char** argv) {
         .mode = options.server ? "server" : "local",
         .app_name = "小兔进销存",
         .version = XIAOTU_VERSION,
+        .data_dir_warning = data_dir_warning,
     };
     xiaotu::HttpServer http(services, info, token);
 

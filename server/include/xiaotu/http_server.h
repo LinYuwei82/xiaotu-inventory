@@ -21,6 +21,9 @@ struct ServerInfo {
   std::string mode;  // "local" / "server"
   std::string app_name;
   std::string version;
+  // 启动时检测到的数据目录风险提示（如位于 iCloud / OneDrive 同步目录），
+  // 空串表示正常；前端在 /api/health 里读取后显示横幅。
+  std::string data_dir_warning;
 };
 
 // HTTP 外壳：只负责认证、路由注册与生命周期，业务全部在 Services 内。
