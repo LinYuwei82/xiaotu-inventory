@@ -25,7 +25,24 @@
 #define XIAOTU_HAS_WEBVIEW 1
 #endif
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace {
+
+// Windows 控制台默认使用系统代码页（简体中文为 936），而日志与提示按 UTF-8 输出，
+// 不切代码页会在 cmd 里显示成「灏忓厰…」这类乱码。仅在存在可见控制台时切换，
+// 重定向到文件或管道的场景（壳拉起服务端）不受影响，字节仍是 UTF-8。
+void configure_console_encoding() {
+#if defined(_WIN32)
+  if (GetConsoleWindow() == nullptr) {
+    return;
+  }
+  SetConsoleOutputCP(CP_UTF8);
+  SetConsoleCP(CP_UTF8);
+#endif
+}
 
 std::atomic<bool> g_stop{false};
 
@@ -102,6 +119,7 @@ std::string local_url(const std::string& base, const std::string& token) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  configure_console_encoding();
   try {
     const Options options = parse_args(argc, argv);
     if (options.show_help) {
