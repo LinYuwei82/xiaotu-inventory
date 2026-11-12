@@ -690,6 +690,141 @@
     await reload();
   }
 
+  // ---------- 报表页面 ----------
+
+  async function reportPage(mount) {
+    const today = new Date().toISOString().slice(0, 10);
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>报表</h2>
+          <p class="page-sub">只读汇总；期间为含首含尾的自然日</p>
+        </div>
+        <div class="toolbar">
+          <input type="date" data-role="from" value="${today.slice(0, 8)}01" />
+          <input type="date" data-role="to" value="${today}" />
+          <select data-role="direction">
+            <option value="1">应收账龄</option>
+            <option value="-1">应付账龄</option>
+          </select>
+          <button class="btn" data-role="refresh">刷新</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>库存余额表</h3>
+        <table class="table" data-role="balances"></table>
+      </div>
+      <div class="card">
+        <h3>库存流水明细</h3>
+        <table class="table" data-role="ledger"></table>
+      </div>
+      <div class="card">
+        <h3>收发明细</h3>
+        <table class="table" data-role="flows"></table>
+      </div>
+      <div class="card">
+        <h3>应收应付余额与账龄</h3>
+        <table class="table" data-role="aging"></table>
+      </div>`;
+
+    const fromInput = mount.querySelector('[data-role="from"]');
+    const toInput = mount.querySelector('[data-role="to"]');
+    const directionSelect = mount.querySelector('[data-role="direction"]');
+    const balancesTable = mount.querySelector('[data-role="balances"]');
+    const ledgerTable = mount.querySelector('[data-role="ledger"]');
+    const flowsTable = mount.querySelector('[data-role="flows"]');
+    const agingTable = mount.querySelector('[data-role="aging"]');
+
+    function emptyRow(text, colspan) {
+      return `<tbody><tr><td class="empty" colspan="${colspan}">${text}</td></tr></tbody>`;
+    }
+
+    async function reload() {
+      const period =
+        "?from=" + encodeURIComponent(fromInput.value) + "&to=" + encodeURIComponent(toInput.value);
+      const [balances, ledger, flows, aging] = await Promise.all([
+        api("GET", "/api/reports/stock-balance"),
+        api("GET", "/api/reports/stock-ledger" + period + "&limit=500"),
+        api("GET", "/api/reports/goods-flow" + period),
+        api("GET", "/api/reports/ar-ap-aging?direction=" + directionSelect.value),
+      ]);
+
+      balancesTable.innerHTML = !balances.length
+        ? emptyRow("暂无库存", 5)
+        : `<thead><tr><th>商品编码</th><th>商品名称</th><th>仓库</th><th>数量</th><th>金额（元）</th></tr></thead>
+           <tbody>${balances
+             .map(
+               (row) => `<tr>
+                 <td>${escapeHtml(row.item_code)}</td>
+                 <td>${escapeHtml(row.item_name)}</td>
+                 <td>${escapeHtml(row.warehouse_name)}</td>
+                 <td class="${row.qty < 0 ? "negative" : ""}">${row.qty}</td>
+                 <td>${money(row.amount_cents)}</td>
+               </tr>`
+             )
+             .join("")}</tbody>`;
+
+      ledgerTable.innerHTML = !ledger.length
+        ? emptyRow("该期间暂无流水", 7)
+        : `<thead><tr><th>时间</th><th>类型</th><th>单据号</th><th>商品</th><th>仓库</th><th>数量</th><th>金额（元）</th></tr></thead>
+           <tbody>${ledger
+             .map(
+               (row) => `<tr>
+                 <td>${escapeHtml(row.biz_time)}</td>
+                 <td>${escapeHtml(row.biz_type)}</td>
+                 <td>${escapeHtml(row.doc_no)}</td>
+                 <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
+                 <td>${escapeHtml(row.warehouse_name)}</td>
+                 <td class="${row.qty < 0 ? "negative" : ""}">${row.qty}</td>
+                 <td>${money(row.amount_cents)}</td>
+               </tr>`
+             )
+             .join("")}</tbody>`;
+
+      flowsTable.innerHTML = !flows.length
+        ? emptyRow("该期间无收发", 9)
+        : `<thead><tr><th>商品编码</th><th>商品名称</th><th>仓库</th><th>期初</th><th>收入</th>
+             <th>发出</th><th>期末</th><th>收入金额（元）</th><th>发出金额（元）</th></tr></thead>
+           <tbody>${flows
+             .map(
+               (row) => `<tr>
+                 <td>${escapeHtml(row.item_code)}</td>
+                 <td>${escapeHtml(row.item_name)}</td>
+                 <td>${escapeHtml(row.warehouse_name)}</td>
+                 <td>${row.opening_qty}</td>
+                 <td>${row.in_qty}</td>
+                 <td>${row.out_qty}</td>
+                 <td class="${row.closing_qty < 0 ? "negative" : ""}">${row.closing_qty}</td>
+                 <td>${money(row.in_amount_cents)}</td>
+                 <td>${money(row.out_amount_cents)}</td>
+               </tr>`
+             )
+             .join("")}</tbody>`;
+
+      agingTable.innerHTML = !aging.length
+        ? emptyRow("暂无未核销余额", 7)
+        : `<thead><tr><th>往来单位</th><th>合计（元）</th><th>未到期</th><th>1-30 天</th>
+             <th>31-60 天</th><th>61-90 天</th><th>90 天以上</th></tr></thead>
+           <tbody>${aging
+             .map(
+               (row) => `<tr>
+                 <td>${escapeHtml(row.partner_name || row.partner_key)}</td>
+                 <td>${money(row.total_cents)}</td>
+                 <td>${money(row.not_due_cents)}</td>
+                 <td>${money(row.d1_30_cents)}</td>
+                 <td>${money(row.d31_60_cents)}</td>
+                 <td>${money(row.d61_90_cents)}</td>
+                 <td>${money(row.d90_plus_cents)}</td>
+               </tr>`
+             )
+             .join("")}</tbody>`;
+    }
+
+    mount.querySelector('[data-role="refresh"]').addEventListener("click", reload);
+    directionSelect.addEventListener("change", reload);
+    await reload();
+  }
+
   async function stockPage(mount) {
     let itemFilter = 0;
 
@@ -847,6 +982,7 @@
       render: financePage,
     },
     { key: "stock", title: "库存", render: stockPage },
+    { key: "reports", title: "报表", render: reportPage },
   ];
 
   function mountPage(page) {

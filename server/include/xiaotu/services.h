@@ -8,6 +8,7 @@
 #include "xiaotu/gen/supplier_service.h"
 #include "xiaotu/gen/unit_service.h"
 #include "xiaotu/gen/warehouse_service.h"
+#include "xiaotu/report_service.h"
 #include "xiaotu/settlement_service.h"
 #include "xiaotu/stock_service.h"
 #include "xiaotu/user_service.h"
@@ -27,6 +28,7 @@ struct Services {
         stock(database),
         finance(database),
         settlements(database),
+        reports(database),
         users(database) {}
 
   Db& db;
@@ -39,6 +41,7 @@ struct Services {
   StockService stock;
   FinanceService finance;
   SettlementService settlements;
+  ReportService reports;
   UserService users;
 };
 

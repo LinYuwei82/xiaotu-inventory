@@ -18,6 +18,7 @@
 #include "xiaotu/gen/warehouse_service.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/permissions.h"
+#include "xiaotu/report_service.h"
 #include "xiaotu/settlement_service.h"
 #include "xiaotu/stock_service.h"
 #include "xiaotu/user_service.h"
@@ -589,6 +590,33 @@ int main() {
 
       const auto settlement_rows = settlements.list(1, customer_key);
       check(settlement_rows.size() == 3, "应有核销、合并核销与撤销三条记录");
+
+      // 报表：流水明细、收发明细与账龄都从同一份流水/台账聚合，结果需自洽。
+      xiaotu::ReportService reports(db);
+      xiaotu::ReportFilter report_filter;
+      report_filter.from = "2026-11-01";
+      report_filter.to = "2026-11-12";
+      report_filter.item_id = sales_item.id;
+      const auto report_ledger = reports.stock_ledger(report_filter);
+      check(!report_ledger.empty() && report_ledger.size() == stock.ledger(sales_item.id).size(),
+            "流水明细应与库存流水条数一致");
+      check(report_ledger.front().biz_time.rfind("2026-11-12", 0) == 0,
+            "流水明细应按时间倒序取到当天记录");
+
+      const auto flows = reports.goods_flow(report_filter);
+      check(flows.size() == 1 && flows.front().closing_qty == balance_of(sales_item.id).qty,
+            "收发明细期末数应等于库存余额");
+      check(flows.front().opening_qty == 0, "11-01 起期初应为 0");
+
+      const auto aging = reports.ar_ap_aging(1, "2026-11-12");
+      std::int64_t expected_ar = 0;
+      for (const auto& row : finance.entries(1, customer_key)) {
+        if (row.status != "VOIDED") expected_ar += row.outstanding_cents;
+      }
+      check(aging.size() == 1 && aging.front().total_cents == expected_ar,
+            "账龄合计应等于未作废往来记录的未核销余额");
+      check(aging.front().not_due_cents == expected_ar && aging.front().d90_plus_cents == 0,
+            "截止日当天到期的记录应全部落在未到期桶");
 
       // 采购退货：先入库再退货，以及入库后部分退货。
       auto returned = items.create(xiaotu::gen::ItemRow{.code = "R001", .name = "退货商品"});

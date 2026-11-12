@@ -16,6 +16,7 @@ void register_stock_routes(httplib::Server& server, Services& services);
 void register_user_routes(httplib::Server& server, Services& services);
 void register_audit_routes(httplib::Server& server, Services& services);
 void register_finance_routes(httplib::Server& server, Services& services);
+void register_report_routes(httplib::Server& server, Services& services);
 
 void register_all_routes(httplib::Server& server, Services& services) {
   gen::register_item_routes(server, services);
@@ -28,6 +29,7 @@ void register_all_routes(httplib::Server& server, Services& services) {
   register_user_routes(server, services);
   register_audit_routes(server, services);
   register_finance_routes(server, services);
+  register_report_routes(server, services);
 }
 
 }  // namespace xiaotu
