@@ -19,6 +19,11 @@ struct SystemSettings {
   bool allow_negative_stock = false;
   int session_idle_minutes = 30;
   int session_absolute_hours = 12;
+  // 库存成本口径：INCLUSIVE 含税价（默认，沿用历史行为）/ NET 不含税净额。
+  // 只影响切换后新审核的单据，历史流水不重算。
+  std::string cost_basis = "INCLUSIVE";
+  // 最近一次口径切换时间（服务端写入，只读）；空串表示从未切换。
+  std::string cost_basis_changed_at;
 };
 
 // 会话超时：空闲窗口滑动续期，绝对上限从签发时刻起算。

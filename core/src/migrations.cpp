@@ -966,6 +966,14 @@ ALTER TABLE app_user ADD COLUMN failed_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE app_user ADD COLUMN locked_until TEXT NOT NULL DEFAULT '';
 )SQL";
 
+// v33：库存成本口径。默认 INCLUSIVE（按价税合计入账），与既有行为一致；
+// changed_at 记录最近一次切换时间，空串表示从未切换。
+constexpr const char* kV33 = R"SQL(
+INSERT INTO app_setting (key, value, updated_at, updated_by) VALUES
+  ('cost_basis', 'INCLUSIVE', datetime('now', 'localtime'), 'system'),
+  ('cost_basis_changed_at', '', datetime('now', 'localtime'), 'system');
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -1013,6 +1021,7 @@ const std::vector<Migration>& all_migrations() {
       {30, "v30_partner_merge_log", kV30},
       {31, "v31_doc_request_version", kV31},
       {32, "v32_user_login_lock", kV32},
+      {33, "v33_cost_basis", kV33},
   };
   return migrations;
 }

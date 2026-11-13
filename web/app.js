@@ -6355,6 +6355,13 @@
           </div>
           <label class="field"><span>会话空闲超时（分钟）</span><input type="number" min="1" max="1440" step="1" data-field="session_idle_minutes" ${writable ? "" : "disabled"} /></label>
           <label class="field"><span>会话绝对上限（小时）</span><input type="number" min="1" max="720" step="1" data-field="session_absolute_hours" ${writable ? "" : "disabled"} /></label>
+          <label class="field"><span>库存成本口径</span>
+            <select data-field="cost_basis" ${writable ? "" : "disabled"}>
+              <option value="INCLUSIVE">含税价（价税合计）</option>
+              <option value="NET">不含税净额</option>
+            </select>
+            <span class="page-sub" data-role="basis-state"></span>
+          </label>
           <span class="page-sub">空闲超时按最近访问滑动续期；绝对上限从登录时刻起算，超过后需重新登录。</span>
           <div class="form-actions">
             ${writable ? '<button class="btn primary" type="submit">保存</button>' : '<span class="page-sub">当前角色只读</span>'}
@@ -6371,11 +6378,19 @@
     const form = mount.querySelector('[data-role="form"]');
     const input = (name) => form.querySelector('[data-field="' + name + '"]');
     const negativeState = mount.querySelector('[data-role="negative-state"]');
+    const basisState = mount.querySelector('[data-role="basis-state"]');
 
     function renderNegativeState() {
       negativeState.textContent = input("allow_negative_stock").checked
         ? "当前：开启（出库超库存会形成负结存）"
         : "当前：关闭（出库超库存会被拒绝）";
+    }
+
+    function renderBasisState(settings) {
+      const label = settings.cost_basis === "NET" ? "不含税净额" : "含税价";
+      basisState.textContent = settings.cost_basis_changed_at
+        ? "当前：" + label + "；切换于 " + settings.cost_basis_changed_at + "，只影响新审核单据"
+        : "当前：" + label + "；尚未切换过口径，只影响新审核单据";
     }
 
     try {
@@ -6387,7 +6402,9 @@
       input("allow_negative_stock").checked = data.allow_negative_stock === true;
       input("session_idle_minutes").value = data.session_idle_minutes || 30;
       input("session_absolute_hours").value = data.session_absolute_hours || 12;
+      input("cost_basis").value = data.cost_basis === "NET" ? "NET" : "INCLUSIVE";
       renderNegativeState();
+      renderBasisState(data);
     } catch (error) {
       showNotice(error.message, "error");
       return;
@@ -6408,8 +6425,10 @@
           allow_negative_stock: input("allow_negative_stock").checked,
           session_idle_minutes: Number(input("session_idle_minutes").value),
           session_absolute_hours: Number(input("session_absolute_hours").value),
+          cost_basis: input("cost_basis").value,
         });
         renderNegativeState();
+        renderBasisState(await api("GET", "/api/settings"));
         showNotice("系统参数已保存", "ok");
       } catch (error) {
         showNotice(error.message, "error");

@@ -28,11 +28,16 @@ enum class PartnerKind { None, Supplier, Customer };
 // 单据角色：交易单据直接产生库存/往来；订单类单据只做确认与转出库来源。
 enum class DocumentRole { Transaction, Order };
 
+// 成本口径：INCLUSIVE 取价税合计（amount_cents），NET 取不含税净额（net_cents）。
+// 系统参数在审核时读取一次，只作用于本次审核写入的流水，历史流水不重算。
+enum class CostBasis { Inclusive, Net };
+
 // 成本钩子：返回本次变动应结转的金额（正数，单位分）。
-// 参数为数量、单价（分）与变动前的结存数量/金额，便于移动加权平均等算法复用。
-using CostHook = std::function<std::int64_t(std::int64_t qty, std::int64_t price_cents,
+// 参数为整行明细（含数量/单价/净额）、变动前的结存数量/金额与当前成本口径，
+// 便于移动加权平均与按口径取价等算法复用。
+using CostHook = std::function<std::int64_t(const DocLineInput& line,
                                             std::int64_t balance_qty,
-                                            std::int64_t balance_amount)>;
+                                            std::int64_t balance_amount, CostBasis basis)>;
 
 // 单据定义：新增单据类型只加定义，不加流程代码。
 struct DocumentDefinition {

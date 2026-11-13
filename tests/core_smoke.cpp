@@ -86,7 +86,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 32, "迁移后 schema 版本应为 32");
+      check(db.schema_version() == 33, "迁移后 schema 版本应为 33");
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
       db.read([&](sqlite3* conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
@@ -2397,6 +2397,66 @@ int main() {
       }
       check(negative_blocked_again, "负库存关回后触发器应继续拒绝负结存");
 
+      // 成本口径：默认含税；切到不含税后只影响新审核单据，历史结存与流水不变。
+      const auto basis_item =
+          items.create(xiaotu::gen::ItemRow{.code = "BASIS1", .name = "口径商品", .unit_id = 1});
+      check(settings.load().cost_basis == "INCLUSIVE", "成本口径默认应为含税价");
+      check(settings.load().cost_basis_changed_at.empty(), "未切换过口径时切换日应为空");
+      const auto basis_doc = [&](const std::string& doc_type, std::int64_t price_cents) {
+        xiaotu::DocInput doc;
+        doc.doc_type = doc_type;
+        doc.warehouse_id = warehouse_list.at(0).id;
+        doc.doc_date = kToday;
+        doc.partner = "口径往来单位";
+        if (doc_type == "OTH_IN") doc.biz_category = "OTHER";
+        doc.lines.push_back(xiaotu::DocLineInput{.item_id = basis_item.id,
+                                                 .qty = q(1),
+                                                 .price_cents = price_cents,
+                                                 .tax_rate_bp = 1300,
+                                                 .price_includes_tax = true});
+        return documents.save_and_approve(doc);
+      };
+      const auto inclusive_doc = basis_doc("PUR_IN", 11300);
+      check(balance_of(basis_item.id).amount_cents == 11300,
+            "含税口径新单成本应等于价税合计 11300 分");
+      const auto ledger_before = stock.ledger(basis_item.id);
+      check(ledger_before.size() == 1 && ledger_before.front().amount_cents == 11300,
+            "含税口径入库流水金额应为价税合计");
+
+      auto basis_setting = settings.load();
+      basis_setting.cost_basis = "NET";
+      settings.update(basis_setting);
+      const auto switched_setting = settings.load();
+      check(switched_setting.cost_basis == "NET" && !switched_setting.cost_basis_changed_at.empty(),
+            "切换成本口径应记录生效时间");
+      check(balance_of(basis_item.id).amount_cents == 11300, "切换口径不应改动历史结存");
+      const auto ledger_after_switch = stock.ledger(basis_item.id);
+      check(ledger_after_switch.size() == 1 &&
+                ledger_after_switch.front().amount_cents == 11300,
+            "切换口径不应改动历史流水金额");
+
+      const auto net_doc = basis_doc("PUR_IN", 11300);
+      check(balance_of(basis_item.id).amount_cents == 21300,
+            "不含税口径新单成本应等于净额 10000 分");
+      check(11300 - 10000 == 1300, "同一含税单两种口径的成本差额应等于税额");
+      const auto basis_other_in_doc = basis_doc("OTH_IN", 11300);
+      check(balance_of(basis_item.id).amount_cents == 31300,
+            "其他入库应与采购入库共用同一取值路径");
+      const auto return_doc = basis_doc("PUR_RET", 11300);
+      check(balance_of(basis_item.id).amount_cents == 21300,
+            "采购退货应按净额冲减库存金额");
+
+      // 切回默认，避免影响后续用例；单据与商品一并清理。
+      basis_setting.cost_basis = "INCLUSIVE";
+      settings.update(basis_setting);
+      check(settings.load().cost_basis == "INCLUSIVE", "成本口径应能切回含税价");
+      documents.reverse(return_doc.id);
+      documents.reverse(basis_other_in_doc.id);
+      documents.reverse(net_doc.id);
+      documents.reverse(inclusive_doc.id);
+      check(balance_of(basis_item.id).amount_cents == 0, "反审核后口径商品结存金额应清零");
+      items.remove(basis_item.id);
+
       // 信用额度：卡在销售出库审核，默认提示不拦、确认后放行并写审计；reject 模式硬拦。
       xiaotu::CustomerService credit_customers(db);
       const auto credit_customer =
@@ -2700,6 +2760,8 @@ int main() {
                            "ALTER TABLE app_user DROP COLUMN must_change_password;"
                            "ALTER TABLE app_user DROP COLUMN failed_count;"
                            "ALTER TABLE app_user DROP COLUMN locked_until;"
+                           "DELETE FROM app_setting WHERE key IN"
+                           " ('cost_basis', 'cost_basis_changed_at');"
                            "DELETE FROM schema_migration WHERE version >= 28;"
                            "PRAGMA user_version = 27;",
                            nullptr, nullptr, nullptr);
@@ -2738,7 +2800,7 @@ int main() {
         });
 
         xiaotu::migrate(mig);
-        check(mig.schema_version() == 32, "有数据的模拟库应迁到 v32");
+        check(mig.schema_version() == 33, "有数据的模拟库应迁到 v33");
 
         mig.read([&](sqlite3* conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");

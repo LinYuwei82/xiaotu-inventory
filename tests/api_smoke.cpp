@@ -445,6 +445,38 @@ void run_server_mode(const std::filesystem::path& dir) {
   }
   check(audit_count(db, "update", "setting") == 7, "两个会话超时键应各写一条审计");
 
+  // 成本口径：默认含税；切换后记录生效时间，库存流水报表能读出切换日。
+  const auto basis_default = client.Get("/api/settings");
+  check(basis_default && basis_default->status == 200 &&
+            nlohmann::json::parse(basis_default->body).value("cost_basis", "") == "INCLUSIVE",
+        "成本口径默认应为含税价");
+  check(basis_default &&
+            nlohmann::json::parse(basis_default->body).value("cost_basis_changed_at", "x").empty(),
+        "未切换过口径时切换日应为空");
+  const auto basis_switched =
+      client.Put("/api/settings", R"({"cost_basis":"NET"})", "application/json");
+  check(basis_switched && basis_switched->status == 200, "切换成本口径应返回 200");
+  const std::string basis_changed_at =
+      basis_switched ? nlohmann::json::parse(basis_switched->body)
+                           .value("cost_basis_changed_at", std::string{})
+                     : std::string{};
+  check(!basis_changed_at.empty(), "切换成本口径应写入生效时间并返回");
+  const auto ledger_report = client.Get("/api/reports/stock-ledger");
+  check(ledger_report && ledger_report->status == 200, "库存流水报表应返回 200");
+  if (ledger_report) {
+    const auto data = nlohmann::json::parse(ledger_report->body);
+    check(data.value("cost_basis", "") == "NET", "库存流水报表应标注当前成本口径");
+    check(data.value("cost_basis_changed_at", "") == basis_changed_at,
+          "库存流水报表应能读出切换日");
+  }
+  const auto profit_report = client.Get("/api/reports/sales-profit");
+  check(profit_report && profit_report->status == 200, "销售毛利报表应返回 200");
+  const auto basis_restored =
+      client.Put("/api/settings", R"({"cost_basis":"INCLUSIVE"})", "application/json");
+  check(basis_restored && basis_restored->status == 200 &&
+            nlohmann::json::parse(basis_restored->body).value("cost_basis", "") == "INCLUSIVE",
+        "成本口径应能切回含税价");
+
   // 模板抬头为空时，打印用公司名称兜底。
   const auto printed = client.Get("/api/print/render?target_type=REPORT&target_key=sales-profit");
   check(printed && printed->status == 200, "打印渲染应返回 200");
@@ -472,8 +504,8 @@ void run_server_mode(const std::filesystem::path& dir) {
   check(diagnostic && diagnostic->status == 200, "诊断信息应返回 200");
   if (diagnostic) {
     const auto data = nlohmann::json::parse(diagnostic->body);
-    check(data.value("schema_version", 0) == 32, "诊断信息里的 schema 应为 32");
-    check(data.value("migrations", 0) == 32, "诊断信息里的迁移条数应为 32");
+    check(data.value("schema_version", 0) == 33, "诊断信息里的 schema 应为 33");
+    check(data.value("migrations", 0) == 33, "诊断信息里的迁移条数应为 33");
     check(data.value("mode", "") == "server", "网络版诊断信息 mode 应为 server");
     check(!data.value("data_dir", "").empty(), "诊断信息应包含数据目录");
     check(data.value("database_bytes", 0LL) > 0, "诊断信息应包含大于 0 的数据库大小");

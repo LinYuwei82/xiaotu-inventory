@@ -60,8 +60,13 @@ void register_stock_routes(httplib::Server& server, Services& services) {
                        item_id = std::stoll(req.get_param_value("item_id"));
                      }
                      nlohmann::json list = nlohmann::json::array();
+                     const auto settings = services.settings.load();
                      for (const auto& row : services.stock.ledger(item_id)) {
-                       list.push_back(ledger_to_json(row));
+                       auto item = ledger_to_json(row);
+                       // 成本口径与最近切换日随流水返回，便于对比切换前后的金额。
+                       item["cost_basis"] = settings.cost_basis;
+                       item["cost_basis_changed_at"] = settings.cost_basis_changed_at;
+                       list.push_back(item);
                      }
                      json_ok(res, list);
                    }));

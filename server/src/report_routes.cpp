@@ -285,6 +285,15 @@ nlohmann::json profit_to_json(const SalesProfitRow& row) {
   };
 }
 
+// 成本口径说明：报表标注当前口径与切换日，避免把切换前后的毛利直接对比。
+std::string cost_basis_label(const SystemSettings& settings) {
+  std::string label = settings.cost_basis == "NET" ? "不含税净额" : "含税价";
+  if (!settings.cost_basis_changed_at.empty()) {
+    label += "（切换于 " + settings.cost_basis_changed_at + "）";
+  }
+  return label;
+}
+
 std::string biz_category_label(const std::string& category) {
   if (category == "GIFT") return "赠品";
   if (category == "USAGE") return "领用";
@@ -662,6 +671,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      }
                      const auto rows = services.reports.stock_ledger(filter);
                      const auto totals = services.reports.stock_ledger_totals(filter);
+                     const auto settings = services.settings.load();
                      const std::int64_t last_row =
                          static_cast<std::int64_t>(filter.offset + rows.size());
                      const bool truncated = totals.rows > last_row;
@@ -672,7 +682,8 @@ void register_report_routes(httplib::Server& server, Services& services) {
                          qty_direction_label(filter.qty_direction) + "；业务类型 " +
                          (filter.biz_category.empty() ? std::string("全部")
                                                       : biz_category_label(filter.biz_category)) +
-                         "；共 " + std::to_string(totals.rows) + " 行" +
+                         "；成本口径 " + cost_basis_label(settings) + "；共 " +
+                         std::to_string(totals.rows) + " 行" +
                          (rows.empty() ? std::string()
                                        : "，当前显示第 " +
                                              std::to_string(filter.offset + 1) + "–" +
@@ -730,6 +741,9 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                                  {"limit", filter.limit},
                                                  {"offset", filter.offset},
                                                  {"truncated", truncated},
+                                                 {"cost_basis", settings.cost_basis},
+                                                 {"cost_basis_changed_at",
+                                                  settings.cost_basis_changed_at},
                                                  {"rows", list},
                                                  {"totals",
                                                   {{"qty", qty_text(totals.qty)},
@@ -823,6 +837,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      const ReportFilter filter = parse_filter(req);
                      const auto rows = services.reports.sales_profit(filter);
+                     const auto settings = services.settings.load();
                      // 数量跨单位不可加总；合计行汇总收入、成本、毛利并重算毛利率。
                      std::int64_t profit_revenue = 0;
                      std::int64_t profit_cost = 0;
@@ -842,7 +857,8 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                              ? std::string("全部")
                                              : "ID " + std::to_string(filter.customer_id)) +
                                         "；收入取单据金额，成本取审核写入的库存流水，"
-                                        "已反审核单据不计入");
+                                        "已反审核单据不计入；成本口径 " +
+                                        cost_basis_label(settings));
                        csv_row(csv, {"商品编码", "商品名称", "单位", "销售数量",
                                      "销售收入（元）", "销售成本（元）", "毛利（元）", "毛利率"});
                        for (const auto& row : rows) {
@@ -866,7 +882,8 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                               ? std::string("全部")
                                               : "ID " + std::to_string(filter.customer_id)) +
                                          "；收入取单据金额，成本取审核写入的库存流水，"
-                                         "已反审核单据不计入");
+                                         "已反审核单据不计入；成本口径 " +
+                                         cost_basis_label(settings));
                        sheet.add_header_row({"商品编码", "商品名称", "单位", "销售数量",
                                              "销售收入（元）", "销售成本（元）", "毛利（元）",
                                              "毛利率"});
@@ -892,7 +909,11 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      }
                      nlohmann::json list = nlohmann::json::array();
                      for (const auto& row : rows) {
-                       list.push_back(profit_to_json(row));
+                       auto item = profit_to_json(row);
+                       // 每行标注当前成本口径与切换日，避免拿切换前后的毛利直接比较。
+                       item["cost_basis"] = settings.cost_basis;
+                       item["cost_basis_changed_at"] = settings.cost_basis_changed_at;
+                       list.push_back(item);
                      }
                      json_ok(res, list);
                    }));

@@ -84,6 +84,12 @@ SystemSettings SettingService::load() const {
     out.allow_negative_stock = read_value(conn, "allow_negative_stock") == "1";
     out.session_idle_minutes = read_int(conn, "session_idle_minutes", 30);
     out.session_absolute_hours = read_int(conn, "session_absolute_hours", 12);
+    out.cost_basis = read_value(conn, "cost_basis");
+    if (out.cost_basis != "NET") {
+      // 缺失或脏值一律回落到默认的含税口径。
+      out.cost_basis = "INCLUSIVE";
+    }
+    out.cost_basis_changed_at = read_value(conn, "cost_basis_changed_at");
   });
   return out;
 }
@@ -112,6 +118,9 @@ SystemSettings SettingService::update(const SystemSettings& input) {
   if (input.session_absolute_hours * 60 <= input.session_idle_minutes) {
     throw AppError("INVALID_INPUT", "会话绝对上限必须大于空闲超时");
   }
+  if (input.cost_basis != "INCLUSIVE" && input.cost_basis != "NET") {
+    throw AppError("INVALID_INPUT", "成本口径只支持 INCLUSIVE 或 NET");
+  }
   db_.write([&](sqlite3* conn) {
     save_one(conn, "company_name", input.company.name);
     save_one(conn, "company_phone", input.company.phone);
@@ -119,6 +128,15 @@ SystemSettings SettingService::update(const SystemSettings& input) {
     save_one(conn, "allow_negative_stock", input.allow_negative_stock ? "1" : "0");
     save_one(conn, "session_idle_minutes", std::to_string(input.session_idle_minutes));
     save_one(conn, "session_absolute_hours", std::to_string(input.session_absolute_hours));
+    // 口径真正发生变化时记录生效时间；重复保存同一值不刷新切换日。
+    const bool basis_changed = read_value(conn, "cost_basis") != input.cost_basis;
+    save_one(conn, "cost_basis", input.cost_basis);
+    if (basis_changed) {
+      Stmt stmt(conn,
+                "UPDATE app_setting SET value = ?, updated_at = ?, updated_by = ?"
+                " WHERE key = 'cost_basis_changed_at';");
+      stmt.bind(1, now_text()).bind(2, now_text()).bind(3, current_user()).run();
+    }
   });
   return load();
 }

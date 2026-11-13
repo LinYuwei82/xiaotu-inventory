@@ -16,6 +16,8 @@ nlohmann::json to_json(const SystemSettings& settings) {
       {"allow_negative_stock", settings.allow_negative_stock},
       {"session_idle_minutes", settings.session_idle_minutes},
       {"session_absolute_hours", settings.session_absolute_hours},
+      {"cost_basis", settings.cost_basis},
+      {"cost_basis_changed_at", settings.cost_basis_changed_at},
   };
 }
 
@@ -35,6 +37,9 @@ void merge_json(const nlohmann::json& body, SystemSettings& settings) {
   }
   if (body.contains("session_absolute_hours")) {
     settings.session_absolute_hours = body.value("session_absolute_hours", 12);
+  }
+  if (body.contains("cost_basis")) {
+    settings.cost_basis = body.value("cost_basis", settings.cost_basis);
   }
 }
 

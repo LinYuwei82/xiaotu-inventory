@@ -21,11 +21,26 @@
 namespace xiaotu {
 namespace {
 
-// 入库/退货：按录入单价入账（采购入库与销售退货的成本口径）。
-std::int64_t amount_by_unit_price(std::int64_t qty, std::int64_t price,
-                                  std::int64_t /*balance_qty*/,
-                                  std::int64_t /*balance_amount*/) {
-  return mul_qty_price(qty, price);
+// 入库/退货：按单价入账（采购入库、采购退货与其他入库共用同一取值路径）。
+// 含税口径取价税合计；不含税口径取行净额，含税单的差额正好是税额。
+std::int64_t amount_by_unit_price(const DocLineInput& line, std::int64_t /*balance_qty*/,
+                                  std::int64_t /*balance_amount*/, CostBasis basis) {
+  if (basis == CostBasis::Net) {
+    return line.net_cents;
+  }
+  return mul_qty_price(line.qty, line.price_cents);
+}
+
+// 移动加权平均：与成本方法无关，两种口径下都按结存金额比例结转。
+std::int64_t moving_average_hook(const DocLineInput& line, std::int64_t balance_qty,
+                                 std::int64_t balance_amount, CostBasis /*basis*/) {
+  return moving_average_cost(line.qty, line.price_cents, balance_qty, balance_amount);
+}
+
+// 系统参数缺失或脏值一律按默认的含税口径处理。
+CostBasis current_cost_basis(sqlite3* conn) {
+  Stmt stmt(conn, "SELECT value FROM app_setting WHERE key = 'cost_basis';");
+  return stmt.step() && stmt.text(0) == "NET" ? CostBasis::Net : CostBasis::Inclusive;
 }
 
 }  // namespace
@@ -51,7 +66,7 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .finance_direction = 1,
           .finance_red = false,
           .price_source = PriceSource::Manual,
-          .cost_hook = moving_average_cost,
+          .cost_hook = moving_average_hook,
           .on_approve = nullptr,
           .on_reverse = nullptr,
       },
@@ -94,7 +109,7 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .finance_direction = 1,
           .finance_red = true,
           .price_source = PriceSource::Manual,
-          .cost_hook = moving_average_cost,
+          .cost_hook = moving_average_hook,
           .on_approve = nullptr,
           .on_reverse = nullptr,
       },
@@ -188,7 +203,7 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .finance_direction = 0,
           .finance_red = false,
           .price_source = PriceSource::Manual,
-          .cost_hook = moving_average_cost,
+          .cost_hook = moving_average_hook,
           .on_approve = nullptr,
           .on_reverse = nullptr,
       },
@@ -337,10 +352,9 @@ void apply_in_or_out(sqlite3* conn, const DocumentDefinition& definition, std::i
     ensure_available(conn, warehouse_id, line.item_id, line.qty);
   }
 
+  const CostBasis basis = current_cost_basis(conn);
   const std::int64_t cost =
-      definition.cost_hook ? definition.cost_hook(line.qty, line.price_cents, balance.qty,
-                                                  balance.amount)
-                           : 0;
+      definition.cost_hook ? definition.cost_hook(line, balance.qty, balance.amount, basis) : 0;
   write_move(conn, definition.doc_type, doc_id, line_id, warehouse_id, line.item_id, biz_time,
              outgoing ? -line.qty : line.qty, outgoing ? -cost : cost);
 }
@@ -689,11 +703,11 @@ std::int64_t default_tax_rate(sqlite3* conn, std::int64_t item_id) {
 }
 
 std::vector<std::int64_t> insert_lines(sqlite3* conn, std::int64_t doc_id,
-                                       const std::vector<DocLineInput>& lines, bool cost_adjust) {
+                                       std::vector<DocLineInput>& lines, bool cost_adjust) {
   std::vector<std::int64_t> line_ids;
   line_ids.reserve(lines.size());
   std::int64_t line_no = 1;
-  for (const DocLineInput& line : lines) {
+  for (DocLineInput& line : lines) {
     const std::int64_t line_id = next_id();
     const std::int64_t amount = cost_adjust ? 0 : mul_qty_price(line.qty, line.price_cents);
     std::int64_t rate_bp = 0;
@@ -702,6 +716,10 @@ std::vector<std::int64_t> insert_lines(sqlite3* conn, std::int64_t doc_id,
     if (!cost_adjust) {
       rate_bp = line.tax_rate_bp >= 0 ? line.tax_rate_bp : default_tax_rate(conn, line.item_id);
       compute_line_tax(amount, rate_bp, line.price_includes_tax, net_cents, tax_cents);
+      // 回写解析后的税额，审核时按口径取净额无需再查一次默认税率。
+      line.tax_rate_bp = rate_bp;
+      line.net_cents = net_cents;
+      line.tax_cents = tax_cents;
     }
     Stmt insert_line(conn,
                      "INSERT INTO doc_line (id, doc_id, line_no, item_id, qty, price_cents,"
@@ -993,12 +1011,13 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input,
       bump.bind(1, created.id).run();
       created.version = 1;
     }
+    // 明细税额在落库时解析；用可变副本承载净额，审核时按成本口径直接取用。
+    std::vector<DocLineInput> lines = input.lines;
     const std::vector<std::int64_t> line_ids =
-        insert_lines(conn, created.id, input.lines,
-                     definition->stock_mode == StockMode::CostAdjust);
+        insert_lines(conn, created.id, lines, definition->stock_mode == StockMode::CostAdjust);
     if (definition->affects_stock) {
       apply_stock_moves(conn, *definition, created.id, input.warehouse_id,
-                        input.target_warehouse_id, validated.biz_time, input.lines, line_ids);
+                        input.target_warehouse_id, validated.biz_time, lines, line_ids);
     }
     if (definition->on_approve) {
       definition->on_approve(conn, created.id);
@@ -1032,8 +1051,8 @@ DocumentEngine::Created DocumentEngine::save_draft(const DocInput& input) {
     insert_header(conn, created.id, created.doc_no, definition->doc_type,
                   definition->partner_kind, input, header_warehouse_id(*definition, input),
                   validated, false, "");
-    insert_lines(conn, created.id, input.lines,
-                 definition->stock_mode == StockMode::CostAdjust);
+    std::vector<DocLineInput> lines = input.lines;
+    insert_lines(conn, created.id, lines, definition->stock_mode == StockMode::CostAdjust);
     audit_write(conn, "save_draft", "document", created.id, created.doc_no,
                 doc_detail(definition->doc_type, validated));
   });
@@ -1104,8 +1123,8 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
 
     Stmt clear(conn, "DELETE FROM doc_line WHERE doc_id = ?;");
     clear.bind(1, doc_id).run();
-    insert_lines(conn, doc_id, input.lines,
-                 definition->stock_mode == StockMode::CostAdjust);
+    std::vector<DocLineInput> lines = input.lines;
+    insert_lines(conn, doc_id, lines, definition->stock_mode == StockMode::CostAdjust);
     audit_write(conn, "update_draft", "document", doc_id, doc_no,
                 doc_detail(doc_type, validated));
   });
@@ -1194,7 +1213,8 @@ void DocumentEngine::approve(std::int64_t doc_id, bool confirm_credit,
     {
       Stmt lines(conn,
                  "SELECT id, item_id, qty, price_cents, warehouse_id, adjust_cents,"
-                 " adjust_reason FROM doc_line WHERE doc_id = ? ORDER BY line_no;");
+                 " adjust_reason, tax_rate_bp, price_includes_tax, net_cents"
+                 " FROM doc_line WHERE doc_id = ? ORDER BY line_no;");
       lines.bind(1, doc_id);
       while (lines.step()) {
         line_ids.push_back(lines.i64(0));
@@ -1203,7 +1223,10 @@ void DocumentEngine::approve(std::int64_t doc_id, bool confirm_credit,
                                            .price_cents = lines.i64(3),
                                            .warehouse_id = lines.i64(4),
                                            .adjust_cents = lines.i64(5),
-                                           .adjust_reason = lines.text(6)});
+                                           .adjust_reason = lines.text(6),
+                                           .tax_rate_bp = lines.i64(7),
+                                           .price_includes_tax = lines.i64(8) != 0,
+                                           .net_cents = lines.i64(9)});
       }
     }
 
