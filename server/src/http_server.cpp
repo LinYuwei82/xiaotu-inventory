@@ -259,17 +259,26 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     const std::filesystem::path backup_dir = std::filesystem::path(info_.data_dir) / "backups";
     const BackupStatus backup = backup_status(backup_dir);
     nlohmann::json backup_body;
-    backup_body["directory"] = backup_dir.string();
-    backup_body["last_at"] = backup.last_at;
-    backup_body["last_result"] = backup.last_result.empty() ? "none" : backup.last_result;
-    backup_body["last_message"] = backup.last_message;
-    backup_body["last_path"] = backup.last_path;
-    backup_body["last_bytes"] = backup.last_bytes;
+    // 免登录接口：只给状态与文件名，不返回任何目录或绝对路径。
+    if (backup.last_success_at.empty()) {
+      backup_body["last_success"] = nullptr;
+    } else {
+      backup_body["last_success"] = {{"at", backup.last_success_at},
+                                     {"file", backup.last_success_file},
+                                     {"bytes", backup.last_success_bytes}};
+    }
+    if (backup.last_failure_at.empty()) {
+      backup_body["last_failure"] = nullptr;
+    } else {
+      backup_body["last_failure"] = {{"at", backup.last_failure_at},
+                                     {"reason", backup.last_failure_reason}};
+    }
     backup_body["schema_version"] = backup.schema_version;
     backup_body["count"] = backup.backup_count;
     backup_body["daily_keep"] = kDailyBackupKeep;
     backup_body["monthly_keep"] = kMonthlyBackupKeep;
     backup_body["due"] = daily_backup_due(backup_dir);
+    backup_body["database_writable"] = database_writable(services_.db);
     body["backup"] = backup_body;
     json_ok(res, body);
   });

@@ -4,6 +4,7 @@
 #include <sqlite3.h>
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -98,12 +99,43 @@ void run_server_mode(const std::filesystem::path& dir) {
         "/api/health 应返回数据目录告警字段");
   const nlohmann::json health_body =
       health ? nlohmann::json::parse(health->body) : nlohmann::json::object();
-  check(health_body.contains("backup") && health_body["backup"].contains("last_at") &&
-            health_body["backup"].contains("last_result") && health_body["backup"].contains("due"),
-        "/api/health 应返回备份状态");
+  check(health_body.contains("backup") && health_body["backup"].contains("last_success") &&
+            health_body["backup"].contains("last_failure") && health_body["backup"].contains("due"),
+        "/api/health 应返回备份成功/失败状态");
   check(health_body.contains("backup") && health_body["backup"].value("count", -1) == 0 &&
-            health_body["backup"].value("last_result", "") == "none",
-        "/api/health 初始备份数应为 0");
+            health_body["backup"]["last_success"].is_null() &&
+            health_body["backup"]["last_failure"].is_null(),
+        "/api/health 初始应无备份记录");
+  check(health_body.contains("backup") &&
+            health_body["backup"].contains("database_writable") &&
+            health_body["backup"]["database_writable"] == true,
+        "/api/health 应返回数据库可写状态");
+  check(health && health->body.find(dir.string()) == std::string::npos,
+        "/api/health 不应返回绝对路径");
+
+  // 写入一份同时包含成功与失败的状态文件，验证两类状态可区分且不泄漏路径。
+  std::filesystem::create_directories(dir / "backups");
+  {
+    std::ofstream status(dir / "backups" / "backup-status.json");
+    status << R"({"last_success":{"at":"2026-11-13 09:00:00",)"
+              R"("file":"app-20261113-090000-daily.db","bytes":4096},)"
+              R"("last_failure":{"at":"2026-11-12 02:30:00","reason":"磁盘已满"},)"
+              R"("schema_version":26})";
+  }
+  {
+    std::ofstream fake(dir / "backups" / "app-20261113-090000-daily.db");
+    fake << "";
+  }
+  const auto health_after = client.Get("/api/health");
+  const nlohmann::json backup_after =
+      health_after ? nlohmann::json::parse(health_after->body)["backup"] : nlohmann::json{};
+  check(backup_after["last_success"].is_object() && backup_after["last_failure"].is_object(),
+        "health 应分别返回最近成功与最近失败");
+  check(backup_after["last_success"].value("file", "").find('/') == std::string::npos,
+        "备份文件名不应包含目录");
+  check(backup_after.value("count", -1) == 1, "health 应统计可用备份数");
+  check(health_after && health_after->body.find(dir.string()) == std::string::npos,
+        "health 备份状态不应包含数据目录绝对路径");
 
   const auto anonymous = client.Get("/api/items");
   check(anonymous && anonymous->status == 401, "未登录访问主数据应返回 401");

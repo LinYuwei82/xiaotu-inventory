@@ -150,11 +150,25 @@ void test_daily_backup(const std::filesystem::path& root) {
         "每日备份文件名带 daily 标记");
 
   const xiaotu::BackupStatus status = xiaotu::backup_status(data / "backups");
-  check(status.last_result == "ok", "备份状态记录成功");
-  check(status.last_at.size() == 19, "备份状态记录完成时间");
-  check(status.last_bytes > 0, "备份状态记录大小");
+  check(status.last_success_at.size() == 19, "备份状态记录成功时间");
+  check(status.last_success_bytes > 0, "备份状态记录大小");
+  check(status.last_failure_at.empty(), "成功备份不产生失败记录");
   check(status.backup_count == 1, "备份状态统计可用备份数");
+  check(xiaotu::database_writable(db), "正常库应判定为可写");
   check(!xiaotu::daily_backup_due(data / "backups"), "当天已备份后不再到期");
+
+  // 成功与失败分别记录：手工写入一条失败状态，不影响上次成功。
+  {
+    std::ofstream out(data / "backups" / "backup-status.json", std::ios::trunc);
+    out << R"({"last_success":{"at":"2026-11-13 09:00:00",)"
+           R"("file":"app-20261113-090000-daily.db","bytes":4096},)"
+           R"("last_failure":{"at":"2026-11-12 02:30:00","reason":"磁盘已满"},)"
+           R"("schema_version":26})";
+  }
+  const xiaotu::BackupStatus mixed = xiaotu::backup_status(data / "backups");
+  check(mixed.last_success_at == "2026-11-13 09:00:00" && !mixed.last_failure_at.empty(),
+        "成功与失败状态可同时保留并区分");
+  check(mixed.last_failure_reason == "磁盘已满", "失败原因可读取");
 
   const xiaotu::DailyBackupOutcome second = xiaotu::run_daily_backup(db, data);
   check(!second.ran, "同一天重复调用不再生成备份");

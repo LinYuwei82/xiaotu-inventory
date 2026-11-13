@@ -69,11 +69,18 @@ void write_status(const std::filesystem::path& directory, const BackupStatus& st
     return;
   }
   nlohmann::json body;
-  body["last_at"] = status.last_at;
-  body["last_result"] = status.last_result;
-  body["last_message"] = status.last_message;
-  body["last_path"] = status.last_path;
-  body["last_bytes"] = status.last_bytes;
+  if (!status.last_success_at.empty()) {
+    body["last_success"] = {{"at", status.last_success_at},
+                            {"file", std::filesystem::path(status.last_success_file).filename().string()},
+                            {"bytes", status.last_success_bytes}};
+  } else {
+    body["last_success"] = nullptr;
+  }
+  if (!status.last_failure_at.empty()) {
+    body["last_failure"] = {{"at", status.last_failure_at}, {"reason", status.last_failure_reason}};
+  } else {
+    body["last_failure"] = nullptr;
+  }
   body["schema_version"] = status.schema_version;
   body["updated_at"] = now_text();
 
@@ -107,11 +114,25 @@ BackupStatus read_status(const std::filesystem::path& directory) {
   try {
     nlohmann::json body;
     in >> body;
-    status.last_at = body.value("last_at", "");
-    status.last_result = body.value("last_result", "");
-    status.last_message = body.value("last_message", "");
-    status.last_path = body.value("last_path", "");
-    status.last_bytes = body.value("last_bytes", std::uintmax_t{0});
+    if (body.contains("last_success") && body["last_success"].is_object()) {
+      const auto& success = body["last_success"];
+      status.last_success_at = success.value("at", "");
+      status.last_success_file = success.value("file", "");
+      status.last_success_bytes = success.value("bytes", std::uintmax_t{0});
+    } else if (body.value("last_result", "") == "ok") {
+      // 兼容旧格式：last_result/last_at 单字段。
+      status.last_success_at = body.value("last_at", "");
+      status.last_success_file = std::filesystem::path(body.value("last_path", "")).filename().string();
+      status.last_success_bytes = body.value("last_bytes", std::uintmax_t{0});
+    }
+    if (body.contains("last_failure") && body["last_failure"].is_object()) {
+      const auto& failure = body["last_failure"];
+      status.last_failure_at = failure.value("at", "");
+      status.last_failure_reason = failure.value("reason", "");
+    } else if (body.value("last_result", "") == "failed") {
+      status.last_failure_at = body.value("last_at", "");
+      status.last_failure_reason = body.value("last_message", "");
+    }
     status.schema_version = body.value("schema_version", 0);
   } catch (...) {
     // 状态文件损坏时按「从未备份」处理，由每日任务重新生成。
@@ -408,8 +429,7 @@ BackupStatus backup_status(const std::filesystem::path& directory) {
 bool daily_backup_due(const std::filesystem::path& directory) {
   const std::string today = today_stamp();
   const BackupStatus status = read_status(directory);
-  if (status.last_result == "ok" && status.last_at.size() >= 10 &&
-      status.last_at.substr(0, 10) == today_text()) {
+  if (status.last_success_at.size() >= 10 && status.last_success_at.substr(0, 10) == today_text()) {
     return false;
   }
 
@@ -456,11 +476,13 @@ DailyBackupOutcome run_daily_backup(Db& db, const std::filesystem::path& data_di
     }
 
     BackupStatus status;
-    status.last_at = now_text();
-    status.last_result = "ok";
-    status.last_path = outcome.backup.path.filename().string();
-    status.last_bytes = outcome.backup.bytes;
+    status.last_success_at = now_text();
+    status.last_success_file = outcome.backup.path.filename().string();
+    status.last_success_bytes = outcome.backup.bytes;
     status.schema_version = target_schema_version();
+    const BackupStatus previous = read_status(directory);
+    status.last_failure_at = previous.last_failure_at;
+    status.last_failure_reason = previous.last_failure_reason;
     write_status(directory, status);
 
     try {
@@ -474,15 +496,29 @@ DailyBackupOutcome run_daily_backup(Db& db, const std::filesystem::path& data_di
     log_info("每日备份完成：" + path_to_utf8(outcome.backup.path));
   } catch (const std::exception& error) {
     BackupStatus status = read_status(directory);
-    status.last_at = now_text();
-    status.last_result = "failed";
-    status.last_message = error.what();
+    status.last_failure_at = now_text();
+    status.last_failure_reason = error.what();
     status.schema_version = target_schema_version();
     write_status(directory, status);
     log_error(std::string("每日备份失败：") + error.what());
     throw;
   }
   return outcome;
+}
+
+bool database_writable(Db& db) {
+  bool writable = false;
+  try {
+    db.write_raw([&](sqlite3* connection) {
+      if (sqlite3_exec(connection, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        return;
+      }
+      writable = sqlite3_exec(connection, "ROLLBACK;", nullptr, nullptr, nullptr) == SQLITE_OK;
+    });
+  } catch (...) {
+    writable = false;
+  }
+  return writable;
 }
 
 }  // namespace xiaotu

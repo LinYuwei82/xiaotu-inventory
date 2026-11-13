@@ -274,6 +274,10 @@ int main(int argc, char** argv) {
     // 因此照常抢锁，抢不到就提示已有实例在运行。
     const bool maintenance_only = options.backup || options.backup_daily ||
                                   !options.set_password_user.empty() || options.partner_preview;
+    // --restore 必须在停服时执行，抢不到锁属于失败；--backup/--backup-daily 可与
+    // 运行中的实例并存（VACUUM INTO 是只读快照），--set-password/--partner-preview
+    // 是停机维护命令，它们不参与锁，也不存在「抢锁失败」。
+    const bool exclusive_action = !options.restore_from.empty();
     xiaotu::InstanceLock instance_lock;
     if (!maintenance_only && !instance_lock.acquire(data_dir)) {
       std::cout << "已有小兔进销存实例在使用该数据目录"
@@ -283,6 +287,12 @@ int main(int argc, char** argv) {
                 << "，本次启动已退出。如果确认没有其他实例，可删除锁文件后重试："
                 << instance_lock.lock_path().string() << std::endl;
       xiaotu::log_warn("单实例锁被占用: " + instance_lock.lock_path().string());
+      if (exclusive_action) {
+        std::cout << "恢复需要独占数据目录，请先停止服务再重试。" << std::endl;
+        xiaotu::log_error("恢复被拒绝：数据目录被其他实例占用");
+        xiaotu::shutdown_logging();
+        return 1;
+      }
       xiaotu::shutdown_logging();
       return 0;
     }

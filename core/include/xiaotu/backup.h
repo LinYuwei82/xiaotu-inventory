@@ -53,17 +53,22 @@ RetentionResult apply_daily_retention(const std::filesystem::path& directory,
                                       int daily_keep = kDailyBackupKeep);
 
 // 备份目录的状态，来源是目录内的 backup-status.json 与现存 .db 文件数。
+// 成功与失败分别记录：一次失败不会清掉上次成功信息，反之亦然。
 struct BackupStatus {
-  std::string last_at;      // 本地时间 YYYY-MM-DD HH:MM:SS；空表示从未执行
-  std::string last_result;  // ok / failed；空表示从未执行
-  std::string last_message; // 失败原因；成功时为空
-  std::string last_path;    // 备份文件名（不含目录）
-  std::uintmax_t last_bytes = 0;
+  std::string last_success_at;    // 本地时间 YYYY-MM-DD HH:MM:SS；空表示从未成功
+  std::string last_success_file;  // 文件名（不含目录）
+  std::uintmax_t last_success_bytes = 0;
   int schema_version = 0;
+  std::string last_failure_at;      // 空表示没有失败记录
+  std::string last_failure_reason;
   std::size_t backup_count = 0;  // 目录内 .db 文件数（含手动与安全备份）
 };
 
 BackupStatus backup_status(const std::filesystem::path& directory);
+
+// 判断数据库当前是否可写：用 BEGIN IMMEDIATE 探测写锁后立即回滚，
+// 只读文件、磁盘满、被外部锁占用都会返回 false，不抛异常。
+bool database_writable(Db& db);
 
 // 今天是否还需要执行每日备份：今天已有成功的每日备份则返回 false。
 // status 丢失时按目录内今天的 daily 文件兜底。

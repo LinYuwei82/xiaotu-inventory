@@ -50,3 +50,9 @@ add_executable(xiaotu_backup_smoke "${CMAKE_CURRENT_SOURCE_DIR}/backup_smoke.cpp
 target_link_libraries(xiaotu_backup_smoke PRIVATE xiaotu_core Threads::Threads)
 
 add_test(NAME backup_smoke COMMAND xiaotu_backup_smoke)
+
+if(UNIX)
+  add_test(NAME restore_lock_exit
+           COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/restore_lock_exit.sh"
+                   $<TARGET_FILE:xiaotu-server>)
+endif()
