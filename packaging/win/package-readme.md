@@ -1,5 +1,7 @@
 # 小兔进销存（Windows）
 
+发布者：个人开发者 `si_mem`；版权：`Copyright © 2026 si_mem`。
+
 ## 最快开始
 
 ### 方式一：双击桌面窗口（包内有 `xiaotu-shell.exe` 时）

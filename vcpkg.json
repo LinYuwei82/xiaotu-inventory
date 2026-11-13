@@ -1,6 +1,6 @@
 {
   "name": "xiaotu-inventory",
-  "version-string": "0.1.0",
+  "version-string": "0.9.0",
   "description": "小兔进销存（单机版 / 网络版）",
   "dependencies": [
     "cpp-httplib",

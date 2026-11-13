@@ -17,7 +17,8 @@
 #endif
 
 #define AppName "小兔进销存"
-#define AppPublisher "小兔进销存"
+#define AppPublisher "si_mem"
+#define AppCopyright "Copyright © 2026 si_mem"
 #define AppExeName "xiaotu-shell.exe"
 #define ServerExeName "xiaotu-server.exe"
 #define WebView2Url "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
@@ -27,6 +28,7 @@ AppId={{6E2A9B4D-5C1F-4F3B-9D2E-7A8B1C3D5E6F}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
+AppCopyright={#AppCopyright}
 ; 当前用户安装：不请求管理员权限，数据目录与提权账户无关。
 PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\{#AppName}

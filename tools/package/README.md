@@ -9,7 +9,7 @@ tools/package/make_dmg.sh
 产物在 `build/package/`（已在 `.gitignore` 的 `build/` 下，不入库）：
 
 ```text
-build/package/xiaotu-inventory-0.1.0.dmg
+build/package/xiaotu-inventory-0.9.0.dmg
 ```
 
 dmg 内包含：

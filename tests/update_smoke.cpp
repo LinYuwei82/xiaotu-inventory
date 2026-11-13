@@ -70,6 +70,11 @@ int main() {
   check(xiaotu::compare_product_version(lower, higher) < 0, "版本大小比较");
   check(xiaotu::compare_product_version(higher, higher) == 0, "版本相等比较");
 
+  xiaotu::ProductVersion zero_nine{0, 9, 0};
+  xiaotu::ProductVersion zero_ten{0, 10, 0};
+  check(xiaotu::compare_product_version(zero_nine, zero_ten) < 0,
+        "0.9.0 应小于 0.10.0（不能按字符串比较）");
+
   const auto day = xiaotu::parse_iso8601_utc("2026-11-13T00:00:00Z");
   const auto previous = xiaotu::parse_iso8601_utc("2026-11-12T00:00:00Z");
   check(day.has_value() && previous.has_value(), "ISO 时间解析");

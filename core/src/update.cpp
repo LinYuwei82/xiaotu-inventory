@@ -8,7 +8,7 @@
 #include <string>
 
 #ifndef XIAOTU_VERSION
-#define XIAOTU_VERSION "0.1.0"
+#define XIAOTU_VERSION "0.9.0"
 #endif
 #ifndef XIAOTU_BUILD
 #define XIAOTU_BUILD 1
