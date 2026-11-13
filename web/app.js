@@ -7465,7 +7465,13 @@
   async function goToPage(page) {
     if (page.key === state.current) return;
     if (!(await confirmLeavePage())) return;
-    location.hash = "#/" + encodeURIComponent(page.key);
+    const target = "#/" + encodeURIComponent(page.key);
+    if (location.hash === target) return;
+    // 用 pushState 改地址再手动路由：直接赋值 location.hash 在 Safari 里会被当成
+    // 一次文档导航，整页重新加载（服务端表现为 GET / + 全套静态资源），侧栏跟着
+    // 一起重建，看起来就是「点菜单整页抖一下」。pushState 不触发任何浏览器导航。
+    history.pushState(null, "", target);
+    handleHashChange();
   }
 
   function mountPage(page, options) {
@@ -7702,6 +7708,8 @@
   }
 
   window.addEventListener("hashchange", handleHashChange);
+  // goToPage 改用 pushState 之后，浏览器前进/后退不再触发 hashchange，改由 popstate 驱动。
+  window.addEventListener("popstate", handleHashChange);
   // 关闭窗口或刷新时的浏览器原生提示。只对 --server 的普通浏览器有效；
   // 单机版 WKWebView 不执行 beforeunload，关窗不会弹确认，需在文档中注明。
   window.addEventListener("beforeunload", (event) => {
