@@ -3,6 +3,7 @@
 
 #include <string>
 
+#include "print_paper.h"
 #include "webview.h"
 
 @interface XiaotuAppDelegate : NSObject <NSApplicationDelegate>
@@ -18,35 +19,70 @@
 // 这里用 NSSavePanel 保存 CSV、用 WKWebView 的打印操作走系统打印面板。
 // 把模板纸张与边距落到 NSPrintInfo：PDF 的 MediaBox 与真实打印纸一致。
 // 连续纸（针式）同样是精确尺寸 + 模板边距，不做额外缩放，保证套打位置不漂。
-static void XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper) {
-  if (info == nil || ![paper isKindOfClass:[NSDictionary class]]) {
-    return;
+//
+// paper == nil 只出现在 Cmd+P（没有模板参数）：沿用系统共享打印设置。
+// paper 非 nil 但缺字段或数值非法时返回 NO，由调用方给出可见错误，不静默用 A4。
+static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** failure) {
+  if (info == nil) {
+    if (failure != NULL) *failure = @"打印初始化失败（NSPrintInfo 不可用）。";
+    return NO;
   }
-  const double mm_to_pt = 72.0 / 25.4;
-  NSNumber* width = paper[@"width_mm"];
-  NSNumber* height = paper[@"height_mm"];
-  if ([width isKindOfClass:[NSNumber class]] && [height isKindOfClass:[NSNumber class]] &&
-      width.doubleValue > 0 && height.doubleValue > 0) {
-    [info setPaperSize:NSMakeSize(width.doubleValue * mm_to_pt, height.doubleValue * mm_to_pt)];
+  if (paper == nil) {
+    return YES;
   }
-  NSNumber* margin = paper[@"margin_mm"];
-  if ([margin isKindOfClass:[NSNumber class]] && margin.doubleValue >= 0) {
-    const CGFloat value = margin.doubleValue * mm_to_pt;
-    [info setLeftMargin:value];
-    [info setRightMargin:value];
-    [info setTopMargin:value];
-    [info setBottomMargin:value];
+  if (![paper isKindOfClass:[NSDictionary class]]) {
+    if (failure != NULL) *failure = @"打印参数格式错误，已取消打印。";
+    return NO;
+  }
+  id width = paper[@"width_mm"];
+  id height = paper[@"height_mm"];
+  id margin = paper[@"margin_mm"];
+  if (![width isKindOfClass:[NSNumber class]] || ![height isKindOfClass:[NSNumber class]] ||
+      ![margin isKindOfClass:[NSNumber class]]) {
+    if (failure != NULL) *failure = @"缺少纸型参数（宽 / 高 / 页边距），已取消打印。";
+    return NO;
+  }
+
+  const bool continuous = [paper[@"paper_kind"] isKindOfClass:[NSString class]] &&
+                          [paper[@"paper_kind"] isEqualToString:@"CONTINUOUS"];
+  const bool original = [paper[@"scale_mode"] isKindOfClass:[NSString class]] &&
+                        [paper[@"scale_mode"] isEqualToString:@"ORIGINAL"];
+
+  xiaotu::mac_print::PaperSpec spec;
+  xiaotu::mac_print::PaperFailure error;
+  if (!xiaotu::mac_print::make_paper_spec([width doubleValue], [height doubleValue],
+                                          [margin doubleValue], continuous, original, spec,
+                                          error)) {
+    if (failure != NULL) {
+      *failure = [NSString stringWithUTF8String:error.message.c_str()];
+    }
+    return NO;
+  }
+
+  [info setPaperSize:NSMakeSize(spec.width_pt, spec.height_pt)];
+  [info setLeftMargin:spec.margin_pt];
+  [info setRightMargin:spec.margin_pt];
+  [info setTopMargin:spec.margin_pt];
+  [info setBottomMargin:spec.margin_pt];
+  // 宽 > 高时显式声明横向，避免部分驱动按 portrait 再做一次旋转。
+  [info setOrientation:spec.landscape ? NSPaperOrientationLandscape
+                                      : NSPaperOrientationPortrait];
+  // 连续纸 / 原始尺寸固定 100%，防止驱动「适合页面」把套打位置缩偏。
+  if (spec.fixed_scale) {
+    [info setScalingFactor:1.0];
   }
   // 套打与自定义纸不接受系统居中，否则位置会随纸宽漂移。
   [info setHorizontallyCentered:NO];
   [info setVerticallyCentered:NO];
+  return YES;
 }
 
-@interface XiaotuScriptHandler : NSObject <WKScriptMessageHandler>
+@interface XiaotuScriptHandler : NSObject <WKScriptMessageHandler, NSMenuItemValidation>
 @property(nonatomic, weak) WKWebView* webview;
 @property(nonatomic, weak) NSWindow* window;
 - (void)printDocumentWithPaper:(NSDictionary*)paper;
 - (void)savePdfWithFilename:(NSString*)filename paper:(NSDictionary*)paper;
+- (void)presentPrintFailure:(NSString*)message;
 @end
 
 @implementation XiaotuScriptHandler
@@ -106,17 +142,48 @@ static void XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper) {
                 }];
 }
 
+// Cmd+P：没有模板参数时用系统共享打印设置走同一条打印链路，不弹自定义错误。
+- (void)printDocument:(id)sender {
+  [self printDocumentWithPaper:nil];
+}
+
+- (BOOL)validateMenuItem:(NSMenuItem*)menuItem {
+  if (menuItem.action == @selector(printDocument:)) {
+    return self.webview != nil;
+  }
+  return YES;
+}
+
+- (void)presentPrintFailure:(NSString*)message {
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"打印无法开始";
+  alert.informativeText = message.length > 0 ? message : @"打印参数无效。";
+  [alert addButtonWithTitle:@"好"];
+  if (self.window != nil) {
+    [alert beginSheetModalForWindow:self.window completionHandler:nil];
+  } else {
+    [alert runModal];
+  }
+}
+
 - (void)printDocumentWithPaper:(NSDictionary*)paper {
   if (self.webview == nil) {
+    [self presentPrintFailure:@"页面尚未加载完成，请稍后重试。"];
     return;
   }
   // 复制一份共享设置，避免本次模板的纸型 / 边距留在进程级单例里影响后续打印。
   NSPrintInfo* info = [[NSPrintInfo sharedPrintInfo] copy];
-  XiaotuApplyPaper(info, paper);
-  NSPrintOperation* operation = [self.webview printOperationWithPrintInfo:info];
-  if (operation != nil) {
-    [operation runOperation];
+  NSString* failure = nil;
+  if (!XiaotuApplyPaper(info, paper, &failure)) {
+    [self presentPrintFailure:failure];
+    return;
   }
+  NSPrintOperation* operation = [self.webview printOperationWithPrintInfo:info];
+  if (operation == nil) {
+    [self presentPrintFailure:@"系统未能创建打印任务。"];
+    return;
+  }
+  [operation runOperation];
 }
 
 // 不弹系统打印面板：用同一条打印链路把页面写成 PDF 文件。
@@ -146,7 +213,13 @@ static void XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper) {
                     return;
                   }
                   NSPrintInfo* info = [[NSPrintInfo sharedPrintInfo] copy];
-                  XiaotuApplyPaper(info, paper);
+                  NSString* failure = nil;
+                  if (!XiaotuApplyPaper(info, paper, &failure)) {
+                    // 保存面板已关闭，错误用弹窗告知；同时让前端恢复按钮状态。
+                    [strong_self presentPrintFailure:failure];
+                    [strong_self finishPdfWithResult:@"error"];
+                    return;
+                  }
                   [info setJobDisposition:NSPrintSaveJob];
                   [[info dictionary] setObject:panel.URL forKey:NSPrintJobSavingURL];
                   NSPrintOperation* operation =
