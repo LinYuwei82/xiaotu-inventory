@@ -4385,8 +4385,9 @@ bool read_content(Stream &strm, T &x, size_t payload_max_length, int &status,
         if (is_chunked_transfer_encoding(x.headers)) {
           ret = read_content_chunked(strm, x, out);
         } else if (!has_header(x.headers, "Content-Length")) {
-          // 本地补丁：请求方（浏览器 fetch、脚本等）漏带 Content-Length 时按空
-          // body 处理，不等待连接关闭/读超时；响应仍保留“读到 EOF”的语义。
+          // 本地补丁 [XIAOTU-PATCH:httplib-empty-body-1]：请求方（浏览器 fetch、
+          // 脚本等）漏带 Content-Length 时按空 body 处理，不等待连接关闭/读超时；
+          // 响应仍保留“读到 EOF”的语义。说明与升级复核见 docs/第三方补丁.md。
           if constexpr (std::is_same<T, Response>::value) {
             ret = read_content_without_length(strm, out);
           }

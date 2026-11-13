@@ -152,6 +152,15 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 "$PYTHON" tools/codegen/generate.py --check
 
+echo "==> 检查第三方库本地补丁"
+HTTPLIB_PATCH_MARKER="XIAOTU-PATCH:httplib-empty-body-1"
+if ! grep -qF "$HTTPLIB_PATCH_MARKER" "$ROOT/third_party/httplib/httplib.h"; then
+  echo "httplib 本地补丁缺失：未找到标记 $HTTPLIB_PATCH_MARKER" >&2
+  echo "升级 httplib 后必须按 docs/第三方补丁.md 逐条复核并恢复补丁。" >&2
+  exit 1
+fi
+echo "    httplib 补丁标记存在（见 docs/第三方补丁.md）"
+
 echo "==> 检查平台专有代码是否泄漏到 core/server"
 "$ROOT/tools/ci/check_platform_leaks.sh"
 
