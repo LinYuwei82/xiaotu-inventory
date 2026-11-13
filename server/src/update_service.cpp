@@ -98,22 +98,30 @@ int run_verifier_process(const std::string& program, const std::vector<std::stri
   SECURITY_ATTRIBUTES inherit{};
   inherit.nLength = sizeof(inherit);
   inherit.bInheritHandle = TRUE;
-  HANDLE null_device = ::CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                     &inherit, OPEN_EXISTING, 0, nullptr);
+  // 三个标准句柄全部显式绑到 NUL，一个都不继承宿主：
+  // STDIN 若沿用 GetStdHandle(STD_INPUT_HANDLE)，在无控制台的宿主里（壳用
+  // CREATE_NO_WINDOW 拉起、或被计划任务/SMB 会话启动）拿到的是无效句柄，
+  // 验签工具读 stdin 会异常退出，被误判成「验签失败」。
+  // 读、写都要用到同一个 NUL，所以句柄按 GENERIC_READ|GENERIC_WRITE 打开。
+  HANDLE null_device =
+      ::CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    &inherit, OPEN_EXISTING, 0, nullptr);
+  if (null_device == INVALID_HANDLE_VALUE) {
+    return -1;
+  }
 
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
+  // STARTF_USESTDHANDLES 要求三个句柄都为可继承的有效句柄，配合 bInheritHandles=TRUE。
   startup.dwFlags = STARTF_USESTDHANDLES;
-  startup.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+  startup.hStdInput = null_device;
   startup.hStdOutput = null_device;
   startup.hStdError = null_device;
 
   PROCESS_INFORMATION process{};
   if (::CreateProcessW(application.c_str(), command_line.data(), nullptr, nullptr, TRUE,
                        CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) == FALSE) {
-    if (null_device != INVALID_HANDLE_VALUE) {
-      ::CloseHandle(null_device);
-    }
+    ::CloseHandle(null_device);
     return -1;
   }
   ::WaitForSingleObject(process.hProcess, INFINITE);
@@ -121,9 +129,7 @@ int run_verifier_process(const std::string& program, const std::vector<std::stri
   ::GetExitCodeProcess(process.hProcess, &exit_code);
   ::CloseHandle(process.hThread);
   ::CloseHandle(process.hProcess);
-  if (null_device != INVALID_HANDLE_VALUE) {
-    ::CloseHandle(null_device);
-  }
+  ::CloseHandle(null_device);
   return static_cast<int>(exit_code);
 }
 
