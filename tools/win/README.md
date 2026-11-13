@@ -81,3 +81,36 @@
 - 真实针式打印机（套打、连续走纸、多层复写）；
 - 购买证书后的 SmartScreen 信誉表现；
 - Apple 公证 / Gatekeeper（macOS 侧）。
+
+## 构建耗时采集（profile-build.ps1）
+
+给 Windows 侧排查「比 mac 慢」用。**默认只读**：只采集环境，不跑 cmake/ctest，不改任何设置。
+
+```powershell
+# 只采集环境
+.\tools\win\profile-build.ps1 -Repo C:\src\xiaotu-inventory
+
+# 额外做一次增量计时（用现有 build 目录）
+.\tools\win\profile-build.ps1 -Repo C:\src\xiaotu-inventory -Measure
+
+# 全量计时（另建临时构建目录，结束删除）；与 -Measure 相互独立
+.\tools\win\profile-build.ps1 -Repo C:\src\xiaotu-inventory -FullMeasure
+```
+
+采集五项：configure/build/ctest 耗时（仅开关打开时）、全量或增量与缓存/生成器、仓库与 vcpkg 的盘和卷类型、Defender 实时保护与排除项、CPU/内存/页面文件。结束打印十几行摘要，最后一行给「配置问题 / 硬件问题 / 无法判断」及依据。退出码 0 表示采集完整；有项采不到会写明原因并返回 1。
+
+### 判断标准（启发式，不是实测均值）
+
+| 现象 | 异常阈值 | 先动哪一项 |
+| --- | --- | --- |
+| configure 超过 60 秒 | 明显偏慢 | 检查 vcpkg 是否在机械盘/网络盘，是否有杀毒扫描 |
+| 增量 build 超过 10 分钟 | 偏慢 | 先看 Defender 排除项，再看是否每次全量重编 |
+| ctest 超过 2 分钟 | 偏慢 | 看是否有用例在等超时，而非 CPU 慢 |
+| 无 ccache/sccache 且 build 超过 10 分钟 | 缺缓存 | 装 sccache 并设 `CMAKE_CXX_COMPILER_LAUNCHER` |
+| 仓库或 vcpkg 在 HDD / 网络盘 / 同步盘 | 任何一项 | 移到本地 SSD，排除同步盘 |
+| Defender 实时开且仓库/vcpkg 未排除 | 未排除 | 加目录排除（需管理员；脚本只读不改） |
+| 物理核 < 4 或内存 < 16 GB | 低于门槛 | 属硬件限制，先加内存/换机 |
+| 页面文件 < 8 GB | 偏小 | 调大页面文件，避免构建时换页 |
+| 生成器是 VS 而非 Ninja | 非 Ninja | 改用 Ninja 预设 |
+
+这些阈值是人给的启发式判断，不是实测出来的均值；不要当成测量结论。
