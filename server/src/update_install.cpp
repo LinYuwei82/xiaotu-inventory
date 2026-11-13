@@ -88,12 +88,19 @@ UpdatePackageResult download_update_package(const UpdateSettings& settings,
     log_warn("更新下载失败：" + result.error_message);
     return result;
   }
-  if (process.exit_code != 0 || !std::filesystem::exists(result.path)) {
+  if (process.exit_code != 0) {
     result.error_code = "UPDATE_DOWNLOAD_FAILED";
     result.error_message = "下载安装包失败：" + package_command_error(process);
     std::filesystem::remove(result.path, error);
     log_warn("更新下载失败（exit=" + std::to_string(process.exit_code) + "）：" +
              compact_output(process.output));
+    return result;
+  }
+  if (!std::filesystem::exists(result.path)) {
+    // curl 正常退出却没留下文件：失败原因与退出码无关，不要回落到「退出码 0」。
+    result.error_code = "UPDATE_DOWNLOAD_FAILED";
+    result.error_message = "下载安装包失败：curl 已正常退出，但未生成安装包文件";
+    log_warn("更新下载失败：未生成安装包文件 " + result.path.string());
     return result;
   }
 

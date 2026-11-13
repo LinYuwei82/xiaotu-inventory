@@ -1,5 +1,6 @@
 #include <httplib.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -131,6 +132,34 @@ int main() {
   result = xiaotu::download_update_package(settings, settings.manifest_file, manifest, download_dir);
   check(!result.ok && result.error_code == "UPDATE_DOWNLOAD_FAILED", "HTTP 404 返回下载失败");
   check(!fs::exists(result.path), "下载失败不保留文件");
+
+#if !defined(_WIN32)
+  // curl 退出码 0 但没生成文件：用 PATH 上的 curl 替身模拟。
+  // Windows 的 SearchPathW 只认 .exe，测试里造不出替身，这段覆盖仅限 POSIX。
+  const fs::path fake_bin = root / "fake-bin";
+  fs::create_directories(fake_bin);
+  {
+    std::ofstream out(fake_bin / "curl");
+    out << "#!/bin/sh\n"
+        << "exit 0\n";
+  }
+  fs::permissions(fake_bin / "curl",
+                  fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
+                  fs::perm_options::add);
+  const char* old_path = std::getenv("PATH");
+  const std::string saved_path = old_path != nullptr ? old_path : "";
+  ::setenv("PATH", (fake_bin.string() + ":" + saved_path).c_str(), 1);
+  manifest.build = 2026111305;
+  manifest.url = "http://127.0.0.1:" + std::to_string(port) + "/pkg.dmg";
+  result = xiaotu::download_update_package(settings, settings.manifest_file, manifest, download_dir);
+  ::setenv("PATH", saved_path.c_str(), 1);
+  check(!result.ok && result.error_code == "UPDATE_DOWNLOAD_FAILED",
+        "退出码 0 但无文件时仍返回下载失败");
+  check(result.error_message.find("未生成安装包文件") != std::string::npos,
+        "无文件时说明真实原因");
+  check(result.error_message.find("退出码 0") == std::string::npos,
+        "不再用「退出码 0」兜底描述与退出码无关的失败");
+#endif
 
   server.stop();
   serving.join();
