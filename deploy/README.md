@@ -4,12 +4,20 @@
 
 ## 行为
 
-- 入口：`xiaotu-server --backup-daily --config /etc/xiaotu/config.toml`
+- 统一入口：`deploy/backup.sh`（内部调用 `xiaotu-server --backup-daily --config ...`），cron 与 systemd timer 都只调用它，避免两套命令漂移。
 - 幂等：当天已有成功备份时直接退出（输出「跳过每日备份」），不会重复生成。
-- 并发安全：备份目录内的 `.backup.lock` 互斥；进程内调度与系统定时任务同时触发时只有一方执行。
+- 手动立即备份：`XIAOTU_BACKUP_MODE=manual deploy/backup.sh`（底层 `--backup`，无条件生成一份）。
+- 并发安全：备份目录内的 `.backup.lock` 互斥；进程内调度与系统定时任务同时触发时只有一方执行，抢锁失败返回非零。
 - 保留策略：清理 `backups/app-<时间戳>-daily.db`，保留最近 30 份日备份，并在每个自然月额外保留 1 份（该月最新）。`manual`、`pre-v*`（迁移前）、`pre-restore-*`（恢复前安全备份）不参与清理。
-- 状态文件：`<数据目录>/backups/backup-status.json`，记录最近一次备份时间、结果、大小与失败原因；`/api/health` 的 `backup` 字段读取同一来源。
+- 生成后校验：备份库自记录的 schema 版本必须与源库一致且不高于程序支持版本，否则该备份判定不可用并写入状态与日志。
+- 状态文件：`<数据目录>/backups/backup-status.json`，分别记录最近成功与最近失败；`/api/health` 的 `backup` 字段读取同一来源（只返回文件名，不含目录）。
 - 日志：`<数据目录>/logs/app.log`（或 `[log] dir` 配置的目录）。
+
+## 手动与接口
+
+- 命令行：`xiaotu-server --backup --data <数据目录>` 立即生成一份手装备份；失败返回非零。
+- HTTP：`POST /api/backup`（管理员 + `setting.write`），返回 `file`、`bytes`、`at`，不返回绝对路径；并发备份返回 409 `BACKUP_BUSY`。
+- 在线恢复不提供 HTTP 接口，继续使用 `--restore`，且必须先停服。
 
 ## systemd timer（推荐）
 
@@ -20,6 +28,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now xiaotu-backup.timer
 systemctl list-timers xiaotu-backup.timer
 ```
+
+systemd 与 cron 二选一，不要同时启用；两者都只调用 `deploy/backup.sh`。
 
 手动触发一次：
 

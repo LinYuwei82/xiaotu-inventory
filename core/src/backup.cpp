@@ -189,6 +189,36 @@ std::string today_stamp() {
   return text;
 }
 
+void update_success_status(const std::filesystem::path& directory,
+                           const BackupResult& result, int schema_version) {
+  BackupStatus status = read_status(directory);
+  status.last_success_at = now_text();
+  status.last_success_file = result.path.filename().string();
+  status.last_success_bytes = result.bytes;
+  status.schema_version = schema_version;
+  write_status(directory, status);
+}
+
+void update_failure_status(const std::filesystem::path& directory, std::string_view reason) {
+  BackupStatus status = read_status(directory);
+  status.last_failure_at = now_text();
+  status.last_failure_reason = std::string(reason);
+  status.schema_version = target_schema_version();
+  write_status(directory, status);
+}
+
+// 备份成功/失败都写 audit_log；数据库不可写时退化为日志，不影响主流程。
+void audit_backup(Db& db, bool success, std::string_view tag, std::string_view detail) {
+  try {
+    db.write([&](sqlite3* connection) {
+      audit_write(connection, "backup", "database", 0, tag,
+                  success ? detail : ("失败：" + std::string(detail)));
+    });
+  } catch (const std::exception& error) {
+    log_warn(std::string("备份审计写入失败：") + error.what());
+  }
+}
+
 std::filesystem::path unique_path(const std::filesystem::path& directory,
                                   std::string_view name) {
   std::filesystem::path candidate = directory / (std::string(name) + ".db");
@@ -245,6 +275,7 @@ BackupResult backup_database(Db& db, const std::filesystem::path& directory,
     stmt.run();
   });
   verify_database(target);
+  verify_backup_schema(target, db.schema_version());
   return BackupResult{.path = target, .bytes = std::filesystem::file_size(target)};
 }
 
@@ -346,6 +377,26 @@ void ensure_restore_compatible(const std::filesystem::path& backup) {
   if (source < target) {
     log_warn("恢复的备份结构版本 v" + std::to_string(source) + " 低于当前 v" +
              std::to_string(target) + "，恢复后将在启动时自动迁移");
+  }
+}
+
+void verify_backup_schema(const std::filesystem::path& backup, int expected_version) {
+  const int actual = backup_schema_version(backup);
+  const int supported = target_schema_version();
+  if (actual <= 0) {
+    throw AppError("BACKUP_SCHEMA_UNKNOWN",
+                   "备份未记录有效的数据库结构版本，不可用于恢复：" +
+                       backup.filename().string());
+  }
+  if (actual != expected_version) {
+    throw AppError("BACKUP_SCHEMA_MISMATCH",
+                   "备份记录的数据库结构版本为 v" + std::to_string(actual) + "，与源库 v" +
+                       std::to_string(expected_version) + " 不一致，已判定该备份不可用。");
+  }
+  if (actual > supported) {
+    throw AppError("BACKUP_SCHEMA_TOO_NEW",
+                   "备份的数据库结构版本为 v" + std::to_string(actual) + "，高于当前程序支持的 v" +
+                       std::to_string(supported) + "，已判定该备份不可用。");
   }
 }
 
@@ -465,7 +516,6 @@ DailyBackupOutcome run_daily_backup(Db& db, const std::filesystem::path& data_di
     return outcome;
   }
 
-  const std::string timestamp = timestamp_tag();
   try {
     outcome.backup = backup_database(db, directory, "daily");
     outcome.ran = true;
@@ -475,35 +525,39 @@ DailyBackupOutcome run_daily_backup(Db& db, const std::filesystem::path& data_di
       log_warn(std::string("每日备份保留策略执行失败：") + error.what());
     }
 
-    BackupStatus status;
-    status.last_success_at = now_text();
-    status.last_success_file = outcome.backup.path.filename().string();
-    status.last_success_bytes = outcome.backup.bytes;
-    status.schema_version = target_schema_version();
-    const BackupStatus previous = read_status(directory);
-    status.last_failure_at = previous.last_failure_at;
-    status.last_failure_reason = previous.last_failure_reason;
-    write_status(directory, status);
-
-    try {
-      db.write([&](sqlite3* connection) {
-        audit_write(connection, "backup", "database", 0,
-                    outcome.backup.path.filename().string(), "daily");
-      });
-    } catch (...) {
-      // 审计失败不应让已生成的备份作废。
-    }
+    update_success_status(directory, outcome.backup, db.schema_version());
+    audit_backup(db, true, "daily", std::to_string(outcome.backup.bytes) + " 字节");
     log_info("每日备份完成：" + path_to_utf8(outcome.backup.path));
   } catch (const std::exception& error) {
-    BackupStatus status = read_status(directory);
-    status.last_failure_at = now_text();
-    status.last_failure_reason = error.what();
-    status.schema_version = target_schema_version();
-    write_status(directory, status);
-    log_error(std::string("每日备份失败：") + error.what());
+    record_backup_failure(db, data_dir, "daily", error.what());
     throw;
   }
   return outcome;
+}
+
+void record_backup_failure(Db& db, const std::filesystem::path& data_dir, std::string_view tag,
+                           std::string_view reason) {
+  update_failure_status(data_dir / "backups", reason);
+  audit_backup(db, false, tag, reason);
+  log_error("备份失败（" + std::string(tag) + "）：" + std::string(reason));
+}
+
+BackupResult run_manual_backup(Db& db, const std::filesystem::path& data_dir) {
+  const std::filesystem::path directory = data_dir / "backups";
+  BackupDirLock lock(directory);
+  if (!lock.held()) {
+    throw AppError("BACKUP_BUSY", "另一个备份任务正在进行，请稍后重试。");
+  }
+  try {
+    const BackupResult result = backup_database(db, directory, "manual");
+    update_success_status(directory, result, db.schema_version());
+    audit_backup(db, true, "manual", std::to_string(result.bytes) + " 字节");
+    log_info("手动备份完成：" + path_to_utf8(result.path));
+    return result;
+  } catch (const std::exception& error) {
+    record_backup_failure(db, data_dir, "manual", error.what());
+    throw;
+  }
 }
 
 bool database_writable(Db& db) {

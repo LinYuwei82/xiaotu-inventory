@@ -38,6 +38,10 @@ BackupResult restore_database(const std::filesystem::path& source,
 // 无法打开或不是本程序的数据库时抛出 AppError。
 int backup_schema_version(const std::filesystem::path& backup);
 
+// 校验刚生成的备份可用：备份自记录的版本必须等于源库版本，且不高于程序支持版本。
+// 读不到版本、版本不一致或高于当前程序支持都抛 AppError，视为备份不可用于恢复。
+void verify_backup_schema(const std::filesystem::path& backup, int expected_version);
+
 // 恢复前校验兼容性：备份版本高于当前程序支持 → SCHEMA_TOO_NEW；
 // 识别不到版本 → SCHEMA_UNKNOWN。旧版本允许恢复（下次启动会迁移）。
 void ensure_restore_compatible(const std::filesystem::path& backup);
@@ -84,5 +88,14 @@ struct DailyBackupOutcome {
 // 生成一份 daily 备份 → 执行保留策略 → 写状态文件。今天已成功备份过则 ran=false。
 // 备份失败会写 failed 状态并把异常原样抛出。
 DailyBackupOutcome run_daily_backup(Db& db, const std::filesystem::path& data_dir);
+
+// 生成一份 manual 备份（CLI 与 POST /api/backup 共用）：写状态、成功/失败审计。
+// 另一个备份任务正在执行时抛 BACKUP_BUSY。
+BackupResult run_manual_backup(Db& db, const std::filesystem::path& data_dir);
+
+// 记录一次备份失败：更新状态文件的 last_failure 并写 backup 审计（失败原因）。
+// 数据库不可写时退化为只写日志，不抛异常。
+void record_backup_failure(Db& db, const std::filesystem::path& data_dir, std::string_view tag,
+                           std::string_view reason);
 
 }  // namespace xiaotu

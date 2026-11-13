@@ -8,6 +8,7 @@
 #include <iostream>
 #include <string>
 
+#include "xiaotu/audit.h"
 #include "xiaotu/backup.h"
 #include "xiaotu/db.h"
 #include "xiaotu/error.h"
@@ -135,6 +136,75 @@ void test_schema_compatibility(const std::filesystem::path& root) {
   check(!std::filesystem::exists(data / "backups"), "拒绝发生在创建备份目录之前");
 }
 
+void test_backup_validation(const std::filesystem::path& root) {
+  const int target = xiaotu::target_schema_version();
+  const std::filesystem::path data = root / "validate-data";
+  std::filesystem::create_directories(data);
+  xiaotu::Db db(data / "app.db", 2);
+  xiaotu::migrate(db);
+
+  const xiaotu::BackupResult manual = xiaotu::run_manual_backup(db, data);
+  check(manual.path.filename().string().find("-manual") != std::string::npos,
+        "手动备份文件名带 manual 标记");
+
+  bool valid = true;
+  try {
+    xiaotu::verify_backup_schema(manual.path, target);
+  } catch (const std::exception&) {
+    valid = false;
+  }
+  check(valid, "同版本备份应通过 schema 校验");
+
+  check(error_code_of([&] { xiaotu::verify_backup_schema(manual.path, target + 1); }) ==
+            "BACKUP_SCHEMA_MISMATCH",
+        "备份版本与源库不一致应判定不可用");
+
+  const std::filesystem::path unknown = root / "validate-unknown.db";
+  sqlite3* connection = nullptr;
+  check(sqlite3_open(unknown.string().c_str(), &connection) == SQLITE_OK, "创建无版本备份");
+  if (connection != nullptr) {
+    sqlite3_close(connection);
+  }
+  check(error_code_of([&] { xiaotu::verify_backup_schema(unknown, target); }) ==
+            "BACKUP_SCHEMA_UNKNOWN",
+        "读不到版本的备份应判定不可用");
+
+  const std::filesystem::path future = root / "validate-future.db";
+  std::filesystem::copy_file(manual.path, future,
+                             std::filesystem::copy_options::overwrite_existing);
+  check(sqlite3_open(future.string().c_str(), &connection) == SQLITE_OK, "打开未来版本备份");
+  if (connection != nullptr) {
+    const std::string sql = "PRAGMA user_version = " + std::to_string(target + 1) + ";";
+    sqlite3_exec(connection, sql.c_str(), nullptr, nullptr, nullptr);
+    sqlite3_close(connection);
+  }
+  check(error_code_of([&] { xiaotu::verify_backup_schema(future, target + 1); }) ==
+            "BACKUP_SCHEMA_TOO_NEW",
+        "高于程序支持的备份应判定不可用");
+
+  // 备份目录被占用时手动备份明确失败。
+  std::filesystem::create_directories(data / "backups" / ".backup.lock");
+  check(error_code_of([&] { xiaotu::run_manual_backup(db, data); }) == "BACKUP_BUSY",
+        "备份目录被占用时手动备份应返回 BACKUP_BUSY");
+  std::filesystem::remove_all(data / "backups" / ".backup.lock");
+
+  // 失败原因同时进入状态与审计，且不清掉上次成功。
+  const std::string success_at = xiaotu::backup_status(data / "backups").last_success_at;
+  xiaotu::record_backup_failure(db, data, "manual", "磁盘已满");
+  const xiaotu::BackupStatus failed = xiaotu::backup_status(data / "backups");
+  check(failed.last_failure_reason == "磁盘已满", "失败原因写入状态文件");
+  check(failed.last_success_at == success_at, "失败不应清掉上次成功");
+  bool audit_found = false;
+  for (const auto& row : xiaotu::audit_recent(db, 20)) {
+    if (row.action == "backup" && row.entity_no == "manual" &&
+        row.detail.find("磁盘已满") != std::string::npos) {
+      audit_found = true;
+      break;
+    }
+  }
+  check(audit_found, "备份失败应写审计并包含原因");
+}
+
 void test_daily_backup(const std::filesystem::path& root) {
   const std::filesystem::path data = root / "daily-data";
   std::filesystem::create_directories(data);
@@ -187,6 +257,7 @@ int main() {
   test_retention(root);
   test_schema_compatibility(root);
   test_daily_backup(root);
+  test_backup_validation(root);
 
   std::filesystem::remove_all(root, ignored);
   if (g_failures != 0) {

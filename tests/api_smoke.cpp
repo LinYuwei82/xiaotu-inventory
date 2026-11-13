@@ -79,6 +79,11 @@ void run_server_mode(const std::filesystem::path& dir) {
   xiaotu::load_role_permissions(db);
   xiaotu::Services services(db);
   services.users.set_password(1, "Passw0rd!");
+  services.users.create(xiaotu::UserInput{.username = "backup_viewer",
+                                          .display_name = "备份只读",
+                                          .role = "viewer",
+                                          .active = true,
+                                          .password = "Viewer0rd!"});
 
   xiaotu::HttpServer http(
       services,
@@ -159,6 +164,51 @@ void run_server_mode(const std::filesystem::path& dir) {
 
   const auto me = client.Get("/api/me");
   check(me && me->status == 200, "登录后 /api/me 应返回 200");
+
+  // 手动备份接口：管理员可执行，返回文件名/大小/时间且不含绝对路径。
+  const auto backup_done = client.Post("/api/backup", "", "application/json");
+  check(backup_done && backup_done->status == 200, "管理员手动备份应返回 200");
+  if (backup_done) {
+    const auto data = nlohmann::json::parse(backup_done->body);
+    check(data.value("file", "").find('/') == std::string::npos &&
+              data.value("file", "").find("-manual") != std::string::npos,
+          "手动备份应返回文件名且不含目录");
+    check(data.value("bytes", 0LL) > 0, "手动备份应返回文件大小");
+    check(data.contains("at"), "手动备份应返回完成时间");
+    check(backup_done->body.find(dir.string()) == std::string::npos,
+          "手动备份响应不应包含绝对路径");
+  }
+  check(audit_count(db, "backup", "database") >= 1, "手动备份应写审计");
+
+  // 同一目录已有备份任务时返回 409，而不是静默成功。
+  std::filesystem::create_directories(dir / "backups" / ".backup.lock");
+  const auto backup_busy = client.Post("/api/backup", "", "application/json");
+  check(backup_busy && backup_busy->status == 409, "备份目录被占用时应返回 409");
+  if (backup_busy) {
+    check(nlohmann::json::parse(backup_busy->body).value("code", "") == "BACKUP_BUSY",
+          "备份占用应返回 BACKUP_BUSY");
+  }
+  // 抢锁失败是拒绝执行而非备份失败，不应写「备份失败」审计或污染状态。
+  check(audit_count(db, "backup", "database", "失败：") == 0,
+        "抢锁失败不应写备份失败审计");
+  std::filesystem::remove_all(dir / "backups" / ".backup.lock");
+
+  // 未登录 401；无 setting.write 的只读角色 403。
+  httplib::Client anonymous_backup("127.0.0.1", port);
+  const auto anonymous_result = anonymous_backup.Post("/api/backup", "", "application/json");
+  check(anonymous_result && anonymous_result->status == 401, "未登录手动备份应返回 401");
+
+  httplib::Client viewer("127.0.0.1", port);
+  const auto viewer_login = viewer.Post("/api/login",
+                                        R"({"username":"backup_viewer","password":"Viewer0rd!"})",
+                                        "application/json");
+  check(viewer_login && viewer_login->status == 200, "只读账号应能登录");
+  if (viewer_login) {
+    viewer.set_default_headers({{"Cookie", session_cookie(viewer_login)},
+                                {"X-CSRF-Token", body_field(viewer_login, "csrf")}});
+    const auto viewer_backup = viewer.Post("/api/backup", "", "application/json");
+    check(viewer_backup && viewer_backup->status == 403, "无权限角色手动备份应返回 403");
+  }
 
   const auto created = client.Post(
       "/api/items", R"({"code":"SMOKE1","name":"冒烟商品","unit_id":1})", "application/json");

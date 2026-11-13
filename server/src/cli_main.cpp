@@ -345,16 +345,11 @@ int main(int argc, char** argv) {
     }
     xiaotu::Db db(database_path, 4);
     if (options.backup) {
-      const auto snapshot = xiaotu::backup_database(db, data_dir / "backups", "manual");
+      const auto snapshot = xiaotu::run_manual_backup(db, data_dir);
       std::cout << "备份完成: " << snapshot.path.string() << " (" << snapshot.bytes
                 << " 字节)" << std::endl;
       xiaotu::log_info("手动备份 " + snapshot.path.string() +
                        " 字节=" + std::to_string(snapshot.bytes));
-      db.write([&](sqlite3* conn) {
-        xiaotu::audit_write(conn, "backup", "database", 0,
-                            snapshot.path.filename().string(),
-                            std::to_string(snapshot.bytes) + " 字节");
-      });
       xiaotu::shutdown_logging();
       return 0;
     }

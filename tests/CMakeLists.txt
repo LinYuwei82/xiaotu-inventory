@@ -55,4 +55,7 @@ if(UNIX)
   add_test(NAME restore_lock_exit
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/restore_lock_exit.sh"
                    $<TARGET_FILE:xiaotu-server>)
+  add_test(NAME deploy_backup_test
+           COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/deploy_backup_test.sh"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/../deploy/backup.sh")
 endif()
