@@ -980,6 +980,15 @@ ALTER TABLE audit_log ADD COLUMN client_ip TEXT NOT NULL DEFAULT '';
 ALTER TABLE audit_log ADD COLUMN request_id TEXT NOT NULL DEFAULT '';
 )SQL";
 
+// v35：批次与保质期仅为将来预留。当前不写入、不显示、不参与计算，也不建索引；
+// 历史行与后续新写入的行都保持空串，测试负责防止将来误写。
+constexpr const char* kV35 = R"SQL(
+ALTER TABLE doc_line ADD COLUMN batch_no TEXT NOT NULL DEFAULT '';
+ALTER TABLE doc_line ADD COLUMN expiry_date TEXT NOT NULL DEFAULT '';
+ALTER TABLE stock_ledger ADD COLUMN batch_no TEXT NOT NULL DEFAULT '';
+ALTER TABLE stock_ledger ADD COLUMN expiry_date TEXT NOT NULL DEFAULT '';
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -1029,6 +1038,7 @@ const std::vector<Migration>& all_migrations() {
       {32, "v32_user_login_lock", kV32},
       {33, "v33_cost_basis", kV33},
       {34, "v34_audit_client_ip_request", kV34},
+      {35, "v35_doc_line_stock_ledger_batch_seam", kV35},
   };
   return migrations;
 }

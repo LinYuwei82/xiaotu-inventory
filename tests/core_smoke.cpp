@@ -86,7 +86,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 34, "迁移后 schema 版本应为 34");
+      check(db.schema_version() == 35, "迁移后 schema 版本应为 35");
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
       db.read([&](sqlite3* conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
@@ -488,6 +488,38 @@ int main() {
       }
       check(purchase_docs.size() == 3 && voided_purchases == 2,
             "应有三张采购入库单，期初与首笔采购被反审核为 VOIDED");
+
+      // v35 数据缝：批次/保质期只为将来预留。两列存在、默认空串，现有单据与流水写入后仍为空。
+      db.read([&](sqlite3* conn) {
+        const auto empty_default = [&](const char* table, const char* column) {
+          xiaotu::Stmt stmt(conn, std::string("PRAGMA table_info(") + table + ");");
+          while (stmt.step()) {
+            if (stmt.text(1) == column) return stmt.text(4) == "''";
+          }
+          return false;
+        };
+        check(empty_default("doc_line", "batch_no"), "doc_line.batch_no 应存在且默认为空串");
+        check(empty_default("doc_line", "expiry_date"), "doc_line.expiry_date 应存在且默认为空串");
+        check(empty_default("stock_ledger", "batch_no"),
+              "stock_ledger.batch_no 应存在且默认为空串");
+        check(empty_default("stock_ledger", "expiry_date"),
+              "stock_ledger.expiry_date 应存在且默认为空串");
+
+        xiaotu::Stmt line_rows(conn, "SELECT COUNT(*) FROM doc_line;");
+        xiaotu::Stmt line_filled(
+            conn, "SELECT COUNT(*) FROM doc_line WHERE batch_no <> '' OR expiry_date <> '';");
+        check(line_rows.step() && line_rows.i64(0) > 0, "单据明细应有数据用于验证数据缝");
+        check(line_filled.step() && line_filled.i64(0) == 0,
+              "现有单据明细的批次/保质期应保持为空串");
+
+        xiaotu::Stmt ledger_rows(conn, "SELECT COUNT(*) FROM stock_ledger;");
+        xiaotu::Stmt ledger_filled(
+            conn,
+            "SELECT COUNT(*) FROM stock_ledger WHERE batch_no <> '' OR expiry_date <> '';");
+        check(ledger_rows.step() && ledger_rows.i64(0) > 0, "库存流水应有数据用于验证数据缝");
+        check(ledger_filled.step() && ledger_filled.i64(0) == 0,
+              "现有库存流水的批次/保质期应保持为空串");
+      });
 
       // 调拨：源仓出、目标仓入，同一事务；不足时整单拒绝。
       const auto aux = warehouses.create(
@@ -2763,6 +2795,10 @@ int main() {
                            "ALTER TABLE app_user DROP COLUMN must_change_password;"
                            "ALTER TABLE app_user DROP COLUMN failed_count;"
                            "ALTER TABLE app_user DROP COLUMN locked_until;"
+                           "ALTER TABLE doc_line DROP COLUMN batch_no;"
+                           "ALTER TABLE doc_line DROP COLUMN expiry_date;"
+                           "ALTER TABLE stock_ledger DROP COLUMN batch_no;"
+                           "ALTER TABLE stock_ledger DROP COLUMN expiry_date;"
                            "DELETE FROM app_setting WHERE key IN"
                            " ('cost_basis', 'cost_basis_changed_at');"
                            "DELETE FROM schema_migration WHERE version >= 28;"
@@ -2802,7 +2838,7 @@ int main() {
               .run();
         });
 
-        // 造数据阶段需要写审计，先用 v34 结构写完；随后回退审计列，模拟 v27 老库，
+        // 造数据阶段需要写审计，先用最新结构写完；随后回退审计列与 v35 预留列，模拟 v27 老库，
         // 这样迁移 v34 时历史审计行的来源 IP / 请求号会由默认值补成空串。
         mig.write_raw([&](sqlite3* conn) {
           const int rc =
@@ -2814,7 +2850,7 @@ int main() {
         });
 
         xiaotu::migrate(mig);
-        check(mig.schema_version() == 34, "有数据的模拟库应迁到 v34");
+        check(mig.schema_version() == 35, "有数据的模拟库应迁到 v35");
 
         mig.read([&](sqlite3* conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");
