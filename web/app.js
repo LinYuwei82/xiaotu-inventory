@@ -2205,6 +2205,11 @@
               </select>
             </label>
           </div>
+          <div class="doc-remark">
+            <label class="field"><span>备注</span>
+              <textarea data-role="remark" rows="2" maxlength="200" placeholder="选填，最多 200 个字"></textarea>
+            </label>
+          </div>
           <table class="table lines" data-role="lines"></table>
           <p class="page-sub" data-role="doc-totals"></p>
           <div class="form-actions">
@@ -2225,6 +2230,7 @@
     const partnerSelect = mount.querySelector('[data-role="partner-select"]');
     const bizCategorySelect = mount.querySelector('[data-role="biz-category"]');
     const salespersonSelect = mount.querySelector('[data-role="salesperson"]');
+    const remarkInput = mount.querySelector('[data-role="remark"]');
 
     const documentList = createDocumentList({
       docType,
@@ -2504,6 +2510,7 @@
       if (partnerSelect) partnerSelect.value = "";
       if (otherDoc) bizCategorySelect.value = "OTHER";
       if (salesDoc) salespersonSelect.value = "0";
+      remarkInput.value = "";
       dateInput.value = new Date().toISOString().slice(0, 10);
       resetLines();
     }
@@ -2522,6 +2529,7 @@
         partner_id: partnerSelect && !partnerSelect.hidden ? Number(partnerSelect.value || 0) : 0,
         biz_category: otherDoc ? bizCategorySelect.value : "",
         salesperson_id: salesDoc ? Number(salespersonSelect.value || 0) : 0,
+        remark: remarkInput.value.trim(),
         lines: [],
       };
       for (const row of linesTable.querySelectorAll("tbody tr")) {
@@ -2576,6 +2584,7 @@
       }
       if (otherDoc) bizCategorySelect.value = data.biz_category || "OTHER";
       if (salesDoc) salespersonSelect.value = String(data.salesperson_id || 0);
+      remarkInput.value = data.remark || "";
       linesTable.innerHTML = costAdjust
         ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
         : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（录入价）</th><th>税率（%）</th><th>含税</th><th>税额（元）</th><th>价税合计（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
@@ -2708,6 +2717,7 @@
           : partnerInput.value.trim(),
         biz_category: otherDoc ? bizCategorySelect.value : "",
         salesperson_id: salesDoc ? Number(salespersonSelect.value || 0) : 0,
+        remark: remarkInput.value.trim(),
         lines,
       };
       const submit = async (confirmCredit) => {
@@ -2784,6 +2794,7 @@
         }
         if (otherDoc) bizCategorySelect.value = detail.biz_category || "OTHER";
         if (salesDoc) salespersonSelect.value = String(detail.salesperson_id || 0);
+        remarkInput.value = detail.remark || "";
         linesTable.innerHTML = costAdjust
           ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
           : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
@@ -2949,6 +2960,11 @@
                 : ""
             }
           </div>
+          <div class="doc-remark">
+            <label class="field"><span>备注</span>
+              <textarea data-role="remark" rows="2" maxlength="200" placeholder="选填，最多 200 个字"></textarea>
+            </label>
+          </div>
           <table class="table lines" data-role="lines"></table>
           <div class="form-actions">
             <button class="btn" type="button" data-role="add-line">添加明细行</button>
@@ -2986,6 +3002,7 @@
     const dateInput = mount.querySelector('[data-role="date"]');
     const customerSelect = mount.querySelector('[data-role="customer"]');
     const salespersonSelect = mount.querySelector('[data-role="salesperson"]');
+    const remarkInput = mount.querySelector('[data-role="remark"]');
     const linesTable = mount.querySelector('[data-role="lines"]');
     const convertCard = mount.querySelector('[data-role="convert-card"]');
     const convertTitle = mount.querySelector('[data-role="convert-title"]');
@@ -3178,6 +3195,7 @@
       mount.querySelector('[data-role="cancel-edit"]').hidden = true;
       customerSelect.value = "";
       if (salespersonSelect) salespersonSelect.value = "0";
+      remarkInput.value = "";
       dateInput.value = new Date().toISOString().slice(0, 10);
       resetLines();
     }
@@ -3189,6 +3207,7 @@
         doc_date: dateInput.value,
         partner_id: Number(customerSelect.value || 0),
         salesperson_id: salespersonSelect ? Number(salespersonSelect.value || 0) : 0,
+        remark: remarkInput.value.trim(),
         lines: [],
       };
       for (const row of linesTable.querySelectorAll("tbody tr")) {
@@ -3223,6 +3242,7 @@
       if (data.doc_date) dateInput.value = data.doc_date;
       customerSelect.value = data.partner_id ? String(data.partner_id) : "";
       if (salespersonSelect) salespersonSelect.value = String(data.salesperson_id || 0);
+      remarkInput.value = data.remark || "";
       linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
       for (const line of data.lines || []) {
         addLine({
@@ -3297,6 +3317,7 @@
         partner_id: Number(customerSelect.value || 0),
         partner: option && option.value ? option.dataset.name || "" : "",
         salesperson_id: salespersonSelect ? Number(salespersonSelect.value || 0) : 0,
+        remark: remarkInput.value.trim(),
         lines,
       };
       try {
@@ -3336,6 +3357,7 @@
         dateInput.value = detail.doc_date;
         customerSelect.value = detail.partner_id ? String(detail.partner_id) : "";
         if (salespersonSelect) salespersonSelect.value = String(detail.salesperson_id || 0);
+        remarkInput.value = detail.remark || "";
         linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
         for (const line of detail.lines) addLine(line);
         formDirty = false;

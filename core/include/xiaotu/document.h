@@ -86,6 +86,9 @@ struct DocInput {
   std::int64_t salesperson_id = 0;
   // 幂等键：同一个 request_id 重复提交只生成一张单据；空串表示老客户端（不做幂等）。
   std::string request_id;
+  // 单据表头备注：六类业务单据共用，最多 200 个字符（按 UTF-8 码点计），
+  // 校验在 validate_document 统一做；空串表示不填。
+  std::string remark;
   // 乐观锁：更新类操作要求客户端持有的版本号；-1 表示老客户端未提供，跳过校验。
   std::int64_t version = -1;
   std::vector<DocLineInput> lines;
@@ -104,6 +107,7 @@ struct DocDetail {
   std::string biz_category;  // 其他出入库的业务类型，其余单据为空
   std::int64_t salesperson_id = 0;
   std::string salesperson_name;
+  std::string remark;  // 表头备注，历史单据为空串
   std::string status;
   std::string order_status;  // 仅订单：'' / CONFIRMED / CONVERTED / CLOSED
   std::int64_t version = 0;  // 乐观锁版本，编辑页提交时原样带回
@@ -140,7 +144,7 @@ struct OrderConversion {
 // 分页行查询与合计查询。空串 / 0 表示该条件不参与过滤。
 struct DocListQuery {
   std::string doc_type;
-  std::string keyword;      // 单号 / 往来单位 / 业务员，模糊匹配
+  std::string keyword;      // 单号 / 往来单位 / 业务员 / 备注，模糊匹配
   std::string date_from;    // ISO 日期，闭区间；空串不限
   std::string date_to;      // ISO 日期，闭区间；空串不限
   std::string status;       // draft / approved / reversed / all / 空

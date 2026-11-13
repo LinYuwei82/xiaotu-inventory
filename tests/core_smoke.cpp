@@ -90,7 +90,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 37, "迁移后 schema 版本应为 37");
+      check(db.schema_version() == 38, "迁移后 schema 版本应为 38");
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
       db.read([&](sqlite3* conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
@@ -1384,6 +1384,51 @@ int main() {
         draft_deleted = error.code() == "NOT_FOUND";
       }
       check(draft_deleted, "删除草稿后应查不到该单据");
+
+      // 表头备注：往返、审核后保留、超长拒绝（按 UTF-8 码点而不是字节）、空值可选。
+      {
+        auto remark_item =
+            items.create(xiaotu::gen::ItemRow{.code = "RMK1", .name = "备注商品"});
+        xiaotu::DocInput remark_input;
+        remark_input.doc_type = "PUR_IN";
+        remark_input.warehouse_id = warehouse_list.at(0).id;
+        remark_input.doc_date = kToday;
+        remark_input.partner = "备注供应商";
+        remark_input.lines.push_back(
+            xiaotu::DocLineInput{.item_id = remark_item.id, .qty = q(1), .price_cents = 100});
+        remark_input.remark = "首次备注";
+        const auto remark_draft = documents.save_draft(remark_input);
+        check(documents.detail(remark_draft.id).remark == "首次备注", "草稿应保存表头备注");
+        remark_input.remark = "改后备注";
+        documents.update_draft(remark_draft.id, remark_input);
+        check(documents.detail(remark_draft.id).remark == "改后备注", "草稿应可修改表头备注");
+        documents.approve(remark_draft.id);
+        check(documents.detail(remark_draft.id).remark == "改后备注", "审核不应丢失表头备注");
+
+        // 200 个汉字（UTF-8 下 600 字节）应通过：上限按码点计，不按字节计。
+        std::string max_remark;
+        for (int i = 0; i < 200; ++i) max_remark += "备";
+        remark_input.remark = max_remark;
+        const auto max_draft = documents.save_draft(remark_input);
+        check(documents.detail(max_draft.id).remark == max_remark &&
+                  documents.detail(max_draft.id).remark.size() == 600,
+              "200 个汉字备注应完整保存");
+
+        remark_input.remark = max_remark + "备";
+        bool remark_rejected = false;
+        try {
+          documents.save_draft(remark_input);
+        } catch (const xiaotu::AppError& error) {
+          remark_rejected = error.code() == "INVALID_INPUT" &&
+                            std::string(error.what()).find("200") != std::string::npos;
+        }
+        check(remark_rejected, "超过 200 个字符的备注应明确拒绝");
+
+        remark_input.remark = "";
+        const auto empty_draft = documents.save_draft(remark_input);
+        check(documents.detail(empty_draft.id).remark.empty(), "备注为空应可正常保存");
+        items.remove(remark_item.id);
+      }
 
       // 预收：不填分摊也应保存，资金流水与余额要跟着变动。
       const auto prepayment = make_settlement(1, customer_key, 500, {}, "预收");
@@ -2876,6 +2921,7 @@ int main() {
                            "DROP INDEX IF EXISTS uk_doc_header_request;"
                            "ALTER TABLE doc_header DROP COLUMN request_id;"
                            "ALTER TABLE doc_header DROP COLUMN version;"
+                           "ALTER TABLE doc_header DROP COLUMN remark;"
                            "ALTER TABLE app_user DROP COLUMN must_change_password;"
                            "ALTER TABLE app_user DROP COLUMN failed_count;"
                            "ALTER TABLE app_user DROP COLUMN locked_until;"
@@ -2934,7 +2980,7 @@ int main() {
         });
 
         xiaotu::migrate(mig);
-        check(mig.schema_version() == 37, "有数据的模拟库应迁到 v37");
+        check(mig.schema_version() == 38, "有数据的模拟库应迁到 v38");
 
         mig.read([&](sqlite3* conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");
@@ -3445,7 +3491,10 @@ int main() {
         fs::create_directories(list_dir);
         xiaotu::Db ldb(list_dir / "app.db", 2);
         xiaotu::migrate(ldb);
-        check(ldb.schema_version() == 37, "列表筛选库应迁到 v37");
+        check(ldb.schema_version() == 38, "列表筛选库应迁到 v38");
+        // 幂等：每次启动都会跑 migrate，已应用的 v38 只能跳过，不能重复加列。
+        xiaotu::migrate(ldb);
+        check(ldb.schema_version() == 38, "重复迁移应保持 v38，不重复加 remark 列");
         ldb.read([&](sqlite3* conn) {
           bool has_type_date = false;
           bool has_type_status = false;
@@ -3463,6 +3512,33 @@ int main() {
           }
           check(has_type_date && has_type_status,
                 "v37 后 doc_header 应有类型+日期与类型+状态索引");
+          // v38：备注列存在、NOT NULL、默认空串；老库升级后历史行不应出现 NULL。
+          xiaotu::Stmt remark_col(
+              conn,
+              "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('doc_header')"
+              " WHERE name = 'remark';");
+          check(remark_col.step() && remark_col.text(0) == "TEXT" && remark_col.i64(1) == 1 &&
+                    remark_col.text(2) == "''",
+                "v38 后 doc_header.remark 应为 TEXT NOT NULL DEFAULT ''");
+          xiaotu::Stmt remark_null(conn, "SELECT COUNT(*) FROM doc_header WHERE remark IS NULL;");
+          check(remark_null.step() && remark_null.i64(0) == 0,
+                "v38 后历史单据备注应为空串而不是 NULL");
+        });
+
+        // 老数据默认空：按老列写入（不带 remark）的历史行应自动落空串。
+        ldb.write([&](sqlite3* conn) {
+          xiaotu::Stmt legacy(
+              conn,
+              "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id, status,"
+              " created_at)"
+              " VALUES (?, 'OLD-REMARK-1', 'PUR_IN', '2026-01-01', 1, 'APPROVED',"
+              " '2026-01-01 00:00:00');");
+          legacy.bind(1, xiaotu::next_id()).run();
+        });
+        ldb.read([&](sqlite3* conn) {
+          xiaotu::Stmt old(conn,
+                           "SELECT remark FROM doc_header WHERE doc_no = 'OLD-REMARK-1';");
+          check(old.step() && old.text(0).empty(), "按老列写入的历史行备注应为空串");
         });
 
         xiaotu::gen::ItemService list_items(ldb);
@@ -3479,13 +3555,14 @@ int main() {
 
         const auto make_sale = [&](const std::string& date, const std::string& customer,
                                    std::int64_t salesperson_id, std::int64_t qty,
-                                   std::int64_t price_cents) {
+                                   std::int64_t price_cents, std::string remark = "") {
           xiaotu::DocInput sale;
           sale.doc_type = "SAL_OUT";
           sale.warehouse_id = list_warehouse;
           sale.doc_date = date;
           sale.partner = customer;
           sale.salesperson_id = salesperson_id;
+          sale.remark = std::move(remark);
           sale.lines.push_back(
               xiaotu::DocLineInput{.item_id = list_item.id, .qty = q(qty),
                                    .price_cents = price_cents});
@@ -3502,7 +3579,7 @@ int main() {
                                  .price_cents = 100});
         engine.save_and_approve(stock_in);
 
-        const auto jan = make_sale("2026-01-05", "客户甲", zhang.id, 2, 1234);  // 2468
+        const auto jan = make_sale("2026-01-05", "客户甲", zhang.id, 2, 1234, "加急单");  // 2468
         const auto feb = make_sale("2026-02-10", "客户乙", li.id, 1, 5000);    // 5000
         const auto mar = make_sale("2026-03-01", "客户甲", zhang.id, 1, 800);  // 800
         engine.reverse(mar.id);
@@ -3541,6 +3618,10 @@ int main() {
               "关键字应匹配往来单位");
         check(query("张三", "", "", "", 0, 0, 1, 20).total_count == 3,
               "关键字应匹配业务员名称快照");
+        check(query("加急", "", "", "", 0, 0, 1, 20).total_count == 1,
+              "关键字应命中表头备注");
+        check(query("加急", "", "", "", 0, 0, 1, 20).rows.at(0).remark == "加急单",
+              "列表行应带回表头备注");
         check(query("客户", "2026-02-01", "2026-02-28", "", 0, 0, 1, 20).total_count == 4,
               "日期闭区间内命中四张客户名称含「客户」的销售单");
         check(query(jan.doc_no, "", "", "", 0, 0, 1, 20).total_count == 1,
