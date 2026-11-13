@@ -273,7 +273,18 @@ ProcessResult run_process_capture(const std::string& program,
   ::close(pipe_fd[0]);
 
   int status = 0;
-  while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+  pid_t waited = -1;
+  do {
+    waited = ::waitpid(pid, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  if (waited < 0) {
+    // 收集退出状态失败（例如 ECHILD，子进程已被别处回收）。此时 status 仍是
+    // 初值 0，若继续往下走会被 WIFEXITED(0) 当成「正常退出、退出码 0」。
+    const int saved_errno = errno;
+    result.started = false;
+    result.exit_code = -1;
+    result.error = std::string("无法获取子进程退出状态：") + std::strerror(saved_errno);
+    return result;
   }
   result.started = true;
   if (WIFEXITED(status)) {
