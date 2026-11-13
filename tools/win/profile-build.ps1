@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   小兔进销存 Windows 构建耗时采集（默认只读）
   只采集环境；不加 -Measure / -FullMeasure 时绝不运行 cmake 或 ctest。
