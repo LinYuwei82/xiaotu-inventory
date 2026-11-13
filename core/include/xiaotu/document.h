@@ -99,6 +99,10 @@ struct DocDetail {
   std::string order_status;  // 仅订单：'' / CONFIRMED / CONVERTED / CLOSED
   std::int64_t total_qty = 0;
   std::int64_t total_amount_cents = 0;
+  // 含税口径：净额 + 税额 = 价税合计，均按行汇总（历史单据 tax = 0）。
+  std::int64_t total_net_cents = 0;
+  std::int64_t total_tax_cents = 0;
+  std::int64_t total_with_tax_cents = 0;
   std::vector<DocLineInput> lines;
 };
 

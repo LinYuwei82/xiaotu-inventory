@@ -198,6 +198,30 @@
     return (negative ? "-" : "") + (absolute / 100n).toString() + "." + fraction;
   }
 
+  // 数量（定点整数）× 单价（分）→ 金额（分），与后端 mul_qty_price 同一舍入口径。
+  function qtyAmountCents(qtyScaled, priceCents) {
+    if (qtyScaled === null) return 0;
+    const numerator = BigInt(qtyScaled) * BigInt(priceCents || 0);
+    const scaled =
+      numerator >= 0n ? (numerator + QTY_SCALE / 2n) / QTY_SCALE
+                      : -((-numerator + QTY_SCALE / 2n) / QTY_SCALE);
+    return Number(scaled);
+  }
+
+  // 行税额：整数分四舍五入，逐行计算，保证「净额 + 税额 = 价税合计」不差一分。
+  function taxForAmount(amountCents, rateBp, includesTax) {
+    if (!rateBp) return { net: amountCents, tax: 0 };
+    const divRound = (numerator, denominator) =>
+      numerator >= 0
+        ? Math.floor((numerator + Math.floor(denominator / 2)) / denominator)
+        : -Math.floor((-numerator + Math.floor(denominator / 2)) / denominator);
+    if (includesTax) {
+      const tax = divRound(amountCents * rateBp, 10000 + rateBp);
+      return { net: amountCents - tax, tax };
+    }
+    return { net: amountCents, tax: divRound(amountCents * rateBp, 10000) };
+  }
+
   function qtyIsNegative(value) {
     return String(value === null || value === undefined ? "" : value).startsWith("-");
   }
@@ -348,7 +372,12 @@
     if (!totals) return "";
     if (totals.text !== undefined) return String(totals.text);
     if (totals.total_amount_text !== undefined) {
-      return "合计数量 " + totals.total_qty + "，合计金额 " + totals.total_amount_text + " 元";
+      let text = "合计数量 " + totals.total_qty + "，合计金额 " + totals.total_amount_text + " 元";
+      if (totals.total_tax_text !== undefined) {
+        text += "\n税额 " + totals.total_tax_text + " 元";
+        text += "\n价税合计 " + totals.total_with_tax_text + " 元";
+      }
+      return text;
     }
     if (totals.closing_text !== undefined) {
       let text = "期初余额 " + totals.opening_text + " 元，期末余额 " + totals.closing_text + " 元";
@@ -1467,6 +1496,7 @@
             </label>
           </div>
           <table class="table lines" data-role="lines"></table>
+          <p class="page-sub" data-role="doc-totals"></p>
           <div class="form-actions">
             <button class="btn" type="button" data-role="add-line">添加明细行</button>
             <button class="btn" type="button" data-role="save-draft">存为草稿</button>
@@ -1548,36 +1578,90 @@
         <td><span class="qty-cell"><input type="text" inputmode="decimal" value="1" data-role="qty" /><span class="unit-hint" data-role="unit"></span></span></td>
         <td><input type="number" min="0" step="0.01" value="0.00" data-role="price" /></td>
         <td><input type="text" class="readonly" value="—" data-role="amount" disabled /></td>
+        <td><input type="number" min="0" max="100" step="0.01" value="0" data-role="tax-rate" /></td>
+        <td><label class="checkbox"><input type="checkbox" data-role="tax-included" /></label></td>
+        <td><input type="text" class="readonly" value="—" data-role="tax" disabled /></td>
         <td class="actions"><button class="link danger" type="button" data-role="remove">移除</button></td>`;
       linesTable.querySelector("tbody").appendChild(row);
-      row.querySelector('[data-role="remove"]').addEventListener("click", () => row.remove());
+      row.querySelector('[data-role="remove"]').addEventListener("click", () => {
+        row.remove();
+        recalcTotals();
+      });
       const recalc = () => {
         const qty = parseQty(row.querySelector('[data-role="qty"]').value, true);
         const price = Math.round(Number(row.querySelector('[data-role="price"]').value || 0) * 100);
+        const amount = qtyAmountCents(qty, price);
+        const rateBp = Math.round(Number(row.querySelector('[data-role="tax-rate"]').value || 0) * 100);
+        const includesTax = row.querySelector('[data-role="tax-included"]').checked;
         row.querySelector('[data-role="amount"]').value = qtyAmountText(qty, price);
+        row.querySelector('[data-role="tax"]').value = money(
+          taxForAmount(amount, rateBp, includesTax).tax
+        );
+        recalcTotals();
       };
       row.querySelector('[data-role="qty"]').addEventListener("input", recalc);
       row.querySelector('[data-role="price"]').addEventListener("input", recalc);
+      row.querySelector('[data-role="tax-rate"]').addEventListener("input", recalc);
+      row.querySelector('[data-role="tax-included"]').addEventListener("change", recalc);
       const itemSelect = row.querySelector('[data-role="item"]');
       const unitHint = row.querySelector('[data-role="unit"]');
       const updateUnit = () => {
         const item = items.find((candidate) => String(candidate.id) === String(itemSelect.value));
         unitHint.textContent = item && item.unit ? item.unit : "";
+        // 新行跟随商品默认税率；编辑历史单据时保留落库税率。
+        if (!line) {
+          const bp = item && item.tax_rate_bp ? item.tax_rate_bp : 0;
+          row.querySelector('[data-role="tax-rate"]').value = (bp / 100)
+            .toFixed(2)
+            .replace(/\.?0+$/, "");
+        }
+        recalc();
       };
       itemSelect.addEventListener("change", updateUnit);
       updateUnit();
       if (line) {
         row.querySelector('[data-role="qty"]').value = qtyText(line.qty);
         row.querySelector('[data-role="price"]').value = (line.price_cents / 100).toFixed(2);
+        row.querySelector('[data-role="tax-rate"]').value = ((line.tax_rate_bp || 0) / 100)
+          .toFixed(2)
+          .replace(/\.?0+$/, "");
+        row.querySelector('[data-role="tax-included"]').checked = !!line.price_includes_tax;
         recalc();
+      }
+    }
+
+    function recalcTotals() {
+      if (costAdjust) return;
+      let qty = 0;
+      let amount = 0;
+      let tax = 0;
+      let withTax = 0;
+      for (const row of linesTable.querySelectorAll("tbody tr")) {
+        const qtyScaled = parseQty(row.querySelector('[data-role="qty"]').value, true) || 0;
+        const price = Math.round(Number(row.querySelector('[data-role="price"]').value || 0) * 100);
+        const lineAmount = qtyAmountCents(qtyScaled, price);
+        const rateBp = Math.round(Number(row.querySelector('[data-role="tax-rate"]').value || 0) * 100);
+        const includesTax = row.querySelector('[data-role="tax-included"]').checked;
+        const lineTax = taxForAmount(lineAmount, rateBp, includesTax).tax;
+        qty += qtyScaled;
+        amount += lineAmount;
+        tax += lineTax;
+        withTax += includesTax ? lineAmount : lineAmount + lineTax;
+      }
+      const totalsEl = mount.querySelector('[data-role="doc-totals"]');
+      if (totalsEl) {
+        totalsEl.textContent =
+          "合计数量 " + qtyText(qty) + "，金额 " + money(amount) +
+          "，税额 " + money(tax) + "，价税合计 " + money(withTax);
       }
     }
 
     function resetLines() {
       linesTable.innerHTML = costAdjust
         ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
-        : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+        : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th>税率（%）</th><th>含税</th><th>税额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
       addLine();
+      recalcTotals();
     }
 
     function statusLabel(status) {
@@ -1587,7 +1671,9 @@
     function actionsFor(doc) {
       const print =
         '<button class="link" data-role="print">打印</button>' +
-        '<button class="link" data-role="pdf">导出 PDF</button>';
+        '<button class="link" data-role="pdf">导出 PDF</button>' +
+        '<button class="link" data-role="export-csv">CSV</button>' +
+        '<button class="link" data-role="export-xlsx">Excel</button>';
       if (costAdjust && !can("cost.adjust")) {
         return doc.status === "DRAFT"
           ? print + '<button class="link" data-role="edit">编辑</button>'
@@ -1744,11 +1830,20 @@
           docType === "STK_CNT"
         );
         const price = Math.round(Number(row.querySelector('[data-role="price"]').value || 0) * 100);
+        const rateBp = Math.round(
+          Number(row.querySelector('[data-role="tax-rate"]').value || 0) * 100
+        );
         if (!itemId || qty === null) {
           showNotice("请检查明细行的商品与数量", "error");
           return null;
         }
-        lines.push({ item_id: itemId, qty, price_cents: price });
+        lines.push({
+          item_id: itemId,
+          qty,
+          price_cents: price,
+          tax_rate_bp: rateBp,
+          price_includes_tax: row.querySelector('[data-role="tax-included"]').checked,
+        });
       }
       if (!lines.length) {
         showNotice("请至少添加一行明细", "error");
@@ -1894,6 +1989,16 @@
             "/api/print/render?target_type=DOC&target_key=" + docType + "&doc_id=" + id,
             doc ? doc.doc_no : undefined
           );
+          return;
+        }
+        if (button.dataset.role === "export-csv") {
+          await downloadCsv("/api/documents/" + id + "/export?format=csv");
+          showNotice("已导出 CSV", "ok");
+          return;
+        }
+        if (button.dataset.role === "export-xlsx") {
+          await downloadXlsx("/api/documents/" + id + "/export?format=xlsx");
+          showNotice("已导出 Excel", "ok");
           return;
         }
         if (button.dataset.role === "reverse") {

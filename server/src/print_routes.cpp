@@ -141,6 +141,19 @@ std::string money_text(std::int64_t cents) {
   return (negative ? "-" : "") + std::to_string(abs / 100) + "." + fraction;
 }
 
+// 税率（整数万分比）→ 展示文本：1300 → 13%，650 → 6.5%。
+std::string rate_text(std::int64_t bp) {
+  std::string text = std::to_string(bp / 100);
+  if (bp % 100 != 0) {
+    char buffer[8];
+    std::snprintf(buffer, sizeof(buffer), ".%02lld", static_cast<long long>(bp % 100));
+    std::string fraction = buffer;
+    while (!fraction.empty() && fraction.back() == '0') fraction.pop_back();
+    text += fraction;
+  }
+  return text + "%";
+}
+
 std::string margin_text(std::int64_t revenue_cents, std::int64_t profit_cents) {
   if (revenue_cents == 0) return "—";
   // 毛利率保留一位小数，用整数千分比换算，展示层也不引入浮点。
@@ -727,7 +740,12 @@ void render_document(Services& services, const PrintTargetDef& target, const htt
                            {"unit", unit},
                            {"qty", qty_text(line.qty)},
                            {"price_cents", line.price_cents},
-                           {"amount_cents", mul_qty_price(line.qty, line.price_cents)}});
+                           {"amount_cents", mul_qty_price(line.qty, line.price_cents)},
+                           {"tax_rate_text", rate_text(line.tax_rate_bp)},
+                           {"price_includes_tax", line.price_includes_tax ? "是" : "否"},
+                           {"net_cents", line.net_cents},
+                           {"tax_cents", line.tax_cents},
+                           {"with_tax_cents", line.net_cents + line.tax_cents}});
   }
 
   const std::string header_warehouse =
@@ -752,7 +770,13 @@ void render_document(Services& services, const PrintTargetDef& target, const htt
   render.header_fields.push_back({{"label", "状态"}, {"value", doc_status_label(detail.status)}});
   render.totals = {{"total_qty", qty_text(detail.total_qty)},
                    {"total_amount_cents", detail.total_amount_cents},
-                   {"total_amount_text", money_text(detail.total_amount_cents)}};
+                   {"total_amount_text", money_text(detail.total_amount_cents)},
+                   {"total_net_cents", detail.total_net_cents},
+                   {"total_tax_cents", detail.total_tax_cents},
+                   {"total_with_tax_cents", detail.total_with_tax_cents},
+                   {"total_net_text", money_text(detail.total_net_cents)},
+                   {"total_tax_text", money_text(detail.total_tax_cents)},
+                   {"total_with_tax_text", money_text(detail.total_with_tax_cents)}};
   render.placeholders["doc_no"] = detail.doc_no;
   render.placeholders["doc_date"] = detail.doc_date;
   render.placeholders["partner"] = detail.partner;

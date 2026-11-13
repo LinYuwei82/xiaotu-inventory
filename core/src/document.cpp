@@ -609,6 +609,9 @@ ValidatedDoc validate_document(sqlite3* conn, const DocInput& input,
     if (line.price_cents < 0) {
       throw AppError("INVALID_INPUT", "单价不能为负数");
     }
+    if (line.tax_rate_bp > 10000) {
+      throw AppError("INVALID_INPUT", "税率不能超过 100%");
+    }
     Stmt item(conn,
               "SELECT i.unit, COALESCE(u.qty_decimals, 0) FROM item i"
               " LEFT JOIN unit u ON u.id = i.unit_id"
@@ -629,6 +632,39 @@ ValidatedDoc validate_document(sqlite3* conn, const DocInput& input,
   return validated;
 }
 
+// 整数分四舍五入（远离 0），全程不引入浮点。
+std::int64_t div_round(std::int64_t numerator, std::int64_t denominator) {
+  if (denominator <= 0) return 0;
+  return numerator >= 0 ? (numerator + denominator / 2) / denominator
+                        : -((-numerator + denominator / 2) / denominator);
+}
+
+// 行税额：逐行计算再汇总，保证每一行「净额 + 税额 = 价税合计」精确成立。
+// - 单价不含税：净额 = 金额，税额 = 金额 × 税率；
+// - 单价含税：价税合计 = 金额，税额 = 价税合计 × 税率 ÷ (1 + 税率)，净额 = 差额。
+void compute_line_tax(std::int64_t amount_cents, std::int64_t rate_bp, bool includes_tax,
+                      std::int64_t& net_cents, std::int64_t& tax_cents) {
+  if (rate_bp <= 0) {
+    net_cents = amount_cents;
+    tax_cents = 0;
+    return;
+  }
+  if (includes_tax) {
+    tax_cents = div_round(amount_cents * rate_bp, 10000 + rate_bp);
+    net_cents = amount_cents - tax_cents;
+    return;
+  }
+  net_cents = amount_cents;
+  tax_cents = div_round(amount_cents * rate_bp, 10000);
+}
+
+std::int64_t default_tax_rate(sqlite3* conn, std::int64_t item_id) {
+  Stmt stmt(conn, "SELECT tax_rate_bp FROM item WHERE id = ?;");
+  stmt.bind(1, item_id);
+  if (!stmt.step()) return 0;
+  return stmt.i64(0);
+}
+
 std::vector<std::int64_t> insert_lines(sqlite3* conn, std::int64_t doc_id,
                                        const std::vector<DocLineInput>& lines, bool cost_adjust) {
   std::vector<std::int64_t> line_ids;
@@ -636,22 +672,34 @@ std::vector<std::int64_t> insert_lines(sqlite3* conn, std::int64_t doc_id,
   std::int64_t line_no = 1;
   for (const DocLineInput& line : lines) {
     const std::int64_t line_id = next_id();
+    const std::int64_t amount = cost_adjust ? 0 : mul_qty_price(line.qty, line.price_cents);
+    std::int64_t rate_bp = 0;
+    std::int64_t net_cents = 0;
+    std::int64_t tax_cents = 0;
+    if (!cost_adjust) {
+      rate_bp = line.tax_rate_bp >= 0 ? line.tax_rate_bp : default_tax_rate(conn, line.item_id);
+      compute_line_tax(amount, rate_bp, line.price_includes_tax, net_cents, tax_cents);
+    }
     Stmt insert_line(conn,
                      "INSERT INTO doc_line (id, doc_id, line_no, item_id, qty, price_cents,"
                      " amount_cents, source_order_line_id, warehouse_id, adjust_cents,"
-                     " adjust_reason)"
-                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
+                     " adjust_reason, tax_rate_bp, price_includes_tax, net_cents, tax_cents)"
+                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
     insert_line.bind(1, line_id)
         .bind(2, doc_id)
         .bind(3, line_no)
         .bind(4, line.item_id)
         .bind(5, line.qty)
         .bind(6, line.price_cents)
-        .bind(7, cost_adjust ? 0 : mul_qty_price(line.qty, line.price_cents))
+        .bind(7, amount)
         .bind(8, line.source_order_line_id)
         .bind(9, cost_adjust ? line.warehouse_id : 0)
         .bind(10, cost_adjust ? line.adjust_cents : 0)
         .bind(11, cost_adjust ? line.adjust_reason : std::string{})
+        .bind(12, rate_bp)
+        .bind(13, static_cast<std::int64_t>(line.price_includes_tax ? 1 : 0))
+        .bind(14, net_cents)
+        .bind(15, tax_cents)
         .run();
     line_ids.push_back(line_id);
     ++line_no;
@@ -1139,7 +1187,8 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
     }
     Stmt lines(conn,
                "SELECT id, item_id, qty, price_cents, converted_qty, source_order_line_id,"
-               " warehouse_id, adjust_cents, adjust_reason"
+               " warehouse_id, adjust_cents, adjust_reason, tax_rate_bp, price_includes_tax,"
+               " net_cents, tax_cents"
                " FROM doc_line WHERE doc_id = ? ORDER BY line_no;");
     lines.bind(1, doc_id);
     while (lines.step()) {
@@ -1151,8 +1200,17 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
                                           .warehouse_id = lines.i64(6),
                                           .adjust_cents = lines.i64(7),
                                           .adjust_reason = lines.text(8),
-                                          .source_order_line_id = lines.i64(5)});
+                                          .source_order_line_id = lines.i64(5),
+                                          .tax_rate_bp = lines.i64(9),
+                                          .price_includes_tax = lines.i64(10) != 0,
+                                          .net_cents = lines.i64(11),
+                                          .tax_cents = lines.i64(12)});
     }
+    for (const auto& line : detail.lines) {
+      detail.total_net_cents += line.net_cents;
+      detail.total_tax_cents += line.tax_cents;
+    }
+    detail.total_with_tax_cents = detail.total_net_cents + detail.total_tax_cents;
   });
   return detail;
 }

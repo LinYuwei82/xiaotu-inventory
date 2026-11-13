@@ -248,8 +248,8 @@ void run_server_mode(const std::filesystem::path& dir) {
   check(diagnostic && diagnostic->status == 200, "诊断信息应返回 200");
   if (diagnostic) {
     const auto data = nlohmann::json::parse(diagnostic->body);
-    check(data.value("schema_version", 0) == 25, "诊断信息里的 schema 应为 25");
-    check(data.value("migrations", 0) == 25, "诊断信息里的迁移条数应为 25");
+    check(data.value("schema_version", 0) == 26, "诊断信息里的 schema 应为 26");
+    check(data.value("migrations", 0) == 26, "诊断信息里的迁移条数应为 26");
     check(data.value("mode", "") == "server", "网络版诊断信息 mode 应为 server");
     check(!data.value("data_dir", "").empty(), "诊断信息应包含数据目录");
     check(data.value("database_bytes", 0LL) > 0, "诊断信息应包含大于 0 的数据库大小");

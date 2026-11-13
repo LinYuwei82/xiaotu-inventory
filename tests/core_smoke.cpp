@@ -79,7 +79,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 25, "迁移后 schema 版本应为 25");
+      check(db.schema_version() == 26, "迁移后 schema 版本应为 26");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -1379,6 +1379,39 @@ int main() {
       check(adjust_detail.lines.at(0).warehouse_id == adjust_wh &&
                 adjust_detail.lines.at(0).adjust_reason == "运费分摊",
             "成本调整单应逐行保存仓库与原因");
+      {
+        // 含税价：逐行算税再汇总，净额 + 税额 = 价税合计，整数分不差一。
+        const auto tax_item = items.create(
+            xiaotu::gen::ItemRow{.code = "TAX001", .name = "含税测试", .unit_id = 1});
+        xiaotu::DocInput tax_doc;
+        tax_doc.doc_type = "OTH_IN";
+        tax_doc.warehouse_id = adjust_wh;
+        tax_doc.doc_date = kToday;
+        tax_doc.biz_category = "OTHER";
+        tax_doc.lines.push_back(xiaotu::DocLineInput{.item_id = tax_item.id,
+                                                     .qty = q(3),
+                                                     .price_cents = 100,
+                                                     .tax_rate_bp = 1300});
+        tax_doc.lines.push_back(xiaotu::DocLineInput{.item_id = tax_item.id,
+                                                     .qty = q(1),
+                                                     .price_cents = 113,
+                                                     .tax_rate_bp = 1300,
+                                                     .price_includes_tax = true});
+        const auto tax_created = documents.save_and_approve(tax_doc);
+        const auto tax_detail = documents.detail(tax_created.id);
+        check(tax_detail.lines.at(0).net_cents == 300 && tax_detail.lines.at(0).tax_cents == 39,
+              "不含税单价 3.00 × 3 应按 13% 算出税额 0.39");
+        check(tax_detail.lines.at(1).net_cents == 100 && tax_detail.lines.at(1).tax_cents == 13,
+              "含税单价 1.13 应按 13% 反算出净额 1.00 / 税额 0.13");
+        check(tax_detail.total_amount_cents == 413 && tax_detail.total_net_cents == 400 &&
+                  tax_detail.total_tax_cents == 52 && tax_detail.total_with_tax_cents == 452,
+              "单据合计应为金额 4.13 / 净额 4.00 / 税额 0.52 / 价税合计 4.52");
+        check(tax_detail.lines.at(0).net_cents + tax_detail.lines.at(0).tax_cents == 339 &&
+                  tax_detail.lines.at(1).net_cents + tax_detail.lines.at(1).tax_cents == 113,
+              "每行净额 + 税额都应等于价税合计");
+        documents.reverse(tax_created.id);
+        items.remove(tax_item.id);
+      }
       documents.reverse(adjust_doc.id);
       check(balance_of(adjust_item.id).amount_cents == 10000, "反审核成本调整应回退金额");
 

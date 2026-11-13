@@ -800,6 +800,16 @@ WHERE i.barcode <> ''
   AND NOT EXISTS (SELECT 1 FROM item_barcode b WHERE b.item_id = i.id);
 )SQL";
 
+// v26：含税价第一步。单据行保存税率（整数万分比）、含税标记与算好的不含税/税额；
+// 全部整数分，不引入浮点。历史单据按 0 税回填：net = amount、tax = 0。
+constexpr const char* kV26 = R"SQL(
+ALTER TABLE doc_line ADD COLUMN tax_rate_bp INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doc_line ADD COLUMN price_includes_tax INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doc_line ADD COLUMN net_cents INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE doc_line ADD COLUMN tax_cents INTEGER NOT NULL DEFAULT 0;
+UPDATE doc_line SET net_cents = amount_cents;
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -840,6 +850,7 @@ const std::vector<Migration>& all_migrations() {
       {23, "v23_allow_negative_stock", kV23},
       {24, "v24_session_timeout", kV24},
       {25, "v25_item_barcode_backfill", kV25},
+      {26, "v26_doc_line_tax", kV26},
   };
   return migrations;
 }

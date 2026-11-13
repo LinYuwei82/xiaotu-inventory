@@ -33,6 +33,12 @@ struct DocLineInput {
   std::int64_t adjust_cents = 0;         // 成本调整金额（分），可正可负
   std::string adjust_reason;             // 成本调整原因，仅成本调整单使用
   std::int64_t source_order_line_id = 0;  // 出库行来源订单行
+  // 税率：整数万分比（13% = 1300）；<0 表示取商品默认税率。
+  std::int64_t tax_rate_bp = -1;
+  bool price_includes_tax = false;  // 单价是否含税
+  // 行税额结果（整数分）：净额 + 税额 = 价税合计，由审核时算好落库。
+  std::int64_t net_cents = 0;
+  std::int64_t tax_cents = 0;
 };
 
 struct SalesOutboundInput {

@@ -725,6 +725,7 @@ main {
   .print-totals {
     margin-top: 2mm;
     font-weight: 600;
+    white-space: pre-line;
   }
 
   .print-meta {

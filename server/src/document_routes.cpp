@@ -1,6 +1,8 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include <cstdio>
+#include <map>
 #include <string>
 
 #include "xiaotu/document.h"
@@ -10,6 +12,7 @@
 #include "xiaotu/permissions.h"
 #include "xiaotu/qty.h"
 #include "xiaotu/services.h"
+#include "xiaotu/xlsx.h"
 
 namespace xiaotu {
 namespace {
@@ -78,6 +81,10 @@ nlohmann::json detail_to_json(const DocDetail& detail) {
         {"warehouse_id", line.warehouse_id},
         {"adjust_cents", line.adjust_cents},
         {"adjust_reason", line.adjust_reason},
+        {"tax_rate_bp", line.tax_rate_bp},
+        {"price_includes_tax", line.price_includes_tax},
+        {"net_cents", line.net_cents},
+        {"tax_cents", line.tax_cents},
     });
   }
   return nlohmann::json{
@@ -96,6 +103,9 @@ nlohmann::json detail_to_json(const DocDetail& detail) {
       {"order_status", detail.order_status},
       {"total_qty", qty_text(detail.total_qty)},
       {"total_amount_cents", detail.total_amount_cents},
+      {"total_net_cents", detail.total_net_cents},
+      {"total_tax_cents", detail.total_tax_cents},
+      {"total_with_tax_cents", detail.total_with_tax_cents},
       {"lines", lines},
   };
 }
@@ -121,10 +131,54 @@ DocInput input_from_json(const nlohmann::json& body) {
       line.warehouse_id = item.value("warehouse_id", std::int64_t{0});
       line.adjust_cents = item.value("adjust_cents", std::int64_t{0});
       line.adjust_reason = item.value("adjust_reason", std::string{});
+      if (item.contains("tax_rate_bp") && !item["tax_rate_bp"].is_null()) {
+        line.tax_rate_bp = item.value("tax_rate_bp", std::int64_t{-1});
+      }
+      line.price_includes_tax = item.value("price_includes_tax", false);
       input.lines.push_back(line);
     }
   }
   return input;
+}
+
+// 单据导出与打印共用同一批列，金额由整数分换算成元，两位小数。
+std::string export_yuan(std::int64_t cents) {
+  const bool negative = cents < 0;
+  const std::int64_t abs = negative ? -cents : cents;
+  std::string fraction = std::to_string(abs % 100);
+  if (fraction.size() < 2) fraction.insert(0, 2 - fraction.size(), '0');
+  return (negative ? "-" : "") + std::to_string(abs / 100) + "." + fraction;
+}
+
+std::string rate_text(std::int64_t bp) {
+  std::string text = std::to_string(bp / 100);
+  if (bp % 100 != 0) {
+    char buffer[8];
+    std::snprintf(buffer, sizeof(buffer), ".%02lld", static_cast<long long>(bp % 100));
+    std::string fraction = buffer;
+    while (!fraction.empty() && fraction.back() == '0') fraction.pop_back();
+    text += fraction;
+  }
+  return text + "%";
+}
+
+std::string csv_escape(const std::string& value) {
+  if (value.find_first_of(",\"\r\n") == std::string::npos) return value;
+  std::string escaped = "\"";
+  for (const char ch : value) {
+    if (ch == '"') escaped += '"';
+    escaped += ch;
+  }
+  escaped += '"';
+  return escaped;
+}
+
+void append_csv_row(std::string& out, const std::vector<std::string>& fields) {
+  for (std::size_t i = 0; i < fields.size(); ++i) {
+    if (i != 0) out += ',';
+    out += csv_escape(fields[i]);
+  }
+  out += "\r\n";
 }
 
 }  // namespace
@@ -148,6 +202,116 @@ void register_document_routes(httplib::Server& server, Services& services) {
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      const auto id = std::stoll(req.matches[1].str());
                      json_ok(res, detail_to_json(services.docs.detail(id)));
+                   }));
+
+  // 单据导出：逐行带不含税净额与税额，末尾给出「合计金额 / 税额 / 价税合计」，
+  // 与打印、页面同源（都来自 doc_line 的 net_cents / tax_cents）。
+  server.Get(R"(/api/documents/(\d+)/export)",
+             guard("document.read",
+                   [&services](const httplib::Request& req, httplib::Response& res) {
+                     const std::int64_t id = std::stoll(req.matches[1].str());
+                     const DocDetail detail = services.docs.detail(id);
+                     std::map<std::int64_t, gen::ItemRow> items;
+                     for (const auto& row : services.item.list()) items[row.id] = row;
+                     const bool want_xlsx =
+                         req.has_param("format") && req.get_param_value("format") == "xlsx";
+                     const std::vector<std::string> header = {
+                         "行号", "商品编码", "商品名称", "规格", "单位", "数量",
+                         "单价（元）", "金额（元）", "税率", "含税", "净额（元）",
+                         "税额（元）", "价税合计（元）"};
+                     if (want_xlsx) {
+                       XlsxSheet sheet(detail.doc_no);
+                       sheet.add_text_row({"单号", detail.doc_no});
+                       sheet.add_text_row({"日期", detail.doc_date});
+                       sheet.add_text_row({"往来单位", detail.partner});
+                       sheet.add_header_row(header);
+                       int line_no = 0;
+                       for (const auto& line : detail.lines) {
+                         const auto found = items.find(line.item_id);
+                         const bool missing = found == items.end();
+                         sheet.add_row(
+                             {XlsxCell::text(std::to_string(++line_no)),
+                              XlsxCell::text(missing ? "" : found->second.code),
+                              XlsxCell::text(missing ? "" : found->second.name),
+                              XlsxCell::text(missing ? "" : found->second.spec),
+                              XlsxCell::text(missing ? "" : found->second.unit),
+                              XlsxCell::text(qty_text(line.qty)),
+                              XlsxCell::money(line.price_cents),
+                              XlsxCell::money(mul_qty_price(line.qty, line.price_cents)),
+                              XlsxCell::text(rate_text(line.tax_rate_bp)),
+                              XlsxCell::text(line.price_includes_tax ? "是" : "否"),
+                              XlsxCell::money(line.net_cents),
+                              XlsxCell::money(line.tax_cents),
+                              XlsxCell::money(line.net_cents + line.tax_cents)});
+                       }
+                       sheet.add_row({XlsxCell::text("合计金额"), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::money(detail.total_amount_cents),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::money(detail.total_net_cents),
+                                      XlsxCell::money(detail.total_tax_cents),
+                                      XlsxCell::money(detail.total_with_tax_cents)});
+                       sheet.add_row({XlsxCell::text("税额"), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::money(detail.total_tax_cents),
+                                      XlsxCell::text("")});
+                       sheet.add_row({XlsxCell::text("价税合计"), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::text(""), XlsxCell::text(""),
+                                      XlsxCell::money(detail.total_with_tax_cents)});
+                       res.set_header("Content-Disposition",
+                                      "attachment; filename=\"" + detail.doc_no + ".xlsx\"");
+                       res.set_content(sheet.build(),
+                                       "application/vnd.openxmlformats-officedocument."
+                                       "spreadsheetml.sheet");
+                       return;
+                     }
+                     std::string csv;
+                     append_csv_row(csv, {"单号", detail.doc_no});
+                     append_csv_row(csv, {"日期", detail.doc_date});
+                     append_csv_row(csv, {"往来单位", detail.partner});
+                     append_csv_row(csv, {});
+                     append_csv_row(csv, header);
+                     int line_no = 0;
+                     for (const auto& line : detail.lines) {
+                       const auto found = items.find(line.item_id);
+                       const bool missing = found == items.end();
+                       append_csv_row(
+                           csv,
+                           {std::to_string(++line_no),
+                            missing ? "" : found->second.code,
+                            missing ? "" : found->second.name,
+                            missing ? "" : found->second.spec,
+                            missing ? "" : found->second.unit,
+                            qty_text(line.qty), export_yuan(line.price_cents),
+                            export_yuan(mul_qty_price(line.qty, line.price_cents)),
+                            rate_text(line.tax_rate_bp),
+                            line.price_includes_tax ? "是" : "否",
+                            export_yuan(line.net_cents), export_yuan(line.tax_cents),
+                            export_yuan(line.net_cents + line.tax_cents)});
+                     }
+                     append_csv_row(csv, {});
+                     append_csv_row(csv, {"合计金额", "", "", "", "", "", "",
+                                          export_yuan(detail.total_amount_cents), "", "",
+                                          export_yuan(detail.total_net_cents),
+                                          export_yuan(detail.total_tax_cents),
+                                          export_yuan(detail.total_with_tax_cents)});
+                     append_csv_row(csv, {"税额", "", "", "", "", "", "", "", "", "", "",
+                                          export_yuan(detail.total_tax_cents), ""});
+                     append_csv_row(csv, {"价税合计", "", "", "", "", "", "", "", "", "", "",
+                                          "", export_yuan(detail.total_with_tax_cents)});
+                     res.set_header("Content-Disposition",
+                                    "attachment; filename=\"" + detail.doc_no + ".csv\"");
+                     res.set_content("\xEF\xBB\xBF" + csv, "text/csv; charset=utf-8");
                    }));
 
   server.Post("/api/documents",
