@@ -782,13 +782,16 @@
     return "rid-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
   }
 
-  // 打印路径的 target_key=… 已带 ?，报表查询串也从 ? 开始；直接相加会得到
+  // 打印路径的 target_key=… 已经带 ?，报表查询串也从 ? 开始；直接相加会得到
   // target_key=purchase-detail?from=…，服务端把 "?from" 并进 target_key 后报
-  // 「未知的打印目标」。这里把首个 ? 换成 &，让查询参数真正成为独立参数。
+  // 「未知的打印目标」。这里统一按 URL 解析：先解析已有查询，再 set 参数，
+  // 不再依赖手写 ?/& 的先后顺序。
   function withQuery(url, query) {
     if (!query) return url;
-    const text = String(query);
-    return url + (url.indexOf("?") >= 0 ? text.replace(/^\?/, "&") : text);
+    const parsed = new URL(url, window.location.origin);
+    const extra = new URLSearchParams(String(query).replace(/^\?/, ""));
+    extra.forEach((value, key) => parsed.searchParams.set(key, value));
+    return parsed.pathname + parsed.search;
   }
 
   // xlsx 是二进制，单机版桥接用 base64 传回原生保存，浏览器走 Blob 下载。
