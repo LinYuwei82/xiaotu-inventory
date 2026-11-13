@@ -95,12 +95,47 @@ C7560 指「指定初始化器（designated initializer）顺序与结构体成�
 
 ## MANUAL 项
 
-脚本只打印人工操作提示并记 MANUAL，不假装验过：
+`verify.ps1` 只在装不出自动化条件时才记 MANUAL：
 
-- WebView2 缺失提示（虚拟机先卸载 WebView2）；
+- SmartScreen 未签名提示（需要联网真机 + 未签名包）。
+
+其余三项已由 `tools\win\ui-checks.ps1` 自动判定，不再靠人工记忆：
+
+- WebView2 缺失提示；
 - 窗口位置与大小记忆；
-- 打印对话框（纸型 / 边距 / 缩放）；
-- SmartScreen 未签名提示。
+- 打印对话框（预览能否调出、能否取消、取消后是否卡死）。
+
+对应关系：`verify.ps1` 里这三条 MANUAL 的说明文字已指向 `ui-checks.ps1`，跑法见下一节。
+
+## UI 回归检查（ui-checks.ps1）
+
+替代上面三项 MANUAL，自动判定并输出 `[PASS]/[FAIL]/[SKIP]` 与汇总行；**退出码 1 表示至少一项 FAIL**，SKIP 不影响退出码。
+
+```powershell
+# 默认用仓库构建产物：shell\win\build\xiaotu-shell.exe + build\windows\server\xiaotu-server.exe
+.\tools\win\ui-checks.ps1
+
+# 指定产物与超时/容差
+.\tools\win\ui-checks.ps1 -ShellPath C:\dist\xiaotu-shell.exe -StartupTimeoutSec 90 -WindowTolerancePx 4
+
+# 只跑其中两项
+.\tools\win\ui-checks.ps1 -SkipPrint -SkipWebView2Missing
+```
+
+| 检查 | 验什么 | 判定依据 |
+| --- | --- | --- |
+| 窗口位置与大小记忆 | 移动/缩放窗口后正常关闭，再启动是否回到原位 | 记忆文件 `%LOCALAPPDATA%\com.simem.xiaotu\shell-window.txt` 与关闭前矩形一致；重启后 `GetWindowRect` 各边偏差 ≤ `-WindowTolerancePx`（默认 2px） |
+| 打印预览 | 界面「报表 → 库存余额表 → 打印」能否调出打印界面、取消后是否卡死 | 出现 CDP 目标 `edge://print/` 且界面文本含「打印机」「份数」；点「取消」后目标关闭，主界面仍能执行脚本，`print-view` / `print-mode` 已被 `afterprint` 清理 |
+| WebView2 缺失提示 | 运行时缺失时是否给出可读提示而非白屏/闪退 | 仅对子进程设 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` 指向不存在的临时目录；弹窗含 `HRESULT 0x80070002` 与下载链接；点确定后退出码 1；去掉变量后能正常加载 `#/item` |
+
+前提与边界：
+
+- 需要先构建 Windows 壳与服务端（脚本会在 `%TEMP%\ui-checks-*` 里复制一份，壳与服务端必须能配对启动）；
+- 打印预览需要 WebView2 Runtime，且系统至少有一个打印队列（虚拟打印机即可，例如 Microsoft Print to PDF）；没有打印机时 Edge 打印预览仍会出现，只是没有可用目标；
+- 每次运行使用独立临时 stage 并把 `LOCALAPPDATA` 指向其中，**不读写真实数据目录**，也不写 `packaging\win\out`；
+- 不安装/不卸载 WebView2，不改注册表、不动系统组件；模拟缺失只靠子进程环境变量，退出即还原；
+- 失败不误报：`WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` 未生效（壳正常启动）时该项记 SKIP；本机确实没有 WebView2 Runtime 时，提示项只校验文案与退出码，复原启动记 SKIP，窗口记忆项也记 SKIP；
+- Windows 的系统打印对话框在 WebView2 里是内置打印预览（`edge://print/`），不是 Win32 `#32770`；`#32770` 只在用户在预览里按 Ctrl+Shift+P 时出现，本脚本不覆盖该分支。
 
 ## 已知不能由本脚本替代
 

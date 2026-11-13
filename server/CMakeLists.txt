@@ -46,7 +46,9 @@ if(WIN32)
   if (NOT EXISTS "${XIAOTU_WIN_ICON}")
     message(FATAL_ERROR "未找到 Windows 图标：${XIAOTU_WIN_ICON}")
   endif()
-  file(TO_NATIVE_PATH "${XIAOTU_WIN_ICON}" XIAOTU_WIN_ICON_RC)
+  # 传给 rc.exe 的路径保持正斜杠：反斜杠会被 RC 当作转义，路径在 \x 处被截断，
+  # 报 RC2135 file not found: D:\projects。
+  file(TO_CMAKE_PATH "${XIAOTU_WIN_ICON}" XIAOTU_WIN_ICON_RC)
   configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/version.rc.in"
     "${CMAKE_CURRENT_BINARY_DIR}/version.rc"

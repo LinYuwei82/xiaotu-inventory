@@ -618,6 +618,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   wc.style = CS_HREDRAW | CS_VREDRAW;
   wc.lpfnWndProc = window_proc;
   wc.hInstance = instance;
+  // 资源 ID 1 是 shell/win/version.rc.in 里 "1 ICON" 嵌进去的那份图标（候选 A）。
+  // 不设 hIcon/hIconSm 时，标题栏与任务栏按钮画的是系统默认图标，只有资源管理器、
+  // 桌面/开始菜单快捷方式读 exe 资源段，表现为「换了图标但不彻底」。
+  wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
+  // 小图标不能复用 LoadIconW：它固定按 SM_CXICON（通常 32px）取，高 DPI 下再被
+  // 下采样到 16px 会发糊；LoadImageW 按 SM_CXSMICON/SM_CYSMICON 直接取对应尺寸。
+  wc.hIconSm = static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                             GetSystemMetrics(SM_CXSMICON),
+                                             GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
   wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
   wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
   wc.lpszClassName = kWindowClass;
