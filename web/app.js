@@ -171,6 +171,17 @@
     return `<tbody><tr><td class="empty" colspan="${colspan}">${text}</td></tr></tbody>`;
   }
 
+  // 商品下拉的选项文案，全站唯一口径：编码 + 空格 + 名称 + 空格 + 规格。
+  // 规格为空时自动省略，不留多余空格；同编码不同规格的商品据此区分。
+  // 单据明细行、报表筛选、销售报表维度下拉都引用这里，避免各页面自行拼接。
+  function itemOptionText(item) {
+    if (!item) return "";
+    return [item.code, item.name, item.spec]
+      .map((part) => (part === null || part === undefined ? "" : String(part).trim()))
+      .filter(Boolean)
+      .join(" ");
+  }
+
   function money(cents) {
     const value = Number(cents || 0);
     return (value / 100).toFixed(2);
@@ -2276,19 +2287,12 @@
       mount.querySelector('[data-role="submit"]').hidden = true;
     }
 
-    function itemLabel(item) {
-      return [item.code, item.name, item.spec]
-        .map((part) => (part || "").trim())
-        .filter(Boolean)
-        .join(" ");
-    }
-
     function itemOptions(selected) {
       return items
         .map(
           (item) =>
             `<option value="${item.id}" ${String(item.id) === String(selected) ? "selected" : ""}>${escapeHtml(
-              itemLabel(item)
+              itemOptionText(item)
             )}</option>`
         )
         .join("");
@@ -3044,16 +3048,9 @@
     dateInput.value = new Date().toISOString().slice(0, 10);
     convertDate.value = dateInput.value;
 
-    function itemLabel(item) {
-      return [item.code, item.name, item.spec]
-        .map((part) => (part || "").trim())
-        .filter(Boolean)
-        .join(" ");
-    }
-
     function itemLabelById(itemId) {
       const item = items.find((row) => row.id === itemId);
-      return item ? itemLabel(item) : String(itemId);
+      return item ? itemOptionText(item) : String(itemId);
     }
 
     function itemOptions(selected) {
@@ -3061,7 +3058,7 @@
         .map(
           (item) =>
             `<option value="${item.id}" ${String(item.id) === String(selected) ? "selected" : ""}>${escapeHtml(
-              itemLabel(item)
+              itemOptionText(item)
             )}</option>`
         )
         .join("");
@@ -4207,10 +4204,10 @@
           ? previous
           : "all";
       fillSelect(purchaseSupplierSelect, suppliers, "全部供应商", (row) => row.code + " " + row.name);
-      fillSelect(purchaseItemSelect, items, "全部商品", (row) => row.code + " " + row.name);
+      fillSelect(purchaseItemSelect, items, "全部商品", itemOptionText);
       fillSelect(purchaseWarehouseSelect, warehouses, "全部仓库", (row) => row.code + " " + row.name);
       fillSelect(balanceWarehouseSelect, warehouses, "全部仓库", (row) => row.code + " " + row.name);
-      fillSelect(balanceItemSelect, items, "全部商品", (row) => row.code + " " + row.name);
+      fillSelect(balanceItemSelect, items, "全部商品", itemOptionText);
       fillSelect(otherFlowWarehouseSelect, warehouses, "全部仓库", (row) => row.code + " " + row.name);
       const fundQuery =
         period + "&account_id=" + encodeURIComponent(fundAccountSelect.value || "0");
@@ -4914,7 +4911,7 @@
         .join("");
     itemSelect.innerHTML =
       option("0", "全部商品") +
-      items.map((row) => option(row.id, row.code + " " + row.name)).join("");
+      items.map((row) => option(row.id, itemOptionText(row))).join("");
     warehouseSelect.innerHTML =
       option("0", "全部仓库") +
       warehouses.map((row) => option(row.id, row.code + " " + row.name)).join("");
