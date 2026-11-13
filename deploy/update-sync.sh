@@ -5,11 +5,13 @@
 # 同步采用临时文件 + 原子替换，避免服务端读到半个文件。
 #
 # 环境变量：
-#   XIAOTU_UPDATE_SOURCE    厂商清单 URL（必填，https）
-#   XIAOTU_UPDATE_TARGET    本地落盘路径（必填，如 /srv/xiaotu-updates/macos/stable/latest.json）
-#   XIAOTU_UPDATE_PUBKEY    可选，Ed25519 公钥 PEM；提供时调用 Python 工具验签
-#   XIAOTU_UPDATE_PYTHON    可选，Python 解释器（默认 python3）
-#   XIAOTU_UPDATE_TOOL      可选，update_manifest.py 路径
+#   XIAOTU_UPDATE_SOURCE          厂商清单 URL（必填，https）
+#   XIAOTU_UPDATE_TARGET          本地清单落盘路径（必填）
+#   XIAOTU_UPDATE_APPCAST_SOURCE  可选，厂商 appcast URL
+#   XIAOTU_UPDATE_APPCAST_TARGET  可选，appcast 落盘路径（与 SOURCE 同时提供）
+#   XIAOTU_UPDATE_PUBKEY          可选，Ed25519 公钥 PEM；提供时调用 Python 工具验签清单
+#   XIAOTU_UPDATE_PYTHON          可选，Python 解释器（默认 python3）
+#   XIAOTU_UPDATE_TOOL            可选，update_manifest.py 路径
 
 set -euo pipefail
 
@@ -36,3 +38,18 @@ fi
 chmod 0644 "$TMP"
 mv -f "$TMP" "$XIAOTU_UPDATE_TARGET"
 echo "已同步更新清单：$XIAOTU_UPDATE_TARGET"
+
+# 可选：同步 appcast（Sparkle 客户端使用）；同样先写临时文件再原子替换。
+if [ -n "${XIAOTU_UPDATE_APPCAST_SOURCE:-}" ] && [ -n "${XIAOTU_UPDATE_APPCAST_TARGET:-}" ]; then
+  APPCAST_DIR="$(dirname "$XIAOTU_UPDATE_APPCAST_TARGET")"
+  mkdir -p "$APPCAST_DIR"
+  APPCAST_TMP="$(mktemp "${APPCAST_DIR}/.appcast.XXXXXX")"
+  curl --fail --silent --show-error --location \
+    --connect-timeout 5 --max-time 20 \
+    --proto '=https' \
+    --output "$APPCAST_TMP" \
+    "$XIAOTU_UPDATE_APPCAST_SOURCE"
+  chmod 0644 "$APPCAST_TMP"
+  mv -f "$APPCAST_TMP" "$XIAOTU_UPDATE_APPCAST_TARGET"
+  echo "已同步 appcast：$XIAOTU_UPDATE_APPCAST_TARGET"
+fi

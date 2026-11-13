@@ -57,21 +57,126 @@ cron.d 文件需要 `用户` 字段（已包含），不要改成用户 crontab 
 
 恢复必须在服务停止时执行；确认程序版本与备份匹配后再恢复。
 
-## 更新源（网络版 / 私有化）
+## 更新模块（网络版 / 私有化服务端）
 
-更新检查由服务端读取本地清单完成，不主动访问外网；清单由 `deploy/update-sync.sh` 从厂商更新源同步：
+本节只适用于**网络版/私有化服务端**的更新检查。单机版客户端不读取这些配置：它直接使用 `Info.plist` 中的 `XiaotuUpdateManifestURL` 拉取厂商清单，安装由 Sparkle 完成。
 
-1. 复制 `deploy/nginx/updates.conf.example` 到 Nginx 配置目录，替换域名与路径后 reload。
-2. 在 `/etc/xiaotu/update_signing.pub.pem` 放置 Ed25519 公钥。
-3. 安装 `deploy/cron/xiaotu-update-sync` 到 `/etc/cron.d/`，或改用 systemd timer（二选一，不要重复）。
-4. 在 `config.toml` 增加：
+### 1. 前置条件
+
+- Python 3 与 `cryptography`（服务端调用与发布侧相同的验签工具）：
+
+```bash
+python3 -m venv /opt/xiaotu/tools/package/.venv
+/opt/xiaotu/tools/package/.venv/bin/pip install -r /opt/xiaotu/tools/package/requirements.txt
+```
+
+- 未安装或路径不可达时，`/api/update/check` 返回 `UPDATE_VERIFY_UNAVAILABLE`，不会下发更新。
+- 未配置 `public_key_file` 时返回 `UPDATE_UNVERIFIED`，同样不下发。
+
+### 2. 完整配置
 
 ```toml
 [update]
+# 部署侧同步到本机的清单文件（服务端只读，不主动访问外网）
 manifest_file = "/srv/xiaotu-updates/macos/stable/latest.json"
-channel = "stable"
-min_supported_version = "1.3.0"
-rollout_percent = 100
+channel = "stable"                  # stable / beta
+min_supported_version = "1.3.0"     # 低于此版本强制升级（理由 MIN_SUPPORTED）
+rollout_percent = 100               # 灰度上限，实际取 min(清单, 本值)
+public_key_file = "/etc/xiaotu/update_signing.pub.pem"
+verifier_python = "/opt/xiaotu/tools/package/.venv/bin/python"
+verifier_script = "/opt/xiaotu/tools/package/update_manifest.py"
 ```
 
-灰度放行：把清单里的 `rollout_percent` 依次改为 1、10、50、100，每次替换后 purge CDN 的 `latest.json` 与 `appcast.xml`，观察 24 小时；服务端启动时会读取新文件，无需重启。回滚时把清单指回上一版本并保留安装包。
+- `manifest_file` 每次请求重新读取，替换文件后无需重启。
+- 其余配置在进程启动时读取，修改后需重启服务。
+- `public_key_file`、`verifier_python`、`verifier_script` 缺一不可，否则按错误码拒绝。
+
+### 3. 公钥生成、保管与更换
+
+生成（离线机器执行，私钥不外传）：
+
+```bash
+python3 - <<'PY'
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+key = Ed25519PrivateKey.generate()
+open("update_signing_2026.pem", "wb").write(key.private_bytes(
+    serialization.Encoding.PEM,
+    serialization.PrivateFormat.PKCS8,
+    serialization.NoEncryption()))
+open("update_signing_2026.pub.pem", "wb").write(key.public_key().public_bytes(
+    serialization.Encoding.PEM,
+    serialization.PublicFormat.SubjectPublicKeyInfo))
+PY
+```
+
+- 私钥只保存在离线介质与发布机 CI Secret 中，不进仓库、不进镜像、不进备份明文。
+- 公钥部署到 `/etc/xiaotu/update_signing.pub.pem`，权限 0644，属主 root。
+
+更换流程：
+
+1. 生成新密钥对，先用新私钥签发**新清单**。
+2. 把新公钥放到新路径（如 `update_signing_2027.pub.pem`），更新 `public_key_file` 并重启服务。
+3. 重启后立即验证 `/api/update/check` 返回正常；旧清单若仍被引用需重新签名。
+4. 旧私钥归档或销毁，公钥保留一个发布周期用于排查。
+5. 注意：客户端 Sparkle 的 `SUPublicEDKey` 内置于 app，**更换该公钥必须先发布一版客户端**；服务端验签公钥可以独立更换，两者不是同一把也可，但建议保持一致以便排查。
+
+### 4. 清单与 appcast 同步
+
+使用 `deploy/update-sync.sh`，不要手工 `cp`：
+
+```bash
+XIAOTU_UPDATE_SOURCE=https://updates.example.com/macos/stable/latest.json \
+XIAOTU_UPDATE_TARGET=/srv/xiaotu-updates/macos/stable/latest.json \
+XIAOTU_UPDATE_APPCAST_SOURCE=https://updates.example.com/macos/stable/appcast.xml \
+XIAOTU_UPDATE_APPCAST_TARGET=/srv/xiaotu-updates/macos/stable/appcast.xml \
+XIAOTU_UPDATE_PUBKEY=/etc/xiaotu/update_signing.pub.pem \
+XIAOTU_UPDATE_PYTHON=/opt/xiaotu/tools/package/.venv/bin/python \
+XIAOTU_UPDATE_TOOL=/opt/xiaotu/tools/package/update_manifest.py \
+/opt/xiaotu/deploy/update-sync.sh
+```
+
+- 脚本先下载到同目录临时文件、验签通过后再原子替换，服务端不会读到半个文件。
+- 定时执行：安装 `deploy/cron/xiaotu-update-sync` 到 `/etc/cron.d/`，或改用 systemd timer，**二选一**。
+- 若 `XIAOTU_UPDATE_PUBKEY` 为空，脚本不验签；生产环境必须配置。
+
+### 5. 灰度放行与回滚
+
+清单是签名的，**不能直接改 `rollout_percent`**（会导致签名失效）。每次放量都要用原参数重新生成并签名：
+
+```bash
+tools/package/.venv/bin/python tools/package/update_manifest.py generate \
+  --file releases/macos/1.4.2/xiaotu-1.4.2.dmg \
+  --version 1.4.2 --build 2026111301 \
+  --url https://cdn.example.com/releases/macos/1.4.2/xiaotu-1.4.2.dmg \
+  --schema-min 28 --schema-max 40 --api-min 1 --api-max 1 \
+  --rollout 10 \
+  --key ~/keys/update_signing.pem --key-id 2026-01 \
+  --out build/package/latest.json --appcast build/package/appcast.xml
+```
+
+放量步骤：1% → 10% → 50% → 100%，每档观察至少 24 小时；替换清单与 appcast 后 purge CDN，确认 `/api/update/check` 返回符合预期。服务端读取 `min(清单 rollout, 配置 rollout_percent)`。
+
+回滚：
+
+1. 每次发布保留已签名清单与 appcast 归档（如 `releases/macos/1.4.2/latest.json`）。
+2. 把上一版归档的 `latest.json`、`appcast.xml` 原子替换回更新源并 purge。
+3. 确认 `/api/update/check` 返回上一版本；安装包保留至少 3 个 stable 版本。
+4. 回滚包若重新打包，构建号必须递增，否则客户端会判为“无更新”。
+
+### 6. 常见错误码
+
+| 错误码 | 出现原因 | 处理 |
+| --- | --- | --- |
+| `UPDATE_NOT_CONFIGURED` | 未配置 `manifest_file`；返回 200 且无更新 | 补齐配置并重启 |
+| `UPDATE_UNVERIFIED` | 未配置 `public_key_file`，服务端拒绝信任清单（503） | 配置公钥并重启 |
+| `UPDATE_VERIFY_UNAVAILABLE` | 公钥/验签脚本路径不存在，或 Python/cryptography 缺失（503） | 安装依赖、修正 `verifier_python` 与 `verifier_script` |
+| `UPDATE_SIGNATURE_INVALID` | 清单被篡改、私钥不匹配、规范化不一致（503） | 用发布工具重新生成并签名；检查 `key_id` 与公钥是否配套 |
+| `MANIFEST_UPGRADE_PATH_INVALID` | `upgrade_path` 元素缺字段、schema/build 非正数、version 非 SemVer（503） | 修正清单的 `upgrade_path` 后重新签名 |
+| `INTERMEDIATE_REQUIRED` | 客户端 schema 低于 `schema_min`，需先升到中间版本（200，`update_available=false`） | 按响应中的 `intermediate.version` 引导用户先升级 |
+| `INCOMPATIBLE_SCHEMA` | 客户端 schema 高于 `schema_max`，或低于 `schema_min` 且无可用升级路径（200） | 检查版本是否过旧/过新；必要时补充 `upgrade_path` 或人工迁移 |
+
+### 7. 发布侧清单生成
+
+清单、appcast 与签名统一由 `tools/package/update_manifest.py` 生成，参数见 `tools/package/README.md`。发布顺序：上传安装包到 CDN → 生成并签名清单/appcast → 原子替换更新源 → purge → 冒烟验证 `/api/update/check`。

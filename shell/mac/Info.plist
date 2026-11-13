@@ -29,9 +29,10 @@
     <key>NSAllowsLocalNetworking</key>
     <true/>
   </dict>
-  <!-- 更新：以下三项需在发布前替换为真实地址与公钥；接入 Sparkle 后生效。 -->
-  <!-- 注意：SUEnableAutomaticChecks=true 会与自研 24h 检查并存，形成双份检查/提示；
-       当前保留该取值，建议发布前二选一（见 docs/更新模块技术方案.md 第 9 节）。 -->
+  <!-- 更新：地址与公钥需在发布前替换；定时检查由 XiaotuUpdater 负责（24h±2h）。
+       SUEnableAutomaticChecks=false 关闭 Sparkle 自己的定时检查，避免双份检查/提示；
+       SUAutomaticallyUpdate=true 仅表示“检查到更新后静默下载、退出时安装”，
+       不产生额外调度；SUScheduledCheckInterval 已移除（自动检查关闭后无意义）。 -->
   <key>XiaotuUpdateManifestURL</key>
   <string></string>
   <key>XiaotuUpdateChannel</key>
@@ -41,9 +42,7 @@
   <key>SUPublicEDKey</key>
   <string></string>
   <key>SUEnableAutomaticChecks</key>
-  <true/>
-  <key>SUScheduledCheckInterval</key>
-  <integer>86400</integer>
+  <false/>
   <key>SUAutomaticallyUpdate</key>
   <true/>
 </dict>
