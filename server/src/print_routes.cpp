@@ -10,6 +10,7 @@
 
 #include "xiaotu/context.h"
 #include "xiaotu/document.h"
+#include "xiaotu/edition.h"
 #include "xiaotu/error.h"
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
@@ -448,6 +449,7 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
   }
 
   if (target.key == "sales-profit") {
+    EditionPolicy::instance().require("report.profit");
     render.subtitle = period_label(filter.from, filter.to) + "；" +
                       dimension_label(filter.item_id, "商品") + "；客户 " +
                       (filter.customer_id == 0 ? std::string("全部")

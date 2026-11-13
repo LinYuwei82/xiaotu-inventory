@@ -69,15 +69,18 @@ target_link_libraries(xiaotu_update_service_smoke PRIVATE xiaotu_server Threads:
 add_test(NAME update_service_smoke COMMAND xiaotu_update_service_smoke)
 
 if(UNIX)
-  add_test(NAME restore_lock_exit
-           COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/restore_lock_exit.sh"
-                   $<TARGET_FILE:xiaotu-server>)
+  # 社区版不支持网络版部署（deployment.network），依赖 --server 的用例不适用。
+  if(NOT XIAOTU_EDITION STREQUAL "community")
+    add_test(NAME restore_lock_exit
+             COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/restore_lock_exit.sh"
+                     $<TARGET_FILE:xiaotu-server>)
+    add_test(NAME update_api_test
+             COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/update_api_test.sh"
+                     $<TARGET_FILE:xiaotu-server>)
+  endif()
   add_test(NAME deploy_backup_test
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/deploy_backup_test.sh"
                    "${CMAKE_CURRENT_SOURCE_DIR}/../deploy/backup.sh")
-  add_test(NAME update_api_test
-           COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/update_api_test.sh"
-                   $<TARGET_FILE:xiaotu-server>)
   add_test(NAME update_manifest_test
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/update_manifest_test.sh")
 endif()

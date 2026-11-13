@@ -1612,6 +1612,8 @@ int main() {
       check(xiaotu::resolved_print_columns(builtin).size() == ledger_target->columns.size(),
             "内置默认应显示全部登记列");
 
+      // 社区版打印模板上限为 1，多模板行为只在额度足够的版本里验证。
+      if (xiaotu::EditionPolicy::instance().limit("max_print_templates") > 2) {
       xiaotu::PrintTemplate tmpl;
       tmpl.code = "PT-LEDGER";
       tmpl.name = "流水打印";
@@ -1740,6 +1742,7 @@ int main() {
       candidate.columns.push_back(
           {.column_key = "biz_time", .position = 3, .visible = true});
       check(rejects(candidate), "同一模板重复列应拒绝");
+      }  // 打印模板额度足够时才验证多模板行为
 
       // 打印布局计划：纸型、可打印宽度、缩放与告警在服务端一次算清，页面 / 打印 / PDF 共用。
       // 预设：A4 纵向、页边距 12mm → 可打印宽 186mm；241×140 连续纸 → 可打印宽 217mm。

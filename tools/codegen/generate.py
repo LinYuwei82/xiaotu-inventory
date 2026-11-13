@@ -176,6 +176,14 @@ def generate_editions(path: Path, schema: dict, env: Environment, check: bool) -
     content = render(env, schema.get("template", "edition_caps.h.j2"), context)
     output = ROOT / schema["targets"]["core_include"] / schema.get("output", "edition_caps.h")
     write(output, content, check)
+
+    # 前端能力表由同一份 schema 生成，保证界面隐藏与后端拒绝同源。
+    if schema.get("web_template"):
+        web_dir = schema["targets"].get("web_gen")
+        if not web_dir:
+            raise SystemExit("配置了 web_template 但没有 web_gen 输出目录")
+        web_output = ROOT / web_dir / schema.get("web_output", "edition_caps.js")
+        write(web_output, render(env, schema["web_template"], context), check)
     print(f"完成：{len(editions)} 个版本")
     return 0
 

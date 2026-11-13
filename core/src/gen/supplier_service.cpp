@@ -27,6 +27,12 @@ void SupplierService::validate(const SupplierRow& row) {
 SupplierRow SupplierService::create(SupplierRow input) {
   validate(input);
   db_.write([&](sqlite3* conn) {
+    {
+      std::int64_t current = 0;
+      Stmt count(conn, "SELECT (SELECT COUNT(*) FROM customer WHERE is_deleted = 0 AND status = 1) + (SELECT COUNT(*) FROM supplier WHERE is_deleted = 0 AND status = 1);");
+      if (count.step()) current = count.i64(0);
+      EditionPolicy::instance().check_quota("max_partners", current, 1);
+    }
     ensure_unique(conn, "supplier", "code", input.code, 0, "编码");
     SupplierDao::insert(conn, input);
     audit_write(conn, "create", "supplier", input.id, input.code);

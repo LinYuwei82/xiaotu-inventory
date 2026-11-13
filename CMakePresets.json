@@ -32,6 +32,23 @@
       }
     },
     {
+      "name": "macos-community",
+      "displayName": "macOS 社区版（Ninja + ccache，无 WebView 壳，用于能力/额度验证）",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/community",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "XIAOTU_EDITION": "community",
+        "XIAOTU_BUILD_SHELL": "OFF",
+        "XIAOTU_DEV_WEB": "OFF"
+      },
+      "environment": {
+        "VCPKG_BINARY_SOURCES": "clear;files,${sourceDir}/.vcpkg-cache,readwrite"
+      }
+    },
+    {
       "name": "linux-ci",
       "displayName": "Linux CI（Ninja，无 WebView 壳）",
       "generator": "Ninja",
@@ -67,6 +84,7 @@
   "buildPresets": [
     { "name": "dev", "configurePreset": "macos-dev" },
     { "name": "release", "configurePreset": "macos-release" },
+    { "name": "community", "configurePreset": "macos-community" },
     { "name": "linux-ci", "configurePreset": "linux-ci" },
     { "name": "windows-release", "configurePreset": "windows-release" },
     { "name": "windows-dev", "configurePreset": "windows-dev" }
@@ -80,6 +98,11 @@
     {
       "name": "release",
       "configurePreset": "macos-release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "community",
+      "configurePreset": "macos-community",
       "output": { "outputOnFailure": true }
     },
     {

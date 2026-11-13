@@ -10,6 +10,7 @@
 
 #include "xiaotu/audit.h"
 #include "xiaotu/crud.h"
+#include "xiaotu/edition.h"
 #include "xiaotu/error.h"
 
 namespace xiaotu {
@@ -603,6 +604,12 @@ PrintTemplate PrintTemplateService::create(const PrintTemplate& input) {
   const AuditStamp stamp = audit_stamp();
   db_.write([&](sqlite3* conn) {
     ensure_code_free(conn, tmpl.code, 0);
+    {
+      std::int64_t current = 0;
+      Stmt count(conn, "SELECT COUNT(*) FROM print_template WHERE is_deleted = 0;");
+      if (count.step()) current = count.i64(0);
+      EditionPolicy::instance().check_quota("max_print_templates", current, 1);
+    }
     if (tmpl.is_default) {
       clear_default(conn, tmpl.target_type, tmpl.target_key, 0);
     }

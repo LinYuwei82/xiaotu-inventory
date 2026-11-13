@@ -58,7 +58,11 @@ void {{ t.Name }}Service::validate(const {{ t.Name }}Row& row) {
 {% if t.get("quota") %}
     {
       std::int64_t current = 0;
-      Stmt count(conn, "SELECT COUNT(*) FROM {{ t.table }} WHERE is_deleted = 0 AND status = 1;");
+{% if t.get("quota_count") %}
+      Stmt count(conn, "SELECT {{ t.quota_count }};");
+{% else %}
+      Stmt count(conn, "SELECT COUNT(*) FROM {{ t.get("quota_table", t.table) }} WHERE is_deleted = 0 AND status = 1;");
+{% endif %}
       if (count.step()) current = count.i64(0);
       EditionPolicy::instance().check_quota("{{ t.quota }}", current, 1);
     }

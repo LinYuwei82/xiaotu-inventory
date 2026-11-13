@@ -14,7 +14,25 @@
     allPages: [],
     csrf: "",
     permissions: [],
+    edition: "",
   };
+
+  // 版本能力表由 tools/codegen 从 editions.json 生成，与后端 edition_caps.h 同源；
+  // 这里只负责隐藏入口，服务端仍会按同一张表二次拒绝。
+  const EDITION_CAPS = window.XIAOTU_EDITION_CAPS || null;
+
+  function editionCaps() {
+    if (!EDITION_CAPS) return null;
+    const code = state.edition || EDITION_CAPS.default;
+    return EDITION_CAPS.editions[code] || EDITION_CAPS.editions[EDITION_CAPS.default] || null;
+  }
+
+  function editionAllows(feature) {
+    const caps = editionCaps();
+    if (!caps || !caps.features) return false;
+    const value = caps.features[feature];
+    return value === "full" || value === "limited";
+  }
 
   const main = document.getElementById("main");
   const nav = document.getElementById("nav");
@@ -405,6 +423,9 @@
 
   async function api(method, path, body) {
     const options = { method, credentials: "include", headers: {} };
+    if (EDITION_CAPS) {
+      options.headers["X-API-Version"] = String(EDITION_CAPS.api_version);
+    }
     if (state.csrf && method !== "GET") {
       options.headers["X-CSRF-Token"] = state.csrf;
     }
@@ -3632,6 +3653,7 @@
 
   async function reportPage(mount) {
     const today = new Date().toISOString().slice(0, 10);
+    const profitAllowed = editionAllows("report.profit");
     mount.innerHTML = `
       <div class="page-head">
         <div>
@@ -3730,7 +3752,9 @@
         <p class="page-sub">按商品跨仓库汇总：期初 + 入库 − 出库 = 期末，数量与金额双口径</p>
         <table class="table" data-role="summary"></table>
       </div>
-      <div class="card">
+      ${
+        profitAllowed
+          ? `<div class="card">
         <div class="card-head">
           <h3>销售毛利</h3>
           <button class="btn small" data-role="export-profit">导出 CSV</button>
@@ -3740,7 +3764,9 @@
         </div>
         <p class="page-sub">收入取单据金额，成本取审核写入的库存流水；已反审核单据不计入</p>
         <table class="table" data-role="profit"></table>
-      </div>
+      </div>`
+          : ""
+      }
       <div class="card">
         <div class="card-head">
           <h3>采购报表</h3>
@@ -4005,7 +4031,7 @@
         ),
         api("GET", "/api/reports/goods-flow" + period),
         api("GET", "/api/reports/inventory-summary" + period),
-        api("GET", "/api/reports/sales-profit" + period),
+        profitAllowed ? api("GET", "/api/reports/sales-profit" + period) : Promise.resolve([]),
         api("GET", "/api/reports/ar-ap-aging?direction=" + directionSelect.value),
         api("GET", "/api/reports/fund-ledger" + fundQuery),
         api("GET", "/api/reports/fund-balances?as_of=" + encodeURIComponent(toInput.value)),
@@ -4192,6 +4218,8 @@
              <td></td><td>${money(sumClosingAmount)}</td></tr></tfoot>`;
 
       // 合计行：收入、成本、毛利汇总后重算毛利率；数量跨单位不加总。
+      // 社区版不渲染毛利卡片，profitTable 为空时整段跳过。
+      if (profitTable) {
       const profitRevenue = profit.reduce((sum, row) => sum + row.revenue_cents, 0);
       const profitCost = profit.reduce((sum, row) => sum + row.cost_cents, 0);
       const profitValue = profit.reduce((sum, row) => sum + row.profit_cents, 0);
@@ -4222,6 +4250,7 @@
              <td class="${profitValue < 0 ? "negative" : ""}">${money(profitValue)}</td>
              <td>${profitRevenue === 0 ? "—" : ((profitValue / profitRevenue) * 100).toFixed(1) + "%"}</td>
            </tr></tfoot>`;
+      }
 
       const agingTotal = aging.reduce((sum, row) => sum + row.total_cents, 0);
       const agingNotDue = aging.reduce((sum, row) => sum + row.not_due_cents, 0);
@@ -4396,7 +4425,9 @@
       "export-summary",
       () => "/api/reports/inventory-summary" + periodQuery() + "&format=csv"
     );
-    wireExport("export-profit", () => "/api/reports/sales-profit" + periodQuery() + "&format=csv");
+    if (profitAllowed) {
+      wireExport("export-profit", () => "/api/reports/sales-profit" + periodQuery() + "&format=csv");
+    }
     wireExport(
       "export-purchase-detail",
       () => "/api/reports/purchase-detail" + purchaseQuery() + "&format=csv"
@@ -4453,7 +4484,9 @@
       "excel-summary",
       () => "/api/reports/inventory-summary" + periodQuery() + "&format=xlsx"
     );
-    wireExcel("excel-profit", () => "/api/reports/sales-profit" + periodQuery() + "&format=xlsx");
+    if (profitAllowed) {
+      wireExcel("excel-profit", () => "/api/reports/sales-profit" + periodQuery() + "&format=xlsx");
+    }
     wireExcel(
       "excel-purchase-detail",
       () => "/api/reports/purchase-detail" + purchaseQuery() + "&format=xlsx"
@@ -4517,10 +4550,12 @@
       () =>
         withQuery("/api/print/render?target_type=REPORT&target_key=inventory-summary", periodQuery())
     );
-    wirePrint(
-      "print-profit",
-      () => withQuery("/api/print/render?target_type=REPORT&target_key=sales-profit", periodQuery())
-    );
+    if (profitAllowed) {
+      wirePrint(
+        "print-profit",
+        () => withQuery("/api/print/render?target_type=REPORT&target_key=sales-profit", periodQuery())
+      );
+    }
     wirePrint(
       "print-purchase-detail",
       () =>
@@ -6795,6 +6830,7 @@
       title: "经营看板",
       group: "",
       permission: "finance.read",
+      capability: "report.dashboard",
       render: dashboardPage,
     },
     {
@@ -7044,6 +7080,7 @@
       }
 
       const health = await api("GET", "/api/health");
+      state.edition = health.edition || "";
       document.getElementById("mode-label").textContent =
         health.mode === "local" ? "单机版" : "网络版";
       document.getElementById("health").textContent =
@@ -7074,7 +7111,11 @@
           render: (mount, ui) => window.XiaotuPages[page.key].render(mount, ui),
         })),
         ...FIXED_PAGES,
-      ].filter((page) => !page.permission || can(page.permission));
+      ].filter(
+        (page) =>
+          (!page.permission || can(page.permission)) &&
+          (!page.capability || editionAllows(page.capability))
+      );
 
       nav.innerHTML = navHtml(buildNav(all));
       nav.addEventListener("click", (event) => {

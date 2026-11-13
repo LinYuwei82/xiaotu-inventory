@@ -15,6 +15,7 @@
 #include "xiaotu/backup.h"
 #include "xiaotu/context.h"
 #include "xiaotu/edition.h"
+#include "xiaotu/gen/edition_caps.h"
 #include "xiaotu/error.h"
 #include "xiaotu/http_json.h"
 #include "xiaotu/ids.h"
@@ -198,7 +199,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         if (origin.rfind("http://127.0.0.1:", 0) == 0 || origin.rfind("http://localhost:", 0) == 0) {
           res.set_header("Access-Control-Allow-Origin", origin);
           res.set_header("Access-Control-Allow-Credentials", "true");
-          res.set_header("Access-Control-Allow-Headers", "Content-Type");
+          res.set_header("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token, X-API-Version");
           res.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
           res.set_header("Vary", "Origin");
         }
@@ -210,6 +211,23 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
 
         const std::string& path = req.path;
         const bool is_api = path.rfind("/api/", 0) == 0;
+
+        // 能力协商：客户端带版本时只接受当前版本与 N-1，其余回 426 让其升级。
+        const std::string client_api = req.get_header_value("X-API-Version");
+        if (is_api && path != "/api/health" && !client_api.empty()) {
+          int version = -1;
+          try {
+            version = std::stoi(client_api);
+          } catch (const std::exception&) {
+            version = -1;
+          }
+          if (version != gen::kApiVersion && version != gen::kApiVersion - 1) {
+            json_error(res, 426, "API_VERSION_UNSUPPORTED",
+                       "客户端 API 版本不兼容：服务端 " + std::to_string(gen::kApiVersion) +
+                           "，客户端 " + client_api);
+            return httplib::Server::HandlerResponse::Handled;
+          }
+        }
         if (!is_api) {
           return httplib::Server::HandlerResponse::Unhandled;
         }
@@ -269,6 +287,19 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     body["version"] = info_.version;
     body["mode"] = info_.mode;
     body["edition"] = std::string(EditionPolicy::instance().code());
+    body["api_version"] = gen::kApiVersion;
+    {
+      nlohmann::json capabilities;
+      capabilities["features"] = nlohmann::json::object();
+      for (const auto& feature : gen::active_edition().features) {
+        capabilities["features"][std::string(feature.key)] = std::string(feature.state);
+      }
+      capabilities["quotas"] = nlohmann::json::object();
+      for (const auto& quota : gen::active_edition().quotas) {
+        capabilities["quotas"][std::string(quota.key)] = quota.limit;
+      }
+      body["capabilities"] = capabilities;
+    }
     body["schema_version"] = services_.db.schema_version();
     body["embedded_resources"] = resources::count();
     body["data_dir_warning"] = info_.data_dir_warning;

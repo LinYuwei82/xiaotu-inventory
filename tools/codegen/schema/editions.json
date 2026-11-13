@@ -1,10 +1,14 @@
 {
   "name": "editions",
   "targets": {
-    "core_include": "core/include/xiaotu/gen"
+    "core_include": "core/include/xiaotu/gen",
+    "web_gen": "web/gen"
   },
   "template": "edition_caps.h.j2",
   "output": "edition_caps.h",
+  "web_template": "edition_caps.js.j2",
+  "web_output": "edition_caps.js",
+  "api_version": 1,
   "default": "full",
   "editions": [
     {

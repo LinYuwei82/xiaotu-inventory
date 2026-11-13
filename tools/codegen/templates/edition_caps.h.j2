@@ -11,6 +11,9 @@
 
 namespace xiaotu::gen {
 
+// 前后端能力协商版本：请求头 X-API-Version 只接受当前版本与 N-1。
+inline constexpr int kApiVersion = {{ schema.api_version }};
+
 struct EditionFeature {
   std::string_view key;
   std::string_view state;  // full / limited / hidden

@@ -77,6 +77,13 @@ case "$(uname -s)" in
     echo "==> 运行 ctest"
     ctest --test-dir build/release --output-on-failure
 
+    # 社区版只保留基础能力，额度与 hidden 能力的拦截路径必须单独构建验证。
+    echo "==> 构建 community（能力与额度限制）"
+    cmake --preset macos-community
+    cmake --build --preset community --parallel
+    echo "==> 运行 community ctest"
+    ctest --test-dir build/community --output-on-failure
+
     if [[ "$QUICK" -eq 0 ]]; then
       echo "==> 构建 windows-release（XIAOTU_BUILD_SHELL=OFF）"
       cmake --preset windows-release

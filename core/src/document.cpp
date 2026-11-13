@@ -12,6 +12,7 @@
 #include "xiaotu/crud.h"
 #include "xiaotu/audit.h"
 #include "xiaotu/doc_number.h"
+#include "xiaotu/edition.h"
 #include "xiaotu/error.h"
 #include "xiaotu/ids.h"
 #include "xiaotu/log.h"
@@ -20,6 +21,16 @@
 
 namespace xiaotu {
 namespace {
+
+// 单据数额度只在新建（含草稿与下推）时校验；存量单据仍可查询、审核与导出。
+void enforce_document_quota(sqlite3* conn) {
+  std::int64_t current = 0;
+  Stmt count(conn, "SELECT COUNT(*) FROM doc_header;");
+  if (count.step()) {
+    current = count.i64(0);
+  }
+  EditionPolicy::instance().check_quota("max_documents", current, 1);
+}
 
 // 入库/退货：按单价入账（采购入库、采购退货与其他入库共用同一取值路径）。
 // 含税口径取价税合计；不含税口径取行净额，含税单的差额正好是税额。
@@ -996,6 +1007,7 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input,
     if (input.request_id.empty()) {
       log_warn("保存单据未带 request_id（无幂等键）: doc_type=" + input.doc_type);
     }
+    enforce_document_quota(conn);
     const ValidatedDoc validated = validate_document(conn, input, *definition, true, true);
     created.id = next_id();
     enforce_credit_limit(conn, *definition, input, validated, created.id, confirm_credit,
@@ -1045,6 +1057,7 @@ DocumentEngine::Created DocumentEngine::save_draft(const DocInput& input) {
     if (input.request_id.empty()) {
       log_warn("保存草稿未带 request_id（无幂等键）: doc_type=" + input.doc_type);
     }
+    enforce_document_quota(conn);
     const ValidatedDoc validated = validate_document(conn, input, *definition, false, false);
     created.id = next_id();
     created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
@@ -1521,6 +1534,7 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
 
   OrderConversion result;
   db_.write([&](sqlite3* conn) {
+    enforce_document_quota(conn);
     std::string doc_type;
     std::string status;
     std::string order_status;

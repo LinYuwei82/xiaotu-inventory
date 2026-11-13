@@ -38,6 +38,11 @@ void json_from_exception(httplib::Response& res, const AppError& error) {
     status = 404;
   } else if (code == "FORBIDDEN") {
     status = 403;
+  } else if (code == "FEATURE_UNAVAILABLE") {
+    // 版本能力隐藏：与权限不足同为 403，但错误码区分，便于前端提示升级。
+    status = 403;
+  } else if (code == "QUOTA_EXCEEDED") {
+    status = 409;
   } else if (code == "ACCOUNT_LOCKED") {
     // 与登录限流保持同一语义：稍后重试，而不是请求格式错误。
     status = 429;

@@ -48,6 +48,12 @@ void ItemService::validate(const ItemRow& row) {
 ItemRow ItemService::create(ItemRow input) {
   validate(input);
   db_.write([&](sqlite3* conn) {
+    {
+      std::int64_t current = 0;
+      Stmt count(conn, "SELECT COUNT(*) FROM item WHERE is_deleted = 0 AND status = 1;");
+      if (count.step()) current = count.i64(0);
+      EditionPolicy::instance().check_quota("max_items", current, 1);
+    }
     sync_reference(conn, input.unit_id, "unit", "name",
                    input.unit, "计量单位");
     ensure_unique(conn, "item", "code", input.code, 0, "编码");

@@ -10,6 +10,8 @@
 #include <string_view>
 #include <vector>
 
+#include "xiaotu/edition.h"
+
 #include "xiaotu/error.h"
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
@@ -946,6 +948,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
   server.Get("/api/reports/sales-profit",
              guard("finance.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
+                     EditionPolicy::instance().require("report.profit");
                      const ReportFilter filter = parse_filter(req);
                      const auto rows = services.reports.sales_profit(filter);
                      const auto settings = services.settings.load();
@@ -1279,6 +1282,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
   server.Get("/api/reports/dashboard",
              guard("finance.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
+                     EditionPolicy::instance().require("report.dashboard");
                      const std::string today = req.has_param("today")
                                                    ? req.get_param_value("today")
                                                    : today_text();

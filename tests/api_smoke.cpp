@@ -127,6 +127,43 @@ void run_server_mode(const std::filesystem::path& dir) {
         "/api/health 应返回数据目录告警字段");
   const nlohmann::json health_body =
       health ? nlohmann::json::parse(health->body) : nlohmann::json::object();
+  const bool community = health_body.value("edition", "") == "community";
+  check(health_body.contains("api_version") && health_body.contains("capabilities") &&
+            health_body["capabilities"].contains("features") &&
+            health_body["capabilities"].contains("quotas"),
+        "/api/health 应返回 API 版本与能力表");
+  {
+    // 前端能力文件由同一份 editions.json 生成，必须与 /api/health 完全一致。
+    const auto caps_js = client.Get("/gen/edition_caps.js");
+    check(caps_js && caps_js->status == 200, "前端能力文件应可访问");
+    if (caps_js) {
+      const auto begin = caps_js->body.find('{');
+      const auto end = caps_js->body.rfind('}');
+      check(begin != std::string::npos && end != std::string::npos, "能力文件应内嵌 JSON");
+      if (begin != std::string::npos && end != std::string::npos) {
+        const auto caps = nlohmann::json::parse(caps_js->body.substr(begin, end - begin + 1));
+        const auto code = health_body.value("edition", "");
+        const auto edition_entry =
+            caps["editions"].contains(code) ? caps["editions"][code] : nlohmann::json::object();
+        check(edition_entry.contains("features") &&
+                  edition_entry["features"] == health_body["capabilities"]["features"],
+              "前端能力表应与 /api/health 一致（同一源头）");
+        check(caps.value("api_version", 0) == health_body.value("api_version", 0),
+              "能力文件与 health 的 API 版本应一致");
+      }
+    }
+  }
+  {
+    // 能力协商：不兼容版本回 426，health 始终放行便于客户端协商。
+    httplib::Client versioned("127.0.0.1", port);
+    versioned.set_default_headers({{"X-API-Version", "999"}});
+    const auto rejected = versioned.Get("/api/items");
+    check(rejected && rejected->status == 426 &&
+              rejected->body.find("API_VERSION_UNSUPPORTED") != std::string::npos,
+          "不兼容的 API 版本应返回 426");
+    const auto probe = versioned.Get("/api/health");
+    check(probe && probe->status == 200, "health 应始终可访问以便协商");
+  }
   check(health_body.contains("backup") && health_body["backup"].contains("last_success") &&
             health_body["backup"].contains("last_failure") && health_body["backup"].contains("due"),
         "/api/health 应返回备份成功/失败状态");
@@ -539,6 +576,159 @@ void run_server_mode(const std::filesystem::path& dir) {
     check(audit_xlsx && audit_xlsx->status == 200, "审计 XLSX 导出应返回 200");
   }
 
+  // 规模额度（社区版）：额度内不受影响，到达上限后新建被拒并说明上限，读不受影响。
+  if (community) {
+    const auto limit_of = [&](const char* key) {
+      return health_body["capabilities"]["quotas"].value(key, std::int64_t{-1});
+    };
+    const auto count_of = [&](const std::string& sql) {
+      std::int64_t value = 0;
+      db.read([&](sqlite3* conn) {
+        xiaotu::Stmt stmt(conn, sql);
+        if (stmt.step()) value = stmt.i64(0);
+      });
+      return value;
+    };
+    const auto fill_to = [&](const std::string& sql, const char* what) {
+      db.write([&](sqlite3* conn) {
+        check(sqlite3_exec(conn, sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK,
+              std::string("补足") + what + "额度数据应成功");
+      });
+    };
+    const auto expect_quota = [&](const auto& result, const char* label) {
+      check(result && result->status == 409 &&
+                result->body.find("QUOTA_EXCEEDED") != std::string::npos &&
+                result->body.find(label) != std::string::npos,
+            std::string("超过") + label + "上限应被拒绝并提示上限");
+    };
+
+    // 商品
+    {
+      const auto limit = limit_of("max_items");
+      const auto current = count_of("SELECT COUNT(*) FROM item WHERE is_deleted = 0 AND status = 1;");
+      if (current < limit) {
+        const auto ok = client.Post("/api/items",
+                                    R"({"code":"QOK-ITEM","name":"额度内商品","unit_id":1})",
+                                    "application/json");
+        check(ok && ok->status == 200, "商品未到上限时应能新建");
+      }
+      const auto now = count_of("SELECT COUNT(*) FROM item WHERE is_deleted = 0 AND status = 1;");
+      if (now < limit) {
+        fill_to("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < " +
+                    std::to_string(limit - now) + ") INSERT INTO item (id, code, name, created_at,"
+                    " updated_at) SELECT 810000000 + n, 'QITEM' || n, '额度商品' || n,"
+                    " '2026-01-01 00:00:00', '2026-01-01 00:00:00' FROM seq;",
+                "商品");
+      }
+      const auto rejected = client.Post("/api/items",
+                                        R"({"code":"QOVER-ITEM","name":"超限商品","unit_id":1})",
+                                        "application/json");
+      expect_quota(rejected, "商品数");
+      check(client.Get("/api/items") && client.Get("/api/items")->status == 200,
+            "达到上限后商品列表仍应可读");
+    }
+
+    // 仓库
+    {
+      const auto limit = limit_of("max_warehouses");
+      const auto current =
+          count_of("SELECT COUNT(*) FROM warehouse WHERE is_deleted = 0 AND status = 1;");
+      if (current < limit) {
+        const auto ok = client.Post("/api/warehouses",
+                                    R"({"code":"QOK-WH","name":"额度内仓库"})",
+                                    "application/json");
+        check(ok && ok->status == 200, "仓库未到上限时应能新建");
+      }
+      const auto now =
+          count_of("SELECT COUNT(*) FROM warehouse WHERE is_deleted = 0 AND status = 1;");
+      if (now < limit) {
+        fill_to("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < " +
+                    std::to_string(limit - now) + ") INSERT INTO warehouse (id, code, name,"
+                    " created_at, updated_at) SELECT 811000000 + n, 'QWH' || n, '额度仓库' || n,"
+                    " '2026-01-01 00:00:00', '2026-01-01 00:00:00' FROM seq;",
+                "仓库");
+      }
+      const auto rejected = client.Post("/api/warehouses",
+                                        R"({"code":"QOVER-WH","name":"超限仓库"})",
+                                        "application/json");
+      expect_quota(rejected, "仓库数");
+    }
+
+    // 往来单位（客户 + 供应商合计）
+    {
+      const char* partner_count =
+          "SELECT (SELECT COUNT(*) FROM customer WHERE is_deleted = 0 AND status = 1)"
+          " + (SELECT COUNT(*) FROM supplier WHERE is_deleted = 0 AND status = 1);";
+      const auto limit = limit_of("max_partners");
+      const auto current = count_of(partner_count);
+      if (current < limit) {
+        const auto ok = client.Post("/api/customers",
+                                    R"({"code":"QOK-CUS","name":"额度内客户"})",
+                                    "application/json");
+        check(ok && ok->status == 200, "往来单位未到上限时应能新建");
+      }
+      const auto now = count_of(partner_count);
+      if (now < limit) {
+        fill_to("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < " +
+                    std::to_string(limit - now) + ") INSERT INTO customer (id, code, name,"
+                    " created_at, updated_at) SELECT 812000000 + n, 'QCUS' || n, '额度客户' || n,"
+                    " '2026-01-01 00:00:00', '2026-01-01 00:00:00' FROM seq;",
+                "往来单位");
+      }
+      const auto rejected = client.Post("/api/suppliers",
+                                        R"({"code":"QOVER-SUP","name":"超限供应商"})",
+                                        "application/json");
+      expect_quota(rejected, "往来单位数");
+    }
+
+    // 打印模板
+    {
+      const auto limit = limit_of("max_print_templates");
+      const auto current = count_of("SELECT COUNT(*) FROM print_template WHERE is_deleted = 0;");
+      if (current < limit) {
+        const auto ok = client.Post(
+            "/api/print-templates",
+            R"({"code":"QOK-TPL","name":"额度内模板","target_type":"DOC","target_key":"PUR_IN",)"
+            R"("columns":[{"column_key":"line_no"}]})",
+            "application/json");
+        check(ok && ok->status == 200, "打印模板未到上限时应能新建");
+      }
+      const auto rejected = client.Post(
+          "/api/print-templates",
+          R"({"code":"QOVER-TPL","name":"超限模板","target_type":"DOC","target_key":"PUR_IN",)"
+          R"("columns":[{"column_key":"line_no"}]})",
+          "application/json");
+      expect_quota(rejected, "打印模板数");
+    }
+
+    // 单据
+    {
+      const auto limit = limit_of("max_documents");
+      const auto current = count_of("SELECT COUNT(*) FROM doc_header;");
+      if (current < limit) {
+        fill_to("WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n < " +
+                    std::to_string(limit - current) + ") INSERT INTO doc_header (id, doc_no,"
+                    " doc_type, doc_date, warehouse_id, status, created_at) SELECT 813000000 + n,"
+                    " 'QDOC' || n, 'OTH_IN', '2026-01-01', 1, 'DRAFT', '2026-01-01 00:00:00'"
+                    " FROM seq;",
+                "单据");
+      }
+      nlohmann::json over_doc{
+          {"doc_type", "OTH_IN"},
+          {"warehouse_id", 1},
+          {"doc_date", xiaotu::today_text()},
+          {"partner", "额度超限"},
+          {"request_id", "quota-doc"},
+          {"lines", nlohmann::json::array({{{"item_id", item_body.value("id", 0LL)},
+                                            {"qty", 1},
+                                            {"price_cents", 100}}})},
+      };
+      expect_quota(client.Post("/api/documents", over_doc.dump(), "application/json"), "单据数");
+      check(client.Get("/api/documents") && client.Get("/api/documents")->status == 200,
+            "达到上限后单据列表仍应可读");
+    }
+  }
+
   // 系统参数：默认三项为空，保存后回读一致，每个变化的键各一条审计。
   const auto settings = client.Get("/api/settings");
   check(settings && settings->status == 200, "系统参数读取应返回 200");
@@ -611,7 +801,21 @@ void run_server_mode(const std::filesystem::path& dir) {
           "库存流水报表应能读出切换日");
   }
   const auto profit_report = client.Get("/api/reports/sales-profit");
-  check(profit_report && profit_report->status == 200, "销售毛利报表应返回 200");
+  if (community) {
+    check(profit_report && profit_report->status == 403 &&
+              profit_report->body.find("FEATURE_UNAVAILABLE") != std::string::npos,
+          "社区版销售毛利接口应明确拒绝");
+  } else {
+    check(profit_report && profit_report->status == 200, "销售毛利报表应返回 200");
+  }
+  const auto dashboard_report = client.Get("/api/reports/dashboard");
+  if (community) {
+    check(dashboard_report && dashboard_report->status == 403 &&
+              dashboard_report->body.find("FEATURE_UNAVAILABLE") != std::string::npos,
+          "社区版经营看板接口应明确拒绝");
+  } else {
+    check(dashboard_report && dashboard_report->status == 200, "经营看板应返回 200");
+  }
   const auto basis_restored =
       client.Put("/api/settings", R"({"cost_basis":"INCLUSIVE"})", "application/json");
   check(basis_restored && basis_restored->status == 200 &&
@@ -620,8 +824,14 @@ void run_server_mode(const std::filesystem::path& dir) {
 
   // 模板抬头为空时，打印用公司名称兜底。
   const auto printed = client.Get("/api/print/render?target_type=REPORT&target_key=sales-profit");
-  check(printed && printed->status == 200, "打印渲染应返回 200");
-  if (printed) {
+  if (community) {
+    check(printed && printed->status == 403 &&
+              printed->body.find("FEATURE_UNAVAILABLE") != std::string::npos,
+          "社区版销售毛利打印应明确拒绝");
+  } else {
+    check(printed && printed->status == 200, "打印渲染应返回 200");
+  }
+  if (!community && printed) {
     const auto render = nlohmann::json::parse(printed->body);
     check(render.value("header_text", "") == "冒烟公司",
           "模板抬头为空时应默认打印公司名称");

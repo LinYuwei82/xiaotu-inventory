@@ -15,6 +15,7 @@
 #include "xiaotu/config.h"
 #include "xiaotu/customer_service.h"
 #include "xiaotu/db.h"
+#include "xiaotu/edition.h"
 #include "xiaotu/error.h"
 #include "xiaotu/http_server.h"
 #include "xiaotu/ids.h"
@@ -259,6 +260,18 @@ int main(int argc, char** argv) {
                      " 模式=" + (options.server ? "server" : "local") +
                      " 数据目录=" + data_dir.string() + " 监听=" +
                      (options.server ? listen + ":" + std::to_string(port) : "127.0.0.1:自动"));
+
+    // 网络版部署是版本能力：当前版本隐藏时直接拒绝启动，而不是悄悄退回单机。
+    if (options.server &&
+        !xiaotu::EditionPolicy::instance().available("deployment.network")) {
+      const std::string message =
+          "FEATURE_UNAVAILABLE: 当前版本（" + std::string(xiaotu::EditionPolicy::instance().label()) +
+          "）不提供网络版部署（deployment.network）";
+      std::cout << message << std::endl;
+      xiaotu::log_error(message);
+      xiaotu::shutdown_logging();
+      return 2;
+    }
 
     // 同步目录检测：只告警不拦截，指引用户把数据目录迁回本地磁盘。
     std::string data_dir_warning;
