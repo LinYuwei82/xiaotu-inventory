@@ -1,0 +1,23 @@
+[Unit]
+Description=小兔进销存 每日备份（一次性任务）
+Documentation=file:/opt/xiaotu/README.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=xiaotu
+Group=xiaotu
+WorkingDirectory=/opt/xiaotu
+ExecStart=/opt/xiaotu/xiaotu-server --backup-daily --config /etc/xiaotu/config.toml
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/xiaotu /var/log/xiaotu
+
+[Install]
+WantedBy=multi-user.target

@@ -96,6 +96,14 @@ void run_server_mode(const std::filesystem::path& dir) {
   check(health && health->status == 200, "网络版 /api/health 应返回 200");
   check(health && nlohmann::json::parse(health->body).contains("data_dir_warning"),
         "/api/health 应返回数据目录告警字段");
+  const nlohmann::json health_body =
+      health ? nlohmann::json::parse(health->body) : nlohmann::json::object();
+  check(health_body.contains("backup") && health_body["backup"].contains("last_at") &&
+            health_body["backup"].contains("last_result") && health_body["backup"].contains("due"),
+        "/api/health 应返回备份状态");
+  check(health_body.contains("backup") && health_body["backup"].value("count", -1) == 0 &&
+            health_body["backup"].value("last_result", "") == "none",
+        "/api/health 初始备份数应为 0");
 
   const auto anonymous = client.Get("/api/items");
   check(anonymous && anonymous->status == 401, "未登录访问主数据应返回 401");

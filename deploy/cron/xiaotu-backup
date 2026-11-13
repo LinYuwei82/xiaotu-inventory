@@ -1,0 +1,7 @@
+# 小兔进销存 每日备份（cron.d 格式）
+# 安装：cp deploy/cron/xiaotu-backup /etc/cron.d/xiaotu-backup && chmod 644 /etc/cron.d/xiaotu-backup
+# 说明：命令内部会判断「今天是否已成功备份」，重复触发不会产生多份日备份。
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/bin:/bin
+
+30 2 * * * xiaotu /opt/xiaotu/xiaotu-server --backup-daily --config /etc/xiaotu/config.toml >> /var/log/xiaotu/backup.log 2>&1

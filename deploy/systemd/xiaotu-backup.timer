@@ -1,0 +1,13 @@
+[Unit]
+Description=小兔进销存 每日备份定时器
+Documentation=file:/opt/xiaotu/README.md
+
+[Timer]
+# 每天 02:30 触发；机器关机/休眠错过时开机后补跑一次。
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=xiaotu-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "xiaotu/audit.h"
+#include "xiaotu/backup.h"
 #include "xiaotu/context.h"
 #include "xiaotu/edition.h"
 #include "xiaotu/error.h"
@@ -254,6 +255,22 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     body["schema_version"] = services_.db.schema_version();
     body["embedded_resources"] = resources::count();
     body["data_dir_warning"] = info_.data_dir_warning;
+
+    const std::filesystem::path backup_dir = std::filesystem::path(info_.data_dir) / "backups";
+    const BackupStatus backup = backup_status(backup_dir);
+    nlohmann::json backup_body;
+    backup_body["directory"] = backup_dir.string();
+    backup_body["last_at"] = backup.last_at;
+    backup_body["last_result"] = backup.last_result.empty() ? "none" : backup.last_result;
+    backup_body["last_message"] = backup.last_message;
+    backup_body["last_path"] = backup.last_path;
+    backup_body["last_bytes"] = backup.last_bytes;
+    backup_body["schema_version"] = backup.schema_version;
+    backup_body["count"] = backup.backup_count;
+    backup_body["daily_keep"] = kDailyBackupKeep;
+    backup_body["monthly_keep"] = kMonthlyBackupKeep;
+    backup_body["due"] = daily_backup_due(backup_dir);
+    body["backup"] = backup_body;
     json_ok(res, body);
   });
 

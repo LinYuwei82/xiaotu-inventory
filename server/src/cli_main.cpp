@@ -1,9 +1,11 @@
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -58,6 +60,7 @@ struct Options {
   std::filesystem::path data_dir;
   std::filesystem::path config_path;
   bool backup = false;
+  bool backup_daily = false;
   std::filesystem::path restore_from;
   std::string set_password_user;
   bool partner_preview = false;
@@ -75,6 +78,7 @@ void print_usage(const char* program) {
             << "  --data <目录>   数据目录，默认为系统应用数据目录\n"
             << "  --config <文件> 配置文件；默认依次查找 $XIAOTU_CONFIG、<数据目录>/config.toml\n"
             << "  --backup        立即生成一次数据库备份并退出\n"
+            << "  --backup-daily  今天尚未成功备份时生成每日备份并清理旧备份（供定时任务调用）\n"
             << "  --restore <文件> 用指定备份覆盖当前数据库并退出（先自动留安全备份）\n"
             << "  --set-password <用户名> 用环境变量 XIAOTU_PASSWORD 设置该用户口令并退出\n"
             << "  --partner-preview 只读预览客户/供应商重复候选并退出\n"
@@ -100,6 +104,8 @@ Options parse_args(int argc, char** argv) {
       options.data_dir = argv[++i];
     } else if (arg == "--backup") {
       options.backup = true;
+    } else if (arg == "--backup-daily") {
+      options.backup_daily = true;
     } else if (arg == "--restore" && i + 1 < argc) {
       options.restore_from = argv[++i];
     } else if (arg == "--set-password" && i + 1 < argc) {
@@ -130,6 +136,55 @@ Options parse_args(int argc, char** argv) {
 std::string local_url(const std::string& base, const std::string& token) {
   return base + "/#t=" + token;
 }
+
+// 进程内每日备份：启动时检查一次，之后每 30 分钟检查一次。
+// 单机版不常驻也没关系，下次启动会补上当天缺失的备份；与外部 cron 并发时由目录锁互斥。
+class DailyBackupScheduler {
+ public:
+  DailyBackupScheduler(xiaotu::Db& db, std::filesystem::path data_dir)
+      : db_(db), data_dir_(std::move(data_dir)) {}
+
+  ~DailyBackupScheduler() { stop(); }
+
+  void start() {
+    thread_ = std::thread([this] { loop(); });
+  }
+
+  void stop() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      running_.store(false);
+    }
+    cv_.notify_all();
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+ private:
+  void loop() {
+    while (running_.load()) {
+      try {
+        const xiaotu::DailyBackupOutcome outcome = xiaotu::run_daily_backup(db_, data_dir_);
+        if (outcome.ran) {
+          xiaotu::log_info("每日备份完成，清理旧备份 " +
+                           std::to_string(outcome.retention.removed) + " 份");
+        }
+      } catch (const std::exception& error) {
+        xiaotu::log_error(std::string("每日备份失败：") + error.what());
+      }
+      std::unique_lock<std::mutex> lock(mutex_);
+      cv_.wait_for(lock, std::chrono::minutes(30), [this] { return !running_.load(); });
+    }
+  }
+
+  xiaotu::Db& db_;
+  std::filesystem::path data_dir_;
+  std::thread thread_;
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::atomic<bool> running_{true};
+};
 
 }  // namespace
 
@@ -217,8 +272,8 @@ int main(int argc, char** argv) {
     // 单实例锁：同一数据目录只允许一个实例写库。--backup 允许运行中执行，
     // --set-password 是停机维护命令，两者不参与锁；--restore 必须在停服时执行，
     // 因此照常抢锁，抢不到就提示已有实例在运行。
-    const bool maintenance_only =
-        options.backup || !options.set_password_user.empty() || options.partner_preview;
+    const bool maintenance_only = options.backup || options.backup_daily ||
+                                  !options.set_password_user.empty() || options.partner_preview;
     xiaotu::InstanceLock instance_lock;
     if (!maintenance_only && !instance_lock.acquire(data_dir)) {
       std::cout << "已有小兔进销存实例在使用该数据目录"
@@ -248,8 +303,8 @@ int main(int argc, char** argv) {
     }
 
     if (!options.restore_from.empty()) {
-      if (options.backup) {
-        throw xiaotu::AppError("BAD_ARGUMENT", "--backup 与 --restore 不能同时使用");
+      if (options.backup || options.backup_daily) {
+        throw xiaotu::AppError("BAD_ARGUMENT", "--backup / --backup-daily 与 --restore 不能同时使用");
       }
       const auto snapshot = xiaotu::restore_database(options.restore_from, database_path);
       std::cout << "恢复完成: " << snapshot.path.string() << " (" << snapshot.bytes
@@ -313,6 +368,22 @@ int main(int argc, char** argv) {
       return 0;
     }
 
+    if (options.backup_daily) {
+      if (!database_existed) {
+        throw xiaotu::AppError("NOT_FOUND", "数据库不存在，无法备份：" + database_path.string());
+      }
+      const xiaotu::DailyBackupOutcome outcome = xiaotu::run_daily_backup(db, data_dir);
+      if (outcome.ran) {
+        std::cout << "每日备份完成: " << outcome.backup.path.string() << " ("
+                  << outcome.backup.bytes << " 字节)，清理旧备份 "
+                  << outcome.retention.removed << " 份" << std::endl;
+      } else {
+        std::cout << "跳过每日备份: " << outcome.skipped << std::endl;
+      }
+      xiaotu::shutdown_logging();
+      return 0;
+    }
+
     const int previous_version = db.schema_version();
     if (database_existed && previous_version > 0 &&
         previous_version < xiaotu::target_schema_version()) {
@@ -343,6 +414,10 @@ int main(int argc, char** argv) {
       xiaotu::shutdown_logging();
       return 0;
     }
+
+    // 每日备份调度：单机版与网络版都在进程内兜底；网络版还可用 deploy 下的 timer/cron。
+    DailyBackupScheduler backup_scheduler(db, data_dir);
+    backup_scheduler.start();
 
     const std::string token = xiaotu::random_hex(32);
     xiaotu::ServerInfo info{
