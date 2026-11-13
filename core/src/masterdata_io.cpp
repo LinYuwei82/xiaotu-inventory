@@ -17,6 +17,7 @@
 #include "xiaotu/audit.h"
 #include "xiaotu/backup.h"
 #include "xiaotu/crud.h"
+#include "xiaotu/customer_service.h"
 #include "xiaotu/error.h"
 #include "xiaotu/gen/customer_dao.h"
 #include "xiaotu/gen/item_dao.h"
@@ -128,10 +129,17 @@ std::vector<ItemRecord> load_items(Db& db) {
 std::vector<PartnerRecord> load_partners(Db& db, const char* table, bool with_credit) {
   std::vector<PartnerRecord> records;
   db.read([&](sqlite3* conn) {
-    Stmt stmt(conn,
-              "SELECT id, code, name, contact, phone, address, status, is_deleted, tax_no" +
-                  std::string(with_credit ? ", credit_limit_cents" : "") + " FROM " +
-                  std::string(table) + " ORDER BY code;");
+    // 客户额度以 partner 为准，导出也读 partner；没有 partner 时回落到镜像。
+    const std::string sql =
+        with_credit
+            ? "SELECT c.id, c.code, c.name, c.contact, c.phone, c.address, c.status,"
+              " c.is_deleted, c.tax_no,"
+              " COALESCE(p.credit_limit_cents, c.credit_limit_cents)"
+              " FROM customer c LEFT JOIN partner p ON p.id = c.id AND p.is_customer = 1"
+              " ORDER BY c.code;"
+            : "SELECT id, code, name, contact, phone, address, status, is_deleted, tax_no" +
+                  std::string(" FROM ") + table + " ORDER BY code;";
+    Stmt stmt(conn, sql);
     while (stmt.step()) {
       PartnerRecord record;
       record.row.id = stmt.i64(0);
@@ -792,6 +800,8 @@ ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
           customer.credit_limit_cents =
               plan.has_credit ? plan.credit_limit_cents : plan.current_credit_limit_cents;
           gen::CustomerDao::update(conn, customer);
+          // 额度单一写入点：partner 为主，customer 行只做镜像（上面已按 partner 值回填）。
+          set_customer_credit_limit(conn, customer.id, customer.credit_limit_cents);
         }
         ++report.outcome.updated;
       } else {
@@ -801,6 +811,7 @@ ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
           gen::CustomerRow customer = as_customer(row);
           if (plan.has_credit) customer.credit_limit_cents = plan.credit_limit_cents;
           gen::CustomerDao::insert(conn, customer);
+          set_customer_credit_limit(conn, customer.id, customer.credit_limit_cents);
         }
         ++report.outcome.inserted;
       }

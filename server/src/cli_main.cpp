@@ -13,6 +13,7 @@
 #include "xiaotu/audit.h"
 #include "xiaotu/backup.h"
 #include "xiaotu/config.h"
+#include "xiaotu/customer_service.h"
 #include "xiaotu/db.h"
 #include "xiaotu/error.h"
 #include "xiaotu/http_server.h"
@@ -399,6 +400,16 @@ int main(int argc, char** argv) {
                        " 字节=" + std::to_string(snapshot.bytes));
     }
     xiaotu::migrate(db);
+    // 历史分裂修补：partner 额度为 0 而 customer 镜像非 0 时并回 partner（幂等）。
+    // v28 已搬过数据，这里只兜底被旧版本/外部工具写歪的库。
+    {
+      std::size_t repaired = 0;
+      db.write([&](sqlite3* conn) { repaired = xiaotu::repair_customer_credit_mirror(conn); });
+      if (repaired > 0) {
+        std::cout << "信用额度镜像修补: " << repaired << " 条" << std::endl;
+        xiaotu::log_info("信用额度镜像修补 " + std::to_string(repaired) + " 条");
+      }
+    }
     xiaotu::load_role_permissions(db);
     std::cout << "数据库结构版本: v" << db.schema_version() << std::endl;
     xiaotu::log_info("数据库结构版本 v" + std::to_string(db.schema_version()));

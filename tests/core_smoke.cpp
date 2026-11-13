@@ -19,6 +19,7 @@
 
 #include "xiaotu/audit.h"
 #include "xiaotu/backup.h"
+#include "xiaotu/customer_service.h"
 #include "xiaotu/document.h"
 #include "xiaotu/edition.h"
 #include "xiaotu/error.h"
@@ -2397,11 +2398,13 @@ int main() {
       check(negative_blocked_again, "负库存关回后触发器应继续拒绝负结存");
 
       // 信用额度：卡在销售出库审核，默认提示不拦、确认后放行并写审计；reject 模式硬拦。
-      xiaotu::gen::CustomerService credit_customers(db);
+      xiaotu::CustomerService credit_customers(db);
       const auto credit_customer =
           credit_customers.create(xiaotu::gen::CustomerRow{.code = "C-CREDIT",
                                                            .name = "额度客户",
                                                            .credit_limit_cents = 100000});
+      check(credit_customers.credit_limit_cents(credit_customer.id) == 100000,
+            "客户建档后额度应从 partner 读回");
       auto credit_item = items.create(xiaotu::gen::ItemRow{.code = "CR001", .name = "额度商品"});
       {
         xiaotu::DocInput stock_in;
@@ -2456,6 +2459,91 @@ int main() {
       }
       check(credit_rejected, "reject 模式下超额应直接拒绝");
       documents.set_credit_limit_mode("warn");
+
+      // 额度单一来源：页面改额度后 partner 与 customer 镜像一致。
+      const auto credit_edit = credit_customers.update(
+          credit_customer.id,
+          xiaotu::gen::CustomerRow{.code = "C-CREDIT", .name = "额度客户",
+                                   .credit_limit_cents = 123400});
+      check(credit_edit.credit_limit_cents == 123400, "客户页改额度应返回新值");
+      {
+        std::int64_t partner_limit = 0;
+        std::int64_t mirror_limit = 0;
+        db.read([&](sqlite3* conn) {
+          xiaotu::Stmt partner(conn, "SELECT credit_limit_cents FROM partner WHERE id = ?;");
+          partner.bind(1, credit_customer.id);
+          if (partner.step()) partner_limit = partner.i64(0);
+          xiaotu::Stmt mirror(conn, "SELECT credit_limit_cents FROM customer WHERE id = ?;");
+          mirror.bind(1, credit_customer.id);
+          if (mirror.step()) mirror_limit = mirror.i64(0);
+        });
+        check(partner_limit == 123400 && mirror_limit == 123400,
+              "客户页改额度后 partner 与 customer 两处应一致");
+      }
+      // 超额判断读 partner：把两边人为改成不同值，partner 更小就必须提示。
+      credit_customers.update(credit_customer.id,
+                              xiaotu::gen::CustomerRow{.code = "C-CREDIT",
+                                                       .name = "额度客户",
+                                                       .credit_limit_cents = 100000});
+      db.write([&](sqlite3* conn) {
+        xiaotu::Stmt partner(conn, "UPDATE partner SET credit_limit_cents = 10000 WHERE id = ?;");
+        partner.bind(1, credit_customer.id).run();
+        xiaotu::Stmt mirror(conn,
+                            "UPDATE customer SET credit_limit_cents = 1000000 WHERE id = ?;");
+        mirror.bind(1, credit_customer.id).run();
+      });
+      check(credit_customers.credit_limit_cents(credit_customer.id) == 10000,
+            "读取额度应取 partner，而不是更大的 customer 镜像");
+      {
+        bool listed_from_partner = false;
+        for (const auto& row : credit_customers.list()) {
+          if (row.id == credit_customer.id) listed_from_partner = row.credit_limit_cents == 10000;
+        }
+        check(listed_from_partner, "客户列表展示的额度应来自 partner");
+      }
+      {
+        bool partner_based_warning = false;
+        try {
+          documents.save_and_approve(credit_sale(q(2)));
+        } catch (const xiaotu::AppError& error) {
+          partner_based_warning = error.code() == "CREDIT_LIMIT_WARNING" &&
+                                  std::string(error.what()).find("额度 100.00") !=
+                                      std::string::npos;
+        }
+        check(partner_based_warning, "超额判断应以 partner 额度为准（镜像更大也不放行）");
+      }
+
+      // 历史分裂修补：partner 为 0、镜像非 0 时并回 partner，且可重复执行。
+      db.write([&](sqlite3* conn) {
+        xiaotu::Stmt partner(conn, "UPDATE partner SET credit_limit_cents = 0 WHERE id = ?;");
+        partner.bind(1, credit_customer.id).run();
+        xiaotu::Stmt mirror(conn,
+                            "UPDATE customer SET credit_limit_cents = 666600 WHERE id = ?;");
+        mirror.bind(1, credit_customer.id).run();
+      });
+      std::size_t repaired = 0;
+      db.write([&](sqlite3* conn) {
+        repaired = xiaotu::repair_customer_credit_mirror(conn);
+      });
+      check(repaired == 1, "partner 额度为 0 而镜像非 0 时应并回 partner");
+      {
+        std::int64_t partner_limit = 0;
+        db.read([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn, "SELECT credit_limit_cents FROM partner WHERE id = ?;");
+          stmt.bind(1, credit_customer.id);
+          if (stmt.step()) partner_limit = stmt.i64(0);
+        });
+        check(partner_limit == 666600, "修补后 partner 应等于镜像值");
+      }
+      repaired = 0;
+      db.write([&](sqlite3* conn) {
+        repaired = xiaotu::repair_customer_credit_mirror(conn);
+      });
+      check(repaired == 0, "重复修补应幂等");
+      credit_customers.update(credit_customer.id,
+                              xiaotu::gen::CustomerRow{.code = "C-CREDIT",
+                                                       .name = "额度客户",
+                                                       .credit_limit_cents = 100000});
 
       // 备份与恢复：快照可校验，恢复后 schema 一致，覆盖前留安全备份。
       const auto backup_root =

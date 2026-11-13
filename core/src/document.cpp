@@ -459,14 +459,28 @@ std::string cents_text(std::int64_t cents) {
 }
 
 // 信用额度卡在销售出库审核（产生应收的那一刻），只做客户侧。
-// 额度 0 视为不限制；mode=warn 时首次返回 CREDIT_LIMIT_WARNING 由界面二次确认，
-// 确认后放行并写审计；mode=reject 直接拒绝。
+// 额度以 partner.credit_limit_cents 为准（v28 起为唯一来源），customer 表只是镜像；
+// 合并过的客户由既有 partner 解析跟到保留的那条。额度 0 视为不限制；
+// mode=warn 时首次返回 CREDIT_LIMIT_WARNING 由界面二次确认，确认后放行并写审计；
+// mode=reject 直接拒绝。
 void enforce_credit_limit(sqlite3* conn, const DocumentDefinition& definition,
                           const DocInput& input, const ValidatedDoc& validated,
                           std::int64_t doc_id, bool confirm_credit, const std::string& mode) {
   if (definition.doc_type != "SAL_OUT" || input.partner_id <= 0) return;
   std::int64_t limit = 0;
-  {
+  std::int64_t partner_id =
+      find_partner_for_archive(conn, PartnerSide::Customer, input.partner_id);
+  if (partner_id == 0) {
+    // 迁移前或异常数据：补建一次 partner（沿用原 id 并带上镜像额度）。
+    partner_id = ensure_partner_for_archive(conn, PartnerSide::Customer, input.partner_id);
+  }
+  if (partner_id > 0) {
+    Stmt stmt(conn, "SELECT credit_limit_cents FROM partner WHERE id = ?;");
+    stmt.bind(1, partner_id);
+    if (!stmt.step()) return;
+    limit = stmt.i64(0);
+  } else {
+    // 档案缺失才回落到镜像，避免把客户额度当成 0（不限额）。
     Stmt stmt(conn, "SELECT credit_limit_cents FROM customer WHERE id = ? AND is_deleted = 0;");
     stmt.bind(1, input.partner_id);
     if (!stmt.step()) return;

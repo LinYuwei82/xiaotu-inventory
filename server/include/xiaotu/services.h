@@ -1,5 +1,6 @@
 #pragma once
 
+#include "xiaotu/customer_service.h"
 #include "xiaotu/db.h"
 #include "xiaotu/document.h"
 #include "xiaotu/finance_service.h"
@@ -45,7 +46,7 @@ struct Services {
   gen::ItemService item;
   gen::WarehouseService warehouse;
   gen::SupplierService supplier;
-  gen::CustomerService customer;
+  CustomerService customer;
   gen::UnitService unit;
   gen::EmployeeService employee;
   gen::FundAccountService fund_account;
