@@ -776,6 +776,39 @@ void run_server_mode(const std::filesystem::path& dir) {
   }
   check(audit_count(db, "update", "setting") == 7, "两个会话超时键应各写一条审计");
 
+  // 参数生效：改完 session_idle_minutes 后，新签发的会话有效期应按 45 分钟。
+  const auto relogin_after_timeout = client.Post(
+      "/api/login", R"({"username":"admin","password":"Passw0rd!"})", "application/json");
+  check(relogin_after_timeout && relogin_after_timeout->status == 200,
+        "修改会话超时后应能重新登录");
+  if (relogin_after_timeout) {
+    std::int64_t idle_minutes = -1;
+    db.read([&](sqlite3* conn) {
+      xiaotu::Stmt stmt(
+          conn,
+          "SELECT CAST((julianday(expires_at) - julianday('now', 'localtime')) * 1440 AS INTEGER)"
+          " FROM app_session WHERE expires_at = (SELECT MAX(expires_at) FROM app_session);");
+      if (stmt.step()) idle_minutes = stmt.i64(0);
+    });
+    check(idle_minutes >= 43 && idle_minutes <= 46,
+          "新会话空闲有效期应按设置签发（约 45 分钟）");
+    client.set_default_headers({{"Cookie", session_cookie(relogin_after_timeout)},
+                                {"X-CSRF-Token", body_field(relogin_after_timeout, "csrf")}});
+  }
+
+  // 公司抬头已有保存/读回用例；这里补超长校验，失败请求不应改动现有值。
+  const std::string too_long(101, 'x');
+  const auto company_rejected = client.Put(
+      "/api/settings",
+      nlohmann::json{{"company", nlohmann::json{{"name", too_long}}}}.dump(),
+      "application/json");
+  check(company_rejected && company_rejected->status == 400, "公司名称超长应被拒绝");
+  const auto company_after_reject = client.Get("/api/settings");
+  check(company_after_reject && company_after_reject->status == 200 &&
+            nlohmann::json::parse(company_after_reject->body)["company"].value("name", "") ==
+                "冒烟公司",
+        "超长请求失败后公司抬头应保持不变");
+
   // 成本口径：默认含税；切换后记录生效时间，库存流水报表能读出切换日。
   const auto basis_default = client.Get("/api/settings");
   check(basis_default && basis_default->status == 200 &&
