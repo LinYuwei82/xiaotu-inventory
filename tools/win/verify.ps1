@@ -457,9 +457,9 @@ if ($SkipInstall) {
 }
 
 # ---------- 11. MANUAL ----------
-Manual "WebView2 缺失提示" "在虚拟机卸载 WebView2 后双击壳，应提示缺失而非白屏/闪退"
-Manual "窗口位置与大小记忆" "移动并缩放窗口后重启，应恢复上次位置与大小"
-Manual "打印对话框" "打开打印预览并调起系统对话框，检查纸型/边距/缩放"
+Manual "WebView2 缺失提示" "已自动化：tools\win\ui-checks.ps1（默认跑全部；本机缺少 Runtime 时会 SKIP 复原校验）"
+Manual "窗口位置与大小记忆" "已自动化：tools\win\ui-checks.ps1 -SkipPrint -SkipWebView2Missing"
+Manual "打印对话框" "已自动化：tools\win\ui-checks.ps1 -SkipWindowState -SkipWebView2Missing（需 WebView2 与至少一个打印队列；验的是打印预览出现/取消/不卡死，纸型边距仍建议人工看一眼）"
 Manual "SmartScreen 表现" "未签名包首次运行应出现「未知发布者 → 更多信息 → 仍要运行」"
 
 # ---------- 汇总 ----------
