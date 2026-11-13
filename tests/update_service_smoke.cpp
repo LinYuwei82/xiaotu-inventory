@@ -92,7 +92,15 @@ int main() {
   std::ofstream(script_path) << "# test verifier";
   settings.public_key_file = pub_path.string();
   settings.verifier_script = script_path.string();
+  // 验签桩要求"始终成功"：非 Windows 借 /usr/bin/true，Windows 没有该程序，
+  // 用生成到临时目录的批处理代替（批处理会忽略追加的 verify 参数，直接返回 0）。
+#if defined(_WIN32)
+  const auto stub_path = dir / "stub-verifier.bat";
+  std::ofstream(stub_path) << "@echo off\r\nexit /b 0\r\n";
+  settings.verifier_python = stub_path.string();
+#else
   settings.verifier_python = "/usr/bin/true";
+#endif
 
   settings.manifest_file =
       write_manifest("stable.json", manifest_json("1.4.2", 2026111301, 28, 32, 100)).string();
