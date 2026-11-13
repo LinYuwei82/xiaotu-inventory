@@ -922,6 +922,36 @@ constexpr const char* kV29 = R"SQL(
 ALTER TABLE partner ADD COLUMN origin TEXT NOT NULL DEFAULT 'MANUAL';
 )SQL";
 
+// v30：客户/供应商合并动作。日志只追加，记录合并目标、源档案快照、映射快照、
+// 源档案名下的全部历史键与当时的台账/核销水位，作为能否撤销的判定依据。
+// 合并本身只写 partner.merged_into 与目标角色位，不改任何业务表的历史键。
+constexpr const char* kV30 = R"SQL(
+CREATE TABLE partner_merge_log (
+  id                 INTEGER PRIMARY KEY,
+  target_partner_id  INTEGER NOT NULL,
+  target_code        TEXT    NOT NULL DEFAULT '',
+  target_name        TEXT    NOT NULL DEFAULT '',
+  target_is_customer INTEGER NOT NULL DEFAULT 0,
+  target_is_supplier INTEGER NOT NULL DEFAULT 0,
+  target_snapshot    TEXT    NOT NULL DEFAULT '{}',
+  source_ids         TEXT    NOT NULL DEFAULT '[]',
+  sources_snapshot   TEXT    NOT NULL DEFAULT '[]',
+  moved_maps         TEXT    NOT NULL DEFAULT '[]',
+  source_keys        TEXT    NOT NULL DEFAULT '[]',
+  ledger_mark        INTEGER NOT NULL DEFAULT 0,
+  settlement_mark    INTEGER NOT NULL DEFAULT 0,
+  actor              TEXT    NOT NULL,
+  created_at         TEXT    NOT NULL,
+  can_undo           INTEGER NOT NULL DEFAULT 1,
+  undo_reason        TEXT    NOT NULL DEFAULT '',
+  undone_at          TEXT    NOT NULL DEFAULT '',
+  undone_by          TEXT    NOT NULL DEFAULT '',
+  CHECK (can_undo IN (0, 1))
+);
+CREATE INDEX idx_partner_merge_target ON partner_merge_log(target_partner_id);
+CREATE INDEX idx_partner_merge_created ON partner_merge_log(created_at);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -966,6 +996,7 @@ const std::vector<Migration>& all_migrations() {
       {27, "v27_print_scale_paper", kV27},
       {28, "v28_partner_table_1to1", kV28},
       {29, "v29_partner_origin", kV29},
+      {30, "v30_partner_merge_log", kV30},
   };
   return migrations;
 }

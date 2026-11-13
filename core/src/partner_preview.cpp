@@ -232,7 +232,10 @@ PartnerPreviewReport partner_merge_preview(const Db& db) {
     {
       Stmt stmt(conn,
                 "SELECT id, code, name, COALESCE(tax_no, ''), COALESCE(phone, '')"
-                " FROM customer WHERE is_deleted = 0 ORDER BY code;");
+                " FROM customer c WHERE c.is_deleted = 0"
+                " AND NOT EXISTS (SELECT 1 FROM partner p"
+                "                 WHERE p.id = c.id AND p.merged_into <> 0)"
+                " ORDER BY code;");
       while (stmt.step()) {
         ArchiveRow row;
         row.archive_id = stmt.i64(0);
@@ -248,7 +251,12 @@ PartnerPreviewReport partner_merge_preview(const Db& db) {
     {
       Stmt stmt(conn,
                 "SELECT id, code, name, COALESCE(tax_no, ''), COALESCE(phone, '')"
-                " FROM supplier WHERE is_deleted = 0 ORDER BY code;");
+                " FROM supplier s WHERE s.is_deleted = 0"
+                " AND NOT EXISTS (SELECT 1 FROM partner_legacy_map m"
+                "                 JOIN partner p ON p.id = m.partner_id"
+                "                 WHERE m.side = 'supplier' AND m.legacy_id = s.id"
+                "                   AND p.merged_into <> 0)"
+                " ORDER BY code;");
       while (stmt.step()) {
         ArchiveRow row;
         row.archive_id = stmt.i64(0);

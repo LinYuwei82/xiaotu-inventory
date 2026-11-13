@@ -3,6 +3,7 @@
 #include <sqlite3.h>
 
 #include <exception>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,34 @@ bool numeric_id(std::string_view text) {
     if (ch < '0' || ch > '9') return false;
   }
   return true;
+}
+
+// 合并链：source.merged_into 指向保留档案。最多跟随 32 层，避免脏数据成环时死循环。
+std::int64_t follow_merged(sqlite3* conn, std::int64_t partner_id) {
+  for (int depth = 0; depth < 32 && partner_id > 0; ++depth) {
+    Stmt stmt(conn, "SELECT merged_into FROM partner WHERE id = ?;");
+    stmt.bind(1, partner_id);
+    if (!stmt.step()) return partner_id;
+    const std::int64_t next = stmt.i64(0);
+    if (next <= 0 || next == partner_id) return partner_id;
+    partner_id = next;
+  }
+  return partner_id;
+}
+
+// 目标 partner 及其全部被合并进来的下游 source id。
+std::vector<std::int64_t> merge_subtree(sqlite3* conn, std::int64_t root_id) {
+  std::vector<std::int64_t> ids{root_id};
+  std::set<std::int64_t> seen{root_id};
+  for (std::size_t index = 0; index < ids.size(); ++index) {
+    Stmt stmt(conn, "SELECT id FROM partner WHERE merged_into = ? ORDER BY id;");
+    stmt.bind(1, ids[index]);
+    while (stmt.step()) {
+      const std::int64_t child = stmt.i64(0);
+      if (seen.insert(child).second) ids.push_back(child);
+    }
+  }
+  return ids;
 }
 
 bool partner_code_taken(sqlite3* conn, const std::string& code) {
@@ -44,14 +73,14 @@ std::int64_t find_partner_for_archive(sqlite3* conn, PartnerSide side,
   if (side == PartnerSide::Customer) {
     Stmt stmt(conn, "SELECT id FROM partner WHERE id = ? AND is_customer = 1;");
     stmt.bind(1, archive_id);
-    return stmt.step() ? stmt.i64(0) : 0;
+    return stmt.step() ? follow_merged(conn, stmt.i64(0)) : 0;
   }
   Stmt stmt(conn,
             "SELECT m.partner_id FROM partner_legacy_map m"
             " JOIN partner p ON p.id = m.partner_id"
             " WHERE m.side = 'supplier' AND m.legacy_id = ?;");
   stmt.bind(1, archive_id);
-  return stmt.step() ? stmt.i64(0) : 0;
+  return stmt.step() ? follow_merged(conn, stmt.i64(0)) : 0;
 }
 
 std::int64_t ensure_partner_for_archive(sqlite3* conn, PartnerSide side,
@@ -181,19 +210,18 @@ std::string partner_key_for_archive(sqlite3* conn, PartnerSide side, std::int64_
 
 std::string partner_dimension_key(sqlite3* conn, std::string_view partner_key) {
   const std::string key(partner_key);
-  if (key.rfind("P:", 0) == 0) {
-    if (numeric_id(key.substr(2))) {
-      Stmt stmt(conn, "SELECT 1 FROM partner WHERE id = ?;");
-      stmt.bind(1, std::stoll(key.substr(2)));
-      if (stmt.step()) return key;
-    }
-    return key;
+  if (key.rfind("P:", 0) == 0 && numeric_id(key.substr(2))) {
+    const std::int64_t partner_id = std::stoll(key.substr(2));
+    Stmt stmt(conn, "SELECT 1 FROM partner WHERE id = ?;");
+    stmt.bind(1, partner_id);
+    if (!stmt.step()) return key;
+    // 被合并档案的历史 P: 键一律折算到保留档案。
+    return "P:" + std::to_string(follow_merged(conn, partner_id));
   }
   if (key.rfind("C:", 0) == 0 && numeric_id(key.substr(2))) {
-    const std::int64_t id = std::stoll(key.substr(2));
-    if (find_partner_for_archive(conn, PartnerSide::Customer, id) > 0) {
-      return "P:" + std::to_string(id);
-    }
+    const std::int64_t partner_id =
+        find_partner_for_archive(conn, PartnerSide::Customer, std::stoll(key.substr(2)));
+    if (partner_id > 0) return "P:" + std::to_string(partner_id);
     return key;
   }
   if (key.rfind("S:", 0) == 0 && numeric_id(key.substr(2))) {
@@ -210,19 +238,24 @@ std::vector<std::string> partner_key_aliases(sqlite3* conn, std::string_view par
   if (dimension.rfind("P:", 0) != 0 || !numeric_id(dimension.substr(2))) {
     return {key};
   }
-  const std::int64_t partner_id = std::stoll(dimension.substr(2));
+  const std::int64_t root_id = std::stoll(dimension.substr(2));
+  const std::vector<std::int64_t> ids = merge_subtree(conn, root_id);
   std::vector<std::string> aliases;
-  aliases.push_back("P:" + std::to_string(partner_id));
-  {
-    Stmt customer(conn, "SELECT 1 FROM customer WHERE id = ?;");
-    customer.bind(1, partner_id);
-    if (customer.step()) aliases.push_back("C:" + std::to_string(partner_id));
+  aliases.push_back("P:" + std::to_string(root_id));
+  for (const std::int64_t id : ids) {
+    if (id != root_id) aliases.push_back("P:" + std::to_string(id));
   }
-  {
+  for (const std::int64_t id : ids) {
+    // 客户档案 id 与 partner id 一一对应；只把仍是客户的档案补成历史 C: 键。
+    Stmt customer(conn, "SELECT 1 FROM partner WHERE id = ? AND is_customer = 1;");
+    customer.bind(1, id);
+    if (customer.step()) aliases.push_back("C:" + std::to_string(id));
+  }
+  for (const std::int64_t id : ids) {
     Stmt suppliers(conn,
                    "SELECT legacy_id FROM partner_legacy_map"
                    " WHERE side = 'supplier' AND partner_id = ? ORDER BY legacy_id;");
-    suppliers.bind(1, partner_id);
+    suppliers.bind(1, id);
     while (suppliers.step()) {
       aliases.push_back("S:" + std::to_string(suppliers.i64(0)));
     }

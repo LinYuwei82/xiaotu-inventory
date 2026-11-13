@@ -275,6 +275,43 @@
     );
   }
 
+  // 已合并档案：partner 层记录 merged_into，客户下拉与列表按伙伴 id 隐藏；
+  // 供应商旧 id 需经 supplier_ids 映射回档案 id。
+  let mergedTraderCache = null;
+
+  function invalidateMergedTraders() {
+    mergedTraderCache = null;
+  }
+
+  async function loadMergedTraders() {
+    if (mergedTraderCache) return mergedTraderCache;
+    const customers = new Set();
+    const suppliers = new Set();
+    try {
+      const response = await fetch(API_BASE + "/api/partners", { credentials: "include" });
+      if (response.ok) {
+        const rows = await response.json();
+        for (const row of rows || []) {
+          if (!row.merged_into) continue;
+          if (row.is_customer) customers.add(Number(row.id));
+          for (const legacyId of row.supplier_ids || []) suppliers.add(Number(legacyId));
+        }
+      }
+    } catch (error) {
+      // 读取失败时按未合并处理，不阻塞页面。
+    }
+    mergedTraderCache = { customers, suppliers };
+    return mergedTraderCache;
+  }
+
+  async function filterMergedTraders(path, rows) {
+    if (!Array.isArray(rows)) return rows;
+    const merged = await loadMergedTraders();
+    const hidden = path === "/api/suppliers" ? merged.suppliers : merged.customers;
+    if (!hidden.size) return rows;
+    return rows.filter((row) => !hidden.has(Number(row.id)));
+  }
+
   async function api(method, path, body) {
     const options = { method, credentials: "include", headers: {} };
     if (state.csrf && method !== "GET") {
@@ -297,6 +334,12 @@
       error.status = response.status;
       error.code = payload && payload.code;
       throw error;
+    }
+    if (method === "GET") {
+      const plain = path.split("?")[0];
+      if (plain === "/api/customers" || plain === "/api/suppliers") {
+        return filterMergedTraders(plain, payload);
+      }
     }
     return payload;
   }
@@ -638,6 +681,7 @@
     const optionCache = {};
 
     const io = def.importable ? def.permissions || {} : null;
+    const isTrader = def.key === "customer" || def.key === "supplier";
     const ioButtons = io
       ? `${can(io.read) ? `<button class="btn" data-role="template">下载模板</button>
           <button class="btn" data-role="export-xlsx">导出 Excel</button>
@@ -653,6 +697,7 @@
         </div>
         <div class="page-actions">
           ${ioButtons}
+          ${isTrader && can("customer.write") ? '<button class="btn" data-role="merge-open">合并单位</button>' : ""}
           <button class="btn primary" data-role="new">新增</button>
         </div>
       </div>
@@ -663,6 +708,16 @@
           <button class="btn" type="button" data-role="cancel">取消</button>
         </div>
       </div>
+      ${isTrader ? `<div class="card" data-role="merge-card" hidden>
+        <div class="card-head">
+          <h3>合并往来单位</h3>
+          <button class="btn" type="button" data-role="merge-close">关闭</button>
+        </div>
+        <p class="page-sub" data-role="merge-hint"></p>
+        <div data-role="merge-body"></div>
+        <div class="card-head"><h3>最近合并与撤销</h3></div>
+        <div data-role="merge-log"></div>
+      </div>` : ""}
       ${def.filters ? '<div class="card filters" data-role="filters"></div>' : ""}
       <div class="card">
         <table class="table" data-role="table"></table>
@@ -867,6 +922,170 @@
     async function reload() {
       rows = await api("GET", def.api + filterQuery());
       renderTable();
+    }
+
+    const mergeCard = mount.querySelector('[data-role="merge-card"]');
+    const mergeBody = mount.querySelector('[data-role="merge-body"]');
+    const mergeHint = mount.querySelector('[data-role="merge-hint"]');
+    const mergeLog = mount.querySelector('[data-role="merge-log"]');
+    let mergePreview = null;
+    let mergePartners = [];
+    let mergeLogs = [];
+
+    function mergeOriginLabel(origin) {
+      if (origin === "AUTO_ARCHIVE") return "自动补建";
+      if (origin === "MANUAL") return "手工/合并";
+      return origin || "—";
+    }
+
+    function renderMergeLogs() {
+      if (!mergeLog) return;
+      mergeLog.innerHTML = !mergeLogs.length
+        ? '<p class="page-sub">还没有合并记录</p>'
+        : `<table class="table"><thead><tr><th>时间</th><th>保留档案</th><th>被合并</th>
+             <th>执行人</th><th>状态</th><th>操作</th></tr></thead><tbody>${mergeLogs
+             .map(
+               (log) => `<tr>
+                 <td>${escapeHtml(log.created_at)}</td>
+                 <td>${escapeHtml(log.target_code + " " + log.target_name)}</td>
+                 <td>${escapeHtml(log.source_ids)}</td>
+                 <td>${escapeHtml(log.actor)}</td>
+                 <td>${log.undone_at ? "已撤销 " + escapeHtml(log.undone_at) : "已合并"}</td>
+                 <td class="actions">${
+                   log.undone_at
+                     ? '<span class="page-sub">—</span>'
+                     : log.can_undo
+                       ? `<button class="link" data-role="undo" data-log="${log.id}" data-name="${escapeHtml(log.target_name)}">撤销</button>`
+                       : `<span class="page-sub" title="${escapeHtml(log.undo_reason)}">不可撤销</span>`
+                 }</td>
+               </tr>`
+             )
+             .join("")}</tbody></table>`;
+    }
+
+    async function openMergePanel() {
+      if (!mergeCard) return;
+      const role = def.key === "customer" ? "customer" : "supplier";
+      mergeCard.hidden = false;
+      mergeHint.textContent = "正在读取候选与合并记录…";
+      try {
+        const [partners, preview, logs] = await Promise.all([
+          api("GET", "/api/partners?role=" + role),
+          api("GET", "/api/partners/merge-preview"),
+          api("GET", "/api/partners/merge-log?limit=10"),
+        ]);
+        mergePreview = preview;
+        mergeLogs = logs;
+        mergePartners = partners.filter((row) => !row.merged_into && row.status);
+        mergeHint.textContent =
+          `候选组 ${preview.groups} 组（高置信 ${preview.high}、中高 ${preview.medium}、` +
+          `仅名称 ${preview.name_only}）。仅名称相同属低置信，不会自动合并，请逐组核对。`;
+        mergeBody.innerHTML = !mergePartners.length
+          ? '<p class="page-sub">当前没有可合并的档案</p>'
+          : `<table class="table"><thead><tr><th>合并</th><th>保留</th><th>编码</th>
+               <th>名称</th><th>来源</th></tr></thead><tbody>${mergePartners
+               .map(
+                 (row) => `<tr>
+                   <td><input type="checkbox" data-merge-source value="${row.id}" /></td>
+                   <td><input type="radio" name="merge-target-${def.key}" value="${row.id}" /></td>
+                   <td>${escapeHtml(row.code)}</td>
+                   <td>${escapeHtml(row.name)}</td>
+                   <td>${escapeHtml(mergeOriginLabel(row.origin))}</td>
+                 </tr>`
+               )
+               .join("")}</tbody></table>
+             <div class="form-actions">
+               <button class="btn primary" type="button" data-role="merge-run">合并所选</button>
+               <span class="page-sub">先勾选要并入的档案，再选一条作为保留档案</span>
+             </div>`;
+        renderMergeLogs();
+      } catch (error) {
+        mergeHint.textContent = "读取失败：" + error.message;
+      }
+    }
+
+    if (mergeCard) {
+      mergeCard.addEventListener("click", async (event) => {
+        const button = event.target.closest("button");
+        if (!button) return;
+        if (button.dataset.role === "merge-close") {
+          mergeCard.hidden = true;
+          return;
+        }
+        if (button.dataset.role === "merge-run") {
+          const sources = Array.from(
+            mergeBody.querySelectorAll("input[data-merge-source]:checked")
+          )
+            .map((input) => Number(input.value))
+            .filter(Boolean);
+          const targetInput = mergeBody.querySelector(
+            `input[name="merge-target-${def.key}"]:checked`
+          );
+          const target = targetInput ? Number(targetInput.value) : 0;
+          if (!target) {
+            showNotice("请选择保留档案", "error");
+            return;
+          }
+          const selected = sources.filter((id) => id !== target);
+          if (!selected.length) {
+            showNotice("请至少勾选一条要并入的档案，且不能只选保留档案", "error");
+            return;
+          }
+          const byId = new Map(mergePartners.map((row) => [row.id, row]));
+          const names = selected.map((id) => (byId.get(id) || {}).name || "#" + id);
+          const targetName = (byId.get(target) || {}).name || "#" + target;
+          const candidates = (mergePreview && mergePreview.candidates) || [];
+          const matched = candidates.filter((group) =>
+            (group.rows || []).some((row) => names.includes(row.name))
+          );
+          const matchText = matched.length
+            ? matched.map((group) => group.match + "：" + group.match_value).join("；")
+            : "未命中自动候选，按人工选择合并";
+          const ok = await askConfirm(
+            `将把以下 ${selected.length} 条档案合并到「${targetName}」：\n` +
+              names.join("、") +
+              `\n\n预览结果：${matchText}\n\n` +
+              "合并后这些档案不再出现在列表与下拉，历史台账、账龄与对账单归到保留档案。确认继续？",
+            { okText: "确认合并" }
+          );
+          if (!ok) return;
+          try {
+            const result = await api("POST", "/api/partners/merge", {
+              target_id: target,
+              source_ids: selected,
+            });
+            invalidateMergedTraders();
+            mergeCard.hidden = true;
+            showNotice(`已合并 ${selected.length} 条到「${result.target_name || targetName}」`);
+            await reload();
+          } catch (error) {
+            showNotice(error.message, "error");
+            await openMergePanel();
+          }
+          return;
+        }
+        if (button.dataset.role === "undo") {
+          const logId = Number(button.dataset.log);
+          const ok = await askConfirm(
+            `撤销合并到「${button.dataset.name || ""}」？\n` +
+              "仅在合并后没有新业务写入被合并档案时才允许撤销。",
+            { okText: "确认撤销" }
+          );
+          if (!ok) return;
+          try {
+            await api("POST", "/api/partners/undo", { log_id: logId });
+            invalidateMergedTraders();
+            mergeCard.hidden = true;
+            showNotice("已撤销合并");
+            await reload();
+          } catch (error) {
+            showNotice(error.message, "error");
+            await openMergePanel();
+          }
+        }
+      });
+      const openButton = mount.querySelector('[data-role="merge-open"]');
+      if (openButton) openButton.addEventListener("click", openMergePanel);
     }
 
     await renderFilters();

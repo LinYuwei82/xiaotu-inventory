@@ -137,6 +137,13 @@ std::string mark_list(std::size_t count) {
 
 std::string partner_key_name(sqlite3* conn, std::string_view partner_key) {
   const std::string key(partner_key);
+  // 合并后历史键（P:/C:/S:）统一按保留档案取名；T: 或映射缺失时再回落原表。
+  const std::string dimension = partner_dimension_key(conn, key);
+  if (dimension.rfind("P:", 0) == 0 && numeric_id(dimension.substr(2))) {
+    Stmt partner(conn, "SELECT name FROM partner WHERE id = ?;");
+    partner.bind(1, std::stoll(dimension.substr(2)));
+    if (partner.step()) return partner.text(0);
+  }
   const char* table = nullptr;
   if (key.rfind("C:", 0) == 0) {
     table = "customer";
@@ -157,9 +164,10 @@ int partner_key_direction(sqlite3* conn, std::string_view partner_key) {
   const std::string key(partner_key);
   if (key.rfind("S:", 0) == 0) return -1;
   if (key.rfind("C:", 0) == 0 || key.rfind("T:", 0) == 0) return 1;
-  if (key.rfind("P:", 0) == 0 && numeric_id(key.substr(2))) {
+  const std::string dimension = partner_dimension_key(conn, key);
+  if (dimension.rfind("P:", 0) == 0 && numeric_id(dimension.substr(2))) {
     Stmt partner(conn, "SELECT is_customer, is_supplier FROM partner WHERE id = ?;");
-    partner.bind(1, std::stoll(key.substr(2)));
+    partner.bind(1, std::stoll(dimension.substr(2)));
     if (partner.step()) {
       const bool is_customer = partner.i64(0) != 0;
       const bool is_supplier = partner.i64(1) != 0;
@@ -168,11 +176,21 @@ int partner_key_direction(sqlite3* conn, std::string_view partner_key) {
     }
   }
   // 兼买卖 / 档案缺失 / 未知前缀：以台账实际方向为准，两边都有时默认应收。
+  // 合并后同一单位可能有多个历史键，方向按全部别名一起判断。
+  const std::vector<std::string> aliases = partner_key_aliases(conn, key);
+  std::string marks;
+  for (std::size_t i = 0; i < aliases.size(); ++i) {
+    if (i != 0) marks += ", ";
+    marks += "?";
+  }
   Stmt ledger(conn,
               "SELECT COALESCE(SUM(CASE WHEN direction = 1 THEN 1 ELSE 0 END), 0),"
               " COALESCE(SUM(CASE WHEN direction = -1 THEN 1 ELSE 0 END), 0)"
-              " FROM ar_ap_entry WHERE partner_key = ? AND status <> 'VOIDED';");
-  ledger.bind(1, key);
+              " FROM ar_ap_entry WHERE partner_key IN (" + marks + ")"
+              " AND status <> 'VOIDED';");
+  for (std::size_t i = 0; i < aliases.size(); ++i) {
+    ledger.bind(static_cast<std::int64_t>(i + 1), aliases[i]);
+  }
   if (ledger.step()) {
     const std::int64_t receivable = ledger.i64(0);
     const std::int64_t payable = ledger.i64(1);
@@ -611,12 +629,17 @@ std::vector<AgingRow> ReportService::ar_ap_aging(int direction, std::string_view
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
               // 归集前把历史 C:/S: 键折成 partner 维度，与新 P: 键合并成一行；
-              // T: 与查不到归属的键保持自身，按名称独立。
-              "WITH key_dim AS ("
-              "  SELECT 'P:' || id AS key, 'P:' || id AS dim FROM partner"
-              "  UNION ALL SELECT 'C:' || id, 'P:' || id FROM customer"
-              "  UNION ALL SELECT 'S:' || legacy_id, 'P:' || partner_id"
-              "    FROM partner_legacy_map WHERE side = 'supplier')"
+              // 合并过的档案沿 merged_into 链折算到保留档案；T: 与查不到归属的键保持自身。
+              "WITH RECURSIVE merge_chain(src_id, root_id) AS ("
+              "  SELECT id, id FROM partner WHERE merged_into = 0"
+              "  UNION ALL SELECT p.id, m.root_id FROM partner p"
+              "    JOIN merge_chain m ON p.merged_into = m.src_id),"
+              " key_dim(key, dim) AS ("
+              "  SELECT 'P:' || src_id, 'P:' || root_id FROM merge_chain"
+              "  UNION ALL SELECT 'C:' || c.id, 'P:' || COALESCE(mc.root_id, c.id)"
+              "    FROM customer c LEFT JOIN merge_chain mc ON mc.src_id = c.id"
+              "  UNION ALL SELECT 'S:' || m.legacy_id, 'P:' || COALESCE(mc.root_id, m.partner_id)"
+              "    FROM partner_legacy_map m LEFT JOIN merge_chain mc ON mc.src_id = m.partner_id)"
               " SELECT COALESCE(d.dim, t.partner_key) AS dim_key,"
               " COALESCE(NULLIF(p.name, ''), MAX(t.partner_name)) AS partner_name,"
               " t.direction,"
@@ -1006,13 +1029,30 @@ DashboardResult ReportService::dashboard(std::string_view today) const {  Dashbo
     }
     {
       Stmt stmt(conn,
-                "SELECT partner_id,"
-                " COALESCE(NULLIF(MAX(partner_name), ''), '未指定客户'),"
-                " SUM(amount_cents - settled_cents)"
-                " FROM ar_ap_entry"
-                " WHERE direction = 1 AND status IN ('OPEN', 'PARTIAL')"
-                " GROUP BY partner_id"
-                " ORDER BY SUM(amount_cents - settled_cents) DESC"
+                // 欠款按 partner 维度归集：历史 C:/S: 与合并前的 P: 都随 merged_into 并到保留档案。
+                "WITH RECURSIVE merge_chain(src_id, root_id) AS ("
+                "  SELECT id, id FROM partner WHERE merged_into = 0"
+                "  UNION ALL SELECT p.id, m.root_id FROM partner p"
+                "    JOIN merge_chain m ON p.merged_into = m.src_id),"
+                " key_dim(key, dim) AS ("
+                "  SELECT 'P:' || src_id, 'P:' || root_id FROM merge_chain"
+                "  UNION ALL SELECT 'C:' || c.id, 'P:' || COALESCE(mc.root_id, c.id)"
+                "    FROM customer c LEFT JOIN merge_chain mc ON mc.src_id = c.id"
+                "  UNION ALL SELECT 'S:' || m.legacy_id, 'P:' || COALESCE(mc.root_id, m.partner_id)"
+                "    FROM partner_legacy_map m LEFT JOIN merge_chain mc ON mc.src_id = m.partner_id)"
+                " SELECT CASE WHEN COALESCE(d.dim, e.partner_key) LIKE 'P:%'"
+                "         THEN CAST(substr(COALESCE(d.dim, e.partner_key), 3) AS INTEGER)"
+                "         ELSE 0 END AS partner_id,"
+                " COALESCE(NULLIF(MAX(p.name), ''), MAX(e.partner_name), '未指定客户'),"
+                " SUM(e.amount_cents - e.settled_cents)"
+                " FROM ar_ap_entry e"
+                " LEFT JOIN key_dim d ON d.key = e.partner_key"
+                " LEFT JOIN partner p ON p.id = CASE"
+                "   WHEN COALESCE(d.dim, e.partner_key) LIKE 'P:%'"
+                "   THEN CAST(substr(COALESCE(d.dim, e.partner_key), 3) AS INTEGER) ELSE 0 END"
+                " WHERE e.direction = 1 AND e.status IN ('OPEN', 'PARTIAL')"
+                " GROUP BY COALESCE(d.dim, e.partner_key)"
+                " ORDER BY SUM(e.amount_cents - e.settled_cents) DESC"
                 " LIMIT 10;");
       while (stmt.step()) {
         DashboardDebtor debtor;

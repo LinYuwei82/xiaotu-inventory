@@ -48,6 +48,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v27 | 打印模板纸型与缩放：`paper_kind`（`SHEET` / `CONTINUOUS`）与 `scale_mode`（`FIT_WIDTH` / `ORIGINAL`），历史模板默认单页纸、按纸宽自适应 |
 | v28 | 客户/供应商合表第一步：建 `partner`（客户/供应商双角色位、税号、信用额度、`credit_days` 占位、`merged_into`）与 `partner_legacy_map`；客户/供应商 1:1 搬入，旧表与 `C:` / `S:` / `T:` 键保持不动，不做合并 |
 | v29 | `partner.origin` 来源标记（`AUTO_ARCHIVE` = 档案首次引用时业务补建，`MANUAL` = 历史迁移、手工或合并），默认 `MANUAL` 补齐老数据 |
+| v30 | 客户/供应商合并：`partner_merge_log` 记录保留档案、前后快照、映射快照、源档案历史键与台账/核销水位；合并只写 `partner.merged_into` 与角色位，历史键不动 |
 
 ## 1. 环境要求
 

@@ -5,6 +5,7 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -25,6 +26,7 @@
 #include "xiaotu/gen/customer_service.h"
 #include "xiaotu/gen/item_service.h"
 #include "xiaotu/log.h"
+#include "xiaotu/partner_merge.h"
 #include "xiaotu/partner_preview.h"
 #include "xiaotu/partner_resolve.h"
 #include "xiaotu/password.h"
@@ -83,7 +85,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 29, "迁移后 schema 版本应为 29");
+      check(db.schema_version() == 30, "迁移后 schema 版本应为 30");
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
       db.read([&](sqlite3* conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
@@ -2489,6 +2491,7 @@ int main() {
         mig.write_raw([&](sqlite3* conn) {
           const int rc =
               sqlite3_exec(conn,
+                           "DROP TABLE partner_merge_log;"
                            "DROP TABLE partner_legacy_map;"
                            "DROP TABLE partner;"
                            "DELETE FROM schema_migration WHERE version >= 28;"
@@ -2529,7 +2532,7 @@ int main() {
         });
 
         xiaotu::migrate(mig);
-        check(mig.schema_version() == 29, "有数据的模拟库应迁到 v29");
+        check(mig.schema_version() == 30, "有数据的模拟库应迁到 v30");
 
         mig.read([&](sqlite3* conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");
@@ -2830,6 +2833,201 @@ int main() {
         check(origin_json.find("\"origin\":\"AUTO_ARCHIVE\"") != std::string::npos &&
                   origin_json.find("\"origin\":\"MANUAL\"") != std::string::npos,
               "预览 JSON 应输出来源标记");
+
+        // 供应商合并：沿用 partner_legacy_map 的 S: 历史键，合并后账龄归到保留档案。
+        std::int64_t sup_b_partner = 0;
+        mig.read([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn,
+                            "SELECT partner_id FROM partner_legacy_map"
+                            " WHERE side = 'supplier' AND legacy_id = ?;");
+          stmt.bind(1, sup_b.id);
+          if (stmt.step()) sup_b_partner = stmt.i64(0);
+        });
+        check(sup_b_partner > 0, "供应商乙应有 partner 映射");
+        mig.write([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn,
+                            "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
+                            " partner_id, partner_name, partner_key, biz_date, due_date,"
+                            " amount_cents, settled_cents, status, created_at, created_by)"
+                            " VALUES (?, 0, '供应商合并前', 'OPENING_AP', -1, ?, '迁移供应商乙',"
+                            " ?, ?, '', 300, 0, 'OPEN', ?, 'test');");
+          stmt.bind(1, xiaotu::next_id())
+              .bind(2, sup_b.id)
+              .bind(3, "S:" + std::to_string(sup_b.id))
+              .bind(4, kToday)
+              .bind(5, kToday + " 00:00:00")
+              .run();
+        });
+        const auto sup_merged =
+            xiaotu::partner_merge(mig, supplier_partner, {sup_b_partner}, "test");
+        check(sup_merged.target_id == supplier_partner, "供应商合并应保留指定档案");
+        const auto sup_aging = mig_reports.ar_ap_aging(-1, kToday);
+        std::int64_t sup_target_total = 0;
+        bool sup_source_split = false;
+        for (const auto& row : sup_aging) {
+          if (row.partner_key == sup_p_key) sup_target_total = row.total_cents;
+          if (row.partner_key == "S:" + std::to_string(sup_b.id)) sup_source_split = true;
+        }
+        check(sup_target_total == 1300 && !sup_source_split,
+              "供应商合并后 S: 历史键应归到保留档案一行");
+        const auto partner_list = xiaotu::partner_rows(mig);
+        bool supplier_ids_ok = false;
+        for (const auto& row : partner_list) {
+          if (row.id == sup_b_partner) {
+            supplier_ids_ok = row.merged_into == supplier_partner &&
+                              std::find(row.supplier_ids.begin(), row.supplier_ids.end(),
+                                        sup_b.id) != row.supplier_ids.end();
+          }
+        }
+        check(supplier_ids_ok, "合并后的 partner 清单应带出供应商旧 id 供界面隐藏");
+        xiaotu::partner_merge_undo(mig, sup_merged.log_id, "test");
+        const auto sup_aging_undone = mig_reports.ar_ap_aging(-1, kToday);
+        std::int64_t sup_target_undone = 0;
+        std::int64_t sup_source_undone = 0;
+        for (const auto& row : sup_aging_undone) {
+          if (row.partner_key == sup_p_key) sup_target_undone = row.total_cents;
+          if (row.partner_key == "P:" + std::to_string(sup_b_partner)) {
+            sup_source_undone = row.total_cents;
+          }
+        }
+        check(sup_target_undone == 1000 && sup_source_undone == 300,
+              "撤销供应商合并后账龄应回到两条档案");
+
+        // 合并动作：两条客户档案合并后，台账、账龄与对账单归到保留档案一行且金额相加。
+        mig.write([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn,
+                            "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
+                            " partner_id, partner_name, partner_key, biz_date, due_date,"
+                            " amount_cents, settled_cents, status, created_at, created_by)"
+                            " VALUES (?, 0, '合并前', 'OPENING_AR', 1, ?, '迁移客户乙', ?, ?, '',"
+                            " 600, 0, 'OPEN', ?, 'test');");
+          stmt.bind(1, xiaotu::next_id())
+              .bind(2, cust_b.id)
+              .bind(3, "C:" + std::to_string(cust_b.id))
+              .bind(4, kToday)
+              .bind(5, kToday + " 00:00:00")
+              .run();
+        });
+        const auto aging_before_merge = mig_reports.ar_ap_aging(0, kToday);
+        std::int64_t before_target = 0;
+        std::int64_t before_source = 0;
+        for (const auto& row : aging_before_merge) {
+          if (row.partner_key == "P:" + std::to_string(cust_a.id)) before_target = row.total_cents;
+          if (row.partner_key == "P:" + std::to_string(cust_b.id)) before_source = row.total_cents;
+        }
+        check(before_target == 1400 && before_source == 600,
+              "合并前两条档案应各有一行账龄");
+
+        const auto merged = xiaotu::partner_merge(
+            mig, cust_a.id, {static_cast<std::int64_t>(cust_b.id)}, "test");
+        check(merged.log_id > 0 && merged.target_id == cust_a.id,
+              "合并应写入日志并返回保留档案");
+        mig.read([&](sqlite3* conn) {
+          xiaotu::Stmt source(conn, "SELECT merged_into FROM partner WHERE id = ?;");
+          source.bind(1, cust_b.id);
+          check(source.step() && source.i64(0) == cust_a.id,
+                "被合并档案的 merged_into 应指向保留档案");
+          xiaotu::Stmt audit(conn,
+                             "SELECT COUNT(*) FROM audit_log WHERE action = 'partner_merge'"
+                             " AND entity_id = ?;");
+          audit.bind(1, cust_a.id);
+          check(audit.step() && audit.i64(0) == 1, "合并动作应写审计日志");
+          xiaotu::Stmt log(conn,
+                           "SELECT target_snapshot, sources_snapshot, source_keys, moved_maps"
+                           " FROM partner_merge_log WHERE id = ?;");
+          log.bind(1, merged.log_id);
+          check(log.step() && log.text(0).find("\"id\"") != std::string::npos &&
+                    log.text(1).find(std::to_string(cust_b.id)) != std::string::npos &&
+                    log.text(2).find("\"C:" + std::to_string(cust_b.id)) != std::string::npos,
+                "合并日志应保存前后快照与源档案历史键");
+        });
+
+        const auto aging_merged = mig_reports.ar_ap_aging(0, kToday);
+        bool merged_single_row = false;
+        bool merged_source_split = false;
+        for (const auto& row : aging_merged) {
+          if (row.partner_key == "P:" + std::to_string(cust_a.id) &&
+              row.total_cents == 2000) {
+            merged_single_row = true;
+          }
+          if (row.partner_key == "P:" + std::to_string(cust_b.id) ||
+              row.partner_key == "C:" + std::to_string(cust_b.id)) {
+            merged_source_split = true;
+          }
+        }
+        check(merged_single_row && !merged_source_split,
+              "合并后账龄应只剩保留档案一行，金额为两条之和");
+        const auto merged_statement = mig_reports.partner_statement(
+            "P:" + std::to_string(cust_a.id), 1, "", "");
+        check(merged_statement.partner_name == "迁移客户甲" &&
+                  merged_statement.increase_cents == 2000,
+              "合并后对账单应使用保留档案名称并合并发生额");
+
+        // 撤销：没有新业务写入，完整回到合并前两条档案。
+        xiaotu::partner_merge_undo(mig, merged.log_id, "test");
+        mig.read([&](sqlite3* conn) {
+          xiaotu::Stmt target(conn, "SELECT merged_into FROM partner WHERE id = ?;");
+          target.bind(1, cust_a.id);
+          check(target.step() && target.i64(0) == 0, "撤销后保留档案 merged_into 应清零");
+          xiaotu::Stmt source(conn, "SELECT merged_into FROM partner WHERE id = ?;");
+          source.bind(1, cust_b.id);
+          check(source.step() && source.i64(0) == 0, "撤销后被合并档案应恢复独立");
+          xiaotu::Stmt audit(conn,
+                             "SELECT COUNT(*) FROM audit_log"
+                             " WHERE action = 'partner_merge_undo' AND entity_id = ?;");
+          audit.bind(1, cust_a.id);
+          check(audit.step() && audit.i64(0) == 1, "撤销动作应写审计日志");
+        });
+        const auto aging_undone = mig_reports.ar_ap_aging(0, kToday);
+        std::int64_t undone_target = 0;
+        std::int64_t undone_source = 0;
+        for (const auto& row : aging_undone) {
+          if (row.partner_key == "P:" + std::to_string(cust_a.id)) undone_target = row.total_cents;
+          if (row.partner_key == "P:" + std::to_string(cust_b.id)) undone_source = row.total_cents;
+        }
+        check(undone_target == 1400 && undone_source == 600,
+              "撤销后账龄应回到合并前两条档案");
+
+        // 合并后新写业务：撤销被拒绝且不做半截撤销。
+        const auto merged_again = xiaotu::partner_merge(
+            mig, cust_a.id, {static_cast<std::int64_t>(cust_b.id)}, "test");
+        mig.write([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn,
+                            "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
+                            " partner_id, partner_name, partner_key, biz_date, due_date,"
+                            " amount_cents, settled_cents, status, created_at, created_by)"
+                            " VALUES (?, 0, '合并后', 'OPENING_AR', 1, ?, '迁移客户乙', ?, ?, '',"
+                            " 900, 0, 'OPEN', ?, 'test');");
+          stmt.bind(1, xiaotu::next_id())
+              .bind(2, cust_b.id)
+              .bind(3, "P:" + std::to_string(cust_b.id))
+              .bind(4, kToday)
+              .bind(5, kToday + " 00:00:00")
+              .run();
+        });
+        const std::string undo_blocker =
+            xiaotu::partner_merge_undo_blocker(mig, merged_again.log_id);
+        check(undo_blocker.find("新业务") != std::string::npos,
+              "合并后有新业务时应给出撤销拒绝原因");
+        bool undo_rejected = false;
+        try {
+          xiaotu::partner_merge_undo(mig, merged_again.log_id, "test");
+        } catch (const xiaotu::AppError& error) {
+          undo_rejected = error.code() == "MERGE_UNDO_BLOCKED";
+        }
+        check(undo_rejected, "合并后新写业务再撤销应被拒绝");
+        mig.read([&](sqlite3* conn) {
+          xiaotu::Stmt source(conn, "SELECT merged_into FROM partner WHERE id = ?;");
+          source.bind(1, cust_b.id);
+          check(source.step() && source.i64(0) == cust_a.id,
+                "撤销被拒绝时不应做半截还原");
+          xiaotu::Stmt log(conn, "SELECT undone_at FROM partner_merge_log WHERE id = ?;");
+          log.bind(1, merged_again.log_id);
+          check(log.step() && log.text(0).empty(), "被拒绝的撤销不应把日志标记为已撤销");
+          xiaotu::Stmt audit(conn,
+                             "SELECT COUNT(*) FROM audit_log WHERE action = 'partner_merge';");
+          check(audit.step() && audit.i64(0) == 3, "每次合并都应独立写审计日志");
+        });
       }
     }
   } catch (const std::exception& error) {
