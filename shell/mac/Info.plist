@@ -29,5 +29,20 @@
     <key>NSAllowsLocalNetworking</key>
     <true/>
   </dict>
+  <!-- 更新：以下三项需在发布前替换为真实地址与公钥；接入 Sparkle 后生效。 -->
+  <key>XiaotuUpdateManifestURL</key>
+  <string></string>
+  <key>XiaotuUpdateChannel</key>
+  <string>stable</string>
+  <key>SUFeedURL</key>
+  <string></string>
+  <key>SUPublicEDKey</key>
+  <string></string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
+  <key>SUScheduledCheckInterval</key>
+  <integer>86400</integer>
+  <key>SUAutomaticallyUpdate</key>
+  <true/>
 </dict>
 </plist>

@@ -4,6 +4,7 @@
 #include <string>
 
 #include "print_paper.h"
+#include "updater.h"
 #include "webview.h"
 
 @interface XiaotuAppDelegate : NSObject <NSApplicationDelegate>
@@ -357,6 +358,24 @@ int run_webview(const std::string& url, const std::string& title) {
 
     NSURL* nsurl = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
     [webview loadRequest:[NSURLRequest requestWithURL:nsurl]];
+
+    // 更新预检查：清单地址与通道来自 Info.plist；health 只用于读取本地 schema。
+    [[XiaotuUpdater shared] noteLaunch];
+    NSString* manifest_url =
+        [[NSBundle mainBundle] objectForInfoDictionaryKey:@"XiaotuUpdateManifestURL"];
+    NSString* update_channel =
+        [[NSBundle mainBundle] objectForInfoDictionaryKey:@"XiaotuUpdateChannel"];
+    NSString* health_base = nil;
+    if (nsurl.scheme.length > 0 && nsurl.host.length > 0) {
+      health_base = [NSString stringWithFormat:@"%@://%@%@", nsurl.scheme, nsurl.host,
+                                               nsurl.port != nil
+                                                   ? [@":" stringByAppendingString:
+                                                                   nsurl.port.stringValue]
+                                                   : @""];
+    }
+    [[XiaotuUpdater shared] startWithManifestURL:manifest_url
+                                     healthBase:health_base
+                                        channel:update_channel ?: @"stable"];
 
     [NSApp activateIgnoringOtherApps:YES];
     [NSApp run];
