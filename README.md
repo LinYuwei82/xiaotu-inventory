@@ -683,6 +683,8 @@ tools/package/make_dmg.sh
 与指向 `/Applications` 的「应用程序」软链。脚本、签名参数与校验方式见
 [tools/package/README.md](tools/package/README.md)。
 
+包体实测（0.9.0）：dmg **2,980,224 B（2.84 MiB）**；`.app` 表观 5.12 MiB / 实占 5,256 KiB；主可执行 4,502,048 B（占 83.8%）；内嵌前端 270,103 B（未压缩）；`Frameworks` 为 0；图标 867,537 B；未 strip 符号表约 1.03 MiB。原「10–30 MB」估算已不适用，目标下调为 dmg ≤ 3 MiB。
+
 **签名现状**：仓库当前没有 Developer ID 证书，脚本默认做 ad-hoc 签名，也未做公证。首次打开的放行方式（含 Windows）统一见 [docs/发行与安装说明.md](docs/发行与安装说明.md)。当前分发方式为手工发送，未启用下载页与更新清单。
 
 拿到 Developer ID 证书后可设置 `XIAOTU_SIGN_IDENTITY` 重新打包；要免拦截仍需额外公证与 staple，当前不在仓库范围内。
