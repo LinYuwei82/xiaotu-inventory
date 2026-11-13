@@ -29,11 +29,14 @@
     <key>NSAllowsLocalNetworking</key>
     <true/>
   </dict>
-  <!-- 更新：以下三项由 tools/package/make_dmg.sh 通过 CMake 变量注入，仓库内保持为空；
+  <!-- 更新：以下键由 tools/package/make_dmg.sh 通过 CMake 变量注入，仓库内保持为空；
        为空表示更新功能关闭。定时检查由 XiaotuUpdater 负责（24h±2h）。
-       SUEnableAutomaticChecks=false 关闭 Sparkle 自己的定时检查，避免双份检查/提示；
-       SUAutomaticallyUpdate=true 仅表示“检查到更新后静默下载、退出时安装”，
-       不产生额外调度；SUScheduledCheckInterval 已移除（自动检查关闭后无意义）。 -->
+       这些 Sparkle 键只被 Sparkle 读取，本仓库代码不读取；未链接 Sparkle 时它们是
+       占位、不生效。Q25 口径：允许自动检查与后台预下载，但安装必须由用户显式点击、
+       确认会关闭程序后才执行；从不静默安装。SUAutomaticallyUpdate 的语义包含
+       “自动安装”，因此固定为 false；后台预下载由自研下载链路负责，不依赖该键。
+       SUAllowsAutomaticUpdates=false 进一步关闭 Sparkle 的自动更新；
+       SUEnableAutomaticChecks=false 关闭 Sparkle 自己的定时检查，避免双份检查/提示。 -->
   <key>XiaotuUpdateManifestURL</key>
   <string>@XIAOTU_UPDATE_MANIFEST_URL_XML@</string>
   <key>XiaotuUpdateChannel</key>
@@ -45,6 +48,8 @@
   <key>SUEnableAutomaticChecks</key>
   <false/>
   <key>SUAutomaticallyUpdate</key>
-  <true/>
+  <false/>
+  <key>SUAllowsAutomaticUpdates</key>
+  <false/>
 </dict>
 </plist>

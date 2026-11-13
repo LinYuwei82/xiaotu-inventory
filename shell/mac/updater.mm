@@ -617,6 +617,9 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
                    "（build " + std::to_string(remoteBuild) + "）");
   finish(kResultUpdateAvailable);
 #if XIAOTU_HAS_SPARKLE
+  // 只触发检查。Q25 现行口径下 Info.plist 的 SUAutomaticallyUpdate 与
+  // SUAllowsAutomaticUpdates 都是 false，Sparkle 不会自动下载或安装；
+  // 下载与安装只能由用户在关于页显式点「下载并校验」「安装更新」触发。
   dispatch_async(dispatch_get_main_queue(), ^{
     [[self sparkleController] checkForUpdatesInBackground];
   });
