@@ -592,11 +592,17 @@ std::string safe_filename(std::string_view filename) {
   return value;
 }
 
-BackupResult backup_before_import(Db& db, MasterKind kind) {
+BackupResult backup_before_import(Db& db, MasterKind kind,
+                                  const std::filesystem::path& backup_dir) {
   try {
-    return backup_database(db, db.file().parent_path() / "backups",
-                           "pre-import-" + master_key(kind));
+    const std::filesystem::path directory =
+        backup_dir.empty() ? db.file().parent_path() / "backups" : backup_dir;
+    return backup_database(db, directory, "pre-import-" + master_key(kind));
   } catch (const AppError& error) {
+    if (error.code() == "BACKUP_DIR_UNWRITABLE") {
+      throw AppError("BACKUP_DIR_UNWRITABLE",
+                     "导入前自动备份失败，已中止：" + std::string(error.what()));
+    }
     throw AppError("BACKUP_FAILED", "导入前自动备份失败，已中止：" + std::string(error.what()));
   } catch (const std::exception& error) {
     throw AppError("BACKUP_FAILED", "导入前自动备份失败，已中止：" + std::string(error.what()));
@@ -706,7 +712,8 @@ MasterExport export_master(Db& db, MasterKind kind) {
 }
 
 ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
-                           std::string_view filename) {
+                           std::string_view filename,
+                           const std::filesystem::path& backup_dir) {
   if (bytes.empty()) throw AppError("IMPORT_INVALID", "请选择要导入的 .xlsx 文件");
   if (bytes.size() > kImportMaxBytes) {
     throw AppError("IMPORT_TOO_LARGE", "文件超过 5MB 上限，请分批导入");
@@ -728,7 +735,7 @@ ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
     auto plans = validate_items(table, columns, records, units, categories, report.issues);
     if (!report.ok()) return report;
 
-    report.outcome.backup = backup_before_import(db, kind).path.filename().string();
+    report.outcome.backup = backup_before_import(db, kind, backup_dir).path.filename().string();
     const std::string name = safe_filename(filename);
     db.write([&](sqlite3* conn) {
       for (const auto& plan : plans) {
@@ -774,7 +781,7 @@ ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
   auto plans = validate_partners(table, columns, records, report.issues, label);
   if (!report.ok()) return report;
 
-  report.outcome.backup = backup_before_import(db, kind).path.filename().string();
+  report.outcome.backup = backup_before_import(db, kind, backup_dir).path.filename().string();
   const std::string name = safe_filename(filename);
   db.write([&](sqlite3* conn) {
     for (const auto& plan : plans) {

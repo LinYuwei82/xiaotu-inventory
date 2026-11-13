@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -51,7 +52,9 @@ MasterExport export_master(Db& db, MasterKind kind);
 // 解析 → 全量校验 → 备份 → 单事务写入。
 // 行级错误通过 ImportReport::issues 返回，不写库；文件级错误（不是 xlsx、
 // 表头不认识、超过上限、备份失败）抛 AppError。
+// backup_dir 为空时备份到 <数据库所在目录>/backups。
 ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
-                           std::string_view filename);
+                           std::string_view filename,
+                           const std::filesystem::path& backup_dir = {});
 
 }  // namespace xiaotu

@@ -241,6 +241,19 @@ int main() {
       check(row != nullptr && (*row)[7] == "否", "客户的启用状态应为否");
     }
 
+    // 6b. 指定自定义备份目录：pre-import 备份落到该目录，默认目录不再新增。
+    {
+      const fs::path custom_backup = dir / "custom-backups";
+      const std::size_t default_before = backup_count(backup_dir);
+      report = xiaotu::import_master(
+          db, xiaotu::MasterKind::Item,
+          item_xlsx({{"SP999", "自定义备份", "", "瓶", "", "", "", "是"}}), "items.xlsx",
+          custom_backup);
+      check(report.ok(), "指定自定义备份目录应导入成功");
+      check(backup_count(custom_backup) == 1, "导入前备份应写入自定义目录");
+      check(backup_count(backup_dir) == default_before, "默认备份目录不新增文件");
+    }
+
     // 7. 超大文件直接拒绝。
     bool too_large = false;
     try {

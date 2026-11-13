@@ -304,10 +304,14 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     body["embedded_resources"] = resources::count();
     body["data_dir_warning"] = info_.data_dir_warning;
 
-    const std::filesystem::path backup_dir = std::filesystem::path(info_.data_dir) / "backups";
+    const std::filesystem::path backup_dir =
+        info_.backup_dir.empty() ? std::filesystem::path(info_.data_dir) / "backups"
+                                 : std::filesystem::path(info_.backup_dir);
     const BackupStatus backup = backup_status(backup_dir);
     nlohmann::json backup_body;
-    // 免登录接口：只给状态与文件名，不返回任何目录或绝对路径。
+    // 免登录接口：只给状态与文件名，不返回任何目录或绝对路径；
+    // backup_dir_is_custom 仅说明是否单独指定了备份目录。
+    backup_body["backup_dir_is_custom"] = info_.backup_dir_custom;
     if (backup.last_success_at.empty()) {
       backup_body["last_success"] = nullptr;
     } else {
@@ -462,6 +466,9 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
 #endif
     body["data_dir"] = info_.data_dir;
     body["database_path"] = info_.database_path;
+    body["backup_dir"] = info_.backup_dir.empty()
+                             ? (std::filesystem::path(info_.data_dir) / "backups").string()
+                             : info_.backup_dir;
     body["database_bytes"] = database_bytes;
     body["listen"] = listen;
     body["user"] = current_context().user;

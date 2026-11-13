@@ -135,6 +135,11 @@ void assign(ConfigValues& values, const std::string& section, const std::string&
     values.data_dir = value;
     return;
   }
+  if (section == "storage" && key == "backup_dir") {
+    // 空串合法：表示沿用 <data_dir>/backups。相对路径在解析阶段按数据目录展开。
+    values.backup_dir = parse_string(raw, path, line_no);
+    return;
+  }
   if (section == "log" && key == "level") {
     std::string value = parse_string(raw, path, line_no);
     for (char& ch : value) {

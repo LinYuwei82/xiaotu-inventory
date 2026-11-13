@@ -77,6 +77,12 @@ void test_retention(const std::filesystem::path& root) {
   }
   touch(directory, manual_name(2025, 12, 31));
   touch(directory, "pre-restore-20251231-120000.db");
+  // 非本程序命名规则的文件一律跳过，不参与统计与删除。
+  touch(directory, "notes.txt");
+  touch(directory, "backup-status.json");
+  touch(directory, "app-20240101-120000-dailydb.db");
+  touch(directory, "app-20240101-120000-daily.db.bak");
+  touch(directory, "pre-import-item-20240101.db");
 
   const xiaotu::RetentionResult result = xiaotu::apply_daily_retention(directory, 30);
   check(result.kept == 33, "保留最近 30 份 + 3 个月份代表，共 33 份");
@@ -90,6 +96,11 @@ void test_retention(const std::filesystem::path& root) {
   check(std::filesystem::exists(directory / manual_name(2025, 12, 31)), "手动备份不参与清理");
   check(std::filesystem::exists(directory / "pre-restore-20251231-120000.db"),
         "恢复前安全备份不参与清理");
+  for (const char* name : {"notes.txt", "backup-status.json", "app-20240101-120000-dailydb.db",
+                           "app-20240101-120000-daily.db.bak", "pre-import-item-20240101.db"}) {
+    check(std::filesystem::exists(directory / name),
+          std::string("异名文件不参与清理：") + name);
+  }
 
   const xiaotu::RetentionResult again = xiaotu::apply_daily_retention(directory, 30);
   check(again.kept == 33 && again.removed == 0, "重复清理幂等");
@@ -129,6 +140,64 @@ void test_retention_monthly_beyond_window(const std::filesystem::path& root) {
 
   const xiaotu::RetentionResult again = xiaotu::apply_daily_retention(directory, 30);
   check(again.kept == 31 && again.removed == 0, "重复清理不再删除");
+}
+
+void test_backup_directory(const std::filesystem::path& root) {
+  namespace fs = std::filesystem;
+  const fs::path data = root / "dir-data";
+  fs::create_directories(data);
+  xiaotu::Db db(data / "app.db", 2);
+  xiaotu::migrate(db);
+
+  // 默认回落：未配置/空串 → <data_dir>/backups。
+  check(xiaotu::resolve_backup_dir(data, "") == data / "backups",
+        "空配置应回落到 <data_dir>/backups");
+  // 绝对路径原样使用。
+  check(xiaotu::resolve_backup_dir(data, "/tmp/xiaotu-abs-backups") ==
+            fs::path("/tmp/xiaotu-abs-backups"),
+        "绝对路径应原样使用");
+  // 相对路径按 data_dir 解析，不受 cwd 影响。
+  check(xiaotu::resolve_backup_dir(data, "nested/bk") == data / "nested/bk",
+        "相对路径应按数据目录解析");
+
+  // 自定义绝对目录：不存在时自动递归创建，且不写默认目录。
+  const fs::path custom = root / "custom-backups" / "deep";
+  check(!fs::exists(custom), "自定义备份目录初始不存在");
+  const xiaotu::BackupResult first = xiaotu::run_manual_backup(db, data, custom);
+  check(first.path.parent_path() == custom, "手动备份应写入自定义目录");
+  check(fs::is_directory(custom), "备份前应自动创建目录");
+  check(!fs::exists(data / "backups"), "自定义目录生效时不应写默认目录");
+
+  // 相对配置解析出的目录同样生效。
+  const fs::path relative = xiaotu::resolve_backup_dir(data, "relative-backups");
+  xiaotu::ensure_backup_directory(relative);
+  check(fs::is_directory(data / "relative-backups"), "相对目录应创建在数据目录下");
+
+  // 不可写目录：明确报 BACKUP_DIR_UNWRITABLE，且不回落到默认目录。
+  const fs::path locked = root / "locked-backups";
+  fs::create_directories(locked);
+  fs::permissions(locked, fs::perms::owner_read | fs::perms::owner_exec,
+                  fs::perm_options::replace);
+  check(error_code_of([&] { xiaotu::ensure_backup_directory(locked); }) ==
+            "BACKUP_DIR_UNWRITABLE",
+        "不可写目录应报 BACKUP_DIR_UNWRITABLE");
+  fs::remove_all(data / "backups");
+  check(error_code_of([&] { xiaotu::run_manual_backup(db, data, locked); }) ==
+            "BACKUP_DIR_UNWRITABLE",
+        "不可写备份目录时手动备份应失败");
+  check(!fs::exists(data / "backups"), "不可写时不得静默回落到默认目录");
+  fs::permissions(locked, fs::perms::owner_all, fs::perm_options::replace);
+
+  // 恢复前安全备份也写入解析后的目录。
+  const xiaotu::BackupResult snapshot = xiaotu::backup_database(db, custom, "smoke");
+  const fs::path restored = root / "restored-custom.db";
+  fs::copy_file(snapshot.path, restored);
+  const fs::path safety_dir = root / "restore-safety";
+  const xiaotu::RestoreResult restored_result =
+      xiaotu::restore_database(snapshot.path, restored, "cli", "命令行", safety_dir);
+  check(!restored_result.safety_backup.empty(), "覆盖恢复应留下安全备份");
+  check(restored_result.safety_backup.parent_path() == safety_dir,
+        "恢复前安全备份应写入指定目录");
 }
 
 void test_schema_compatibility(const std::filesystem::path& root) {
@@ -292,6 +361,7 @@ int main() {
 
   test_retention(root);
   test_retention_monthly_beyond_window(root);
+  test_backup_directory(root);
   test_schema_compatibility(root);
   test_daily_backup(root);
   test_backup_validation(root);

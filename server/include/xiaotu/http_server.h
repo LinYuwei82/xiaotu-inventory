@@ -28,6 +28,10 @@ struct ServerInfo {
   std::string data_dir;
   std::string database_path;
   std::string listen_host;  // 单机版为空，监听 127.0.0.1 的自动端口
+  // 解析后的备份目录（诊断页展示）；backup_dir_custom 供免登录 health 说明是否单独指定，
+  // health 本身不输出任何目录或绝对路径。
+  std::string backup_dir;
+  bool backup_dir_custom = false;
   // 网络版更新源（见 docs/更新模块技术方案.md）：清单文件由部署侧同步，
   // 服务端只做解析与判定；空 manifest_file 表示未启用更新检查。
   std::string update_manifest_file;

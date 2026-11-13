@@ -261,7 +261,8 @@ void register_opening_routes(httplib::Server& server, Services& services) {
                         throw AppError("NOT_FOUND", "未知期初类型");
                       }
                       const OpeningReport report = import_opening(
-                          services.db, *kind, req.body, import_filename(req));
+                          services.db, *kind, req.body, import_filename(req),
+                          services.effective_backup_dir());
                       if (!report.ok()) {
                         res.status = 400;
                         res.set_content(opening_report_json(report).dump(),
@@ -489,7 +490,8 @@ void register_masterdata_routes(httplib::Server& server, Services& services) {
                 guard(route.write, [&services, kind](const httplib::Request& req,
                                                      httplib::Response& res) {
                   const ImportReport report =
-                      import_master(services.db, kind, req.body, import_filename(req));
+                      import_master(services.db, kind, req.body, import_filename(req),
+                                    services.effective_backup_dir());
                   if (!report.ok()) {
                     res.status = 400;
                     res.set_content(import_json(report).dump(), "application/json; charset=utf-8");

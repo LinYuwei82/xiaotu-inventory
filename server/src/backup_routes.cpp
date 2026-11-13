@@ -27,7 +27,8 @@ void register_manual_backup(httplib::Server& server, Services& services) {
                       try {
                         const std::filesystem::path data_dir =
                             services.db.file().parent_path();
-                        const BackupResult result = run_manual_backup(services.db, data_dir);
+                        const BackupResult result = run_manual_backup(
+                            services.db, data_dir, services.effective_backup_dir());
                         nlohmann::json body;
                         body["ok"] = true;
                         body["file"] = result.path.filename().string();

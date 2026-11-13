@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,7 +41,9 @@ std::vector<std::string> opening_columns(OpeningKind kind);
 std::string opening_blocker(Db& db, OpeningKind kind);
 
 // 有业务流水之后一律拒绝导入期初（不覆盖、不追加），错误信息说明判定依据。
+// backup_dir 为空时备份到 <数据库所在目录>/backups。
 OpeningReport import_opening(Db& db, OpeningKind kind, std::string_view bytes,
-                             std::string_view filename);
+                             std::string_view filename,
+                             const std::filesystem::path& backup_dir = {});
 
 }  // namespace xiaotu

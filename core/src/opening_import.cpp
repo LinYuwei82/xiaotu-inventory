@@ -177,19 +177,26 @@ std::string business_blocker(sqlite3* conn, OpeningKind kind) {
   return {};
 }
 
-std::string backup_before_import(Db& db, OpeningKind kind) {
+std::string backup_before_import(Db& db, OpeningKind kind,
+                                 const std::filesystem::path& backup_dir) {
   try {
-    return backup_database(db, db.file().parent_path() / "backups",
-                           "pre-opening-" + opening_key(kind))
+    const std::filesystem::path directory =
+        backup_dir.empty() ? db.file().parent_path() / "backups" : backup_dir;
+    return backup_database(db, directory, "pre-opening-" + opening_key(kind))
         .path.filename()
         .string();
   } catch (const AppError& error) {
+    if (error.code() == "BACKUP_DIR_UNWRITABLE") {
+      throw AppError("BACKUP_DIR_UNWRITABLE",
+                     "导入前自动备份失败，已中止：" + std::string(error.what()));
+    }
     throw AppError("BACKUP_FAILED", "导入前自动备份失败，已中止：" + std::string(error.what()));
   }
 }
 
 OpeningReport import_stock(Db& db, const SheetTable& table, const ColumnMap& columns,
-                           std::string_view filename) {
+                           std::string_view filename,
+                           const std::filesystem::path& backup_dir) {
   OpeningReport report;
   std::vector<OpeningIssue> issues;
   std::vector<std::pair<std::int64_t, std::vector<DocLineInput>>> batches;
@@ -264,7 +271,7 @@ OpeningReport import_stock(Db& db, const SheetTable& table, const ColumnMap& col
     return report;
   }
 
-  report.backup = backup_before_import(db, OpeningKind::Stock);
+  report.backup = backup_before_import(db, OpeningKind::Stock, backup_dir);
   const std::string doc_date = today_text();
   DocumentEngine engine(db);
   for (const auto& batch : batches) {
@@ -291,7 +298,8 @@ OpeningReport import_stock(Db& db, const SheetTable& table, const ColumnMap& col
 }
 
 OpeningReport import_receivable_payable(Db& db, OpeningKind kind, const SheetTable& table,
-                                        const ColumnMap& columns, std::string_view filename) {
+                                        const ColumnMap& columns, std::string_view filename,
+                                        const std::filesystem::path& backup_dir) {
   OpeningReport report;
   const bool receivable = kind == OpeningKind::Receivable;
   const char* code_column = receivable ? "客户编码" : "供应商编码";
@@ -344,7 +352,7 @@ OpeningReport import_receivable_payable(Db& db, OpeningKind kind, const SheetTab
     return report;
   }
 
-  report.backup = backup_before_import(db, kind);
+  report.backup = backup_before_import(db, kind, backup_dir);
   const std::string name = filename.empty() ? "期初.xlsx" : std::string(filename);
   db.write([&](sqlite3* conn) {
     const AuditStamp stamp = audit_stamp();
@@ -382,7 +390,8 @@ OpeningReport import_receivable_payable(Db& db, OpeningKind kind, const SheetTab
 }
 
 OpeningReport import_fund(Db& db, const SheetTable& table, const ColumnMap& columns,
-                          std::string_view filename) {
+                          std::string_view filename,
+                          const std::filesystem::path& backup_dir) {
   OpeningReport report;
   std::vector<OpeningIssue> issues;
   std::vector<std::pair<std::int64_t, std::int64_t>> updates;  // id -> cents
@@ -421,7 +430,7 @@ OpeningReport import_fund(Db& db, const SheetTable& table, const ColumnMap& colu
     return report;
   }
 
-  report.backup = backup_before_import(db, OpeningKind::Fund);
+  report.backup = backup_before_import(db, OpeningKind::Fund, backup_dir);
   const std::string name = filename.empty() ? "资金账户期初.xlsx" : std::string(filename);
   db.write([&](sqlite3* conn) {
     const AuditStamp stamp = audit_stamp();
@@ -494,7 +503,8 @@ std::string opening_blocker(Db& db, OpeningKind kind) {
 }
 
 OpeningReport import_opening(Db& db, OpeningKind kind, std::string_view bytes,
-                             std::string_view filename) {
+                             std::string_view filename,
+                             const std::filesystem::path& backup_dir) {
   if (bytes.empty()) throw AppError("IMPORT_INVALID", "请选择要导入的 .xlsx 文件");
   if (bytes.size() > kImportMaxBytes) {
     throw AppError("IMPORT_TOO_LARGE", "文件超过 5MB 上限，请分批导入");
@@ -511,12 +521,12 @@ OpeningReport import_opening(Db& db, OpeningKind kind, std::string_view bytes,
   const ColumnMap columns = map_columns(table.header, known, required);
   switch (kind) {
     case OpeningKind::Stock:
-      return import_stock(db, table, columns, filename);
+      return import_stock(db, table, columns, filename, backup_dir);
     case OpeningKind::Receivable:
     case OpeningKind::Payable:
-      return import_receivable_payable(db, kind, table, columns, filename);
+      return import_receivable_payable(db, kind, table, columns, filename, backup_dir);
     case OpeningKind::Fund:
-      return import_fund(db, table, columns, filename);
+      return import_fund(db, table, columns, filename, backup_dir);
   }
   return {};
 }

@@ -143,8 +143,9 @@ std::string local_url(const std::string& base, const std::string& token) {
 // 单机版不常驻也没关系，下次启动会补上当天缺失的备份；与外部 cron 并发时由目录锁互斥。
 class DailyBackupScheduler {
  public:
-  DailyBackupScheduler(xiaotu::Db& db, std::filesystem::path data_dir)
-      : db_(db), data_dir_(std::move(data_dir)) {}
+  DailyBackupScheduler(xiaotu::Db& db, std::filesystem::path data_dir,
+                       std::filesystem::path backup_dir)
+      : db_(db), data_dir_(std::move(data_dir)), backup_dir_(std::move(backup_dir)) {}
 
   ~DailyBackupScheduler() { stop(); }
 
@@ -167,7 +168,8 @@ class DailyBackupScheduler {
   void loop() {
     while (running_.load()) {
       try {
-        const xiaotu::DailyBackupOutcome outcome = xiaotu::run_daily_backup(db_, data_dir_);
+        const xiaotu::DailyBackupOutcome outcome =
+            xiaotu::run_daily_backup(db_, data_dir_, backup_dir_);
         if (outcome.ran) {
           xiaotu::log_info("每日备份完成，清理旧备份 " +
                            std::to_string(outcome.retention.removed) + " 份");
@@ -182,6 +184,7 @@ class DailyBackupScheduler {
 
   xiaotu::Db& db_;
   std::filesystem::path data_dir_;
+  std::filesystem::path backup_dir_;
   std::thread thread_;
   std::mutex mutex_;
   std::condition_variable cv_;
@@ -229,6 +232,10 @@ int main(int argc, char** argv) {
     if (options.data_dir.empty() && file_config.data_dir.has_value()) {
       data_dir = *file_config.data_dir;
     }
+    // 备份目录：[storage] backup_dir 空/未配置 → <data_dir>/backups；
+    // 相对路径按数据目录解析，不受启动 cwd 影响。
+    const std::filesystem::path backup_dir =
+        xiaotu::resolve_backup_dir(data_dir, file_config.backup_dir.value_or(""));
 
     const std::string listen =
         !options.listen.empty() ? options.listen : file_config.listen.value_or("0.0.0.0");
@@ -332,7 +339,8 @@ int main(int argc, char** argv) {
       }
       // 命令行没有登录用户：审计 actor 固定为 cli，不伪造用户身份。
       const auto restore =
-          xiaotu::restore_database(options.restore_from, database_path, "cli", "命令行");
+          xiaotu::restore_database(options.restore_from, database_path, "cli", "命令行",
+                                   backup_dir);
       std::cout << "恢复完成: " << restore.path.string() << " (" << restore.bytes
                 << " 字节) schema=v" << restore.schema_version;
       if (!restore.safety_backup.empty()) {
@@ -355,7 +363,7 @@ int main(int argc, char** argv) {
     }
     xiaotu::Db db(database_path, 4);
     if (options.backup) {
-      const auto snapshot = xiaotu::run_manual_backup(db, data_dir);
+      const auto snapshot = xiaotu::run_manual_backup(db, data_dir, backup_dir);
       std::cout << "备份完成: " << snapshot.path.string() << " (" << snapshot.bytes
                 << " 字节)" << std::endl;
       xiaotu::log_info("手动备份 " + snapshot.path.string() +
@@ -387,7 +395,8 @@ int main(int argc, char** argv) {
       if (!database_existed) {
         throw xiaotu::AppError("NOT_FOUND", "数据库不存在，无法备份：" + database_path.string());
       }
-      const xiaotu::DailyBackupOutcome outcome = xiaotu::run_daily_backup(db, data_dir);
+      const xiaotu::DailyBackupOutcome outcome =
+          xiaotu::run_daily_backup(db, data_dir, backup_dir);
       if (outcome.ran) {
         std::cout << "每日备份完成: " << outcome.backup.path.string() << " ("
                   << outcome.backup.bytes << " 字节)，清理旧备份 "
@@ -403,7 +412,7 @@ int main(int argc, char** argv) {
     if (database_existed && previous_version > 0 &&
         previous_version < xiaotu::target_schema_version()) {
       const auto snapshot = xiaotu::backup_database(
-          db, data_dir / "backups", "pre-v" + std::to_string(previous_version));
+          db, backup_dir, "pre-v" + std::to_string(previous_version));
       std::cout << "迁移前备份: " << snapshot.path.string() << std::endl;
       xiaotu::log_info("迁移前备份 " + snapshot.path.string() +
                        " 字节=" + std::to_string(snapshot.bytes));
@@ -424,6 +433,7 @@ int main(int argc, char** argv) {
     xiaotu::log_info("数据库结构版本 v" + std::to_string(db.schema_version()));
 
     xiaotu::Services services(db);
+    services.backup_dir = backup_dir;
     services.docs.set_credit_limit_mode(file_config.credit_limit_mode.value_or("warn"));
     if (!options.set_password_user.empty()) {
       const char* password = std::getenv("XIAOTU_PASSWORD");
@@ -441,7 +451,7 @@ int main(int argc, char** argv) {
     }
 
     // 每日备份调度：单机版与网络版都在进程内兜底；网络版还可用 deploy 下的 timer/cron。
-    DailyBackupScheduler backup_scheduler(db, data_dir);
+    DailyBackupScheduler backup_scheduler(db, data_dir, backup_dir);
     backup_scheduler.start();
 
     const std::string token = xiaotu::random_hex(32);
@@ -453,6 +463,9 @@ int main(int argc, char** argv) {
         .data_dir = data_dir.string(),
         .database_path = database_path.string(),
         .listen_host = options.server ? listen : std::string{},
+        .backup_dir = backup_dir.string(),
+        .backup_dir_custom =
+            file_config.backup_dir.has_value() && !file_config.backup_dir->empty(),
         .update_manifest_file = file_config.update_manifest_file.value_or(""),
         .update_channel = file_config.update_channel.value_or("stable"),
         .update_min_supported_version =

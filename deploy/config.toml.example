@@ -9,8 +9,11 @@ listen = "0.0.0.0"
 port = 8080
 
 [storage]
-# 数据目录：app.db、backups/ 都在这里
+# 数据目录：app.db、日志与默认备份目录都在这里
 data_dir = "/var/lib/xiaotu"
+# 备份目录（可选）：留空表示 <data_dir>/backups；
+# 相对路径按 data_dir 解析，绝对路径原样使用；不可写时备份直接报错，不会回落。
+backup_dir = ""
 
 [log]
 # debug / info / warn / error

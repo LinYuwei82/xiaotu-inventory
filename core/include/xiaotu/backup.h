@@ -29,6 +29,17 @@ struct RestoreResult {
 inline constexpr int kDailyBackupKeep = 30;
 inline constexpr int kMonthlyBackupKeep = 1;
 
+// 解析实际备份目录：
+//   - 配置为空 → data_dir / "backups"
+//   - 相对路径 → data_dir / 配置值（不受启动 cwd 影响）
+//   - 绝对路径 → 原样使用
+std::filesystem::path resolve_backup_dir(const std::filesystem::path& data_dir,
+                                         const std::string& configured);
+
+// 递归创建备份目录，并写一个临时探针文件确认可写（探针随即删除）。
+// 创建失败、不是目录或不可写时抛 BACKUP_DIR_UNWRITABLE，信息带目录路径。
+void ensure_backup_directory(const std::filesystem::path& directory);
+
 // 用 VACUUM INTO 生成一致性快照，文件名带时间戳，目录不存在会创建。
 BackupResult backup_database(Db& db, const std::filesystem::path& directory,
                              std::string_view tag);
@@ -43,9 +54,11 @@ void verify_database(const std::filesystem::path& path);
 // 传了 actor 就写 restore 审计（成功与失败各一条，entity=database，
 // entity_no=备份文件名，detail 含 schema 版本/来源/安全备份文件名/失败原因）。
 // CLI 约定 actor="cli"、origin="命令行"：命令行没有登录用户，不伪造用户身份。
+// backup_dir 为空时沿用旧行为：<目标库所在目录>/backups。
 RestoreResult restore_database(const std::filesystem::path& source,
                                const std::filesystem::path& database_path,
-                               std::string_view actor = {}, std::string_view origin = {});
+                               std::string_view actor = {}, std::string_view origin = {},
+                               const std::filesystem::path& backup_dir = {});
 
 // 读取备份内的 schema 版本：优先 schema_migration 的最大 version，退回 user_version。
 // 无法打开或不是本程序的数据库时抛出 AppError。
@@ -100,15 +113,19 @@ struct DailyBackupOutcome {
 
 // 生成一份 daily 备份 → 执行保留策略 → 写状态文件。今天已成功备份过则 ran=false。
 // 备份失败会写 failed 状态并把异常原样抛出。
-DailyBackupOutcome run_daily_backup(Db& db, const std::filesystem::path& data_dir);
+// backup_dir 为空时使用 data_dir / "backups"（兼容旧调用）。
+DailyBackupOutcome run_daily_backup(Db& db, const std::filesystem::path& data_dir,
+                                    const std::filesystem::path& backup_dir = {});
 
 // 生成一份 manual 备份（CLI 与 POST /api/backup 共用）：写状态、成功/失败审计。
-// 另一个备份任务正在执行时抛 BACKUP_BUSY。
-BackupResult run_manual_backup(Db& db, const std::filesystem::path& data_dir);
+// 另一个备份任务正在执行时抛 BACKUP_BUSY；backup_dir 语义同 run_daily_backup。
+BackupResult run_manual_backup(Db& db, const std::filesystem::path& data_dir,
+                               const std::filesystem::path& backup_dir = {});
 
 // 记录一次备份失败：更新状态文件的 last_failure 并写 backup 审计（失败原因）。
-// 数据库不可写时退化为只写日志，不抛异常。
+// 数据库不可写时退化为只写日志，不抛异常。backup_dir 为空时使用 data_dir / "backups"。
 void record_backup_failure(Db& db, const std::filesystem::path& data_dir, std::string_view tag,
-                           std::string_view reason);
+                           std::string_view reason,
+                           const std::filesystem::path& backup_dir = {});
 
 }  // namespace xiaotu

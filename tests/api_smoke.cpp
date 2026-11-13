@@ -235,6 +235,8 @@ void run_server_mode(const std::filesystem::path& dir) {
             health_body["backup"].contains("database_writable") &&
             health_body["backup"]["database_writable"] == true,
         "/api/health 应返回数据库可写状态");
+  check(health_body["backup"].value("backup_dir_is_custom", true) == false,
+        "/api/health 应说明备份目录是否单独指定（默认未指定）");
   check(health && health->body.find(dir.string()) == std::string::npos,
         "/api/health 不应返回绝对路径");
 
@@ -952,6 +954,8 @@ void run_server_mode(const std::filesystem::path& dir) {
     check(data.value("migrations", 0) == 36, "诊断信息里的迁移条数应为 36");
     check(data.value("mode", "") == "server", "网络版诊断信息 mode 应为 server");
     check(!data.value("data_dir", "").empty(), "诊断信息应包含数据目录");
+    check(data.value("backup_dir", "") == (dir / "backups").string(),
+          "诊断信息应包含解析后的备份目录（默认 <数据目录>/backups）");
     check(data.value("database_bytes", 0LL) > 0, "诊断信息应包含大于 0 的数据库大小");
     check(data.value("listen", "").rfind("127.0.0.1:", 0) == 0, "诊断信息应包含监听地址");
     check(data.value("user", "") == "admin" && data.value("role", "") == "admin",

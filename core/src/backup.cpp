@@ -231,6 +231,47 @@ std::filesystem::path unique_path(const std::filesystem::path& directory,
 
 }  // namespace
 
+std::filesystem::path resolve_backup_dir(const std::filesystem::path& data_dir,
+                                         const std::string& configured) {
+  if (configured.empty()) {
+    return data_dir / "backups";
+  }
+  const std::filesystem::path value(configured);
+  if (value.is_absolute()) {
+    return value;
+  }
+  // 相对路径按数据目录解析，避免受启动时工作目录影响。
+  return data_dir / value;
+}
+
+void ensure_backup_directory(const std::filesystem::path& directory) {
+  std::error_code error;
+  std::filesystem::create_directories(directory, error);
+  const bool is_directory = std::filesystem::is_directory(directory, error);
+  if (error || !is_directory) {
+    const std::string detail = error ? "：" + error.message() : "：路径不是目录";
+    throw AppError("BACKUP_DIR_UNWRITABLE",
+                   "备份目录不可写：" + path_to_utf8(directory) + detail);
+  }
+  // 用临时探针文件确认真的可写（只读挂载、权限不足都会在这里暴露），随后删除。
+  const auto probe = directory /
+                     (".write-probe-" + timestamp_tag() + "-" +
+                      std::to_string(
+                          std::chrono::steady_clock::now().time_since_epoch().count()));
+  {
+    std::ofstream out(probe, std::ios::binary | std::ios::trunc);
+    out << "probe";
+    out.flush();
+    if (!out) {
+      std::error_code ignored;
+      std::filesystem::remove(probe, ignored);
+      throw AppError("BACKUP_DIR_UNWRITABLE", "备份目录不可写：" + path_to_utf8(directory));
+    }
+  }
+  std::error_code ignored;
+  std::filesystem::remove(probe, ignored);
+}
+
 void verify_database(const std::filesystem::path& path) {
   if (!std::filesystem::exists(path)) {
     throw AppError("BACKUP_NOT_FOUND", "备份文件不存在：" + path.string());
@@ -261,11 +302,7 @@ void verify_database(const std::filesystem::path& path) {
 
 BackupResult backup_database(Db& db, const std::filesystem::path& directory,
                              std::string_view tag) {
-  std::error_code error;
-  std::filesystem::create_directories(directory, error);
-  if (error) {
-    throw AppError("BACKUP_FAILED", "无法创建备份目录：" + error.message());
-  }
+  ensure_backup_directory(directory);
   const std::string name = "app-" + timestamp_tag() + "-" + std::string(tag);
   const std::filesystem::path target = unique_path(directory, name);
   const std::string target_text = target.string();
@@ -319,7 +356,8 @@ void audit_restore(const std::filesystem::path& database_path, std::string_view 
 
 RestoreResult restore_database(const std::filesystem::path& source,
                                const std::filesystem::path& database_path,
-                               std::string_view actor, std::string_view origin) {
+                               std::string_view actor, std::string_view origin,
+                               const std::filesystem::path& backup_dir) {
   RestoreResult result;
   result.path = database_path;
   const std::string source_name = source.filename().string();
@@ -335,11 +373,9 @@ RestoreResult restore_database(const std::filesystem::path& source,
       throw AppError("INVALID_INPUT", "恢复源与目标数据库相同");
     }
 
-    const std::filesystem::path backup_dir = database_path.parent_path() / "backups";
-    std::filesystem::create_directories(backup_dir, error);
-    if (error) {
-      throw AppError("RESTORE_FAILED", "无法创建备份目录：" + error.message());
-    }
+    const std::filesystem::path directory =
+        backup_dir.empty() ? database_path.parent_path() / "backups" : backup_dir;
+    ensure_backup_directory(directory);
     if (std::filesystem::exists(database_path)) {
       // 先 checkpoint，让单文件安全备份包含 WAL 中已提交的内容。
       sqlite3* connection = nullptr;
@@ -348,7 +384,7 @@ RestoreResult restore_database(const std::filesystem::path& source,
         sqlite3_close(connection);
       }
       const std::filesystem::path safety =
-          unique_path(backup_dir, "pre-restore-" + timestamp_tag());
+          unique_path(directory, "pre-restore-" + timestamp_tag());
       std::filesystem::copy_file(database_path, safety,
                                  std::filesystem::copy_options::overwrite_existing, error);
       if (error) {
@@ -556,9 +592,12 @@ bool daily_backup_due(const std::filesystem::path& directory) {
   return true;
 }
 
-DailyBackupOutcome run_daily_backup(Db& db, const std::filesystem::path& data_dir) {
+DailyBackupOutcome run_daily_backup(Db& db, const std::filesystem::path& data_dir,
+                                    const std::filesystem::path& backup_dir) {
   DailyBackupOutcome outcome;
-  const std::filesystem::path directory = data_dir / "backups";
+  const std::filesystem::path directory =
+      backup_dir.empty() ? data_dir / "backups" : backup_dir;
+  ensure_backup_directory(directory);
   BackupDirLock lock(directory);
   if (!lock.held()) {
     outcome.skipped = "另一进程正在备份";
@@ -582,21 +621,25 @@ DailyBackupOutcome run_daily_backup(Db& db, const std::filesystem::path& data_di
     audit_backup(db, true, "daily", std::to_string(outcome.backup.bytes) + " 字节");
     log_info("每日备份完成：" + path_to_utf8(outcome.backup.path));
   } catch (const std::exception& error) {
-    record_backup_failure(db, data_dir, "daily", error.what());
+    record_backup_failure(db, data_dir, "daily", error.what(), directory);
     throw;
   }
   return outcome;
 }
 
 void record_backup_failure(Db& db, const std::filesystem::path& data_dir, std::string_view tag,
-                           std::string_view reason) {
-  update_failure_status(data_dir / "backups", reason);
+                           std::string_view reason,
+                           const std::filesystem::path& backup_dir) {
+  update_failure_status(backup_dir.empty() ? data_dir / "backups" : backup_dir, reason);
   audit_backup(db, false, tag, reason);
   log_error("备份失败（" + std::string(tag) + "）：" + std::string(reason));
 }
 
-BackupResult run_manual_backup(Db& db, const std::filesystem::path& data_dir) {
-  const std::filesystem::path directory = data_dir / "backups";
+BackupResult run_manual_backup(Db& db, const std::filesystem::path& data_dir,
+                               const std::filesystem::path& backup_dir) {
+  const std::filesystem::path directory =
+      backup_dir.empty() ? data_dir / "backups" : backup_dir;
+  ensure_backup_directory(directory);
   BackupDirLock lock(directory);
   if (!lock.held()) {
     throw AppError("BACKUP_BUSY", "另一个备份任务正在进行，请稍后重试。");
@@ -608,7 +651,7 @@ BackupResult run_manual_backup(Db& db, const std::filesystem::path& data_dir) {
     log_info("手动备份完成：" + path_to_utf8(result.path));
     return result;
   } catch (const std::exception& error) {
-    record_backup_failure(db, data_dir, "manual", error.what());
+    record_backup_failure(db, data_dir, "manual", error.what(), directory);
     throw;
   }
 }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+
 #include "xiaotu/customer_service.h"
 #include "xiaotu/db.h"
 #include "xiaotu/document.h"
@@ -43,6 +45,8 @@ struct Services {
         users(database) {}
 
   Db& db;
+  // 解析后的备份目录（[storage] backup_dir 展开结果）；空表示 <数据目录>/backups。
+  std::filesystem::path backup_dir;
   gen::ItemService item;
   gen::WarehouseService warehouse;
   gen::SupplierService supplier;
@@ -59,6 +63,14 @@ struct Services {
   CostRecalcService cost_recalc;
   SettingService settings;
   UserService users;
+
+  // 实际备份目录：未显式设置时退回数据库所在目录下的 backups。
+  std::filesystem::path effective_backup_dir() const {
+    if (!backup_dir.empty()) {
+      return backup_dir;
+    }
+    return db.file().parent_path() / "backups";
+  }
 };
 
 }  // namespace xiaotu

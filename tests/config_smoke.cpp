@@ -46,6 +46,7 @@ int main() {
       "port = 18099\n"
       "[storage]\n"
       "data_dir = \"/mnt/data#1\"\n"
+      "backup_dir = \"/mnt/backups\"\n"
       "[log]\n"
       "level = \"DEBUG\"\n"
       "dir = \"/var/log/xiaotu\"\n");
@@ -54,6 +55,18 @@ int main() {
   check(values.port.has_value() && *values.port == 18099, "读取 server.port");
   check(values.data_dir.has_value() && *values.data_dir == "/mnt/data#1",
         "字符串内的 # 不被当作注释");
+  check(values.backup_dir.has_value() && *values.backup_dir == "/mnt/backups",
+        "读取 storage.backup_dir");
+  {
+    const xiaotu::ConfigValues empty =
+        xiaotu::load_config_file(write_temp("backup_empty", "[storage]\nbackup_dir = \"\"\n"));
+    check(empty.backup_dir.has_value() && empty.backup_dir->empty(),
+          "storage.backup_dir 空串合法（表示默认目录）");
+    const xiaotu::ConfigValues relative = xiaotu::load_config_file(
+        write_temp("backup_relative", "[storage]\nbackup_dir = \"bak/copies\"\n"));
+    check(relative.backup_dir.has_value() && *relative.backup_dir == "bak/copies",
+          "storage.backup_dir 相对路径按原值保存");
+  }
   check(values.log_level.has_value() && *values.log_level == "debug", "日志级别转小写");
   check(values.log_dir.has_value() && *values.log_dir == "/var/log/xiaotu", "读取 log.dir");
 
@@ -77,7 +90,7 @@ int main() {
         "文件不存在报错");
 
   for (const auto& name : {"valid", "unknown_key", "unknown_section", "duplicate", "range",
-                           "no_section", "bad_string"}) {
+                           "no_section", "bad_string", "backup_empty", "backup_relative"}) {
     std::error_code ignored;
     std::filesystem::remove(std::filesystem::temp_directory_path() /
                                 ("xiaotu_config_" + std::string(name) + ".toml"),

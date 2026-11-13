@@ -6515,6 +6515,7 @@
         ["构建时间", `${build.date || "—"} ${build.time || "—"}`],
         ["数据目录", data.data_dir || "—"],
         ["数据库文件", `${data.database_path || "—"}（${formatBytes(data.database_bytes)}）`],
+        ["备份目录", data.backup_dir || "—"],
         ["监听", data.listen || "—"],
         ["当前用户", `${data.user || "—"}（${data.role || "—"}）`],
       ];

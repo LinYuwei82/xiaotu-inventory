@@ -89,6 +89,9 @@ if(UNIX)
   add_test(NAME deploy_backup_test
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/deploy_backup_test.sh"
                    "${CMAKE_CURRENT_SOURCE_DIR}/../deploy/backup.sh")
+  add_test(NAME backup_dir_test
+           COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/backup_dir_test.sh"
+                   $<TARGET_FILE:xiaotu-server>)
   add_test(NAME update_manifest_test
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/update_manifest_test.sh")
 endif()

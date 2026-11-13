@@ -12,6 +12,8 @@ struct ConfigValues {
   std::optional<std::string> listen;    // [server] listen
   std::optional<int> port;              // [server] port
   std::optional<std::string> data_dir;  // [storage] data_dir
+  // [storage] backup_dir：空串表示沿用 <data_dir>/backups；相对路径按 data_dir 解析。
+  std::optional<std::string> backup_dir;
   std::optional<std::string> log_level; // [log] level
   std::optional<std::string> log_dir;   // [log] dir
   // [sales] credit_limit_mode：warn（默认，提示并二次确认后放行）/ reject（硬拦）。
