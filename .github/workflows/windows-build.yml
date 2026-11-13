@@ -1,7 +1,9 @@
 name: Windows build
 
-# 只做「编得过 + 用例过」，不打包、不签名。
-# 触发条件与镜像仓库的推送策略一致：只推 main 和 tag，因此这里是「合并后才发现」。
+# 编得过 + 用例过 + 产出 Windows 安装包。
+# 安装包默认未签名：只有配置了证书 secret 才会调用 signtool，并在 SIGNING.txt 里如实记录；
+# 未配置时明确打印「未签名」，不会把未签名产物当成已签名。
+# 安装/卸载的真实行为仍需在 Windows 机器上人工跑一次，CI 只保证能编出包。
 on:
   push:
     branches: [main]
@@ -44,3 +46,62 @@ jobs:
 
       - name: Build Windows shell
         run: cmake --build shell/win/build
+
+      - name: Install Inno Setup
+        run: choco install innosetup --yes --no-progress
+
+      # 签名是参数化空位：有证书 secret 才加 /DSign=1 与 /Ssigntool；
+      # 没有就跳过，并把「未签名」写进产物说明，避免被误当成已签名分发。
+      - name: Build Windows installer
+        shell: pwsh
+        env:
+          CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          CERT_PFX_PASSWORD: ${{ secrets.WINDOWS_CERT_PFX_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content VERSION -Raw).Trim()
+          New-Item -ItemType Directory -Force packaging\win\out | Out-Null
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            throw "未找到 Inno Setup 编译器：$iscc"
+          }
+
+          $isccArgs = @("/DAppVersion=$version")
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'xiaotu-codesign.pfx'
+          if ($env:CERT_PFX_BASE64) {
+            $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
+              -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signtool) {
+              throw '配置了证书 secret，但未找到 signtool.exe，无法签名'
+            }
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:CERT_PFX_BASE64))
+            $signCommand = '/Ssigntool="{0}" sign /fd SHA256 /f "{1}" /p "{2}" /tr http://timestamp.digicert.com /td SHA256 $f' `
+              -f $signtool.FullName, $pfxPath, $env:CERT_PFX_PASSWORD
+            $isccArgs += '/DSign=1'
+            $isccArgs += $signCommand
+            '已签名：检测到证书 secret，安装包与卸载器由 signtool 签名。' |
+              Out-File packaging\win\out\SIGNING.txt -Encoding utf8
+            Write-Host '签名：已配置证书 secret，开始签名'
+          } else {
+            '未签名：未配置 WINDOWS_CERT_PFX_BASE64，本产物为未签名安装包，不可对外分发。' |
+              Out-File packaging\win\out\SIGNING.txt -Encoding utf8
+            Write-Host '未签名：未配置证书 secret，本次不调用 signtool（产物为未签名安装包）'
+          }
+
+          & $iscc @isccArgs 'packaging\win\xiaotu-inventory.iss'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup 编译失败（退出码 $LASTEXITCODE）"
+          }
+          if (Test-Path -LiteralPath $pfxPath) {
+            Remove-Item -LiteralPath $pfxPath -Force
+          }
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaotu-win-installer
+          path: |
+            packaging/win/out/*.exe
+            packaging/win/out/SIGNING.txt
+          if-no-files-found: error
+          retention-days: 14
