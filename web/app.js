@@ -54,6 +54,25 @@
     return Boolean(unsavedGuard && unsavedGuard());
   }
 
+  // 桌面壳退出时要知道「当前有没有未保存内容 / 提交是否在途」，否则会直接退出。
+  // 浏览器里没有这个通道，postMessage 不存在时静默跳过。
+  // windowShouldClose 必须同步返回，而 evaluateJavaScript 是异步的，所以由页面
+  // 主动推送状态，壳只缓存最近一次结果。
+  function notifyShellDirty() {
+    const handlers =
+      window.webkit && window.webkit.messageHandlers
+        ? window.webkit.messageHandlers.xiaotuState
+        : null;
+    if (!handlers) return;
+    const dirty = pendingWrites > 0 || hasUnsaved();
+    if (dirty === notifyShellDirty.lastSent) return;
+    notifyShellDirty.lastSent = dirty;
+    handlers.postMessage({ dirty });
+  }
+  notifyShellDirty.lastSent = null;
+
+  setInterval(notifyShellDirty, 500);
+
   // WKWebView 没有实现 WKUIDelegate 的 confirm 面板，window.confirm 会静默返回
   // false；离开确认改用页内确认层，不依赖浏览器原生对话框。
   let confirmDialogOpen = false;
@@ -438,7 +457,22 @@
     return rows.filter((row) => !hidden.has(Number(row.id)));
   }
 
+  // 写请求在途计数：桌面壳退出确认要把「提交进行中」也算作未保存。
+  let pendingWrites = 0;
+
   async function api(method, path, body) {
+    if (method === "GET" || method === "HEAD") {
+      return apiRequest(method, path, body);
+    }
+    pendingWrites += 1;
+    try {
+      return await apiRequest(method, path, body);
+    } finally {
+      pendingWrites -= 1;
+    }
+  }
+
+  async function apiRequest(method, path, body) {
     const options = { method, credentials: "include", headers: {} };
     if (EDITION_CAPS) {
       options.headers["X-API-Version"] = String(EDITION_CAPS.api_version);

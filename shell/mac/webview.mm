@@ -7,12 +7,54 @@
 #include "updater.h"
 #include "webview.h"
 
+// 退出确认：桌面壳只在「有未保存内容」或「提交在途」时拦截，见下方实现。
+static BOOL XiaotuConfirmExitIfDirty(void);
+
 @interface XiaotuAppDelegate : NSObject <NSApplicationDelegate>
 @end
 
 @implementation XiaotuAppDelegate
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
   return YES;
+}
+
+// Cmd+Q 与窗口关闭是两条独立路径，必须都走同一个判断，只拦一条等于没拦。
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication*)sender {
+  return XiaotuConfirmExitIfDirty() ? NSTerminateNow : NSTerminateCancel;
+}
+@end
+
+// 前端通过 xiaotuState 推送「是否有未保存内容 / 提交是否在途」。
+// windowShouldClose 与 applicationShouldTerminate 都必须同步返回，不能在这里等
+// evaluateJavaScript 完成（那会死锁在主线程），所以只读前端最近一次推来的值。
+static BOOL g_xiaotuDirty = NO;
+
+// 有未保存内容才拦：平时点红叉或 Cmd+Q 直接退出，不弹无谓的确认。
+// 按钮顺序固定为「取消 / 退出」：先加的是默认按钮，回车即取消。
+static BOOL XiaotuConfirmExitIfDirty(void) {
+  if (!g_xiaotuDirty) {
+    return YES;
+  }
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.alertStyle = NSAlertStyleWarning;
+  alert.messageText = @"还有未保存的内容";
+  alert.informativeText = @"现在退出会丢失当前录入或尚未提交的修改。";
+  [alert addButtonWithTitle:@"取消"];
+  [alert addButtonWithTitle:@"退出"];
+  const BOOL quit = [alert runModal] == NSAlertSecondButtonReturn;
+  if (quit) {
+    // 已在退出路径上确认过：清标记，避免随后 applicationShouldTerminate 再弹一次。
+    g_xiaotuDirty = NO;
+  }
+  return quit;
+}
+
+@interface XiaotuWindowDelegate : NSObject <NSWindowDelegate>
+@end
+
+@implementation XiaotuWindowDelegate
+- (BOOL)windowShouldClose:(NSWindow*)sender {
+  return XiaotuConfirmExitIfDirty();
 }
 @end
 
@@ -119,6 +161,11 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
             ? body[@"paper"]
             : nil;
     [self savePdfWithFilename:filename paper:paper];
+    return;
+  }
+  if ([message.name isEqualToString:@"xiaotuState"]) {
+    NSDictionary* body = [message.body isKindOfClass:[NSDictionary class]] ? message.body : nil;
+    g_xiaotuDirty = [body[@"dirty"] boolValue];
     return;
   }
   if ([message.name hasPrefix:@"xiaotuUpdate"]) {
@@ -397,9 +444,16 @@ int run_webview(const std::string& url, const std::string& title) {
                       defer:NO];
     [window setTitle:app_name];
     [window setMinSize:NSMakeSize(960, 600)];
+    // NSWindow.delegate 是 weak，必须自己持有；窗口关闭前由它决定放行还是弹确认。
+    static XiaotuWindowDelegate* g_windowDelegate = nil;
+    if (g_windowDelegate == nil) {
+      g_windowDelegate = [[XiaotuWindowDelegate alloc] init];
+    }
+    [window setDelegate:g_windowDelegate];
 
     WKWebViewConfiguration* configuration = [[WKWebViewConfiguration alloc] init];
     WKUserContentController* controller = [[WKUserContentController alloc] init];
+    [controller addScriptMessageHandler:script_handler name:@"xiaotuState"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuExport"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuPrint"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuPrintPdf"];
