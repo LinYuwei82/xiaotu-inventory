@@ -2,6 +2,7 @@
 
 #include <sqlite3.h>
 
+#include <exception>
 #include <string>
 #include <vector>
 
@@ -55,80 +56,115 @@ std::int64_t find_partner_for_archive(sqlite3* conn, PartnerSide side,
 
 std::int64_t ensure_partner_for_archive(sqlite3* conn, PartnerSide side,
                                         std::int64_t archive_id) {
-  const std::int64_t existing = find_partner_for_archive(conn, side, archive_id);
-  if (existing > 0 || archive_id <= 0) return existing;
+  if (archive_id <= 0) return 0;
 
   if (side == PartnerSide::Customer) {
-    Stmt src(conn,
-             "SELECT code, name, contact, phone, address, tax_no, credit_limit_cents,"
-             " status, is_deleted, created_at, created_by, updated_at, updated_by"
-             " FROM customer WHERE id = ?;");
-    src.bind(1, archive_id);
-    if (!src.step()) return 0;
-    const std::string code =
-        unique_partner_code(conn, src.text(0), "-C" + std::to_string(archive_id));
-    Stmt insert(conn,
-                "INSERT INTO partner (id, code, name, contact, phone, address, tax_no,"
-                " is_customer, is_supplier, credit_limit_cents, credit_days, merged_into,"
-                " status, is_deleted, created_at, created_by, updated_at, updated_by)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, 0, 0, ?, ?, ?, ?, ?, ?);");
-    insert.bind(1, archive_id)
-        .bind(2, code)
-        .bind(3, src.text(1))
-        .bind(4, src.text(2))
-        .bind(5, src.text(3))
-        .bind(6, src.text(4))
-        .bind(7, src.text(5))
-        .bind(8, src.i64(6))
-        .bind(9, src.i64(7))
-        .bind(10, src.i64(8))
-        .bind(11, src.text(9))
-        .bind(12, src.text(10))
-        .bind(13, src.text(11))
-        .bind(14, src.text(12))
-        .run();
-    return archive_id;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      const std::int64_t existing = find_partner_for_archive(conn, side, archive_id);
+      if (existing > 0) return existing;
+      Stmt src(conn,
+               "SELECT code, name, contact, phone, address, tax_no, credit_limit_cents,"
+               " status, is_deleted, created_at, created_by, updated_at, updated_by"
+               " FROM customer WHERE id = ?;");
+      src.bind(1, archive_id);
+      if (!src.step()) return 0;
+      const std::string code =
+          unique_partner_code(conn, src.text(0), "-C" + std::to_string(archive_id));
+      try {
+        Stmt insert(conn,
+                    "INSERT INTO partner (id, code, name, contact, phone, address, tax_no,"
+                    " is_customer, is_supplier, credit_limit_cents, credit_days, merged_into,"
+                    " status, is_deleted, origin, created_at, created_by, updated_at, updated_by)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, 0, 0, ?, ?, 'AUTO_ARCHIVE',"
+                    " ?, ?, ?, ?);");
+        insert.bind(1, archive_id)
+            .bind(2, code)
+            .bind(3, src.text(1))
+            .bind(4, src.text(2))
+            .bind(5, src.text(3))
+            .bind(6, src.text(4))
+            .bind(7, src.text(5))
+            .bind(8, src.i64(6))
+            .bind(9, src.i64(7))
+            .bind(10, src.i64(8))
+            .bind(11, src.text(9))
+            .bind(12, src.text(10))
+            .bind(13, src.text(11))
+            .bind(14, src.text(12))
+            .run();
+        return archive_id;
+      } catch (const std::exception&) {
+        // 并发补建同一客户：回环重查，已被写入就直接复用。
+      }
+    }
+    return 0;
   }
 
-  Stmt src(conn,
-           "SELECT code, name, contact, phone, address, tax_no, status, is_deleted,"
-           " created_at, created_by, updated_at, updated_by"
-           " FROM supplier WHERE id = ?;");
-  src.bind(1, archive_id);
-  if (!src.step()) return 0;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    const std::int64_t existing = find_partner_for_archive(conn, side, archive_id);
+    if (existing > 0) return existing;
+    Stmt src(conn,
+             "SELECT code, name, contact, phone, address, tax_no, status, is_deleted,"
+             " created_at, created_by, updated_at, updated_by"
+             " FROM supplier WHERE id = ?;");
+    src.bind(1, archive_id);
+    if (!src.step()) return 0;
 
-  Stmt next(conn, "SELECT COALESCE(MAX(id), 0) + 1 FROM partner;");
-  if (!next.step()) return 0;
-  const std::int64_t partner_id = next.i64(0);
-  const std::string legacy_code = src.text(0);
-  const std::string code =
-      unique_partner_code(conn, legacy_code, "-S" + std::to_string(archive_id));
+    Stmt next(conn, "SELECT COALESCE(MAX(id), 0) + 1 FROM partner;");
+    if (!next.step()) return 0;
+    const std::int64_t partner_id = next.i64(0);
+    const std::string legacy_code = src.text(0);
+    const std::string code =
+        unique_partner_code(conn, legacy_code, "-S" + std::to_string(archive_id));
 
-  Stmt insert(conn,
-              "INSERT INTO partner (id, code, name, contact, phone, address, tax_no,"
-              " is_customer, is_supplier, credit_limit_cents, credit_days, merged_into,"
-              " status, is_deleted, created_at, created_by, updated_at, updated_by)"
-              " VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, 0, ?, ?, ?, ?, ?, ?);");
-  insert.bind(1, partner_id)
-      .bind(2, code)
-      .bind(3, src.text(1))
-      .bind(4, src.text(2))
-      .bind(5, src.text(3))
-      .bind(6, src.text(4))
-      .bind(7, src.text(5))
-      .bind(8, src.i64(6))
-      .bind(9, src.i64(7))
-      .bind(10, src.text(8))
-      .bind(11, src.text(9))
-      .bind(12, src.text(10))
-      .bind(13, src.text(11))
-      .run();
+    try {
+      Stmt insert(conn,
+                  "INSERT INTO partner (id, code, name, contact, phone, address, tax_no,"
+                  " is_customer, is_supplier, credit_limit_cents, credit_days, merged_into,"
+                  " status, is_deleted, origin, created_at, created_by, updated_at, updated_by)"
+                  " VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, 0, ?, ?, 'AUTO_ARCHIVE',"
+                  " ?, ?, ?, ?);");
+      insert.bind(1, partner_id)
+          .bind(2, code)
+          .bind(3, src.text(1))
+          .bind(4, src.text(2))
+          .bind(5, src.text(3))
+          .bind(6, src.text(4))
+          .bind(7, src.text(5))
+          .bind(8, src.i64(6))
+          .bind(9, src.i64(7))
+          .bind(10, src.text(8))
+          .bind(11, src.text(9))
+          .bind(12, src.text(10))
+          .bind(13, src.text(11))
+          .run();
+    } catch (const std::exception&) {
+      // id 或编码被并发占用：回环重新取号。
+      continue;
+    }
 
-  Stmt map(conn,
-           "INSERT INTO partner_legacy_map (side, legacy_id, partner_id, legacy_code,"
-           " partner_code, created_at) VALUES ('supplier', ?, ?, ?, ?, datetime('now', 'localtime'));");
-  map.bind(1, archive_id).bind(2, partner_id).bind(3, legacy_code).bind(4, code).run();
-  return partner_id;
+    // 映射是幂等的：同一 legacy id 已被并发写入时保留先写入者，直接复用其 partner。
+    Stmt map(conn,
+             "INSERT OR IGNORE INTO partner_legacy_map (side, legacy_id, partner_id,"
+             " legacy_code, partner_code, created_at)"
+             " VALUES ('supplier', ?, ?, ?, ?, datetime('now', 'localtime'));");
+    map.bind(1, archive_id).bind(2, partner_id).bind(3, legacy_code).bind(4, code).run();
+    Stmt owner(conn,
+               "SELECT partner_id FROM partner_legacy_map"
+               " WHERE side = 'supplier' AND legacy_id = ?;");
+    owner.bind(1, archive_id);
+    if (!owner.step()) continue;
+    const std::int64_t winner = owner.i64(0);
+    if (winner != partner_id) {
+      // 这次插入的 partner 没抢到映射，也没有其他引用，清掉避免留下孤儿档案。
+      Stmt cleanup(conn,
+                   "DELETE FROM partner WHERE id = ? AND NOT EXISTS("
+                   " SELECT 1 FROM partner_legacy_map WHERE partner_id = ?);");
+      cleanup.bind(1, partner_id).bind(2, partner_id).run();
+    }
+    return winner;
+  }
+  return 0;
 }
 
 std::string partner_key_for_archive(sqlite3* conn, PartnerSide side, std::int64_t archive_id,

@@ -175,6 +175,12 @@ std::string csv_escape(std::string_view value) {
   return out;
 }
 
+std::string origin_label(std::string_view origin) {
+  if (origin == "AUTO_ARCHIVE") return "自动补建";
+  if (origin == "MANUAL") return "手工/合并";
+  return origin.empty() ? "—" : std::string(origin);
+}
+
 std::string row_label(const PartnerPreviewRow& row) {
   std::ostringstream out;
   out << preview_side_label(row.side) << " " << (row.code.empty() ? "（无编号）" : row.code) << " "
@@ -182,7 +188,8 @@ std::string row_label(const PartnerPreviewRow& row) {
       << (row.phone.empty() ? "—" : row.phone) << " | 应收 " << format_cents(row.ar_open_cents)
       << " | 应付 " << format_cents(row.ap_open_cents) << " | 单据 " << row.ar_docs << "/"
       << row.ap_docs << " | 期初 " << row.opening_rows << " | 键 "
-      << (row.partner_key.empty() ? "—" : row.partner_key);
+      << (row.partner_key.empty() ? "—" : row.partner_key) << " | 来源 "
+      << origin_label(row.origin);
   return out.str();
 }
 
@@ -219,6 +226,7 @@ PartnerPreviewReport partner_merge_preview(const Db& db) {
   PartnerPreviewReport report;
   std::vector<ArchiveRow> archives;
   std::map<std::string, LedgerAgg> ledger;
+  std::map<std::string, std::string> origin_by_key;
 
   db.read([&](sqlite3* conn) {
     {
@@ -274,7 +282,24 @@ PartnerPreviewReport partner_merge_preview(const Db& db) {
       agg.opening_rows = stmt.i64(6);
       ledger[agg.key] = agg;
     }
+    // 来源标记：档案键与 P: 键都映射到 partner.origin，供归并时区分业务补建与手工记录。
+    Stmt origin_stmt(conn,
+                     "SELECT 'C:' || c.id, COALESCE(p.origin, '')"
+                     " FROM customer c LEFT JOIN partner p ON p.id = c.id"
+                     " UNION ALL"
+                     " SELECT 'S:' || m.legacy_id, COALESCE(p.origin, '')"
+                     " FROM partner_legacy_map m JOIN partner p ON p.id = m.partner_id"
+                     " UNION ALL"
+                     " SELECT 'P:' || p.id, p.origin FROM partner p;");
+    while (origin_stmt.step()) {
+      origin_by_key[origin_stmt.text(0)] = origin_stmt.text(1);
+    }
   });
+
+  for (auto& archive : archives) {
+    const auto found = origin_by_key.find(archive.row.partner_key);
+    if (found != origin_by_key.end()) archive.row.origin = found->second;
+  }
 
   report.customer_total = static_cast<std::int64_t>(std::count_if(
       archives.begin(), archives.end(),
@@ -351,6 +376,8 @@ PartnerPreviewReport partner_merge_preview(const Db& db) {
     row.side = side_of_key(key);
     row.name = agg.name;
     row.partner_key = key;
+    const auto origin = origin_by_key.find(key);
+    if (origin != origin_by_key.end()) row.origin = origin->second;
     row.ar_open_cents = agg.ar_open;
     row.ap_open_cents = agg.ap_open;
     row.ar_docs = agg.ar_docs;
@@ -413,6 +440,8 @@ PartnerPreviewReport partner_merge_preview(const Db& db) {
         row.side = side_of_key(agg->key);
         row.name = agg->name;
         row.partner_key = agg->key;
+        const auto origin = origin_by_key.find(agg->key);
+        if (origin != origin_by_key.end()) row.origin = origin->second;
         row.ar_open_cents = agg->ar_open;
         row.ap_open_cents = agg->ap_open;
         row.ar_docs = agg->ar_docs;
@@ -488,7 +517,8 @@ std::string partner_preview_json(const PartnerPreviewReport& report) {
           << "\",\"ar_open_cents\":" << row.ar_open_cents << ",\"ap_open_cents\":"
           << row.ap_open_cents << ",\"ar_docs\":" << row.ar_docs << ",\"ap_docs\":"
           << row.ap_docs << ",\"opening_rows\":" << row.opening_rows << ",\"partner_key\":\""
-          << json_escape(row.partner_key) << "\"}";
+          << json_escape(row.partner_key) << "\",\"origin\":\"" << json_escape(row.origin)
+          << "\"}";
     }
     out << "]}";
   }
@@ -505,7 +535,8 @@ std::string partner_preview_json(const PartnerPreviewReport& report) {
       out << "{\"partner_key\":\"" << json_escape(row.partner_key) << "\",\"side\":\""
           << preview_side_label(row.side) << "\",\"ar_open_cents\":" << row.ar_open_cents
           << ",\"ap_open_cents\":" << row.ap_open_cents << ",\"ar_docs\":" << row.ar_docs
-          << ",\"ap_docs\":" << row.ap_docs << ",\"opening_rows\":" << row.opening_rows << "}";
+          << ",\"ap_docs\":" << row.ap_docs << ",\"opening_rows\":" << row.opening_rows
+          << ",\"origin\":\"" << json_escape(row.origin) << "\"}";
     }
     out << "]}";
   }
@@ -516,7 +547,7 @@ std::string partner_preview_json(const PartnerPreviewReport& report) {
 std::string partner_preview_csv(const PartnerPreviewReport& report) {
   std::ostringstream out;
   out << "section,match,side,code,name,tax_no,phone,ar_open,ap_open,ar_docs,ap_docs,opening_rows,"
-         "partner_key\n";
+         "partner_key,origin\n";
   for (const auto& group : report.groups) {
     for (const auto& row : group.rows) {
       out << "group," << csv_escape(preview_match_label(group.match)) << ","
@@ -524,7 +555,8 @@ std::string partner_preview_csv(const PartnerPreviewReport& report) {
           << csv_escape(row.name) << "," << csv_escape(row.tax_no) << ","
           << csv_escape(row.phone) << "," << format_cents(row.ar_open_cents) << ","
           << format_cents(row.ap_open_cents) << "," << row.ar_docs << "," << row.ap_docs << ","
-          << row.opening_rows << "," << csv_escape(row.partner_key) << "\n";
+          << row.opening_rows << "," << csv_escape(row.partner_key) << ","
+          << csv_escape(row.origin) << "\n";
     }
   }
   for (const auto& unit : report.multi_key_units) {
@@ -534,7 +566,7 @@ std::string partner_preview_csv(const PartnerPreviewReport& report) {
           << csv_escape(row.tax_no) << "," << csv_escape(row.phone) << ","
           << format_cents(row.ar_open_cents) << "," << format_cents(row.ap_open_cents) << ","
           << row.ar_docs << "," << row.ap_docs << "," << row.opening_rows << ","
-          << csv_escape(row.partner_key) << "\n";
+          << csv_escape(row.partner_key) << "," << csv_escape(row.origin) << "\n";
     }
   }
   return out.str();

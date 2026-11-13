@@ -27,6 +27,7 @@ struct PartnerPreviewRow {
   std::int64_t ap_docs = 0;         // 应付单据数（doc_id > 0）
   std::int64_t opening_rows = 0;    // 期初记录条数（doc_id = 0）
   std::string partner_key;          // C:x / S:y / T:名称 / P:id
+  std::string origin;               // AUTO_ARCHIVE（业务顺手补建）/ MANUAL（历史、手工或合并）
 };
 
 struct PartnerPreviewGroup {

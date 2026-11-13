@@ -83,7 +83,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 28, "迁移后 schema 版本应为 28");
+      check(db.schema_version() == 29, "迁移后 schema 版本应为 29");
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
       db.read([&](sqlite3* conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
@@ -676,6 +676,40 @@ int main() {
               "采购应付键应写作 P:{partner_id}");
       });
 
+      // 同一新供应商被第二张单据引用：只复用同一条 partner 与映射，审核不失败。
+      xiaotu::DocInput supplier_doc2;
+      supplier_doc2.doc_type = "PUR_IN";
+      supplier_doc2.warehouse_id = warehouse_list.at(0).id;
+      supplier_doc2.doc_date = kToday;
+      supplier_doc2.partner_id = supplier.id;
+      supplier_doc2.lines.push_back(
+          xiaotu::DocLineInput{.item_id = supplier_item.id, .qty = q(1), .price_cents = 500});
+      const auto supplier_doc2_created = documents.save_and_approve(supplier_doc2);
+      check(supplier_doc2_created.id > 0, "同一供应商的第二张单据应审核成功");
+      db.read([&](sqlite3* conn) {
+        xiaotu::Stmt map(conn,
+                         "SELECT COUNT(*), MIN(partner_id) FROM partner_legacy_map"
+                         " WHERE side = 'supplier' AND legacy_id = ?;");
+        map.bind(1, supplier.id);
+        check(map.step() && map.i64(0) == 1, "同一供应商只应有一条 legacy 映射");
+        const std::int64_t partner_id = map.i64(1);
+        xiaotu::Stmt origin(conn, "SELECT origin FROM partner WHERE id = ?;");
+        origin.bind(1, partner_id);
+        check(origin.step() && origin.text(0) == "AUTO_ARCHIVE",
+              "自动补建的 partner 应标记 AUTO_ARCHIVE");
+        xiaotu::Stmt keys(conn,
+                          "SELECT DISTINCT partner_key FROM ar_ap_entry"
+                          " WHERE doc_id IN (?, ?);");
+        keys.bind(1, supplier_doc_created.id).bind(2, supplier_doc2_created.id);
+        int rows = 0;
+        while (keys.step()) {
+          ++rows;
+          check(keys.text(0) == "P:" + std::to_string(partner_id),
+                "两张单据应复用同一 P: 键");
+        }
+        check(rows == 1, "两张单据的应付记录应指向同一个 partner");
+      });
+
       bool missing_supplier_rejected = false;
       try {
         xiaotu::DocInput bad;
@@ -769,6 +803,10 @@ int main() {
         key.bind(1, customer_sale_doc.id);
         check(key.step() && key.text(0) == "P:" + std::to_string(customer.id),
               "销售应收键应写作 P:{partner_id}");
+        xiaotu::Stmt origin(conn, "SELECT origin FROM partner WHERE id = ?;");
+        origin.bind(1, customer.id);
+        check(origin.step() && origin.text(0) == "AUTO_ARCHIVE",
+              "自动补建的客户 partner 应标记 AUTO_ARCHIVE");
       });
       check(documents.detail(customer_sale_doc.id).partner == "测试客户档案",
             "销售单据应取客户档案名称");
@@ -793,8 +831,10 @@ int main() {
             "销售退货应生成负数应收（红字）");
 
       const auto ap_rows = finance.entries(-1, "S:" + std::to_string(supplier.id));
-      check(ap_rows.size() == 1 && ap_rows.at(0).amount_cents == 1000,
-            "采购入库应生成应付记录");
+      std::int64_t ap_total = 0;
+      for (const auto& row : ap_rows) ap_total += row.amount_cents;
+      check(ap_rows.size() == 2 && ap_total == 1500,
+            "同一供应商两张采购入库都应生成应付记录");
 
       // 核销：部分核销、多单合并、超额/重复拒绝、撤销用反向记录。
       xiaotu::SettlementService settlements(db);
@@ -2451,7 +2491,7 @@ int main() {
               sqlite3_exec(conn,
                            "DROP TABLE partner_legacy_map;"
                            "DROP TABLE partner;"
-                           "DELETE FROM schema_migration WHERE version = 28;"
+                           "DELETE FROM schema_migration WHERE version >= 28;"
                            "PRAGMA user_version = 27;",
                            nullptr, nullptr, nullptr);
           check(rc == SQLITE_OK, "模拟库应能回退到 v27 结构");
@@ -2489,7 +2529,7 @@ int main() {
         });
 
         xiaotu::migrate(mig);
-        check(mig.schema_version() == 28, "有数据的模拟库应迁到 v28");
+        check(mig.schema_version() == 29, "有数据的模拟库应迁到 v29");
 
         mig.read([&](sqlite3* conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");
@@ -2726,6 +2766,70 @@ int main() {
           check(xiaotu::partner_key_direction(conn, both_p_key) == 1,
                 "兼买卖单位台账两边都有时默认应收，不按角色硬推");
         });
+
+        // 来源标记：历史迁移默认 MANUAL，首次引用补建 AUTO_ARCHIVE，归并预览能区分。
+        mig.read([&](sqlite3* conn) {
+          xiaotu::Stmt origins(conn, "SELECT COUNT(*) FROM partner WHERE origin <> 'MANUAL';");
+          check(origins.step() && origins.i64(0) == 0, "历史迁移记录应默认为 MANUAL");
+        });
+        const auto auto_customer = mig_customers.create(
+            xiaotu::gen::CustomerRow{.code = "SRC-A", .name = "来源标记单位"});
+        std::int64_t auto_partner = 0;
+        mig.write([&](sqlite3* conn) {
+          auto_partner = xiaotu::ensure_partner_for_archive(
+              conn, xiaotu::PartnerSide::Customer, auto_customer.id);
+          check(auto_partner == auto_customer.id, "自动补建客户应沿用档案 id");
+        });
+        mig.read([&](sqlite3* conn) {
+          xiaotu::Stmt origin(conn, "SELECT origin FROM partner WHERE id = ?;");
+          origin.bind(1, auto_partner);
+          check(origin.step() && origin.text(0) == "AUTO_ARCHIVE",
+                "首次引用补建的 partner 应标记 AUTO_ARCHIVE");
+        });
+
+        const std::int64_t manual_partner =
+            (customer_max > auto_customer.id ? customer_max : auto_customer.id) + 9000;
+        mig.write([&](sqlite3* conn) {
+          // 手工创建的 partner 不写 origin，走默认 MANUAL。
+          xiaotu::Stmt partner(conn,
+                               "INSERT INTO partner (id, code, name, contact, phone, address,"
+                               " tax_no, is_customer, is_supplier, credit_limit_cents,"
+                               " credit_days, merged_into, status, is_deleted, created_at,"
+                               " created_by, updated_at, updated_by) VALUES (?, 'SRC-M',"
+                               " '来源标记单位', '', '', '', '', 1, 0, 0, 0, 0, 1, 0,"
+                               " '2026-11-01 09:00:00', 'test', '2026-11-01 09:00:00', 'test');");
+          partner.bind(1, manual_partner);
+          partner.run();
+          xiaotu::Stmt ledger(conn,
+                              "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
+                              " partner_id, partner_name, partner_key, biz_date, due_date,"
+                              " amount_cents, settled_cents, status, created_at, created_by)"
+                              " VALUES (?, 0, '来源', 'OPENING_AR', 1, ?, '来源标记单位', ?, ?, '',"
+                              " 77, 0, 'OPEN', ?, 'test');");
+          ledger.bind(1, xiaotu::next_id())
+              .bind(2, manual_partner)
+              .bind(3, "P:" + std::to_string(manual_partner))
+              .bind(4, kToday)
+              .bind(5, kToday + " 00:00:00")
+              .run();
+        });
+        const auto origin_preview = xiaotu::partner_merge_preview(mig);
+        bool saw_auto = false, saw_manual = false;
+        for (const auto& group : origin_preview.groups) {
+          for (const auto& row : group.rows) {
+            if (row.origin == "AUTO_ARCHIVE") saw_auto = true;
+            if (row.origin == "MANUAL") saw_manual = true;
+          }
+        }
+        check(saw_auto && saw_manual, "归并预览应能区分自动补建与手工记录");
+        const std::string origin_text = xiaotu::partner_preview_text(origin_preview);
+        check(origin_text.find("自动补建") != std::string::npos &&
+                  origin_text.find("手工/合并") != std::string::npos,
+              "预览文本应显示来源标记");
+        const std::string origin_json = xiaotu::partner_preview_json(origin_preview);
+        check(origin_json.find("\"origin\":\"AUTO_ARCHIVE\"") != std::string::npos &&
+                  origin_json.find("\"origin\":\"MANUAL\"") != std::string::npos,
+              "预览 JSON 应输出来源标记");
       }
     }
   } catch (const std::exception& error) {

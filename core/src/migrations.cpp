@@ -916,6 +916,12 @@ FROM _partner_supplier_stage ORDER BY legacy_id;
 DROP TABLE _partner_supplier_stage;
 )SQL";
 
+// v29：partner 来源标记。自动补建（档案首次被单据/期初引用）写 AUTO_ARCHIVE，
+// 历史迁移、手工与后续合并产生的记录保持 MANUAL；老数据由默认值补齐，不出现空标记。
+constexpr const char* kV29 = R"SQL(
+ALTER TABLE partner ADD COLUMN origin TEXT NOT NULL DEFAULT 'MANUAL';
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -959,6 +965,7 @@ const std::vector<Migration>& all_migrations() {
       {26, "v26_doc_line_tax", kV26},
       {27, "v27_print_scale_paper", kV27},
       {28, "v28_partner_table_1to1", kV28},
+      {29, "v29_partner_origin", kV29},
   };
   return migrations;
 }

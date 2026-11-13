@@ -47,6 +47,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v26 | 单据行含税字段：`tax_rate_bp` / `price_includes_tax` / `net_cents` / `tax_cents`，历史行按 0 税回填 |
 | v27 | 打印模板纸型与缩放：`paper_kind`（`SHEET` / `CONTINUOUS`）与 `scale_mode`（`FIT_WIDTH` / `ORIGINAL`），历史模板默认单页纸、按纸宽自适应 |
 | v28 | 客户/供应商合表第一步：建 `partner`（客户/供应商双角色位、税号、信用额度、`credit_days` 占位、`merged_into`）与 `partner_legacy_map`；客户/供应商 1:1 搬入，旧表与 `C:` / `S:` / `T:` 键保持不动，不做合并 |
+| v29 | `partner.origin` 来源标记（`AUTO_ARCHIVE` = 档案首次引用时业务补建，`MANUAL` = 历史迁移、手工或合并），默认 `MANUAL` 补齐老数据 |
 
 ## 1. 环境要求
 
@@ -583,7 +584,7 @@ struct DocumentDefinition {
 - 页面「对账单」按往来单位输出期间对账单：期初 + 期间单据 − 期间核销 = 期末，逐行累计余额。
 - 接口：`GET /api/reports/statement?partner_key=C:<客户 id>&direction=1&from=YYYY-MM-DD&to=YYYY-MM-DD`；
   权限码 `finance.read`，只读、不落表、无写权限。`direction` 省略时按 key 推断：`C:` / `T:` 应收、`S:` 应付、`P:` 按 `partner` 角色位，兼买卖时以台账方向为准。
-- 往来键与归集：写入端产出 `P:{partner_id}`（新档案首次被单据或期初引用时按需补建 `partner` 与映射，不批量回填历史数据）；历史 `C:` / `S:` / `T:` 原样保留。账龄、对账单、台账筛选、收付款明细与欠款 Top N 在分组前折成 partner 维度，同一单位的历史 `C:` / `S:` 单与新 `P:` 单合成一行；`T:` 仍按名称独立。档案记录不存在或补建失败时才退回 `T:{名称}`，不会产出指向空档案的 `P:` 键。
+- 往来键与归集：写入端产出 `P:{partner_id}`（新档案首次被单据或期初引用时按需补建 `partner` 与映射，不批量回填历史数据）；历史 `C:` / `S:` / `T:` 原样保留。补建是幂等的：同一编码或同一 legacy id 已被写入时复用已有记录，重复引用同一新档案只会产生一条 partner 与一条映射，审核不会失败。补建记录带 `origin = AUTO_ARCHIVE`，历史/手工/合并记录为 `MANUAL`，归并预览的文本、JSON、CSV 都会输出来源。账龄、对账单、台账筛选、收付款明细与欠款 Top N 在分组前折成 partner 维度，同一单位的历史 `C:` / `S:` 单与新 `P:` 单合成一行；`T:` 仍按名称独立。档案记录不存在或补建失败时才退回 `T:{名称}`，不会产出指向空档案的 `P:` 键。
 - 数据来源与账龄一致：单据取 `ar_ap_entry`（作废单据不计入），核销取 `settlement`（撤销产生的负数记录计入）。
   同样受 v7 统计口径限制，响应头带 `X-Xiaotu-Data-Scope`。
 - 支持 `?format=csv` / `?format=xlsx` 导出（带 BOM 的 UTF-8、金额按元两位小数）与打印视图（含单位名称、报表名、
