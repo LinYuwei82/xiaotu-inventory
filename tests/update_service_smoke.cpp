@@ -147,6 +147,18 @@ int main() {
   check(!result.decision.update_available && result.decision.code == "NOT_IN_ROLLOUT",
         "灰度未命中时不下发");
 
+  // 验签工具本身失败（非零退出）必须判为验签失败，而不是当成通过：
+  // 这一条覆盖的是「子进程启动/退出码回传」链路，与上面的签名内容无关。
+#if defined(_WIN32)
+  const auto fail_stub_path = dir / "fail-verifier.bat";
+  std::ofstream(fail_stub_path) << "@echo off\r\nexit /b 1\r\n";
+  settings.verifier_python = fail_stub_path.string();
+#else
+  settings.verifier_python = "/usr/bin/false";
+#endif
+  result = xiaotu::check_for_update(settings, query(), 0);
+  check(result.error_code == "UPDATE_SIGNATURE_INVALID", "验签工具返回非零时判为验签失败");
+
   std::filesystem::remove_all(dir);
   if (failures == 0) {
     std::cout << "update_service_smoke 全部通过" << std::endl;
