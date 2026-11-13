@@ -446,7 +446,12 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                        {"label", std::string(EditionPolicy::instance().label())}};
     body["schema_version"] = services_.db.schema_version();
     body["migrations"] = all_migrations().size();
+    // __VERSION__ 是 GCC/Clang 专有宏，MSVC 下未定义；按编译器分流给出等价信息。
+#if defined(_MSC_VER)
+    body["build"] = {{"compiler", "MSVC " + std::to_string(_MSC_FULL_VER)},
+#else
     body["build"] = {{"compiler", __VERSION__},
+#endif
                      {"date", __DATE__},
                      {"time", __TIME__},
                      {"standard", std::to_string(__cplusplus)},
