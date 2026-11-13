@@ -57,10 +57,10 @@
 | 检查 | 通过标准 |
 | --- | --- |
 | MSVC 构建 | `cmake --preset windows-release` 与构建均返回 0 |
+| 编译参数不含 /we7560 | `build/windows/build.ninja` 里搜不到 `/we7560`（根 `CMakeLists.txt` 已移除该开关） |
 | ctest | `ctest --preset windows-release` 返回 0；失败时列出失败用例名 |
 | 静态运行库 /MT | `dumpbin /dependents` 不含 `vcruntime140.dll`、`msvcp140.dll`、`ucrtbased.dll`；找不到 dumpbin 记 SKIP |
 | C7560 生效 | 临时 worktree 的 `document.cpp` 追加错序指定初始化器后编译失败，且输出含 `C7560`；随后主仓库 `document.cpp` 无改动。判定依据是「C7560 被当作错误」，**不是**「`/we7560` 被识别」：本机 MSVC 14.44 对 `/we7560` 报 `D9014`（值无效），而 C7560 默认就是 error，所以该开关是否被接受不在本项验证范围内 |
-| 编译参数不含 /we7560 | `build/windows/build.ninja` 里搜不到 `/we7560`（根 `CMakeLists.txt` 已移除该开关） |
 | 安装包签名状态 | `SIGNING.txt` 明确写「未签名」且不写「已签名」 |
 | 安装包 SHA256 | 记录 `Get-FileHash` 结果 |
 | 静默安装 | 安装器退出码 0。Inno 语义：0 成功、1 用户取消、2 致命错误；静默安装出现 1 视为 FAIL |
@@ -68,11 +68,11 @@
 | 开始菜单快捷方式 | 开始菜单递归能找到「小兔进销存」快捷方式 |
 | 桌面快捷方式 | 有壳时存在，无壳时不存在 |
 | 数据目录位置 | `-DataDir` 存在 |
-| 单机版启动与接口 | 20 秒内读到服务地址；token 换会话 200；`/api/health` 200 且 version 等于 `-ExpectedVersion`；`/api/me` 200 |
+| 单机版启动与接口 | 20 秒内读到服务地址；token 换会话 200；`/api/health` 200 且 version 等于 `-ExpectedVersion`；`/api/me` 200；且 `app.db` 落在 `-DataDir`（数据没有落到别处） |
 | 业务冒烟 | 建商品、建客户、采购入库草稿、审核、查库存余额全部 200，且余额含验收商品 |
 | 停止服务 | 杀进程后进程不再存在 |
 | 同版本覆盖安装 | 再跑一次安装器返回 0；`app.db` 仍存在；程序目录无 `.old` / `.tmp` 残留 |
-| 静默卸载 | 卸载器返回 0；`xiaotu-server.exe` 消失；数据目录仍存在；开始菜单快捷方式消失 |
+| 静默卸载 | 卸载器返回 0（返回 1 即用户取消，同样视为 FAIL）；`xiaotu-server.exe` 消失；数据目录仍存在；开始菜单快捷方式消失 |
 
 ## C7560 与 `/we7560`（不要再加回该开关）
 
