@@ -7482,6 +7482,10 @@
       writeNavState("xiaotu.nav.page", page.key);
       writeNavState("xiaotu.nav.group", page.group || "");
     }
+    // 切页时旧内容被整块移除，新页数据还没回来前 main 会塌到接近 0 高度，
+    // 滚动条随之消失再出现，三端都能看到一次跳动。先记住旧页高度（最多一屏），
+    // 用它给新容器兜住，等首屏渲染的 promise 落地后再撤掉。
+    const holdHeight = Math.min(main.scrollHeight, main.clientHeight);
     main.querySelectorAll(":scope > *").forEach((node) => {
       if (node !== notice && node.id !== "data-warning" && node.id !== "network-warning") {
         node.remove();
@@ -7490,12 +7494,20 @@
     showNotice("");
     const container = document.createElement("section");
     container.className = "page";
+    if (holdHeight > 0) {
+      container.style.minHeight = holdHeight + "px";
+    }
     main.appendChild(container);
-    Promise.resolve(page.render(container, { crudPage, itemPage, money, escapeHtml, can })).catch(
-      (error) => {
-        showNotice(error.message, "error");
-      }
+    const rendered = Promise.resolve(
+      page.render(container, { crudPage, itemPage, money, escapeHtml, can })
     );
+    const releaseHold = () => {
+      container.style.minHeight = "";
+    };
+    rendered.then(releaseHold, releaseHold);
+    rendered.catch((error) => {
+      showNotice(error.message, "error");
+    });
   }
 
   function renderLogin(message) {
