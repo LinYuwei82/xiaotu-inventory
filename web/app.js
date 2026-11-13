@@ -24,6 +24,11 @@
   let unsavedGuard = null;
 
   function setUnsavedGuard(guard) {
+    // 切页时旧录入页已确认离开：先把当前表单补写成本地草稿，再停掉自动保存定时器。
+    if (!guard) {
+      flushActiveDraft();
+      stopDraftTimer();
+    }
     unsavedGuard = guard;
   }
 
@@ -268,6 +273,92 @@
     notice.hidden = !message;
   }
 
+  // ---------- 离线提示、统一超时与表单草稿 ----------
+
+  const API_TIMEOUT_MS = 15000;
+  const DRAFT_INTERVAL_MS = 30000;
+  const DRAFT_PREFIX = "xiaotu.draft.v1.";
+
+  // 断网提示：占正文流常驻在页面顶部，不遮挡操作；恢复联网后自动隐藏。
+  // 沿用现有 .notice.warn 配色，不额外引入颜色。
+  let networkBanner = null;
+
+  function ensureNetworkBanner() {
+    if (networkBanner && networkBanner.isConnected) return networkBanner;
+    networkBanner = document.createElement("div");
+    networkBanner.id = "network-warning";
+    networkBanner.className = "notice warn";
+    networkBanner.setAttribute("role", "status");
+    networkBanner.textContent = "网络已断开，操作可能失败";
+    networkBanner.hidden = true;
+    main.prepend(networkBanner);
+    return networkBanner;
+  }
+
+  function updateNetworkBanner() {
+    ensureNetworkBanner().hidden = navigator.onLine !== false;
+  }
+
+  window.addEventListener("online", updateNetworkBanner);
+  window.addEventListener("offline", updateNetworkBanner);
+  updateNetworkBanner();
+
+  // 当前录入页注册的「立即写草稿」回调：切页、关窗、401 跳登录前都先补一次。
+  let draftFlush = null;
+  let draftTimer = 0;
+
+  function stopDraftTimer() {
+    if (draftTimer) {
+      clearInterval(draftTimer);
+      draftTimer = 0;
+    }
+    draftFlush = null;
+  }
+
+  function flushActiveDraft() {
+    if (draftFlush) draftFlush();
+  }
+
+  function startDraftTimer(flush) {
+    stopDraftTimer();
+    draftFlush = flush;
+    draftTimer = setInterval(flush, DRAFT_INTERVAL_MS);
+  }
+
+  // 草稿只存业务字段，按单据类型分开；口令、token、CSRF 一律不进本地存储。
+  function readDraft(docType) {
+    try {
+      const raw = localStorage.getItem(DRAFT_PREFIX + docType);
+      if (!raw) return null;
+      const draft = JSON.parse(raw);
+      return draft && typeof draft === "object" && draft.form ? draft : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function writeDraft(docType, draft) {
+    try {
+      localStorage.setItem(DRAFT_PREFIX + docType, JSON.stringify(draft));
+    } catch (error) {
+      // 本地存储不可用（隐私模式 / 配额满）时不写草稿，不阻塞录入。
+    }
+  }
+
+  function clearDraft(docType) {
+    try {
+      localStorage.removeItem(DRAFT_PREFIX + docType);
+    } catch (error) {
+      // 删不掉也不影响录入。
+    }
+  }
+
+  function networkFailureText(timedOut) {
+    return timedOut
+      ? "请求超过 " + API_TIMEOUT_MS / 1000 + " 秒未响应，请检查网络后重试"
+      : "网络连接失败，请检查网络后重试";
+  }
+
   // 前端只负责隐藏入口，真正的拦截在各路由的 guard 里。
   function can(permission) {
     return (
@@ -321,27 +412,74 @@
       options.headers["Content-Type"] = "application/json";
       options.body = JSON.stringify(body);
     }
-    const response = await fetch(API_BASE + path, options);
-    let payload = null;
-    try {
-      payload = await response.json();
-    } catch (error) {
-      payload = null;
-    }
-    if (!response.ok) {
-      const message = payload && payload.message ? payload.message : "HTTP " + response.status;
-      const error = new Error(message);
-      error.status = response.status;
-      error.code = payload && payload.code;
-      throw error;
-    }
-    if (method === "GET") {
-      const plain = path.split("?")[0];
-      if (plain === "/api/customers" || plain === "/api/suppliers") {
-        return filterMergedTraders(plain, payload);
+    // 统一 15 秒超时；超时与网络错误的自动重试原样重发同一个 options，
+    // 请求体里的 request_id 不变，幂等键复用，重试不会出第二张单。
+    for (;;) {
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), API_TIMEOUT_MS) : 0;
+      let response = null;
+      let payload = null;
+      let failure = null;
+      try {
+        response = await fetch(
+          API_BASE + path,
+          controller ? { ...options, signal: controller.signal } : options
+        );
+        try {
+          payload = await response.json();
+        } catch (error) {
+          payload = null;
+        }
+      } catch (error) {
+        failure = error;
+      } finally {
+        if (timer) clearTimeout(timer);
       }
+      if (failure) {
+        const timedOut = Boolean(failure && failure.name === "AbortError");
+        if (method === "GET") {
+          // 读请求由页面自身的刷新按钮重试，避免一次刷新并发多个重试弹层。
+          const error = new Error(networkFailureText(timedOut) + "（可点「刷新」重试）");
+          error.network = true;
+          error.timedOut = timedOut;
+          throw error;
+        }
+        const retry = await askConfirm(networkFailureText(timedOut) + "。是否重试本次提交？", {
+          okText: "重试",
+          cancelText: "取消",
+        });
+        if (retry) continue;
+        const error = new Error(timedOut ? "请求超时，已取消提交" : "网络连接失败，已取消提交");
+        error.network = true;
+        error.timedOut = timedOut;
+        throw error;
+      }
+      if (!response.ok) {
+        if (
+          response.status === 401 &&
+          state.current &&
+          path !== "/api/login" &&
+          path !== "/api/session"
+        ) {
+          // 会话过期：先把当前表单落到本地，重新登录后可接着填。
+          flushActiveDraft();
+          stopDraftTimer();
+          renderLogin("登录已过期，请重新登录");
+        }
+        const message = payload && payload.message ? payload.message : "HTTP " + response.status;
+        const error = new Error(message);
+        error.status = response.status;
+        error.code = payload && payload.code;
+        throw error;
+      }
+      if (method === "GET") {
+        const plain = path.split("?")[0];
+        if (plain === "/api/customers" || plain === "/api/suppliers") {
+          return filterMergedTraders(plain, payload);
+        }
+      }
+      return payload;
     }
-    return payload;
   }
 
   function loadScript(src) {
@@ -2060,6 +2198,8 @@
       // 提交成功/取消后作废幂等键，下一次新建重新生成。
       requestId = newRequestId();
       dirty = false;
+      // 提交成功、取消编辑都算显式结束，本地草稿一并清掉。
+      clearDraft(docType);
       mount.querySelector('[data-role="cancel-edit"]').hidden = true;
       form.querySelector('[data-role="partner"]').value = "";
       if (partnerSelect) partnerSelect.value = "";
@@ -2067,6 +2207,133 @@
       if (salesDoc) salespersonSelect.value = "0";
       dateInput.value = new Date().toISOString().slice(0, 10);
       resetLines();
+    }
+
+    // 长表单本地草稿：只存业务字段，按单据类型分键，每 30 秒写一次。
+    const draftEnteredAt = Date.now();
+
+    function draftFormData() {
+      const data = {
+        warehouse_id: Number(warehouseSelect.value || 0),
+        target_warehouse_id: config.twoWarehouse
+          ? Number(targetWarehouseSelect.value || 0)
+          : 0,
+        doc_date: dateInput.value,
+        partner: form.querySelector('[data-role="partner"]').value.trim(),
+        partner_id: partnerSelect && !partnerSelect.hidden ? Number(partnerSelect.value || 0) : 0,
+        biz_category: otherDoc ? bizCategorySelect.value : "",
+        salesperson_id: salesDoc ? Number(salespersonSelect.value || 0) : 0,
+        lines: [],
+      };
+      for (const row of linesTable.querySelectorAll("tbody tr")) {
+        const itemId = Number(row.querySelector('[data-role="item"]').value);
+        if (!itemId) continue;
+        if (costAdjust) {
+          data.lines.push({
+            item_id: itemId,
+            warehouse_id: Number(row.querySelector('[data-role="line-warehouse"]').value || 0),
+            adjust: row.querySelector('[data-role="adjust"]').value.trim(),
+            reason: row.querySelector('[data-role="reason"]').value.trim(),
+          });
+          continue;
+        }
+        data.lines.push({
+          item_id: itemId,
+          qty: row.querySelector('[data-role="qty"]').value.trim(),
+          price: row.querySelector('[data-role="price"]').value,
+          tax_rate: row.querySelector('[data-role="tax-rate"]').value,
+          tax_included: row.querySelector('[data-role="tax-included"]').checked,
+        });
+      }
+      return data;
+    }
+
+    function saveDraftNow() {
+      // 编辑服务端已有草稿时不写本地草稿，避免和版本校验互相干扰。
+      if (editingId || !dirty) return false;
+      writeDraft(docType, {
+        savedAt: Date.now(),
+        enteredAt: draftEnteredAt,
+        form: draftFormData(),
+      });
+      return true;
+    }
+
+    function applyDraft(draft) {
+      const data = draft.form;
+      editingId = 0;
+      editingVersion = -1;
+      // 恢复出来的是新的提交意图，重新生成幂等键。
+      requestId = newRequestId();
+      mount.querySelector('[data-role="cancel-edit"]').hidden = true;
+      if (data.warehouse_id) warehouseSelect.value = String(data.warehouse_id);
+      if (config.twoWarehouse && data.target_warehouse_id) {
+        targetWarehouseSelect.value = String(data.target_warehouse_id);
+      }
+      if (data.doc_date) dateInput.value = data.doc_date;
+      form.querySelector('[data-role="partner"]').value = data.partner || "";
+      if (partnerSelect && !partnerSelect.hidden) {
+        partnerSelect.value = data.partner_id ? String(data.partner_id) : "";
+      }
+      if (otherDoc) bizCategorySelect.value = data.biz_category || "OTHER";
+      if (salesDoc) salespersonSelect.value = String(data.salesperson_id || 0);
+      linesTable.innerHTML = costAdjust
+        ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
+        : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（录入价）</th><th>税率（%）</th><th>含税</th><th>税额（元）</th><th>价税合计（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+      for (const line of data.lines || []) {
+        addLine(
+          costAdjust
+            ? {
+                item_id: line.item_id,
+                qty: "0",
+                price_cents: 0,
+                warehouse_id: line.warehouse_id,
+                adjust_cents: Math.round(Number(line.adjust || 0) * 100),
+                adjust_reason: line.reason || "",
+              }
+            : {
+                item_id: line.item_id,
+                qty: parseQty(line.qty, true) || "0",
+                price_cents: Math.round(Number(line.price || 0) * 100),
+                tax_rate_bp: Math.round(Number(line.tax_rate || 0) * 100),
+                price_includes_tax: Boolean(line.tax_included),
+              }
+        );
+      }
+      if (!linesTable.querySelector("tbody tr")) addLine();
+      if (!costAdjust) recalcTotals();
+      dirty = true;
+    }
+
+    async function restoreDraftIfAny() {
+      const draft = readDraft(docType);
+      if (!draft) return;
+      // 只恢复「进入表单后确实改过」的草稿：写入时间晚于该草稿记录的进入时间。
+      if (!(Number(draft.savedAt) > Number(draft.enteredAt || 0))) {
+        clearDraft(docType);
+        return;
+      }
+      const when = new Date(Number(draft.savedAt));
+      const pad = (value) => String(value).padStart(2, "0");
+      const stamp =
+        pad(when.getMonth() + 1) +
+        "-" +
+        pad(when.getDate()) +
+        " " +
+        pad(when.getHours()) +
+        ":" +
+        pad(when.getMinutes());
+      const restore = await askConfirm(
+        "发现「" + config.title + "」未提交的本地草稿（保存于 " + stamp + "），是否恢复？",
+        { okText: "恢复", cancelText: "放弃" }
+      );
+      if (!restore) {
+        // 放弃即显式丢弃，清掉本地草稿。
+        clearDraft(docType);
+        return;
+      }
+      applyDraft(draft);
+      showNotice("已恢复本地草稿，可继续填写", "ok");
     }
 
     function collectLines() {
@@ -2316,6 +2583,8 @@
     });
 
     await reload();
+    startDraftTimer(saveDraftNow);
+    await restoreDraftIfAny();
   }
 
   // ---------- 订单页面（销售订单 / 采购订单共用） ----------
@@ -2348,6 +2617,9 @@
     let editingVersion = -1;
     let requestId = newRequestId();
     let convertingId = 0;
+    // 订单录入的本地草稿：只有改过表单才写，按订单类型分键。
+    let formDirty = false;
+    const draftEnteredAt = Date.now();
     let page = 1;
     const pageSize = 20;
 
@@ -2673,11 +2945,96 @@
       editingId = 0;
       editingVersion = -1;
       requestId = newRequestId();
+      formDirty = false;
+      // 确认保存成功、取消编辑都清掉本地草稿。
+      clearDraft(docType);
       mount.querySelector('[data-role="cancel-edit"]').hidden = true;
       customerSelect.value = "";
       if (salespersonSelect) salespersonSelect.value = "0";
       dateInput.value = new Date().toISOString().slice(0, 10);
       resetLines();
+    }
+
+    // 订单本地草稿：只存业务字段，按订单类型分键。
+    function draftFormData() {
+      const data = {
+        warehouse_id: Number(warehouseSelect.value || 0),
+        doc_date: dateInput.value,
+        partner_id: Number(customerSelect.value || 0),
+        salesperson_id: salespersonSelect ? Number(salespersonSelect.value || 0) : 0,
+        lines: [],
+      };
+      for (const row of linesTable.querySelectorAll("tbody tr")) {
+        const itemId = Number(row.querySelector('[data-role="item"]').value);
+        if (!itemId) continue;
+        data.lines.push({
+          item_id: itemId,
+          qty: row.querySelector('[data-role="qty"]').value.trim(),
+          price: row.querySelector('[data-role="price"]').value,
+        });
+      }
+      return data;
+    }
+
+    function saveDraftNow() {
+      if (editingId || !formDirty) return false;
+      writeDraft(docType, {
+        savedAt: Date.now(),
+        enteredAt: draftEnteredAt,
+        form: draftFormData(),
+      });
+      return true;
+    }
+
+    function applyDraft(draft) {
+      const data = draft.form;
+      editingId = 0;
+      editingVersion = -1;
+      requestId = newRequestId();
+      mount.querySelector('[data-role="cancel-edit"]').hidden = true;
+      if (data.warehouse_id) warehouseSelect.value = String(data.warehouse_id);
+      if (data.doc_date) dateInput.value = data.doc_date;
+      customerSelect.value = data.partner_id ? String(data.partner_id) : "";
+      if (salespersonSelect) salespersonSelect.value = String(data.salesperson_id || 0);
+      linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+      for (const line of data.lines || []) {
+        addLine({
+          item_id: line.item_id,
+          qty: parseQty(line.qty, true) || "0",
+          price_cents: Math.round(Number(line.price || 0) * 100),
+        });
+      }
+      if (!linesTable.querySelector("tbody tr")) addLine();
+      formDirty = true;
+    }
+
+    async function restoreDraftIfAny() {
+      const draft = readDraft(docType);
+      if (!draft) return;
+      if (!(Number(draft.savedAt) > Number(draft.enteredAt || 0))) {
+        clearDraft(docType);
+        return;
+      }
+      const when = new Date(Number(draft.savedAt));
+      const pad = (value) => String(value).padStart(2, "0");
+      const stamp =
+        pad(when.getMonth() + 1) +
+        "-" +
+        pad(when.getDate()) +
+        " " +
+        pad(when.getHours()) +
+        ":" +
+        pad(when.getMinutes());
+      const restore = await askConfirm(
+        "发现「" + config.title + "」未提交的本地草稿（保存于 " + stamp + "），是否恢复？",
+        { okText: "恢复", cancelText: "放弃" }
+      );
+      if (!restore) {
+        clearDraft(docType);
+        return;
+      }
+      applyDraft(draft);
+      showNotice("已恢复本地草稿，可继续填写", "ok");
     }
 
     function collectLines() {
@@ -2754,6 +3111,7 @@
         if (salespersonSelect) salespersonSelect.value = String(detail.salesperson_id || 0);
         linesTable.innerHTML = `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
         for (const line of detail.lines) addLine(line);
+        formDirty = false;
         mount.querySelector('[data-role="cancel-edit"]').hidden = false;
         form.scrollIntoView({ behavior: "smooth", block: "start" });
       } catch (error) {
@@ -2838,6 +3196,13 @@
 
     mount.querySelector('[data-role="add-line"]').addEventListener("click", () => addLine());
     mount.querySelector('[data-role="refresh"]').addEventListener("click", () => reload());
+    // 订单表单只有改过才写本地草稿。
+    form.addEventListener("input", () => {
+      formDirty = true;
+    });
+    form.addEventListener("change", () => {
+      formDirty = true;
+    });
     mount.querySelector('[data-role="cancel-edit"]').addEventListener("click", resetForm);
     mount.querySelector('[data-role="save-draft"]').addEventListener("click", () => save(true));
     mount.querySelector('[data-role="submit"]').addEventListener("click", () => save(false));
@@ -2924,6 +3289,8 @@
     });
 
     await reload();
+    startDraftTimer(saveDraftNow);
+    await restoreDraftIfAny();
   }
 
   // ---------- 库存页面 ----------
@@ -6527,7 +6894,9 @@
       writeNavState("xiaotu.nav.group", page.group || "");
     }
     main.querySelectorAll(":scope > *").forEach((node) => {
-      if (node !== notice && node.id !== "data-warning") node.remove();
+      if (node !== notice && node.id !== "data-warning" && node.id !== "network-warning") {
+        node.remove();
+      }
     });
     showNotice("");
     const container = document.createElement("section");
@@ -6541,21 +6910,30 @@
   }
 
   function renderLogin(message) {
+    state.current = null;
     nav.innerHTML = "";
     document.getElementById("mode-label").textContent = "请登录";
     document.getElementById("health").textContent = "";
     notice.hidden = true;
-    main.innerHTML = `
-      <div class="login-card">
+    // 保留 #notice 与两条顶部提示，避免重新登录后 showNotice 写到已脱离文档的节点上。
+    main.querySelectorAll(":scope > *").forEach((node) => {
+      if (node !== notice && node.id !== "data-warning" && node.id !== "network-warning") {
+        node.remove();
+      }
+    });
+    const card = document.createElement("div");
+    card.className = "login-card";
+    card.innerHTML = `
         <h2>登录 小兔进销存</h2>
         <p class="hint">${escapeHtml(message || "请输入用户名与口令")}</p>
         <form data-role="login-form">
           <label>用户名<input name="username" autocomplete="username" required /></label>
           <label>口令<input name="password" type="password" autocomplete="current-password" required /></label>
           <button class="btn" type="submit">登录</button>
-        </form>
-      </div>`;
-    const form = main.querySelector("form");
+        </form>`;
+    main.appendChild(card);
+    updateNetworkBanner();
+    const form = card.querySelector("form");
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       try {
@@ -6658,6 +7036,7 @@
   // 关闭窗口或刷新时的浏览器原生提示。只对 --server 的普通浏览器有效；
   // 单机版 WKWebView 不执行 beforeunload，关窗不会弹确认，需在文档中注明。
   window.addEventListener("beforeunload", (event) => {
+    flushActiveDraft();
     if (!hasUnsaved()) return;
     event.preventDefault();
     event.returnValue = "";
