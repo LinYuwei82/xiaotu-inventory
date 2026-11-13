@@ -245,7 +245,10 @@
   const QTY_SCALE = 10000n;
 
   // 定点整数（×10000）→ 十进制文本，去掉末尾 0；全程 BigInt，不做浮点换算。
+  // 服务端返回的 qty 已是十进制字符串（如 "20"、"1.25"）；本地计算出的
+  // 定点整数（×10000）才走下面的换算。两种来源不能混着除。
   function qtyText(value) {
+    if (typeof value === "string") return value;
     if (value === null || value === undefined || value === "") return "";
     let scaled;
     try {
@@ -2475,7 +2478,7 @@
         const rateBp = Math.round(Number(row.querySelector('[data-role="tax-rate"]').value || 0) * 100);
         const includesTax = row.querySelector('[data-role="tax-included"]').checked;
         const lineTax = taxForAmount(lineAmount, rateBp, includesTax).tax;
-        qty += qtyScaled;
+        qty += Number(qtyScaled);
         amount += lineAmount;
         tax += lineTax;
         withTax += includesTax ? lineAmount : lineAmount + lineTax;
@@ -3456,17 +3459,17 @@
           <thead><tr><th>商品</th><th>订单数量</th><th>已下推</th><th>剩余</th><th>本次数量</th><th>单价（元）</th></tr></thead>
           <tbody>${detail.lines
             .map((line) => {
-              const remaining = BigInt(line.qty) - BigInt(line.converted_qty);
+              const remaining = Number(line.remaining_qty);
               return `<tr data-line-id="${line.id}" data-price-cents="${line.price_cents}">
                 <td>${escapeHtml(itemLabelById(line.item_id))}</td>
                 <td>${qtyText(line.qty)}</td>
                 <td>${qtyText(line.converted_qty)}</td>
-                <td>${qtyText(remaining)}</td>
+                <td>${qtyText(line.remaining_qty)}</td>
                 <td><input type="text" inputmode="decimal"
-                  value="${qtyText(remaining)}" data-role="convert-qty" ${remaining <= 0n ? "disabled" : ""} /></td>
+                  value="${qtyText(line.remaining_qty)}" data-role="convert-qty" ${remaining <= 0 ? "disabled" : ""} /></td>
                 <td><input type="number" min="0" step="0.01"
                   value="${(line.price_cents / 100).toFixed(2)}" data-role="convert-price" ${
-                    remaining <= 0n ? "disabled" : ""
+                    remaining <= 0 ? "disabled" : ""
                   } /></td>
               </tr>`;
             })
