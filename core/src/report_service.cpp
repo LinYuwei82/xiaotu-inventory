@@ -16,23 +16,7 @@ namespace {
 
 // 往来档案名称：优先按 partner_key 前缀查档案，查不到再回落到台账上的名称快照。
 std::string archive_name(sqlite3* conn, const std::string& partner_key) {
-  const char* table = nullptr;
-  if (partner_key.rfind("C:", 0) == 0) {
-    table = "customer";
-  } else if (partner_key.rfind("S:", 0) == 0) {
-    table = "supplier";
-  }
-  if (table != nullptr && partner_key.size() > 2) {
-    const std::string id = partner_key.substr(2);
-    const bool numeric =
-        !id.empty() && std::all_of(id.begin(), id.end(), [](char ch) { return ch >= '0' && ch <= '9'; });
-    if (numeric) {
-      Stmt stmt(conn, std::string("SELECT name FROM ") + table + " WHERE id = ?;");
-      stmt.bind(1, std::stoll(id));
-      if (stmt.step()) return stmt.text(0);
-    }
-  }
-  return {};
+  return partner_key_name(conn, partner_key);
 }
 
 std::string ledger_name(sqlite3* conn, const std::string& partner_key) {
@@ -128,6 +112,63 @@ std::int64_t avg_price_cents(std::int64_t qty, std::int64_t amount_cents) {
 }
 
 }  // namespace
+
+namespace {
+
+// 键里的 id 必须是纯数字，避免把畸形键拼进 stoll 或 SQL 参数。
+bool numeric_id(std::string_view text) {
+  if (text.empty()) return false;
+  return std::all_of(text.begin(), text.end(),
+                     [](char ch) { return ch >= '0' && ch <= '9'; });
+}
+
+}  // namespace
+
+std::string partner_key_name(sqlite3* conn, std::string_view partner_key) {
+  const std::string key(partner_key);
+  const char* table = nullptr;
+  if (key.rfind("C:", 0) == 0) {
+    table = "customer";
+  } else if (key.rfind("S:", 0) == 0) {
+    table = "supplier";
+  } else if (key.rfind("P:", 0) == 0) {
+    table = "partner";
+  }
+  if (table == nullptr || !numeric_id(key.substr(2))) {
+    return {};
+  }
+  Stmt stmt(conn, std::string("SELECT name FROM ") + table + " WHERE id = ?;");
+  stmt.bind(1, std::stoll(key.substr(2)));
+  return stmt.step() ? stmt.text(0) : std::string{};
+}
+
+int partner_key_direction(sqlite3* conn, std::string_view partner_key) {
+  const std::string key(partner_key);
+  if (key.rfind("S:", 0) == 0) return -1;
+  if (key.rfind("C:", 0) == 0 || key.rfind("T:", 0) == 0) return 1;
+  if (key.rfind("P:", 0) == 0 && numeric_id(key.substr(2))) {
+    Stmt partner(conn, "SELECT is_customer, is_supplier FROM partner WHERE id = ?;");
+    partner.bind(1, std::stoll(key.substr(2)));
+    if (partner.step()) {
+      const bool is_customer = partner.i64(0) != 0;
+      const bool is_supplier = partner.i64(1) != 0;
+      // 单一角色可以直接定方向；兼买卖或角色全 0 时不按档案硬推。
+      if (is_customer != is_supplier) return is_supplier ? -1 : 1;
+    }
+  }
+  // 兼买卖 / 档案缺失 / 未知前缀：以台账实际方向为准，两边都有时默认应收。
+  Stmt ledger(conn,
+              "SELECT COALESCE(SUM(CASE WHEN direction = 1 THEN 1 ELSE 0 END), 0),"
+              " COALESCE(SUM(CASE WHEN direction = -1 THEN 1 ELSE 0 END), 0)"
+              " FROM ar_ap_entry WHERE partner_key = ? AND status <> 'VOIDED';");
+  ledger.bind(1, key);
+  if (ledger.step()) {
+    const std::int64_t receivable = ledger.i64(0);
+    const std::int64_t payable = ledger.i64(1);
+    if (receivable == 0 && payable > 0) return -1;
+  }
+  return 1;
+}
 
 std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& filter) const {
   std::vector<LedgerDetailRow> rows;

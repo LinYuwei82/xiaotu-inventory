@@ -1432,10 +1432,16 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      if (partner_key.empty()) {
                        throw AppError("INVALID_INPUT", "请指定往来单位");
                      }
-                     int direction = partner_key.rfind("S:", 0) == 0 ? -1 : 1;
-                     if (req.has_param("direction")) {
-                       const std::string value = req.get_param_value("direction");
-                       direction = value == "-1" || value == "AP" ? -1 : 1;
+                     // 方向：显式参数优先；未传时按伙伴角色（P:）或台账方向推断，C:/T: 应收、S: 应付。
+                     int direction = 1;
+                     const std::string direction_param =
+                         req.has_param("direction") ? req.get_param_value("direction") : "";
+                     if (!direction_param.empty()) {
+                       direction = direction_param == "-1" || direction_param == "AP" ? -1 : 1;
+                     } else {
+                       services.db.read([&](sqlite3* conn) {
+                         direction = partner_key_direction(conn, partner_key);
+                       });
                      }
                      const std::string from =
                          req.has_param("from") ? req.get_param_value("from") : "";

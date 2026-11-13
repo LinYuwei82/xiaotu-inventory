@@ -650,9 +650,16 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
   if (partner_key.empty()) {
     throw AppError("INVALID_INPUT", "请指定往来单位");
   }
-  int direction = partner_key.rfind("S:", 0) == 0 ? -1 : 1;
+  // 方向：显式参数优先；未传时按伙伴角色（P:）或台账方向推断，C:/T: 应收、S: 应付。
+  int direction = 1;
   const std::string value = param_text(req, "direction");
-  if (!value.empty()) direction = (value == "-1" || value == "AP") ? -1 : 1;
+  if (!value.empty()) {
+    direction = (value == "-1" || value == "AP") ? -1 : 1;
+  } else {
+    services.db.read([&](sqlite3* conn) {
+      direction = partner_key_direction(conn, partner_key);
+    });
+  }
   const StatementResult result =
       services.reports.partner_statement(partner_key, direction, filter.from, filter.to);
   render.subtitle = std::string("往来单位 ") + result.partner_name + "；方向 " +

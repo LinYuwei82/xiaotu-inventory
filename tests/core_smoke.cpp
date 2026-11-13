@@ -2519,6 +2519,141 @@ int main() {
           check(key.step() && key.text(0) == "C:" + std::to_string(cust_a.id),
                 "本轮不改 partner_key，C: 键应保持原样");
         });
+
+        // 解析侧兼容 P: 键：老键行为不变，P: 按角色位 / 台账方向判定。
+        const std::int64_t customer_max = cust_a.id > cust_b.id ? cust_a.id : cust_b.id;
+        const std::int64_t supplier_partner = customer_max + 1;  // 供应商甲的新 partner id
+        const std::int64_t both_partner = customer_max + 5000;
+        const std::string cust_key = "C:" + std::to_string(cust_a.id);
+        const std::string sup_key = "S:" + std::to_string(sup_a.id);
+        const std::string cust_p_key = "P:" + std::to_string(cust_a.id);
+        const std::string sup_p_key = "P:" + std::to_string(supplier_partner);
+        const std::string both_p_key = "P:" + std::to_string(both_partner);
+
+        mig.write([&](sqlite3* conn) {
+          xiaotu::Stmt both(conn,
+                            "INSERT INTO partner (id, code, name, contact, phone, address,"
+                            " tax_no, is_customer, is_supplier, credit_limit_cents, credit_days,"
+                            " merged_into, status, is_deleted, created_at, created_by,"
+                            " updated_at, updated_by) VALUES (?, 'BOTH', '兼买卖单位', '', '', '',"
+                            " '', 1, 1, 0, 0, 0, 1, 0, '2026-11-01 09:00:00', 'test',"
+                            " '2026-11-01 09:00:00', 'test');");
+          both.bind(1, both_partner);
+          both.run();
+          const auto add_entry = [&](const std::string& key, int direction,
+                                     std::int64_t amount, const std::string& name) {
+            xiaotu::Stmt stmt(conn,
+                              "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
+                              " partner_id, partner_name, partner_key, biz_date, due_date,"
+                              " amount_cents, settled_cents, status, created_at, created_by)"
+                              " VALUES (?, 0, '解析', 'OPENING_AR', ?, 0, ?, ?, ?, '', ?, 0,"
+                              " 'OPEN', ?, 'test');");
+            stmt.bind(1, xiaotu::next_id())
+                .bind(2, static_cast<std::int64_t>(direction))
+                .bind(3, name)
+                .bind(4, key)
+                .bind(5, kToday)
+                .bind(6, amount)
+                .bind(7, kToday + " 00:00:00")
+                .run();
+          };
+          add_entry(cust_key, 1, 300, "老客户应收");
+          add_entry(sup_key, -1, 200, "老供应商应付");
+          add_entry("T:老文本单位", 1, 100, "老文本单位");
+          add_entry(cust_p_key, 1, 1000, "迁移客户甲");
+          add_entry(sup_p_key, -1, 800, "迁移供应商甲");
+          add_entry(both_p_key, -1, 500, "兼买卖单位");
+        });
+
+        mig.read([&](sqlite3* conn) {
+          check(xiaotu::partner_key_direction(conn, cust_key) == 1,
+                "C: 键老数据仍判应收");
+          check(xiaotu::partner_key_direction(conn, sup_key) == -1,
+                "S: 键老数据仍判应付");
+          check(xiaotu::partner_key_direction(conn, "T:老文本单位") == 1,
+                "T: 键老数据仍判应收");
+          check(xiaotu::partner_key_direction(conn, cust_p_key) == 1,
+                "P: 客户档案应判应收");
+          check(xiaotu::partner_key_direction(conn, sup_p_key) == -1,
+                "P: 供应商档案应判应付");
+          check(xiaotu::partner_key_direction(conn, both_p_key) == -1,
+                "兼买卖单位台账只有应付时应按台账判应付");
+          check(xiaotu::partner_key_name(conn, cust_p_key) == "迁移客户甲" &&
+                    xiaotu::partner_key_name(conn, sup_p_key) == "迁移供应商甲",
+                "P: 键应能解析出 partner 名称");
+          check(xiaotu::partner_key_name(conn, "P:99999999").empty(),
+                "不存在的 partner 不应命中档案");
+        });
+
+        // 账龄：P: 键按台账方向归集，且不影响 C:/S:/T: 的旧口径。
+        xiaotu::ReportService mig_reports(mig);
+        const auto aging_all = mig_reports.ar_ap_aging(0, kToday);
+        bool aging_p_ar = false, aging_p_ap = false, aging_c_ar = false;
+        for (const auto& row : aging_all) {
+          if (row.partner_key == cust_p_key && row.direction == 1 &&
+              row.total_cents == 1000) {
+            aging_p_ar = true;
+          }
+          if (row.partner_key == sup_p_key && row.direction == -1 &&
+              row.total_cents == 800) {
+            aging_p_ap = true;
+          }
+          if (row.partner_key == cust_key && row.direction == 1 && row.total_cents == 300) {
+            aging_c_ar = true;
+          }
+        }
+        check(aging_p_ar && aging_p_ap && aging_c_ar,
+              "账龄应同时归集 P: 键与 C: 键，金额与方向正确");
+        const auto aging_ap_only = mig_reports.ar_ap_aging(-1, kToday);
+        bool ap_only_ok = !aging_ap_only.empty();
+        for (const auto& row : aging_ap_only) {
+          if (row.direction != -1) ap_only_ok = false;
+        }
+        check(ap_only_ok, "账龄按应付筛选时应只返回 direction=-1 的行");
+
+        // 对账单：P: 键应从 partner 解析名称，金额只取对应方向。
+        const auto statement = mig_reports.partner_statement(cust_p_key, 1, "", "");
+        check(statement.partner_name == "迁移客户甲",
+              "P: 对账单应从 partner 解析名称，而不是落到无档案");
+        check(statement.increase_cents == 1000,
+              "P: 对账单应收发生额应只含该键的应收记录");
+
+        // 核销：P: 键在应收/应付记录里要能解析出档案名称。
+        xiaotu::FinanceService mig_finance(mig);
+        const auto finance_p = mig_finance.entries(0, both_p_key, "");
+        check(finance_p.size() == 1 && finance_p.front().direction == -1,
+              "台账按 P: 键筛选应返回该单位的应付记录");
+
+        xiaotu::SettlementService mig_settlements(mig);
+        xiaotu::SettlementCreateInput settle_input;
+        settle_input.direction = -1;
+        settle_input.partner_key = sup_p_key;
+        settle_input.amount_cents = 100;
+        settle_input.account_id = 1;
+        settle_input.method = "CASH";
+        settle_input.operator_name = "test";
+        const auto settlement = mig_settlements.create(settle_input);
+        check(settlement.partner_name == "迁移供应商甲",
+              "核销 P: 键时应从 partner 解析往来单位名称");
+
+        // 兼买卖单位补一条应收后，方向以台账两边都有为准，默认应收。
+        mig.write([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn,
+                            "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
+                            " partner_id, partner_name, partner_key, biz_date, due_date,"
+                            " amount_cents, settled_cents, status, created_at, created_by)"
+                            " VALUES (?, 0, '解析', 'OPENING_AR', 1, 0, '兼买卖单位', ?, ?, '',"
+                            " 200, 0, 'OPEN', ?, 'test');");
+          stmt.bind(1, xiaotu::next_id())
+              .bind(2, both_p_key)
+              .bind(3, kToday)
+              .bind(4, kToday + " 00:00:00")
+              .run();
+        });
+        mig.read([&](sqlite3* conn) {
+          check(xiaotu::partner_key_direction(conn, both_p_key) == 1,
+                "兼买卖单位台账两边都有时默认应收，不按角色硬推");
+        });
       }
     }
   } catch (const std::exception& error) {

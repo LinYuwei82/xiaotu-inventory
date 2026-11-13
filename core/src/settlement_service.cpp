@@ -57,7 +57,7 @@ void ensure_account(sqlite3* conn, std::int64_t account_id) {
   }
 }
 
-// C:<id> 客户、S:<id> 供应商；T: 文本键没有档案，返回空由调用方回落到单据名称。
+// C:<id> 客户、S:<id> 供应商、P:<id> 合表档案；T: 文本键没有档案，返回空由调用方回落到单据名称。
 std::string partner_name_of(sqlite3* conn, const std::string& key) {
   try {
     if (key.rfind("C:", 0) == 0) {
@@ -67,6 +67,11 @@ std::string partner_name_of(sqlite3* conn, const std::string& key) {
     }
     if (key.rfind("S:", 0) == 0) {
       Stmt stmt(conn, "SELECT name FROM supplier WHERE id = ? AND is_deleted = 0;");
+      stmt.bind(1, std::stoll(key.substr(2)));
+      return stmt.step() ? stmt.text(0) : "";
+    }
+    if (key.rfind("P:", 0) == 0) {
+      Stmt stmt(conn, "SELECT name FROM partner WHERE id = ? AND is_deleted = 0;");
       stmt.bind(1, std::stoll(key.substr(2)));
       return stmt.step() ? stmt.text(0) : "";
     }
