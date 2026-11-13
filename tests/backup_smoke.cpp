@@ -330,6 +330,63 @@ void test_backup_validation(const std::filesystem::path& root) {
   check(audit_found, "备份失败应写审计并包含原因");
 }
 
+void test_restore_wizard_support(const std::filesystem::path& root) {
+  const int target = xiaotu::target_schema_version();
+  const std::filesystem::path data = root / "wizard-data";
+  std::filesystem::create_directories(data);
+  xiaotu::Db db(data / "app.db", 2);
+  xiaotu::migrate(db);
+  const xiaotu::BackupResult manual = xiaotu::run_manual_backup(db, data);
+
+  const xiaotu::BackupInspection inspection = xiaotu::inspect_backup(manual.path);
+  check(inspection.ok && inspection.is_app_database && inspection.integrity_ok,
+        "预检查应识别可恢复的本程序备份");
+  check(inspection.schema_version == target, "预检查返回备份 schema");
+  check(inspection.compatible && !inspection.will_migrate, "同版本备份不需要迁移");
+
+  const auto items = xiaotu::list_backups(data / "backups");
+  check(!items.empty() && items.front().file == manual.path.filename().string(),
+        "备份列表应包含刚生成的备份");
+  check(items.front().readable && items.front().schema_version == target,
+        "列表项应带 schema 与可读标记");
+  check(!items.front().modified_at.empty(), "列表项应带修改时间");
+
+  // 非 SQLite 文件：列表标记不可读，预检查返回 BACKUP_INVALID。
+  const std::filesystem::path broken = data / "backups" / "broken.db";
+  std::ofstream(broken) << "not a database";
+  check(xiaotu::inspect_backup(broken).error_code == "BACKUP_INVALID",
+        "损坏文件预检查应返回 BACKUP_INVALID");
+  bool broken_listed = false;
+  for (const auto& item : xiaotu::list_backups(data / "backups")) {
+    if (item.file == "broken.db") {
+      broken_listed = true;
+      check(!item.readable, "损坏文件应标记不可读");
+    }
+  }
+  check(broken_listed, "备份列表应包含损坏文件且不中断");
+  std::filesystem::remove(broken);
+
+  // 非本程序的 SQLite 库：预检查返回 NOT_APP_DATABASE。
+  const std::filesystem::path foreign = root / "foreign.db";
+  sqlite3* connection = nullptr;
+  check(sqlite3_open(foreign.string().c_str(), &connection) == SQLITE_OK, "创建非本程序库");
+  if (connection != nullptr) {
+    sqlite3_exec(connection, "CREATE TABLE t(x);", nullptr, nullptr, nullptr);
+    sqlite3_close(connection);
+  }
+  check(xiaotu::inspect_backup(foreign).error_code == "NOT_APP_DATABASE",
+        "非本程序库预检查应返回 NOT_APP_DATABASE");
+
+  // 恢复源损坏时必须在覆盖前失败，目标库仍可打开且版本不变。
+  const std::filesystem::path corrupt = root / "corrupt.db";
+  std::ofstream(corrupt) << "broken";
+  const std::string code =
+      error_code_of([&] { xiaotu::restore_database(corrupt, data / "app.db", "test", "单元测试"); });
+  check(code == "BACKUP_INVALID" || code == "RESTORE_FAILED", "损坏备份恢复应失败");
+  xiaotu::Db reopened(data / "app.db", 1);
+  check(reopened.schema_version() == target, "恢复失败后目标库仍可打开且版本不变");
+}
+
 void test_daily_backup(const std::filesystem::path& root) {
   const std::filesystem::path data = root / "daily-data";
   std::filesystem::create_directories(data);
@@ -384,6 +441,7 @@ int main() {
   test_backup_directory(root);
   test_schema_compatibility(root);
   test_daily_backup(root);
+  test_restore_wizard_support(root);
   test_backup_validation(root);
 
   std::filesystem::remove_all(root, ignored);

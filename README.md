@@ -304,8 +304,9 @@ WebView 会打开 `http://127.0.0.1:5173/?api=http://127.0.0.1:<port>#t=<token>`
 - 手动备份：`<程序> --data <数据目录> --backup`，输出快照路径与字节数。
 - 每日备份：`<程序> --data <数据目录> --backup-daily`，当天尚未成功备份时才执行，生成 `app-<时间>-daily.db` 并清理旧备份；保留最近 30 份日备份，每个自然月额外保留最新 1 份；manual 与 `pre-*` 备份不参与清理。
 - 备份位置：默认 `<数据目录>/backups/`，可用 `[storage] backup_dir` 单独指定：空串或未配置表示沿用默认；相对路径按数据目录解析（不受启动 cwd 影响），绝对路径原样使用。备份与库同盘仍是最脆弱的位置——同一块盘坏了，库和备份一起没；单独指定到另一块物理盘或 NAS 才有意义，且仍建议保留异地副本。备份不加密，加密也不能替代异地。
-- 恢复：`<程序> --data <数据目录> --restore <备份文件>`；先做 `PRAGMA integrity_check`，目标已存在时留一份 `pre-restore-*.db`，再覆盖并清理 `-wal` / `-shm`。恢复必须在服务停止时执行。
-- 恢复审计：成功与失败都写 `audit_log`（`action=restore`、`entity=database`），`entity_no` 为备份文件名，`detail` 记录来源（命令行）、恢复到的 schema 版本、`pre-restore-*` 安全备份文件名（成功）或失败原因（失败）。命令行没有登录用户，`actor` 固定为 `cli`，不伪造用户身份。**界面上的恢复向导尚未实现，当前只有 CLI 这一条恢复入口**。
+- 恢复：`<程序> --data <数据目录> --restore <备份文件>`；先做 `PRAGMA integrity_check`，目标已存在时留一份 `pre-restore-*.db`，再覆盖并清理 `-wal` / `-shm`。恢复必须在服务停止时执行。复制或校验失败时会用 `pre-restore-*.db` 自动回滚，不会留下半截库。
+- 恢复向导：登录后进入「系统 → 备份与恢复」，可列出备份（时间、大小、schema）并预检查（能否打开、完整性、是否本程序库、schema 兼容性），二次确认后提交。提交即进入维护态（其他写请求返回 503 `MAINTENANCE_MODE`）并优雅退出；下次启动在打开数据库之前复用 `restore_database` 完成替换，成功后写 `restore` 审计，结果在重启后的页面顶部展示。
+- 恢复审计：成功与失败都写 `audit_log`（`action=restore`、`entity=database`），`entity_no` 为备份文件名，`detail` 记录来源（命令行 / 网页向导）、恢复到的 schema 版本、`pre-restore-*` 安全备份文件名（成功）或失败原因（失败）。命令行没有登录用户，`actor` 固定为 `cli`，不伪造用户身份；网页向导的 `actor` 为发起恢复的登录用户。
 - 快照是一致性单文件，可直接复制到另一台机器后恢复。
 - 往来单位归并预览（只读）：`<程序> --data <数据目录> --partner-preview`，可选 `--partner-preview-format text|json|csv`。命令在**迁移之前**执行，只 `SELECT customer / supplier / ar_ap_entry`，不升级结构、不写业务表；按税号、名称+电话、仅名称三档列出候选合并组，并单独列出同一名称存在多个 `partner_key` 的单位。规则来源见 `docs/客户供应商合表方案.md`。
 

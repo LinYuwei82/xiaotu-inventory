@@ -18,6 +18,7 @@ add_library(xiaotu_server STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/print_routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/process_capture.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/report_routes.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/restore_wizard.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/session_store.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/setting_routes.cpp"

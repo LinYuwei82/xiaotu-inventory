@@ -72,6 +72,39 @@ void verify_backup_schema(const std::filesystem::path& backup, int expected_vers
 // 识别不到版本 → SCHEMA_UNKNOWN。旧版本允许恢复（下次启动会迁移）。
 void ensure_restore_compatible(const std::filesystem::path& backup);
 
+// 备份目录内可恢复的 .db 文件。schema_version 读不到时为 0，error 给出原因；
+// 列表本身不抛异常，单个文件损坏不影响其他项展示。
+struct BackupFileInfo {
+  std::string file;  // 文件名，不含目录
+  std::filesystem::path path;
+  std::uintmax_t bytes = 0;
+  std::string modified_at;  // 本地时间 YYYY-MM-DD HH:MM:SS
+  int schema_version = 0;
+  bool readable = false;
+  std::string error;
+};
+
+// 按修改时间倒序列出目录内的 .db 文件；目录不存在时返回空列表。
+std::vector<BackupFileInfo> list_backups(const std::filesystem::path& directory);
+
+// 恢复前检查：能否打开、完整性是否通过、是否本程序的库、schema 是否兼容。
+// 预检查只读，不修改备份与当前库。
+struct BackupInspection {
+  bool ok = false;
+  bool is_app_database = false;
+  bool integrity_ok = false;
+  int schema_version = 0;
+  int current_schema_version = 0;
+  bool compatible = false;   // schema 不高于当前程序支持的版本
+  bool will_migrate = false; // schema 低于当前版本，恢复后启动时会迁移
+  std::uintmax_t bytes = 0;
+  std::string modified_at;
+  std::string error_code;
+  std::string error_message;
+};
+
+BackupInspection inspect_backup(const std::filesystem::path& backup);
+
 struct RetentionResult {
   std::size_t kept = 0;
   std::size_t removed = 0;

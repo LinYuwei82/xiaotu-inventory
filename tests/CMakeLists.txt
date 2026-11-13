@@ -105,6 +105,11 @@ if(UNIX)
   add_test(NAME deploy_backup_test
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/deploy_backup_test.sh"
                    "${CMAKE_CURRENT_SOURCE_DIR}/../deploy/backup.sh")
+  # 恢复向导走单机模式，两个版本都适用。
+  add_test(NAME restore_wizard_test
+           COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/restore_wizard_test.sh"
+                   $<TARGET_FILE:xiaotu-server>)
+  set_tests_properties(restore_wizard_test PROPERTIES TIMEOUT 120)
   add_test(NAME backup_dir_test
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/backup_dir_test.sh"
                    $<TARGET_FILE:xiaotu-server>)

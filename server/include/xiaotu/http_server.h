@@ -89,6 +89,9 @@ class HttpServer {
   ShutdownToken shutdown_token_;
   std::atomic<bool> shutdown_started_{false};
   std::thread shutdown_thread_;
+  // 维护态：恢复向导提交后置位，其他写请求一律返回 MAINTENANCE_MODE，
+  // 避免一边恢复一边下单。进程随优雅关闭退出，下次启动前完成文件替换。
+  std::atomic<bool> maintenance_{false};
   // 更新下载任务：大安装包会超过 15 秒写超时，改为后台执行 + 轮询状态。
   std::mutex update_job_mutex_;
   std::thread update_job_thread_;

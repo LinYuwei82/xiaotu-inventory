@@ -6832,6 +6832,176 @@
     }
   }
 
+  // 备份与恢复：列出备份 → 预检查 → 二次确认。
+  // 恢复在下次启动、打开数据库之前执行，提交后程序会退出并进入维护态。
+  async function restorePage(mount) {
+    const canRestore = can("*");
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>备份与恢复</h2>
+          <p class="page-sub">从备份目录选择一份恢复；恢复前会自动生成安全备份，失败会回滚</p>
+        </div>
+      </div>
+      <div class="card" data-role="result"></div>
+      <div class="card" style="margin-top:12px">
+        <div class="page-head" style="margin-bottom:8px">
+          <div><h3 style="margin:0">备份文件</h3></div>
+          <button class="btn" type="button" data-role="reload">刷新</button>
+        </div>
+        <div data-role="list">正在读取…</div>
+      </div>
+      <div class="card" data-role="precheck" style="margin-top:12px;display:none"></div>`;
+
+    const resultCard = mount.querySelector('[data-role="result"]');
+    const listBox = mount.querySelector('[data-role="list"]');
+    const precheckCard = mount.querySelector('[data-role="precheck"]');
+
+    async function loadResult() {
+      try {
+        const data = await api("GET", "/api/restore/result");
+        const result = data.result;
+        if (!result) {
+          resultCard.innerHTML = `<p class="page-sub" style="margin:0">暂无恢复记录。</p>`;
+          return;
+        }
+        const ok = result.ok;
+        const text = ok
+          ? `上次恢复成功：${result.file}（schema v${result.schema_version}）` +
+            (result.safety_backup ? `，恢复前安全备份 ${result.safety_backup}` : "")
+          : `上次恢复失败：${result.error_message || result.error_code || "未知原因"}`;
+        resultCard.innerHTML = `
+          <p style="margin:0;color:${ok ? "inherit" : "#b42318"}">${escapeHtml(text)}</p>
+          <p class="page-sub" style="margin:4px 0 0">${escapeHtml(result.at || "")}</p>
+          ${canRestore ? '<button class="btn" type="button" data-role="clear" style="margin-top:8px">清除记录</button>' : ""}`;
+        const clear = resultCard.querySelector('[data-role="clear"]');
+        if (clear) {
+          clear.addEventListener("click", async () => {
+            try {
+              await api("POST", "/api/restore/result/clear", {});
+              await loadResult();
+              showNotice("恢复记录已清除", "ok");
+            } catch (error) {
+              showNotice(error.message, "error");
+            }
+          });
+        }
+      } catch (error) {
+        resultCard.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+      }
+    }
+
+    function renderPrecheck(inspection) {
+      precheckCard.style.display = "";
+      const rows = [
+        ["备份文件", inspection.file],
+        ["修改时间", inspection.modified_at || "—"],
+        ["大小", formatBytes(inspection.bytes)],
+        ["schema", inspection.schema_version ? `v${inspection.schema_version}` : "—"],
+        ["当前程序 schema", `v${inspection.current_schema_version}`],
+        ["完整性检查", inspection.integrity_ok ? "通过" : "未通过"],
+        ["本程序数据库", inspection.is_app_database ? "是" : "否"],
+        ["可恢复", inspection.ok ? "是" : "否"],
+      ];
+      if (inspection.will_migrate) {
+        rows.push(["恢复后", "启动时会自动迁移到当前 schema"]);
+      }
+      precheckCard.innerHTML = `
+        <h3 style="margin-top:0">预检查结果</h3>
+        <table class="table"><tbody>${rows
+          .map(
+            ([label, value]) =>
+              `<tr><th style="width: 140px">${escapeHtml(label)}</th><td>${escapeHtml(
+                value
+              )}</td></tr>`
+          )
+          .join("")}</tbody></table>
+        ${
+          inspection.ok
+            ? ""
+            : `<p class="page-sub" style="color:#b42318">${escapeHtml(
+                (inspection.error && inspection.error.message) || "该备份不可用于恢复"
+              )}</p>`
+        }
+        ${
+          inspection.ok && canRestore
+            ? '<button class="btn primary" type="button" data-role="apply" style="margin-top:12px">恢复到该备份</button>'
+            : ""
+        }`;
+      const apply = precheckCard.querySelector('[data-role="apply"]');
+      if (apply) {
+        apply.addEventListener("click", async () => {
+          const confirmed = await askConfirm(
+            `将用 ${inspection.file} 覆盖当前数据库，程序随后退出并在下次启动时完成恢复。` +
+              (inspection.will_migrate ? "该备份 schema 较旧，恢复后会自动迁移。" : "") +
+              "是否继续？",
+            { okText: "确认恢复", cancelText: "取消" }
+          );
+          if (!confirmed) return;
+          apply.disabled = true;
+          try {
+            await api("POST", "/api/restore/apply", { file: inspection.file, confirm: true });
+            showNotice("已进入维护状态，程序即将退出；重新打开后将完成恢复", "ok");
+            precheckCard.innerHTML =
+              '<p style="margin:0">恢复已安排，程序正在退出。请重新启动程序，完成后会在本页显示结果。</p>';
+          } catch (error) {
+            apply.disabled = false;
+            if (error.network) {
+              showNotice("程序可能已退出，请重新启动后在顶部查看恢复结果", "ok");
+            } else {
+              showNotice(error.message, "error");
+            }
+          }
+        });
+      }
+    }
+
+    async function loadList() {
+      listBox.textContent = "正在读取…";
+      try {
+        const data = await api("GET", "/api/restore/backups");
+        if (!data.rows.length) {
+          listBox.innerHTML = `<p class="empty">备份目录内没有可恢复的 .db 文件</p>`;
+          return;
+        }
+        listBox.innerHTML = `
+          <table class="table">
+            <thead><tr><th>文件</th><th>修改时间</th><th>大小</th><th>schema</th><th class="actions">操作</th></tr></thead>
+            <tbody>${data.rows
+              .map(
+                (row) => `<tr>
+                  <td>${escapeHtml(row.file)}</td>
+                  <td>${escapeHtml(row.modified_at || "—")}</td>
+                  <td>${formatBytes(row.bytes)}</td>
+                  <td>${row.schema_version ? "v" + row.schema_version : "—"}</td>
+                  <td class="actions"><button class="btn" type="button" data-file="${escapeHtml(
+                    row.file
+                  )}">预检查</button></td>
+                </tr>`
+              )
+              .join("")}</tbody>
+          </table>`;
+        listBox.querySelectorAll("button[data-file]").forEach((button) => {
+          button.addEventListener("click", async () => {
+            try {
+              const inspection = await api("POST", "/api/restore/precheck", {
+                file: button.dataset.file,
+              });
+              renderPrecheck(inspection);
+            } catch (error) {
+              showNotice(error.message, "error");
+            }
+          });
+        });
+      } catch (error) {
+        listBox.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+      }
+    }
+
+    mount.querySelector('[data-role="reload"]').addEventListener("click", loadList);
+    await Promise.all([loadResult(), loadList()]);
+  }
+
   async function aboutPage(mount) {
     mount.innerHTML = `
       <div class="page-head">
@@ -7203,6 +7373,13 @@
       group: "system",
       permission: "setting.read",
       render: settingPage,
+    },
+    {
+      key: "restore",
+      title: "备份与恢复",
+      group: "system",
+      permission: "setting.read",
+      render: restorePage,
     },
     { key: "about", title: "关于与诊断", group: "system", render: aboutPage },
   ];
