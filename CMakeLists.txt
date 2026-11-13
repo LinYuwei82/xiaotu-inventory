@@ -28,6 +28,11 @@ endif()
 set(XIAOTU_EDITION "full" CACHE STRING "版本：full（全功能版）或 community（社区版）")
 message(STATUS "版本：${XIAOTU_EDITION}")
 
+# 构建号：单调递增，发布时由流水线显式传入；本地默认值只用于开发。
+set(XIAOTU_BUILD "2026111301" CACHE STRING "构建号（单调递增）")
+# API 版本：破坏性协议变更时 +1，并保留 N-1 一个 MINOR 周期。
+set(XIAOTU_API_VERSION "1" CACHE STRING "API 协议版本")
+
 # 单机版壳（WKWebView + .app）默认构建；Windows / 无头开发服务器时关闭，
 # 只构建 core、server 与测试，用浏览器访问 --server。
 option(XIAOTU_BUILD_SHELL "构建 macOS 单机版 WebView 壳（.app）" ON)

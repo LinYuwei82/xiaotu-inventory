@@ -1,0 +1,193 @@
+#include <iostream>
+#include <string>
+
+#include <nlohmann/json.hpp>
+
+#include "xiaotu/update.h"
+
+namespace {
+
+int failures = 0;
+
+void check(bool condition, const char* message) {
+  if (!condition) {
+    std::cerr << "FAIL: " << message << std::endl;
+    ++failures;
+  }
+}
+
+nlohmann::json base_manifest() {
+  return nlohmann::json{
+      {"manifest_version", 1},
+      {"key_id", "2026-01"},
+      {"platform", "macos"},
+      {"channel", "stable"},
+      {"version", "1.4.2"},
+      {"build", 2026111301},
+      {"min_os", "12.0"},
+      {"url", "https://cdn.example.com/releases/macos/1.4.2/xiaotu-1.4.2.dmg"},
+      {"sha256",
+       "9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c9f2c"},
+      {"size", 48234496},
+      {"published_at", "2026-11-13T08:00:00Z"},
+      {"release_notes_url", "https://example.com/releases/1.4.2"},
+      {"mandatory", false},
+      {"mandatory_reason", nullptr},
+      {"mandatory_deadline", nullptr},
+      {"schema_min", 28},
+      {"schema_max", 32},
+      {"api_min", 1},
+      {"api_max", 2},
+      {"rollout_percent", 100},
+      {"signature", "c2lnbmF0dXJl"}};
+}
+
+xiaotu::UpdateQuery query() {
+  xiaotu::UpdateQuery value;
+  value.version = "1.3.0";
+  value.build = 2026100101;
+  value.channel = "stable";
+  value.platform = "macos";
+  value.schema_version = 30;
+  value.api_version = 1;
+  value.os_version = "13.0";
+  value.install_id = "11111111-2222-3333-4444-555555555555";
+  return value;
+}
+
+}  // namespace
+
+int main() {
+  xiaotu::ProductVersion version;
+  check(xiaotu::parse_product_version("1.4.2", version), "解析 1.4.2");
+  check(version.major == 1 && version.minor == 4 && version.patch == 2, "版本分量正确");
+  check(!xiaotu::parse_product_version("1.4", version), "两位版本应拒绝");
+  check(!xiaotu::parse_product_version("1.4.2.1", version), "四位版本应拒绝");
+  check(!xiaotu::parse_product_version("v1.4.2", version), "带前缀应拒绝");
+
+  xiaotu::ProductVersion lower{1, 3, 9};
+  xiaotu::ProductVersion higher{1, 4, 0};
+  check(xiaotu::compare_product_version(lower, higher) < 0, "版本大小比较");
+  check(xiaotu::compare_product_version(higher, higher) == 0, "版本相等比较");
+
+  const auto day = xiaotu::parse_iso8601_utc("2026-11-13T00:00:00Z");
+  const auto previous = xiaotu::parse_iso8601_utc("2026-11-12T00:00:00Z");
+  check(day.has_value() && previous.has_value(), "ISO 时间解析");
+  check(day.value() - previous.value() == 86400, "ISO 时间相差一天");
+  check(!xiaotu::parse_iso8601_utc("2026-11-13 00:00:00").has_value(), "非严格 ISO 应拒绝");
+
+  check(xiaotu::compare_dotted_version("12.0", "13.1") < 0, "系统版本比较");
+  check(xiaotu::compare_dotted_version("13.0", "13.0.0") == 0, "系统版本补零比较");
+
+  auto body = base_manifest();
+  xiaotu::UpdateManifest manifest;
+  xiaotu::ManifestError error;
+  check(xiaotu::parse_manifest(body, manifest, error), "合法清单应通过");
+  check(manifest.build == 2026111301 && manifest.schema_max == 32, "清单字段解析正确");
+  check(error.code.empty(), "合法清单无错误码");
+
+  auto missing = base_manifest();
+  missing.erase("sha256");
+  check(!xiaotu::parse_manifest(missing, manifest, error) &&
+            error.code == "MANIFEST_FIELD_MISSING",
+        "缺少字段应拒绝");
+
+  auto bad_sha = base_manifest();
+  bad_sha["sha256"] = "xyz";
+  check(!xiaotu::parse_manifest(bad_sha, manifest, error) &&
+            error.code == "MANIFEST_SHA256_INVALID",
+        "非法 sha256 应拒绝");
+
+  auto insecure = base_manifest();
+  insecure["url"] = "http://cdn.example.com/a.dmg";
+  check(!xiaotu::parse_manifest(insecure, manifest, error) &&
+            error.code == "MANIFEST_URL_INSECURE",
+        "非 HTTPS 应拒绝");
+
+  auto bad_reason = base_manifest();
+  bad_reason["mandatory"] = true;
+  bad_reason["mandatory_reason"] = "WHATEVER";
+  check(!xiaotu::parse_manifest(bad_reason, manifest, error) &&
+            error.code == "MANIFEST_MANDATORY_REASON_INVALID",
+        "未知强制理由应拒绝");
+
+  auto bad_range = base_manifest();
+  bad_range["schema_min"] = 33;
+  bad_range["schema_max"] = 32;
+  check(!xiaotu::parse_manifest(bad_range, manifest, error) &&
+            error.code == "MANIFEST_SCHEMA_RANGE_INVALID",
+        "schema 范围倒置应拒绝");
+
+  xiaotu::parse_manifest(base_manifest(), manifest, error);
+  auto decision = xiaotu::evaluate_manifest(manifest, query(), 0);
+  check(decision.update_available && !decision.mandatory, "新构建应可用");
+  check(decision.code == "UPDATE_AVAILABLE", "普通更新状态码");
+
+  auto same = query();
+  same.build = manifest.build;
+  check(xiaotu::evaluate_manifest(manifest, same, 0).code == "NO_UPDATE", "同构建无更新");
+
+  auto wrong_platform = query();
+  wrong_platform.platform = "windows";
+  check(xiaotu::evaluate_manifest(manifest, wrong_platform, 0).code == "PLATFORM_MISMATCH",
+        "平台不匹配");
+
+  auto wrong_schema = query();
+  wrong_schema.schema_version = 27;
+  check(xiaotu::evaluate_manifest(manifest, wrong_schema, 0).code == "INCOMPATIBLE_SCHEMA",
+        "schema 超出范围应拒绝更新");
+
+  auto old_os = query();
+  old_os.os_version = "11.6";
+  check(xiaotu::evaluate_manifest(manifest, old_os, 0).code == "OS_UNSUPPORTED",
+        "低于最低系统版本应拒绝");
+
+  auto skipped = query();
+  skipped.skipped_version = manifest.version;
+  skipped.skip_until_epoch = 1000;
+  check(xiaotu::evaluate_manifest(manifest, skipped, 500).code == "SKIPPED",
+        "跳过期内应跳过");
+  check(xiaotu::evaluate_manifest(manifest, skipped, 1000).update_available,
+        "跳过到期后恢复提示");
+
+  auto mandatory_body = base_manifest();
+  mandatory_body["mandatory"] = true;
+  mandatory_body["mandatory_reason"] = "SECURITY";
+  xiaotu::UpdateManifest mandatory;
+  check(xiaotu::parse_manifest(mandatory_body, mandatory, error), "强制清单应通过");
+  auto mandatory_skip = query();
+  mandatory_skip.skipped_version = mandatory.version;
+  mandatory_skip.skip_until_epoch = 99999;
+  auto mandatory_decision = xiaotu::evaluate_manifest(mandatory, mandatory_skip, 0);
+  check(mandatory_decision.update_available && mandatory_decision.mandatory,
+        "强制更新不受跳过限制");
+  check(mandatory_decision.reason == "SECURITY", "强制原因保留");
+
+  const int bucket_a = xiaotu::rollout_bucket("device-a", 2026111301);
+  const int bucket_b = xiaotu::rollout_bucket("device-a", 2026111301);
+  check(bucket_a == bucket_b, "分桶稳定");
+  check(bucket_a >= 0 && bucket_a < 100, "分桶范围 0-99");
+  check(xiaotu::rollout_allows(bucket_a + 1, bucket_a), "桶号小于比例时放行");
+  check(!xiaotu::rollout_allows(bucket_a, bucket_a), "桶号等于比例时不放行");
+
+  auto staged_body = base_manifest();
+  // 找一个桶号 > 0 的 install_id，使 rollout_percent = bucket 时必然不放行。
+  int staged_bucket = 0;
+  std::string staged_id = "device-a";
+  for (int i = 0; i < 200 && staged_bucket == 0; ++i) {
+    staged_id = "device-" + std::to_string(i);
+    staged_bucket = xiaotu::rollout_bucket(staged_id, 2026111301);
+  }
+  staged_body["rollout_percent"] = staged_bucket;
+  xiaotu::UpdateManifest staged;
+  check(xiaotu::parse_manifest(staged_body, staged, error), "灰度清单应通过");
+  auto staged_query = query();
+  staged_query.install_id = staged_id;
+  check(!xiaotu::evaluate_manifest(staged, staged_query, 0).update_available,
+        "未命中灰度桶不下发");
+
+  if (failures == 0) {
+    std::cout << "update_smoke 全部通过" << std::endl;
+  }
+  return failures == 0 ? 0 : 1;
+}

@@ -57,6 +57,11 @@ target_include_directories(xiaotu_print_paper_smoke
 
 add_test(NAME print_paper_smoke COMMAND xiaotu_print_paper_smoke)
 
+add_executable(xiaotu_update_smoke "${CMAKE_CURRENT_SOURCE_DIR}/update_smoke.cpp")
+target_link_libraries(xiaotu_update_smoke PRIVATE xiaotu_core)
+
+add_test(NAME update_smoke COMMAND xiaotu_update_smoke)
+
 if(UNIX)
   add_test(NAME restore_lock_exit
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/restore_lock_exit.sh"

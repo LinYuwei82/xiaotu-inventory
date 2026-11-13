@@ -96,6 +96,7 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/setting_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/stock_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/token_hash.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/update.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/user_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/xlsx_reader.cpp"
   ${XIAOTU_GENERATED_CORE_SOURCES}
@@ -119,7 +120,10 @@ endif()
 
 # 生成的能力表按这个宏选择生效版本，见 core/include/xiaotu/gen/edition_caps.h。
 target_compile_definitions(xiaotu_core PUBLIC
-  XIAOTU_EDITION_CODE="${XIAOTU_EDITION}")
+  XIAOTU_EDITION_CODE="${XIAOTU_EDITION}"
+  XIAOTU_VERSION="${PROJECT_VERSION}"
+  XIAOTU_BUILD=${XIAOTU_BUILD}
+  XIAOTU_API_VERSION=${XIAOTU_API_VERSION})
 
 target_compile_definitions(xiaotu_core PRIVATE
   SQLITE_THREADSAFE=1
