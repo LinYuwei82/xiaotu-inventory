@@ -984,7 +984,7 @@
         return `<label class="field">
             <span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>
             <select data-field="${escapeHtml(field.key)}" ${field.required ? "required" : ""}>
-              <option value="0">（未指定）</option>
+              <option value="0">未指定</option>
               ${options
                 .filter((option) => option.status !== false)
                 .map(
@@ -1661,7 +1661,7 @@
         if (!parents.some((item) => item.id === row.parent_id) && row.parent_id !== 0) {
           parentSelect.insertAdjacentHTML(
             "beforeend",
-            `<option value="${row.parent_id}">（当前上级）</option>`
+            `<option value="${row.parent_id}">当前上级</option>`
           );
           parentSelect.value = String(row.parent_id);
         }
@@ -2207,7 +2207,7 @@
             </label>
             <label class="field" ${salesDoc ? "" : "hidden"}><span>业务员</span>
               <select data-role="salesperson">
-                <option value="0">（未指定）</option>
+                <option value="0">未指定</option>
               </select>
             </label>
           </div>
@@ -2459,7 +2459,7 @@
       items = itemList;
       if (config.partnerApi) {
         partnerSelect.innerHTML =
-          '<option value="">（不指定）</option>' +
+          '<option value="">不指定</option>' +
           partnerList
             .filter((partner) => partner.status)
             .map(
@@ -2473,7 +2473,7 @@
       if (salesDoc) {
         // 停用/离职职员仍列在历史单据里，这里保留可选项并标注，不隐藏。
         salespersonSelect.innerHTML =
-          '<option value="0">（未指定）</option>' +
+          '<option value="0">未指定</option>' +
           employeeList
             .map(
               (person) =>
@@ -2960,7 +2960,7 @@
               docType === "SAL_ORDER"
                 ? `<label class="field"><span>业务员</span>
                     <select data-role="salesperson">
-                      <option value="0">（未指定）</option>
+                      <option value="0">未指定</option>
                     </select>
                   </label>`
                 : ""
@@ -3163,7 +3163,7 @@
       warehouseSelect.innerHTML = warehouseOptions;
       convertWarehouse.innerHTML = warehouseOptions;
       customerSelect.innerHTML =
-        '<option value="">（不指定）</option>' +
+        '<option value="">不指定</option>' +
         customers
           .filter((customer) => customer.status)
           .map(
@@ -3175,7 +3175,7 @@
           .join("");
       if (salespersonSelect) {
         salespersonSelect.innerHTML =
-          '<option value="0">（未指定）</option>' +
+          '<option value="0">未指定</option>' +
           employeeList
             .map(
               (person) =>
@@ -3909,15 +3909,13 @@
       <div class="card">
         <div class="card-head">
           <h3>库存余额表</h3>
+          <select data-role="balance-warehouse"></select>
+          <select data-role="balance-item"></select>
+          <label class="checkbox"><input type="checkbox" data-role="balance-hide-zero" />隐藏零库存</label>
           <button class="btn small" data-role="export-balance">导出 CSV</button>
           <button class="btn small" data-role="excel-balance">导出 Excel</button>
           <button class="btn small" data-role="print-balance">打印</button>
           <button class="btn small" data-role="pdf-balance">导出 PDF</button>
-        </div>
-        <div class="toolbar">
-          <select data-role="balance-warehouse"></select>
-          <select data-role="balance-item"></select>
-          <label class="checkbox"><input type="checkbox" data-role="balance-hide-zero" />隐藏零库存</label>
         </div>
         <table class="table" data-role="balances"></table>
       </div>
@@ -4193,7 +4191,7 @@
       ]);
       const previous = fundAccountSelect.value;
       fundAccountSelect.innerHTML =
-        '<option value="all">全部账户（含未指定）</option>' +
+        '<option value="all">全部账户</option>' +
         accounts
           .map(
             (row) =>
@@ -4201,7 +4199,7 @@
                 row.status ? "" : "（停用）"
               }</option>`
           )
-          .join("") + '<option value="0">未指定账户（历史）</option>';
+          .join("") + '<option value="0">未指定账户</option>';
       // 页面默认「全部账户」，其余情况保留上一次选择。
       fundAccountSelect.value =
         previous && (previous === "all" || previous === "0" ||
@@ -6613,7 +6611,7 @@
           <label class="field"><span>会话绝对上限（小时）</span><input type="number" min="1" max="720" step="1" data-field="session_absolute_hours" ${writable ? "" : "disabled"} /></label>
           <label class="field"><span>库存成本口径</span>
             <select data-field="cost_basis" ${writable ? "" : "disabled"}>
-              <option value="INCLUSIVE">含税价（价税合计）</option>
+              <option value="INCLUSIVE">含税价</option>
               <option value="NET">不含税净额</option>
             </select>
             <span class="page-sub">一般纳税人可切「不含税」；小规模纳税人保持「含税」。切换只影响此后审核的单据，历史结存与毛利不重算。</span>

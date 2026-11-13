@@ -7,6 +7,12 @@
   --accent: #2563eb;
   --danger: #c0392b;
   --ok: #15803d;
+  /* 表单控件统一尺寸：按钮与下拉共用同一组值，避免各页面各写一套。 */
+  --control-height: 32px;
+  --control-radius: 6px;
+  --control-border: var(--line);
+  --control-padding-x: 10px;
+  --control-font-size: 13px;
 }
 
 * {
@@ -302,9 +308,13 @@ main {
   background: #fff;
   color: var(--text);
   padding: 6px 12px;
-  border-radius: 6px;
+  min-height: var(--control-height);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--control-radius);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--control-font-size);
 }
 
 .btn:hover {
@@ -513,13 +523,13 @@ main {
 .toolbar select,
 .print-columns input,
 .print-columns select {
-  height: 32px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0 8px;
+  height: var(--control-height);
+  border: 1px solid var(--control-border);
+  border-radius: var(--control-radius);
+  padding: 0 var(--control-padding-x);
   font-family: inherit;
-  font-size: 13px;
-  line-height: 30px;
+  font-size: var(--control-font-size);
+  line-height: calc(var(--control-height) - 2px);
   color: var(--text);
   background: #fff;
 }
@@ -548,6 +558,76 @@ main {
 .print-columns select:focus {
   outline: 2px solid #bfdbfe;
   border-color: var(--accent);
+}
+
+/* 所有屏幕上的下拉统一进设计体系：卡片头、筛选栏、设置页都走这一套。
+   关闭系统渲染后自绘箭头，WKWebView / Chrome / Edge 表现一致；
+   放在 @media screen 内，打印样式与打印结果保持原样。 */
+@media screen {
+  select {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    height: var(--control-height);
+    max-width: 100%;
+    border: 1px solid var(--control-border);
+    border-radius: var(--control-radius);
+    padding: 0 28px 0 var(--control-padding-x);
+    font-family: inherit;
+    font-size: var(--control-font-size);
+    line-height: calc(var(--control-height) - 2px);
+    color: var(--text);
+    background-color: #fff;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='none' stroke='%236b7280' stroke-width='1.5' d='M1 1l4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 9px center;
+    background-size: 10px 6px;
+    cursor: pointer;
+    text-overflow: ellipsis;
+  }
+
+  select:focus,
+  select:focus-visible {
+    outline: 2px solid #bfdbfe;
+    outline-offset: 0;
+    border-color: var(--accent);
+  }
+
+  /* 卡片头统一模板（仅屏幕）：标题在左，动作区右对齐、间距固定；
+     不再用 space-between 把每个控件平均摊开。打印保持原有排版。 */
+  .card-head {
+    justify-content: flex-start;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  /* 第二个子项若不是副说明，就作为动作区的起点推到右侧；
+     若是副说明，则让它吃掉剩余空间，后续动作仍在最右。 */
+  .card-head > :nth-child(2):not(.page-sub) {
+    margin-left: auto;
+  }
+
+  .card-head > :nth-child(2).page-sub {
+    margin-right: auto;
+  }
+
+  .card-head .toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-left: auto;
+  }
+
+  /* 卡片头的下拉与按钮同高，基线一致。 */
+  .card-head select {
+    flex: 0 1 auto;
+  }
+
+  .card-head .checkbox {
+    padding-top: 0;
+    white-space: nowrap;
+  }
 }
 
 .checkbox {
