@@ -317,22 +317,18 @@ int main(int argc, char** argv) {
       if (options.backup || options.backup_daily) {
         throw xiaotu::AppError("BAD_ARGUMENT", "--backup / --backup-daily 与 --restore 不能同时使用");
       }
-      const auto snapshot = xiaotu::restore_database(options.restore_from, database_path);
-      std::cout << "恢复完成: " << snapshot.path.string() << " (" << snapshot.bytes
-                << " 字节)" << std::endl;
-      xiaotu::log_info("恢复数据库 " + snapshot.path.string() +
-                       " 字节=" + std::to_string(snapshot.bytes));
-      // 恢复后往「恢复出来的库」写一条审计；v5 之前的老库没有 audit_log，只留日志。
-      {
-        xiaotu::Db restored_db(database_path, 1);
-        if (restored_db.schema_version() >= 5) {
-          restored_db.write([&](sqlite3* conn) {
-            xiaotu::audit_write(conn, "restore", "database", 0,
-                                options.restore_from.filename().string(),
-                                snapshot.path.string());
-          });
-        }
+      // 命令行没有登录用户：审计 actor 固定为 cli，不伪造用户身份。
+      const auto restore =
+          xiaotu::restore_database(options.restore_from, database_path, "cli", "命令行");
+      std::cout << "恢复完成: " << restore.path.string() << " (" << restore.bytes
+                << " 字节) schema=v" << restore.schema_version;
+      if (!restore.safety_backup.empty()) {
+        std::cout << "，恢复前备份: " << restore.safety_backup.filename().string();
       }
+      std::cout << std::endl;
+      xiaotu::log_info("恢复数据库 " + restore.path.string() +
+                       " 字节=" + std::to_string(restore.bytes) +
+                       " schema=v" + std::to_string(restore.schema_version));
       xiaotu::shutdown_logging();
       return 0;
     }

@@ -2613,21 +2613,75 @@ int main() {
       xiaotu::verify_database(snapshot.path);
 
       const auto restored_path = backup_root / "restored.db";
-      xiaotu::restore_database(snapshot.path, restored_path);
+      // 恢复审计：命令行约定 actor=cli，成功/失败都要留痕。
+      auto last_restore_audit = [](const std::filesystem::path& path) {
+        xiaotu::AuditRow row;
+        xiaotu::Db db(path);
+        db.read([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(
+              conn,
+              "SELECT id, at, actor, action, entity, entity_id, entity_no, detail FROM audit_log"
+              " WHERE action = 'restore' ORDER BY id DESC LIMIT 1;");
+          if (stmt.step()) {
+            row = xiaotu::AuditRow{.id = stmt.i64(0),
+                                   .at = stmt.text(1),
+                                   .actor = stmt.text(2),
+                                   .action = stmt.text(3),
+                                   .entity = stmt.text(4),
+                                   .entity_id = stmt.i64(5),
+                                   .entity_no = stmt.text(6),
+                                   .detail = stmt.text(7)};
+          }
+        });
+        return row;
+      };
+      const auto first_restore =
+          xiaotu::restore_database(snapshot.path, restored_path, "cli", "命令行");
+      check(first_restore.safety_backup.empty(), "目标库不存在时不应产生安全备份");
       {
         xiaotu::Db restored(restored_path);
         check(restored.schema_version() == db.schema_version(),
               "恢复后 schema 版本应与备份一致");
       }
-      xiaotu::restore_database(snapshot.path, restored_path);
-      bool has_safety = false;
-      for (const auto& entry :
-           std::filesystem::directory_iterator(backup_root / "backups")) {
-        if (entry.path().filename().string().rfind("pre-restore-", 0) == 0) {
-          has_safety = true;
-        }
+      {
+        const auto audit = last_restore_audit(restored_path);
+        check(audit.actor == "cli" && audit.action == "restore" && audit.entity == "database",
+              "恢复成功应写 restore 审计，actor 固定为 cli");
+        check(audit.entity_no == snapshot.path.filename().string(),
+              "恢复审计 entity_no 应为备份文件名");
+        check(audit.detail.find("命令行") != std::string::npos &&
+                  audit.detail.find("schema: v") != std::string::npos,
+              "恢复审计 detail 应写明来源与 schema 版本");
       }
-      check(has_safety, "覆盖恢复前应留下 pre-restore 安全备份");
+
+      const auto second_restore =
+          xiaotu::restore_database(snapshot.path, restored_path, "cli", "命令行");
+      check(!second_restore.safety_backup.empty(), "覆盖恢复应留下 pre-restore 安全备份");
+      {
+        const auto audit = last_restore_audit(restored_path);
+        check(audit.detail.find(second_restore.safety_backup.filename().string()) !=
+                  std::string::npos,
+              "恢复审计 detail 应带恢复前安全备份文件名");
+      }
+
+      // 失败也要留痕：损坏的备份在复制前就校验失败，目标库仍可写。
+      const auto corrupt = backup_root / "corrupt.db";
+      {
+        std::ofstream out(corrupt, std::ios::binary);
+        out << "not a sqlite database";
+      }
+      bool restore_failed = false;
+      try {
+        xiaotu::restore_database(corrupt, restored_path, "cli", "命令行");
+      } catch (const xiaotu::AppError&) {
+        restore_failed = true;
+      }
+      check(restore_failed, "损坏的备份应恢复失败");
+      {
+        const auto audit = last_restore_audit(restored_path);
+        check(audit.action == "restore" && audit.detail.find("失败原因") != std::string::npos,
+              "恢复失败也应写审计并说明失败原因");
+      }
       std::filesystem::remove_all(backup_root);
 
       // v28 有数据情形：独立库先迁到 28，再回退成 v27，写入客户/供应商后走生产迁移路径。

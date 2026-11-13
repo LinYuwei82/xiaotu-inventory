@@ -250,6 +250,7 @@ WebView 会打开 `http://127.0.0.1:5173/?api=http://127.0.0.1:<port>#t=<token>`
 - 迁移前自动备份：启动时若数据库版本低于代码内置版本，先用 `VACUUM INTO` 写 `<数据目录>/backups/app-<时间>-pre-v<旧版本>.db`；备份失败则中止迁移，不带着未备份的数据升级。
 - 手动备份：`<程序> --data <数据目录> --backup`，输出快照路径与字节数。
 - 恢复：`<程序> --data <数据目录> --restore <备份文件>`；先做 `PRAGMA integrity_check`，目标已存在时留一份 `pre-restore-*.db`，再覆盖并清理 `-wal` / `-shm`。恢复必须在服务停止时执行。
+- 恢复审计：成功与失败都写 `audit_log`（`action=restore`、`entity=database`），`entity_no` 为备份文件名，`detail` 记录来源（命令行）、恢复到的 schema 版本、`pre-restore-*` 安全备份文件名（成功）或失败原因（失败）。命令行没有登录用户，`actor` 固定为 `cli`，不伪造用户身份。**界面上的恢复向导尚未实现，当前只有 CLI 这一条恢复入口**。
 - 快照是一致性单文件，可直接复制到另一台机器后恢复。
 - 往来单位归并预览（只读）：`<程序> --data <数据目录> --partner-preview`，可选 `--partner-preview-format text|json|csv`。命令在**迁移之前**执行，只 `SELECT customer / supplier / ar_ap_entry`，不升级结构、不写业务表；按税号、名称+电话、仅名称三档列出候选合并组，并单独列出同一名称存在多个 `partner_key` 的单位。规则来源见 `docs/客户供应商合表方案.md`。
 

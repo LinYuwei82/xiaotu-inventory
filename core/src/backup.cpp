@@ -279,55 +279,108 @@ BackupResult backup_database(Db& db, const std::filesystem::path& directory,
   return BackupResult{.path = target, .bytes = std::filesystem::file_size(target)};
 }
 
-BackupResult restore_database(const std::filesystem::path& source,
-                              const std::filesystem::path& database_path) {
-  verify_database(source);
-  ensure_restore_compatible(source);
-  std::error_code error;
-  const std::filesystem::path absolute_source = std::filesystem::absolute(source, error);
-  const std::filesystem::path absolute_target = std::filesystem::absolute(database_path, error);
-  if (absolute_source == absolute_target) {
-    throw AppError("INVALID_INPUT", "恢复源与目标数据库相同");
-  }
+namespace {
 
-  const std::filesystem::path backup_dir = database_path.parent_path() / "backups";
-  std::filesystem::create_directories(backup_dir, error);
-  if (error) {
-    throw AppError("RESTORE_FAILED", "无法创建备份目录：" + error.message());
+// 恢复审计：成功与失败都留痕。恢复出来的库可能没有 audit_log（v5 之前）或已损坏，
+// 这时退化为写日志，不影响恢复本身的成败。
+void audit_restore(const std::filesystem::path& database_path, std::string_view actor,
+                   std::string_view origin, std::string_view source_name, int schema_version,
+                   const std::filesystem::path& safety_backup, bool target_existed,
+                   std::string_view failure) {
+  if (actor.empty() || !std::filesystem::exists(database_path)) return;
+  std::string detail = "来源: " + std::string(origin.empty() ? "未知" : origin) +
+                       "；备份: " + std::string(source_name);
+  if (!failure.empty()) {
+    detail += "；失败原因: " + std::string(failure);
+  } else {
+    detail += "；schema: v" + std::to_string(schema_version);
   }
-  if (std::filesystem::exists(database_path)) {
-    // 先 checkpoint，让单文件安全备份包含 WAL 中已提交的内容。
-    sqlite3* connection = nullptr;
-    if (sqlite3_open(path_to_utf8(database_path).c_str(), &connection) == SQLITE_OK) {
-      sqlite3_exec(connection, "PRAGMA wal_checkpoint(TRUNCATE);", nullptr, nullptr, nullptr);
-      sqlite3_close(connection);
+  detail += "；恢复前安全备份: ";
+  if (!safety_backup.empty()) {
+    detail += safety_backup.filename().string();
+  } else {
+    detail += target_existed ? "无（在创建安全备份前失败）" : "无（目标库原本不存在）";
+  }
+  try {
+    Db db(database_path, 1);
+    if (db.schema_version() < 5) {
+      log_warn("恢复审计跳过：目标库 schema 早于 v5，没有 audit_log");
+      return;
     }
-    const std::filesystem::path safety =
-        unique_path(backup_dir, "pre-restore-" + timestamp_tag());
-    std::filesystem::copy_file(database_path, safety,
-                               std::filesystem::copy_options::overwrite_existing, error);
+    db.write([&](sqlite3* conn) {
+      audit_write_as(conn, actor, "restore", "database", 0, source_name, detail);
+    });
+  } catch (const std::exception& error) {
+    log_warn("恢复审计写入失败: " + std::string(error.what()));
+  }
+}
+
+}  // namespace
+
+RestoreResult restore_database(const std::filesystem::path& source,
+                               const std::filesystem::path& database_path,
+                               std::string_view actor, std::string_view origin) {
+  RestoreResult result;
+  result.path = database_path;
+  const std::string source_name = source.filename().string();
+  const bool target_existed = std::filesystem::exists(database_path);
+  try {
+    verify_database(source);
+    ensure_restore_compatible(source);
+    result.schema_version = backup_schema_version(source);
+    std::error_code error;
+    const std::filesystem::path absolute_source = std::filesystem::absolute(source, error);
+    const std::filesystem::path absolute_target = std::filesystem::absolute(database_path, error);
+    if (absolute_source == absolute_target) {
+      throw AppError("INVALID_INPUT", "恢复源与目标数据库相同");
+    }
+
+    const std::filesystem::path backup_dir = database_path.parent_path() / "backups";
+    std::filesystem::create_directories(backup_dir, error);
     if (error) {
-      throw AppError("RESTORE_FAILED", "无法创建恢复前备份：" + error.message());
+      throw AppError("RESTORE_FAILED", "无法创建备份目录：" + error.message());
     }
-  }
-
-  for (const char* suffix : {"", "-wal", "-shm"}) {
-    const std::filesystem::path sidecar = database_path.string() + suffix;
-    if (std::filesystem::exists(sidecar)) {
-      std::filesystem::remove(sidecar, error);
+    if (std::filesystem::exists(database_path)) {
+      // 先 checkpoint，让单文件安全备份包含 WAL 中已提交的内容。
+      sqlite3* connection = nullptr;
+      if (sqlite3_open(path_to_utf8(database_path).c_str(), &connection) == SQLITE_OK) {
+        sqlite3_exec(connection, "PRAGMA wal_checkpoint(TRUNCATE);", nullptr, nullptr, nullptr);
+        sqlite3_close(connection);
+      }
+      const std::filesystem::path safety =
+          unique_path(backup_dir, "pre-restore-" + timestamp_tag());
+      std::filesystem::copy_file(database_path, safety,
+                                 std::filesystem::copy_options::overwrite_existing, error);
       if (error) {
-        throw AppError("RESTORE_FAILED", "无法清理旧数据库文件：" + error.message());
+        throw AppError("RESTORE_FAILED", "无法创建恢复前备份：" + error.message());
+      }
+      result.safety_backup = safety;
+    }
+
+    for (const char* suffix : {"", "-wal", "-shm"}) {
+      const std::filesystem::path sidecar = database_path.string() + suffix;
+      if (std::filesystem::exists(sidecar)) {
+        std::filesystem::remove(sidecar, error);
+        if (error) {
+          throw AppError("RESTORE_FAILED", "无法清理旧数据库文件：" + error.message());
+        }
       }
     }
+    std::filesystem::copy_file(source, database_path,
+                               std::filesystem::copy_options::overwrite_existing, error);
+    if (error) {
+      throw AppError("RESTORE_FAILED", "复制备份失败：" + error.message());
+    }
+    verify_database(database_path);
+    result.bytes = std::filesystem::file_size(database_path);
+  } catch (const std::exception& error) {
+    audit_restore(database_path, actor, origin, source_name, 0, result.safety_backup,
+                  target_existed, error.what());
+    throw;
   }
-  std::filesystem::copy_file(source, database_path,
-                             std::filesystem::copy_options::overwrite_existing, error);
-  if (error) {
-    throw AppError("RESTORE_FAILED", "复制备份失败：" + error.message());
-  }
-  verify_database(database_path);
-  return BackupResult{.path = database_path,
-                      .bytes = std::filesystem::file_size(database_path)};
+  audit_restore(database_path, actor, origin, source_name, result.schema_version,
+                result.safety_backup, target_existed, {});
+  return result;
 }
 
 int backup_schema_version(const std::filesystem::path& backup) {

@@ -16,6 +16,14 @@ struct BackupResult {
   std::uintmax_t bytes = 0;
 };
 
+// 恢复结果。safety_backup 为恢复前留下的 pre-restore-*.db；目标库原本不存在时为空。
+struct RestoreResult {
+  std::filesystem::path path;
+  std::uintmax_t bytes = 0;
+  int schema_version = 0;
+  std::filesystem::path safety_backup;
+};
+
 // 自动备份保留策略：保留最近 30 份日备份，并在每个自然月额外保留最新的 1 份。
 // 只处理由每日任务生成的 app-<时间戳>-daily.db；manual / pre-* 备份不参与清理。
 inline constexpr int kDailyBackupKeep = 30;
@@ -31,8 +39,13 @@ void verify_database(const std::filesystem::path& path);
 // 用备份替换目标数据库；目标已存在时先留一份 pre-restore 安全备份，
 // 并清理 -wal / -shm。调用前必须确保没有进程占用目标数据库。
 // 恢复前会比对备份的 schema 版本：高于当前程序支持的版本一律拒绝。
-BackupResult restore_database(const std::filesystem::path& source,
-                              const std::filesystem::path& database_path);
+//
+// 传了 actor 就写 restore 审计（成功与失败各一条，entity=database，
+// entity_no=备份文件名，detail 含 schema 版本/来源/安全备份文件名/失败原因）。
+// CLI 约定 actor="cli"、origin="命令行"：命令行没有登录用户，不伪造用户身份。
+RestoreResult restore_database(const std::filesystem::path& source,
+                               const std::filesystem::path& database_path,
+                               std::string_view actor = {}, std::string_view origin = {});
 
 // 读取备份内的 schema 版本：优先 schema_migration 的最大 version，退回 user_version。
 // 无法打开或不是本程序的数据库时抛出 AppError。
