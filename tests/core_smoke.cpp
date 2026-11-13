@@ -1988,6 +1988,7 @@ int main() {
       order_input.warehouse_id = warehouse_list.at(0).id;
       order_input.doc_date = kToday;
       order_input.partner = "订单客户";
+      order_input.remark = "订单备注A";
       order_input.lines.push_back(
           {.item_id = ordered.id, .qty = q(6), .price_cents = 1500});
       const auto order = documents.save_and_approve(order_input);
@@ -2010,6 +2011,23 @@ int main() {
       convert.lines.push_back({.order_line_id = order_line_id, .qty = q(4)});
       const auto partial = documents.convert_order(order.id, convert);
       check(partial.doc_no.rfind("XSCK", 0) == 0, "转出库应生成销售出库单");
+      check(documents.detail(partial.doc_id).remark == "订单备注A",
+            "转出应原样继承订单备注，不拼来源单号");
+      // 订单确认后没有界面改备注的入口；这里直接改库，模拟「之后订单备注变了」。
+      db.write([&](sqlite3* conn) {
+        xiaotu::Stmt changed(conn, "UPDATE doc_header SET remark = '订单备注B' WHERE id = ?;");
+        changed.bind(1, order.id).run();
+      });
+      check(documents.detail(partial.doc_id).remark == "订单备注A",
+            "订单备注后改不应影响已生成的下游单据");
+      bool downstream_rejected = false;
+      try {
+        documents.convert_order(partial.doc_id, convert);
+      } catch (const xiaotu::AppError& error) {
+        downstream_rejected = error.code() == "INVALID_INPUT" &&
+                              std::string(error.what()).find("不是订单") != std::string::npos;
+      }
+      check(downstream_rejected, "下游单据不能再往下派生，备注只传一层");
       order_detail = documents.detail(order.id);
       check(order_detail.order_status == "CONFIRMED" &&
                 order_detail.lines.at(0).converted_qty == q(4),
@@ -2029,6 +2047,8 @@ int main() {
       convert.lines.at(0).qty = q(2);
       const auto full = documents.convert_order(order.id, convert);
       check(full.order_status == "CONVERTED", "全部转出后订单应为 CONVERTED");
+      check(documents.detail(full.doc_id).remark == "订单备注B",
+            "后续转出应取生成时刻的订单备注快照");
       bool no_more = false;
       try {
         documents.convert_order(order.id, convert);
@@ -2037,11 +2057,25 @@ int main() {
       }
       check(no_more, "已全部转出的订单应拒绝继续转出");
 
+      // 模拟用户把下游单据的备注手工改过：反审核 + 重转不应覆盖它。
+      db.write([&](sqlite3* conn) {
+        xiaotu::Stmt edited(
+            conn, "UPDATE doc_header SET remark = '手工改备注' WHERE id = ?;");
+        edited.bind(1, partial.doc_id).run();
+      });
       documents.reverse(partial.doc_id);
+      check(documents.detail(partial.doc_id).remark == "手工改备注",
+            "反审核不应改动下游单据备注");
       order_detail = documents.detail(order.id);
       check(order_detail.order_status == "CONFIRMED" &&
                 order_detail.lines.at(0).converted_qty == q(2),
             "反审核出库单应释放对应订单数量");
+      convert.lines.at(0).qty = q(2);
+      const auto reconverted = documents.convert_order(order.id, convert);
+      check(documents.detail(partial.doc_id).remark == "手工改备注",
+            "重转不应覆盖旧单被人手工改过的备注");
+      check(documents.detail(reconverted.doc_id).remark == "订单备注B",
+            "重转生成的新单取当时的订单备注");
 
       documents.close_order(order.id);
       check(documents.detail(order.id).order_status == "CLOSED", "订单应可关闭");
@@ -2053,6 +2087,22 @@ int main() {
         closed_rejected = error.code() == "INVALID_STATUS";
       }
       check(closed_rejected, "关闭后应拒绝转出");
+
+      // 空备注：转出后目标单仍为空串，不产生「由订单…转入」之类的文本。
+      xiaotu::DocInput empty_order_input;
+      empty_order_input.doc_type = "SAL_ORDER";
+      empty_order_input.warehouse_id = warehouse_list.at(0).id;
+      empty_order_input.doc_date = kToday;
+      empty_order_input.partner = "空备注客户";
+      empty_order_input.lines.push_back(
+          {.item_id = ordered.id, .qty = q(1), .price_cents = 1500});
+      const auto empty_order = documents.save_and_approve(empty_order_input);
+      const std::int64_t empty_order_line = documents.detail(empty_order.id).lines.at(0).id;
+      xiaotu::OrderConvertInput empty_convert;
+      empty_convert.lines.push_back({.order_line_id = empty_order_line, .qty = q(1)});
+      const auto empty_converted = documents.convert_order(empty_order.id, empty_convert);
+      check(documents.detail(empty_converted.doc_id).remark.empty(),
+            "空备注订单转出后目标单备注仍为空");
 
       // 采购订单：确认不动库存/往来，下推生成采购入库，支持分批与改价。
       auto purchase_item =
@@ -2072,6 +2122,7 @@ int main() {
       purchase_order_input.warehouse_id = warehouse_list.at(0).id;
       purchase_order_input.doc_date = kToday;
       purchase_order_input.partner = "订单供应商";
+      purchase_order_input.remark = "采购订单备注";
       purchase_order_input.lines.push_back(
           {.item_id = purchase_item.id, .qty = q(10), .price_cents = 800});
       const auto purchase_order = documents.save_and_approve(purchase_order_input);
@@ -2105,6 +2156,8 @@ int main() {
           {.order_line_id = purchase_line_id, .qty = q(4), .price_cents = 900});
       const auto first_receipt = documents.convert_order(purchase_order.id, purchase_convert);
       check(first_receipt.doc_no.rfind("CGRK", 0) == 0, "下推应生成采购入库单");
+      check(documents.detail(first_receipt.doc_id).remark == "采购订单备注",
+            "采购订单转入库同样继承备注");
       purchase_detail = documents.detail(purchase_order.id);
       check(purchase_detail.order_status == "CONFIRMED" &&
                 purchase_detail.lines.at(0).converted_qty == q(4),

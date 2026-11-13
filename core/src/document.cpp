@@ -1713,6 +1713,7 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
     std::string order_status;
     std::string order_no;
     std::string partner_name;
+    std::string order_remark;
     std::int64_t warehouse_id = 0;
     std::int64_t customer_id = 0;
     std::int64_t supplier_id = 0;
@@ -1720,7 +1721,7 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
     {
       Stmt header(conn,
                   "SELECT doc_type, status, order_status, doc_no, warehouse_id, customer_id,"
-                  " partner_id, customer, salesperson_id FROM doc_header WHERE id = ?;");
+                  " partner_id, customer, salesperson_id, remark FROM doc_header WHERE id = ?;");
       header.bind(1, order_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "订单不存在");
@@ -1734,6 +1735,7 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
       supplier_id = header.i64(6);
       partner_name = header.text(7);
       salesperson_id = header.i64(8);
+      order_remark = header.text(9);
     }
     const DocumentDefinition* order_definition = find_document_definition(doc_type);
     if (order_definition == nullptr || order_definition->role != DocumentRole::Order) {
@@ -1791,6 +1793,9 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
     downstream.partner = partner_name;
     // 下推出的销售出库沿用订单上的业务员，避免业绩归属丢失。
     downstream.salesperson_id = salesperson_id;
+    // 备注只做一次快照复制：不拼来源单号，后续订单再改不影响已生成单据。
+    // 目标单仍是普通单据，备注走同一套 200 字符校验。
+    downstream.remark = order_remark;
 
     std::vector<std::pair<std::int64_t, std::int64_t>> allocations;
     std::int64_t converted_total = 0;
