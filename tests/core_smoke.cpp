@@ -82,7 +82,16 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 27, "迁移后 schema 版本应为 27");
+      check(db.schema_version() == 28, "迁移后 schema 版本应为 28");
+      // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
+      db.read([&](sqlite3* conn) {
+        xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
+        check(partner_count.step() && partner_count.i64(0) == 0,
+              "空库迁移后 partner 应为 0 行");
+        xiaotu::Stmt map_count(conn, "SELECT COUNT(*) FROM partner_legacy_map;");
+        check(map_count.step() && map_count.i64(0) == 0,
+              "空库迁移后 partner_legacy_map 应为 0 行");
+      });
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -2409,7 +2418,108 @@ int main() {
       check(has_safety, "覆盖恢复前应留下 pre-restore 安全备份");
       std::filesystem::remove_all(backup_root);
 
+      // v28 有数据情形：独立库先迁到 28，再回退成 v27，写入客户/供应商后走生产迁移路径。
+      {
+        xiaotu::Db mig(dir / "v28-migrate.db", 2);
+        xiaotu::migrate(mig);
+        mig.write_raw([&](sqlite3* conn) {
+          const int rc =
+              sqlite3_exec(conn,
+                           "DROP TABLE partner_legacy_map;"
+                           "DROP TABLE partner;"
+                           "DELETE FROM schema_migration WHERE version = 28;"
+                           "PRAGMA user_version = 27;",
+                           nullptr, nullptr, nullptr);
+          check(rc == SQLITE_OK, "模拟库应能回退到 v27 结构");
+        });
+        check(mig.schema_version() == 27, "回退后模拟库应为 v27");
 
+        xiaotu::gen::CustomerService mig_customers(mig);
+        xiaotu::gen::SupplierService mig_suppliers(mig);
+        const auto cust_a = mig_customers.create(xiaotu::gen::CustomerRow{
+            .code = "C001", .name = "迁移客户甲", .contact = "张三",
+            .phone = "13800000001", .tax_no = "TAX-C001",
+            .credit_limit_cents = 500000, .address = "甲地址"});
+        const auto cust_b = mig_customers.create(
+            xiaotu::gen::CustomerRow{.code = "C002", .name = "迁移客户乙"});
+        const auto sup_a = mig_suppliers.create(xiaotu::gen::SupplierRow{
+            .code = "S001", .name = "迁移供应商甲", .phone = "13900000001",
+            .tax_no = "TAX-S001"});
+        // 与客户编码冲突，验证追加 -S{legacy_id} 后缀。
+        const auto sup_b = mig_suppliers.create(
+            xiaotu::gen::SupplierRow{.code = "C001", .name = "迁移供应商乙"});
+
+        mig.write([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn,
+                            "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
+                            " partner_id, partner_name, partner_key, biz_date, due_date,"
+                            " amount_cents, settled_cents, status, created_at, created_by)"
+                            " VALUES (?, 0, '迁移', 'OPENING_AR', 1, ?, '迁移客户甲', ?, ?, '',"
+                            " 100, 0, 'OPEN', ?, 'test');");
+          stmt.bind(1, xiaotu::next_id())
+              .bind(2, cust_a.id)
+              .bind(3, "C:" + std::to_string(cust_a.id))
+              .bind(4, kToday)
+              .bind(5, kToday + " 00:00:00")
+              .run();
+        });
+
+        xiaotu::migrate(mig);
+        check(mig.schema_version() == 28, "有数据的模拟库应迁到 v28");
+
+        mig.read([&](sqlite3* conn) {
+          xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");
+          check(count.step() && count.i64(0) == 4, "4 条客户/供应商应 1:1 搬入 partner");
+
+          xiaotu::Stmt cust(conn,
+                            "SELECT code, name, contact, phone, address, tax_no,"
+                            " is_customer, is_supplier, credit_limit_cents, credit_days,"
+                            " merged_into FROM partner WHERE id = ?;");
+          cust.bind(1, cust_a.id);
+          check(cust.step(), "客户应保留原 id 作为 partner.id");
+          check(cust.text(0) == "C001" && cust.text(1) == "迁移客户甲" &&
+                    cust.text(2) == "张三" && cust.text(3) == "13800000001" &&
+                    cust.text(4) == "甲地址" && cust.text(5) == "TAX-C001",
+                "客户字段应原样搬迁");
+          check(cust.i64(6) == 1 && cust.i64(7) == 0 && cust.i64(8) == 500000 &&
+                    cust.i64(9) == 0 && cust.i64(10) == 0,
+                "客户角色位、信用额度应正确，credit_days 与 merged_into 为 0");
+
+          const std::int64_t base = cust_a.id > cust_b.id ? cust_a.id : cust_b.id;
+          xiaotu::Stmt sup(conn,
+                           "SELECT id, code, is_customer, is_supplier, tax_no"
+                           " FROM partner WHERE name = '迁移供应商甲';");
+          check(sup.step(), "供应商应搬入 partner");
+          check(sup.i64(0) == base + 1,
+                "供应商新 id 应接在最大客户 id 之后按 supplier.id 递增");
+          check(sup.text(1) == "S001" && sup.i64(2) == 0 && sup.i64(3) == 1 &&
+                    sup.text(4) == "TAX-S001",
+                "供应商角色位、税号应正确");
+
+          xiaotu::Stmt conflict(conn, "SELECT code FROM partner WHERE name = '迁移供应商乙';");
+          check(conflict.step() && conflict.text(0) == "C001-S" + std::to_string(sup_b.id),
+                "供应商编码与客户冲突时应追加 -S{legacy_id}");
+
+          xiaotu::Stmt map(conn, "SELECT COUNT(*) FROM partner_legacy_map;");
+          check(map.step() && map.i64(0) == 4, "映射表应覆盖客户与供应商各 2 条");
+          xiaotu::Stmt sup_map(conn,
+                               "SELECT partner_id FROM partner_legacy_map"
+                               " WHERE side = 'supplier' AND legacy_id = ?;");
+          sup_map.bind(1, sup_a.id);
+          check(sup_map.step() && sup_map.i64(0) == base + 1,
+                "映射表的供应商旧 id 应指向新 partner id");
+          xiaotu::Stmt cust_map(conn,
+                                "SELECT partner_id FROM partner_legacy_map"
+                                " WHERE side = 'customer' AND legacy_id = ?;");
+          cust_map.bind(1, cust_a.id);
+          check(cust_map.step() && cust_map.i64(0) == cust_a.id,
+                "映射表的客户旧 id 应与 partner id 相同");
+
+          xiaotu::Stmt key(conn, "SELECT partner_key FROM ar_ap_entry WHERE doc_no = '迁移';");
+          check(key.step() && key.text(0) == "C:" + std::to_string(cust_a.id),
+                "本轮不改 partner_key，C: 键应保持原样");
+        });
+      }
     }
   } catch (const std::exception& error) {
     std::cerr << "异常: " << error.what() << std::endl;

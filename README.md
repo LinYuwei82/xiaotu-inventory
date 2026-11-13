@@ -46,6 +46,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v25 | 把已有 `item.barcode` 回填为主码行，一商品多码正式启用 |
 | v26 | 单据行含税字段：`tax_rate_bp` / `price_includes_tax` / `net_cents` / `tax_cents`，历史行按 0 税回填 |
 | v27 | 打印模板纸型与缩放：`paper_kind`（`SHEET` / `CONTINUOUS`）与 `scale_mode`（`FIT_WIDTH` / `ORIGINAL`），历史模板默认单页纸、按纸宽自适应 |
+| v28 | 客户/供应商合表第一步：建 `partner`（客户/供应商双角色位、税号、信用额度、`credit_days` 占位、`merged_into`）与 `partner_legacy_map`；客户/供应商 1:1 搬入，旧表与 `C:` / `S:` / `T:` 键保持不动，不做合并 |
 
 ## 1. 环境要求
 

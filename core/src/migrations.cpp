@@ -817,6 +817,105 @@ ALTER TABLE print_template ADD COLUMN paper_kind TEXT NOT NULL DEFAULT 'SHEET';
 ALTER TABLE print_template ADD COLUMN scale_mode TEXT NOT NULL DEFAULT 'FIT_WIDTH';
 )SQL";
 
+// v28：客户/供应商合表第一步——建 partner 与旧编号映射，只做 1:1 搬运，不做任何合并。
+// customer / supplier 原地保留、继续可读写；partner_key 仍为 C:/S:/T:，本轮不切 P:，
+// doc_header / ar_ap_entry / settlement 的引用一律不动。合并动作与键改写留到后续步骤。
+constexpr const char* kV28 = R"SQL(
+CREATE TABLE partner (
+  id                 INTEGER PRIMARY KEY,
+  code               TEXT    NOT NULL,
+  name               TEXT    NOT NULL,
+  contact            TEXT    NOT NULL DEFAULT '',
+  phone              TEXT    NOT NULL DEFAULT '',
+  address            TEXT    NOT NULL DEFAULT '',
+  tax_no             TEXT    NOT NULL DEFAULT '',
+  is_customer        INTEGER NOT NULL DEFAULT 0,
+  is_supplier        INTEGER NOT NULL DEFAULT 0,
+  credit_limit_cents INTEGER NOT NULL DEFAULT 0,
+  credit_days        INTEGER NOT NULL DEFAULT 0,
+  merged_into        INTEGER NOT NULL DEFAULT 0,
+  status             INTEGER NOT NULL DEFAULT 1,
+  is_deleted         INTEGER NOT NULL DEFAULT 0,
+  created_at         TEXT    NOT NULL,
+  created_by         TEXT    NOT NULL DEFAULT 'system',
+  updated_at         TEXT    NOT NULL,
+  updated_by         TEXT    NOT NULL DEFAULT 'system',
+  CHECK (is_customer IN (0, 1)),
+  CHECK (is_supplier IN (0, 1)),
+  CHECK (status IN (0, 1)),
+  CHECK (is_deleted IN (0, 1)),
+  CHECK (is_customer = 1 OR is_supplier = 1)
+);
+CREATE UNIQUE INDEX uk_partner_code ON partner(code);
+CREATE INDEX idx_partner_name ON partner(name);
+CREATE INDEX idx_partner_tax_no ON partner(tax_no) WHERE tax_no <> '';
+
+CREATE TABLE partner_legacy_map (
+  side         TEXT    NOT NULL,
+  legacy_id    INTEGER NOT NULL,
+  partner_id   INTEGER NOT NULL,
+  legacy_code  TEXT    NOT NULL DEFAULT '',
+  partner_code TEXT    NOT NULL DEFAULT '',
+  created_at   TEXT    NOT NULL,
+  PRIMARY KEY (side, legacy_id)
+);
+CREATE INDEX idx_partner_legacy_partner ON partner_legacy_map(partner_id);
+
+-- 客户 1:1 迁入：id 原样保留，信用额度与税号照搬，只补客户角色位。
+INSERT INTO partner (id, code, name, contact, phone, address, tax_no,
+                     is_customer, is_supplier, credit_limit_cents, credit_days,
+                     merged_into, status, is_deleted, created_at, created_by,
+                     updated_at, updated_by)
+SELECT id, code, name, contact, phone, address, tax_no,
+       1, 0, credit_limit_cents, 0, 0, status, is_deleted,
+       created_at, created_by, updated_at, updated_by
+FROM customer ORDER BY id;
+
+INSERT INTO partner_legacy_map (side, legacy_id, partner_id, legacy_code, partner_code, created_at)
+SELECT 'customer', id, id, code, code, datetime('now', 'localtime')
+FROM customer ORDER BY id;
+
+-- 供应商 1:1 迁入：新 id 接在客户 id 之后，按 supplier.id 排序分配，保证可重复。
+-- 编码与客户冲突时追加 -S{legacy_id}，既保留客户编码，又保证供应商之间不重码。
+DROP TABLE IF EXISTS _partner_supplier_stage;
+CREATE TEMP TABLE _partner_supplier_stage AS
+SELECT s.id AS legacy_id,
+       COALESCE((SELECT MAX(id) FROM customer), 0)
+         + ROW_NUMBER() OVER (ORDER BY s.id) AS partner_id,
+       s.code AS old_code,
+       CASE WHEN EXISTS (SELECT 1 FROM customer c WHERE c.code = s.code)
+            THEN s.code || '-S' || s.id
+            ELSE s.code END AS new_code,
+       s.name, s.contact, s.phone, s.address, s.tax_no,
+       s.status, s.is_deleted, s.created_at, s.created_by, s.updated_at, s.updated_by
+FROM supplier s ORDER BY s.id;
+
+-- 二次冲突（新编码恰好等于另一家供应商的原编码）：后出现的一方再加 -S{legacy_id}。
+UPDATE _partner_supplier_stage
+SET new_code = new_code || '-S' || legacy_id
+WHERE rowid NOT IN (SELECT MIN(rowid) FROM _partner_supplier_stage GROUP BY new_code);
+
+-- 再与客户编码撞上时继续加后缀；partner.code 的唯一索引是最后一道保险。
+UPDATE _partner_supplier_stage
+SET new_code = new_code || '-S' || legacy_id
+WHERE EXISTS (SELECT 1 FROM customer c WHERE c.code = new_code);
+
+INSERT INTO partner (id, code, name, contact, phone, address, tax_no,
+                     is_customer, is_supplier, credit_limit_cents, credit_days,
+                     merged_into, status, is_deleted, created_at, created_by,
+                     updated_at, updated_by)
+SELECT partner_id, new_code, name, contact, phone, address, tax_no,
+       0, 1, 0, 0, 0, status, is_deleted,
+       created_at, created_by, updated_at, updated_by
+FROM _partner_supplier_stage ORDER BY legacy_id;
+
+INSERT INTO partner_legacy_map (side, legacy_id, partner_id, legacy_code, partner_code, created_at)
+SELECT 'supplier', legacy_id, partner_id, old_code, new_code, datetime('now', 'localtime')
+FROM _partner_supplier_stage ORDER BY legacy_id;
+
+DROP TABLE _partner_supplier_stage;
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -859,6 +958,7 @@ const std::vector<Migration>& all_migrations() {
       {25, "v25_item_barcode_backfill", kV25},
       {26, "v26_doc_line_tax", kV26},
       {27, "v27_print_scale_paper", kV27},
+      {28, "v28_partner_table_1to1", kV28},
   };
   return migrations;
 }
