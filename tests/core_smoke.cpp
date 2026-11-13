@@ -86,7 +86,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 33, "迁移后 schema 版本应为 33");
+      check(db.schema_version() == 34, "迁移后 schema 版本应为 34");
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
       db.read([&](sqlite3* conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
@@ -2799,12 +2799,30 @@ int main() {
               .run();
         });
 
+        // 造数据阶段需要写审计，先用 v34 结构写完；随后回退审计列，模拟 v27 老库，
+        // 这样迁移 v34 时历史审计行的来源 IP / 请求号会由默认值补成空串。
+        mig.write_raw([&](sqlite3* conn) {
+          const int rc =
+              sqlite3_exec(conn,
+                           "ALTER TABLE audit_log DROP COLUMN client_ip;"
+                           "ALTER TABLE audit_log DROP COLUMN request_id;",
+                           nullptr, nullptr, nullptr);
+          check(rc == SQLITE_OK, "模拟库应能回退审计来源两列");
+        });
+
         xiaotu::migrate(mig);
-        check(mig.schema_version() == 33, "有数据的模拟库应迁到 v33");
+        check(mig.schema_version() == 34, "有数据的模拟库应迁到 v34");
 
         mig.read([&](sqlite3* conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");
           check(count.step() && count.i64(0) == 4, "4 条客户/供应商应 1:1 搬入 partner");
+
+          // 迁移前的历史审计行不应被伪造来源，两列一律为空串。
+          xiaotu::Stmt legacy(conn,
+                              "SELECT COUNT(*) FROM audit_log"
+                              " WHERE client_ip <> '' OR request_id <> '';");
+          check(legacy.step() && legacy.i64(0) == 0,
+                "历史审计行的来源 IP 与请求号应为空串");
 
           xiaotu::Stmt cust(conn,
                             "SELECT code, name, contact, phone, address, tax_no,"

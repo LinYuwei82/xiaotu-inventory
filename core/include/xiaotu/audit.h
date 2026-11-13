@@ -18,6 +18,9 @@ struct AuditRow {
   std::int64_t entity_id = 0;
   std::string entity_no;
   std::string detail;
+  // 来源 IP 与请求号：历史行与 CLI 路径为空串。
+  std::string client_ip;
+  std::string request_id;
 };
 
 // 审计日志只追加：谁、什么时候、对什么对象做了什么、变更摘要。
@@ -40,6 +43,8 @@ struct AuditFilter {
   std::string entity;
   std::int64_t entity_id = 0;
   std::string actor;
+  std::string client_ip;
+  std::string request_id;
   int page = 1;
   int page_size = 50;
 };
@@ -52,5 +57,8 @@ struct AuditPage {
 };
 
 AuditPage audit_query(Db& db, const AuditFilter& filter);
+
+// 导出用：同一套筛选条件，不分页，按 id 倒序返回全部命中行。
+std::vector<AuditRow> audit_all(Db& db, const AuditFilter& filter);
 
 }  // namespace xiaotu

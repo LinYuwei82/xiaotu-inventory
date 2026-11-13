@@ -6202,6 +6202,8 @@
           <label class="field"><span>对象类型</span><select data-field="entity">${entityOptions}</select></label>
           <label class="field"><span>对象 id</span><input type="number" min="0" step="1" data-field="entity_id" /></label>
           <label class="field"><span>操作人</span><input type="text" data-field="actor" placeholder="用户名" /></label>
+          <label class="field"><span>来源 IP</span><input type="text" data-field="client_ip" placeholder="如 192.168.1.20" /></label>
+          <label class="field"><span>请求号</span><input type="text" data-field="request_id" placeholder="排障用请求标识" /></label>
           <div class="form-actions">
             <button class="btn primary" type="submit">查询</button>
             <button class="btn" type="button" data-role="reset">重置</button>
@@ -6214,6 +6216,8 @@
           <button class="btn" type="button" data-role="prev">上一页</button>
           <span class="page-sub" data-role="page-info"></span>
           <button class="btn" type="button" data-role="next">下一页</button>
+          <button class="btn" type="button" data-role="export-csv">导出 CSV</button>
+          <button class="btn" type="button" data-role="export-xlsx">导出 Excel</button>
         </div>
       </div>`;
 
@@ -6224,6 +6228,16 @@
     const nextButton = mount.querySelector('[data-role="next"]');
 
     const field = (name) => form.querySelector('[data-field="' + name + '"]');
+
+    const filterNames = ["from", "to", "entity", "entity_id", "actor", "client_ip", "request_id"];
+    const filterParams = () => {
+      const params = new URLSearchParams();
+      for (const name of filterNames) {
+        const value = field(name).value.trim();
+        if (value) params.set(name, value);
+      }
+      return params;
+    };
 
     // 核销审计只存 account_id，页面尽量换成账户名；没有权限或取不到时退回 #id。
     const accountNames = new Map();
@@ -6237,11 +6251,7 @@
       .catch(() => {});
 
     async function reload() {
-      const params = new URLSearchParams();
-      for (const name of ["from", "to", "entity", "entity_id", "actor"]) {
-        const value = field(name).value.trim();
-        if (value) params.set(name, value);
-      }
+      const params = filterParams();
       params.set("page", String(page));
       params.set("page_size", String(pageSize));
       try {
@@ -6255,7 +6265,7 @@
           table.innerHTML = '<tbody><tr><td class="empty">没有符合条件的记录</td></tr></tbody>';
           return;
         }
-        table.innerHTML = `<thead><tr><th>时间</th><th>操作人</th><th>对象</th><th>对象 id</th><th>动作</th><th>摘要</th></tr></thead><tbody>${result.items
+        table.innerHTML = `<thead><tr><th>时间</th><th>操作人</th><th>对象</th><th>对象 id</th><th>动作</th><th>来源 IP</th><th>请求号</th><th>摘要</th></tr></thead><tbody>${result.items
           .map(
             (row) => `<tr>
               <td>${escapeHtml(row.at)}</td>
@@ -6265,6 +6275,8 @@
             }</td>
               <td>${row.entity_id || "—"}</td>
               <td>${escapeHtml(auditActionLabel(row))}</td>
+              <td>${row.client_ip ? escapeHtml(row.client_ip) : "—"}</td>
+              <td>${row.request_id ? escapeHtml(row.request_id) : "—"}</td>
               <td class="audit-detail"><span class="audit-detail-text">${escapeHtml(
                 auditDetailText(row, accountNames)
               )}</span></td>
@@ -6282,12 +6294,32 @@
       reload();
     });
     mount.querySelector('[data-role="reset"]').addEventListener("click", () => {
-      for (const name of ["from", "to", "entity_id", "actor"]) {
+      for (const name of ["from", "to", "entity_id", "actor", "client_ip", "request_id"]) {
         field(name).value = "";
       }
       field("entity").value = "";
       page = 1;
       reload();
+    });
+    mount.querySelector('[data-role="export-csv"]').addEventListener("click", async () => {
+      const params = filterParams();
+      params.set("format", "csv");
+      try {
+        await downloadCsv("/api/audit-logs/export?" + params.toString());
+        showNotice("已导出 CSV", "ok");
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+    mount.querySelector('[data-role="export-xlsx"]').addEventListener("click", async () => {
+      const params = filterParams();
+      params.set("format", "xlsx");
+      try {
+        await downloadXlsx("/api/audit-logs/export?" + params.toString());
+        showNotice("已导出 Excel", "ok");
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
     });
     prevButton.addEventListener("click", () => {
       if (page > 1) {

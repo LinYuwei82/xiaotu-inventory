@@ -179,7 +179,9 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                                            random_hex(8),
                                            session ? session->csrf : std::string{},
                                            session ? session->user_id : 0,
-                                           session ? session->must_change_password : false};
+                                           session ? session->must_change_password : false,
+                                           req.remote_addr,
+                                           std::string{}};
 
         // 单机版只接受来自 127.0.0.1 的请求，防御 DNS rebinding。
         if (info_.mode == "local") {

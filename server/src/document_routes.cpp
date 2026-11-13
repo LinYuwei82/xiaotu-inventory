@@ -343,6 +343,10 @@ void register_document_routes(httplib::Server& server, Services& services) {
                     [&services](const httplib::Request& req, httplib::Response& res) {
                       const nlohmann::json body = json_body(req);
                       const DocInput input = input_from_json(body);
+                      // 审计请求号用客户端带来的幂等键；没有就留空，不另生成。
+                      if (!input.request_id.empty()) {
+                        current_context().audit_request_id = input.request_id;
+                      }
                       const bool draft = body.value("save_as_draft", false);
                       const bool confirm_credit = body.value("confirm_credit", false);
                       if (!draft) require_doc_audit(input.doc_type);
@@ -361,6 +365,9 @@ void register_document_routes(httplib::Server& server, Services& services) {
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      const auto id = std::stoll(req.matches[1].str());
                      const DocInput input = input_from_json(json_body(req));
+                     if (!input.request_id.empty()) {
+                       current_context().audit_request_id = input.request_id;
+                     }
                      services.docs.update_draft(id, input);
                      json_ok(res, detail_to_json(services.docs.detail(id)));
                    }));

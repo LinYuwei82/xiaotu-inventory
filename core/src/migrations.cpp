@@ -974,6 +974,12 @@ INSERT INTO app_setting (key, value, updated_at, updated_by) VALUES
   ('cost_basis_changed_at', '', datetime('now', 'localtime'), 'system');
 )SQL";
 
+// v34：审计来源可追溯。历史行两个字段为空串，不回填、不伪造。
+constexpr const char* kV34 = R"SQL(
+ALTER TABLE audit_log ADD COLUMN client_ip TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_log ADD COLUMN request_id TEXT NOT NULL DEFAULT '';
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -1022,6 +1028,7 @@ const std::vector<Migration>& all_migrations() {
       {31, "v31_doc_request_version", kV31},
       {32, "v32_user_login_lock", kV32},
       {33, "v33_cost_basis", kV33},
+      {34, "v34_audit_client_ip_request", kV34},
   };
   return migrations;
 }

@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "xiaotu/audit.h"
 #include "xiaotu/db.h"
 #include "xiaotu/document.h"
 #include "xiaotu/http_server.h"
@@ -454,6 +455,90 @@ void run_server_mode(const std::filesystem::path& dir) {
           "销售明细导出应走流式且包含标题");
   }
 
+  // 审计来源：HTTP 请求带来源 IP，单据请求号可一起筛出；历史行与 CLI 路径两列为空。
+  {
+    nlohmann::json doc_body{
+        {"doc_type", "OTH_IN"},
+        {"warehouse_id", 1},
+        {"doc_date", xiaotu::today_text()},
+        {"partner", "审计来源测试"},
+        {"request_id", "smoke-audit-req"},
+        {"lines", nlohmann::json::array({{{"item_id", item_body.value("id", 0LL)},
+                                          {"qty", 1},
+                                          {"price_cents", 100}}})},
+    };
+    const auto created = client.Post("/api/documents", doc_body.dump(), "application/json");
+    check(created && created->status == 200, "带请求号的单据创建应成功");
+
+    const auto by_request = client.Get("/api/audit-logs?request_id=smoke-audit-req");
+    check(by_request && by_request->status == 200, "按请求号筛选审计应返回 200");
+    if (by_request) {
+      const auto body = nlohmann::json::parse(by_request->body);
+      bool matched = body.value("total", 0) >= 1;
+      for (const auto& row : body["items"]) {
+        matched = matched && row.value("request_id", "") == "smoke-audit-req" &&
+                  row.value("client_ip", "") == "127.0.0.1";
+      }
+      check(matched, "同一请求号的多条审计应能一起筛出，且带出来源 IP");
+    }
+
+    const auto by_ip = client.Get("/api/audit-logs?client_ip=127.0.0.1&page_size=200");
+    check(by_ip && by_ip->status == 200, "按来源 IP 筛选审计应返回 200");
+    if (by_ip) {
+      const auto body = nlohmann::json::parse(by_ip->body);
+      bool all_local = body.value("total", 0) >= 1;
+      for (const auto& row : body["items"]) {
+        all_local = all_local && row.value("client_ip", "") == "127.0.0.1";
+      }
+      check(all_local, "按来源 IP 筛选应只返回该 IP 的审计");
+    }
+
+    // CLI 路径：没有请求上下文，两列应为空串而不是报错。
+    services.db.write([&](sqlite3* conn) {
+      xiaotu::audit_write(conn, "restore", "backup", 0, "", "CLI 恢复测试");
+    });
+    const auto cli_audit = client.Get("/api/audit-logs?entity=backup");
+    check(cli_audit && cli_audit->status == 200, "CLI 审计查询应返回 200");
+    if (cli_audit) {
+      const auto body = nlohmann::json::parse(cli_audit->body);
+      bool found = false;
+      for (const auto& row : body["items"]) {
+        if (row.value("action", "") != "restore") continue;
+        found = row.value("client_ip", "x").empty() && row.value("request_id", "x").empty();
+      }
+      check(found, "CLI 产生的审计来源 IP 与请求号应为空");
+    }
+
+    // 迁移前的旧行（两列走默认值）读取应正常，值为空串。
+    services.db.write([&](sqlite3* conn) {
+      sqlite3_exec(conn,
+                   "INSERT INTO audit_log (at, actor, action, entity, entity_id, entity_no,"
+                   " detail) VALUES ('2026-01-01 00:00:00', 'system', 'legacy', 'item', 0, '',"
+                   " '历史行');",
+                   nullptr, nullptr, nullptr);
+    });
+    const auto legacy = client.Get("/api/audit-logs?entity=item&page_size=200");
+    if (legacy) {
+      const auto body = nlohmann::json::parse(legacy->body);
+      bool legacy_ok = false;
+      for (const auto& row : body["items"]) {
+        if (row.value("action", "") != "legacy") continue;
+        legacy_ok = row.value("client_ip", "x").empty() && row.value("request_id", "x").empty();
+      }
+      check(legacy && legacy->status == 200 && legacy_ok, "旧审计行两列为空且读取不报错");
+    }
+
+    const auto audit_csv =
+        client.Get("/api/audit-logs/export?format=csv&request_id=smoke-audit-req");
+    check(audit_csv && audit_csv->status == 200 &&
+              audit_csv->body.find("来源 IP") != std::string::npos &&
+              audit_csv->body.find("smoke-audit-req") != std::string::npos,
+          "审计 CSV 导出应带来源 IP 与请求号");
+    const auto audit_xlsx =
+        client.Get("/api/audit-logs/export?format=xlsx&request_id=smoke-audit-req");
+    check(audit_xlsx && audit_xlsx->status == 200, "审计 XLSX 导出应返回 200");
+  }
+
   // 系统参数：默认三项为空，保存后回读一致，每个变化的键各一条审计。
   const auto settings = client.Get("/api/settings");
   check(settings && settings->status == 200, "系统参数读取应返回 200");
@@ -560,8 +645,8 @@ void run_server_mode(const std::filesystem::path& dir) {
   check(diagnostic && diagnostic->status == 200, "诊断信息应返回 200");
   if (diagnostic) {
     const auto data = nlohmann::json::parse(diagnostic->body);
-    check(data.value("schema_version", 0) == 33, "诊断信息里的 schema 应为 33");
-    check(data.value("migrations", 0) == 33, "诊断信息里的迁移条数应为 33");
+    check(data.value("schema_version", 0) == 34, "诊断信息里的 schema 应为 34");
+    check(data.value("migrations", 0) == 34, "诊断信息里的迁移条数应为 34");
     check(data.value("mode", "") == "server", "网络版诊断信息 mode 应为 server");
     check(!data.value("data_dir", "").empty(), "诊断信息应包含数据目录");
     check(data.value("database_bytes", 0LL) > 0, "诊断信息应包含大于 0 的数据库大小");
