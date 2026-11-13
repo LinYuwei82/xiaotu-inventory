@@ -1,19 +1,24 @@
-# 小兔进销存 Windows 桌面壳（独立工程）
+# 小兔进销存 Windows 桌面壳
 #
-# 刻意不接入顶层 CMake 构建体系：根 CMakeLists.txt / CMakePresets.json /
-# shell/CMakeLists.txt 一律不改，这里自带 configure 入口。
+# 两种用法：
+#   1) 独立工程（默认）：
+#        .\shell\win\fetch-webview2.ps1
+#        cmake -S shell\win -B shell\win\build -G Ninja -DCMAKE_BUILD_TYPE=Release
+#        cmake --build shell\win\build
+#   2) 接入顶层构建（仅 Windows，默认关闭）：
+#        cmake --preset windows-release -DXIAOTU_BUILD_WIN_SHELL=ON
 #
-#   .\shell\win\fetch-webview2.ps1
-#   cmake -S shell\win -B shell\win\build -G Ninja -DCMAKE_BUILD_TYPE=Release
-#   cmake --build shell\win\build
-#
-# 产物：shell\win\build\xiaotu-shell.exe（需与 xiaotu-server.exe 同目录运行）
+# 产物：xiaotu-shell.exe（需与 xiaotu-server.exe 同目录运行）
 cmake_minimum_required(VERSION 3.25)
 
 # 产品版本沿用仓库根 VERSION 文件，避免 Windows 壳另写一份。
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../VERSION" XIAOTU_VERSION_STRING)
 string(STRIP "${XIAOTU_VERSION_STRING}" XIAOTU_VERSION_STRING)
-project(xiaotu_shell_win VERSION ${XIAOTU_VERSION_STRING} LANGUAGES CXX)
+
+# 作为顶层工程的子目录时不重复 project()，沿用父工程的编译器、标准与运行库设置。
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  project(xiaotu_shell_win VERSION ${XIAOTU_VERSION_STRING} LANGUAGES CXX)
+endif()
 
 if (NOT WIN32)
   message(FATAL_ERROR "shell/win 只能在 Windows 上构建")
