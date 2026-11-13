@@ -317,7 +317,10 @@ if ($SkipInstall) {
         if ($hv -ne $ExpectedVersion) { throw "版本号 $hv，期望 $ExpectedVersion" }
         $me = Get-HttpResult "GET" ($info.Base + "/api/me") $null $script:WebSession
         if ($me.Status -ne 200) { throw "/api/me HTTP $($me.Status)" }
-        Pass "单机版启动与接口" "health 200，version=$hv；/api/me 200"
+        # 数据必须落在指定的 -DataDir，而不是其它位置（默认目录/上次的目录）。
+        $db = Join-Path $DataDir "app.db"
+        if (-not (Test-Path $db)) { throw "启动后未在 -DataDir 生成 app.db: $db" }
+        Pass "单机版启动与接口" "health 200，version=$hv；/api/me 200；app.db 落在 -DataDir"
     }
 
     # ---------- 8. 业务冒烟 ----------
@@ -375,7 +378,7 @@ if ($SkipInstall) {
         $p = Start-Process -FilePath $unins -ArgumentList @(
             "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
         ) -Wait -PassThru
-        if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 1) { throw "卸载器退出码 $($p.ExitCode)" }
+        if ($p.ExitCode -ne 0) { throw "卸载器退出码 $($p.ExitCode)（静默卸载应为 0）" }
         Start-Sleep -Seconds 2
         if (Test-Path (Join-Path $installDir "xiaotu-server.exe")) { throw "卸载后程序仍在" }
         if (-not (Test-Path $DataDir)) { throw "卸载后数据目录被删除，应保留" }
