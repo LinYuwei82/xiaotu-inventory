@@ -114,21 +114,27 @@ begin
 end;
 
 procedure InitializeWizard;
+var
+  PageCaption: String;
 begin
+  { 已有 config.toml 时不再提供修改，避免覆盖用户已有配置或让选择静默失效。
+    说明文字只能通过 CreateInputDirPage 的第 4 个参数传入（向导页没有
+    SubCaption 属性），所以先判断再建页。 }
+  if FileExists(ConfigFilePath) then
+    PageCaption := '检测到已有 config.toml，安装器不会改动它；' +
+      '如需更换数据目录，请直接编辑 ' + ConfigFilePath + '。'
+  else
+    PageCaption := '数据库、日志与备份都放在这个目录。默认放在当前用户的应用数据目录；' + #13#10 +
+      '卸载时会保留该目录并提示，不会自动删除数据。';
   DataDirPage := CreateInputDirPage(wpSelectDir,
-    '数据目录', '选择小兔进销存的数据保存位置',
-    '数据库、日志与备份都放在这个目录。默认放在当前用户的应用数据目录；' + #13#10 +
-    '卸载时会保留该目录并提示，不会自动删除数据。', False, '');
+    '数据目录', '选择小兔进销存的数据保存位置', PageCaption, False, '');
   DataDirPage.Add('数据目录：');
   DataDirPage.Values[0] := DefaultDataDir;
 
-  { 已有 config.toml 时不再提供修改，避免覆盖用户已有配置或让选择静默失效。 }
   if FileExists(ConfigFilePath) then
   begin
     DataDirPage.Values[0] := DefaultDataDir;
     DataDirPage.Edits[0].Enabled := False;
-    DataDirPage.SubCaption := '检测到已有 config.toml，安装器不会改动它；' +
-      '如需更换数据目录，请直接编辑 ' + ConfigFilePath + '。';
   end;
 end;
 
