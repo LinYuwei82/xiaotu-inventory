@@ -77,6 +77,14 @@ if(UNIX)
     add_test(NAME update_api_test
              COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/update_api_test.sh"
                      $<TARGET_FILE:xiaotu-server>)
+  else()
+    # 社区版必须拒绝网络版部署，而不是静默退回单机模式。
+    add_test(NAME community_network_refused
+             COMMAND $<TARGET_FILE:xiaotu-server> --data
+                     "${CMAKE_CURRENT_BINARY_DIR}/community-network-refused" --server)
+    set_tests_properties(community_network_refused PROPERTIES
+      PASS_REGULAR_EXPRESSION "deployment.network"
+      TIMEOUT 30)
   endif()
   add_test(NAME deploy_backup_test
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/deploy_backup_test.sh"
