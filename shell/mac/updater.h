@@ -18,8 +18,20 @@ NS_ASSUME_NONNULL_BEGIN
 // 启动时调用：累计连续启动失败次数；成功运行 30 秒后清零。
 - (void)noteLaunch;
 
-// 供未来设置页使用：跳过指定版本若干天。
-- (void)skipVersion:(NSString*)version days:(NSInteger)days;
+// 以下四个桥方法的结果字典字段见 docs/前端交接-更新模块.md 第 2、3 节。
+// completion 一律在主线程异步回调，不存在同步返回值。
+
+// 立即检查一次（绕过 24h 定时，遵守暂停与跳过）；10 分钟冷却内返回 COOLDOWN。
+- (void)checkNowWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
+
+// version 必须是字符串且非空；days 可为 nil（默认 7）或 1–30 的整数。
+// 参数非法返回 INVALID_ARGUMENT，强制更新返回 MANDATORY_UPDATE。
+- (void)skipVersion:(nullable id)version
+               days:(nullable id)days
+         completion:(void (^)(NSDictionary<NSString*, id>* result))completion;
+
+// 无 Sparkle 返回 UNAVAILABLE，无待安装版本返回 NO_PENDING_UPDATE。
+- (void)installUpdateWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
 
 - (NSDictionary<NSString*, id>*)status;
 

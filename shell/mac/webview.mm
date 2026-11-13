@@ -116,6 +116,10 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
     [self savePdfWithFilename:filename paper:paper];
     return;
   }
+  if ([message.name hasPrefix:@"xiaotuUpdate"]) {
+    [self handleUpdateMessage:message];
+    return;
+  }
   if (![message.name isEqualToString:@"xiaotuExport"]) {
     return;
   }
@@ -171,6 +175,47 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
     [alert beginSheetModalForWindow:self.window completionHandler:nil];
   } else {
     [alert runModal];
+  }
+}
+
+// 更新桥：四个方法都通过 evaluateJavaScript 异步回调，前端封装为 Promise。
+// 契约见 docs/前端交接-更新模块.md 第 2 节；原生侧不生成任何界面。
+- (void)callUpdateCallback:(NSString*)callback payload:(NSDictionary*)payload {
+  NSData* data = [NSJSONSerialization dataWithJSONObject:payload ?: @{} options:0 error:nil];
+  NSString* json = data != nil ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
+                               : @"null";
+  NSString* script =
+      [NSString stringWithFormat:@"window.%@ && window.%@(%@);", callback, callback, json];
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [self.webview evaluateJavaScript:script completionHandler:nil];
+  });
+}
+
+- (void)handleUpdateMessage:(WKScriptMessage*)message {
+  NSDictionary* body = [message.body isKindOfClass:[NSDictionary class]] ? message.body : @{};
+  if ([message.name isEqualToString:@"xiaotuUpdateCheckNow"]) {
+    [[XiaotuUpdater shared] checkNowWithCompletion:^(NSDictionary* result) {
+      [self callUpdateCallback:@"xiaotuUpdateCheckDone" payload:result];
+    }];
+    return;
+  }
+  if ([message.name isEqualToString:@"xiaotuUpdateStatus"]) {
+    [self callUpdateCallback:@"xiaotuUpdateStatusDone" payload:[[XiaotuUpdater shared] status]];
+    return;
+  }
+  if ([message.name isEqualToString:@"xiaotuUpdateSkip"]) {
+    [[XiaotuUpdater shared] skipVersion:body[@"version"]
+                                   days:body[@"days"]
+                             completion:^(NSDictionary* result) {
+                               [self callUpdateCallback:@"xiaotuUpdateSkipDone" payload:result];
+                             }];
+    return;
+  }
+  if ([message.name isEqualToString:@"xiaotuUpdateInstall"]) {
+    [[XiaotuUpdater shared] installUpdateWithCompletion:^(NSDictionary* result) {
+      [self callUpdateCallback:@"xiaotuUpdateInstallDone" payload:result];
+    }];
+    return;
   }
 }
 
@@ -347,6 +392,10 @@ int run_webview(const std::string& url, const std::string& title) {
     [controller addScriptMessageHandler:script_handler name:@"xiaotuExport"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuPrint"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuPrintPdf"];
+    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateCheckNow"];
+    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateStatus"];
+    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateSkip"];
+    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateInstall"];
     configuration.userContentController = controller;
     WKWebView* webview = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
     [webview setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];

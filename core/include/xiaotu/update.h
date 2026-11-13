@@ -100,6 +100,23 @@ UpdateDecision evaluate_manifest(const UpdateManifest& manifest, const UpdateQue
 int rollout_bucket(std::string_view install_id, std::int64_t build);
 bool rollout_allows(int percent, int bucket);
 
+// ---- 原生桥接层复用的小判定（纯函数，便于 ctest 覆盖） ----
+
+// 手动检查冷却：返回距下次可检查的秒数；<= 0 表示当前可检查。
+// last_manual_epoch 为 0（从未手动检查）时直接放行。
+std::int64_t manual_check_retry_after(std::int64_t last_manual_epoch, std::int64_t now_epoch,
+                                      std::int64_t cooldown_seconds);
+
+// 跳过天数合法范围：1–30 的整数。
+bool valid_skip_days(int days);
+
+// install 桥方法的三种结果，对应 STARTED / UNAVAILABLE / NO_PENDING_UPDATE。
+enum class InstallDecision { kStarted, kUnavailable, kNoPendingUpdate };
+
+// 无安装器时优先返回不可用；有待安装版本（pending_build > current_build）才可启动安装。
+InstallDecision decide_install(bool installer_available, std::int64_t pending_build,
+                               std::int64_t current_build);
+
 // ISO 8601 UTC（YYYY-MM-DDTHH:MM:SSZ）与 epoch 互转；解析失败返回 nullopt。
 std::optional<std::int64_t> parse_iso8601_utc(std::string_view text);
 
