@@ -14,9 +14,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # 会把中文字面量读坏并触发 C4819 / 语法错误。GCC 与 Clang 默认即 UTF-8，不需要该选项。
 if(MSVC)
   add_compile_options(/utf-8)
-  # 指定初始化器顺序与声明不一致在 MSVC 下是 C7560；它只在部分配置暴露过，
-  # 这里直接升级为错误，避免漂到 main。
-  add_compile_options(/we7560)
+  # 指定初始化器顺序与声明不一致是 C7560。MSVC 14.4x（本机 19.44.35230 实测）默认即
+  # 按 error 处理：不带任何 /we 也编译失败（退出码 2），因此不需要 /we7560；而该开关
+  # 会被 cl 判为无效参数，每个编译单元刷一条 `D9014: 值"7560"对于"/we"无效`，故移除。
+  # Clang/GCC 仍走下面的 -Werror=reorder-init-list 探测。
   # Windows 分发包用静态运行库：安装后不依赖 VC++ Redistributable。
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
