@@ -6402,6 +6402,7 @@
               <option value="INCLUSIVE">含税价（价税合计）</option>
               <option value="NET">不含税净额</option>
             </select>
+            <span class="page-sub">一般纳税人可切「不含税」；小规模纳税人保持「含税」。切换只影响此后审核的单据，历史结存与毛利不重算。</span>
             <span class="page-sub" data-role="basis-state"></span>
           </label>
           <span class="page-sub">空闲超时按最近访问滑动续期；绝对上限从登录时刻起算，超过后需重新登录。</span>
