@@ -46,6 +46,12 @@ target_link_libraries(xiaotu_api_smoke PRIVATE xiaotu_server Threads::Threads)
 
 add_test(NAME api_smoke COMMAND xiaotu_api_smoke)
 
+add_executable(xiaotu_system_shutdown_smoke
+               "${CMAKE_CURRENT_SOURCE_DIR}/system_shutdown_smoke.cpp")
+target_link_libraries(xiaotu_system_shutdown_smoke PRIVATE xiaotu_server Threads::Threads)
+
+add_test(NAME system_shutdown_smoke COMMAND xiaotu_system_shutdown_smoke)
+
 add_executable(xiaotu_backup_smoke "${CMAKE_CURRENT_SOURCE_DIR}/backup_smoke.cpp")
 target_link_libraries(xiaotu_backup_smoke PRIVATE xiaotu_core Threads::Threads)
 
@@ -77,6 +83,10 @@ if(UNIX)
     add_test(NAME update_api_test
              COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/update_api_test.sh"
                      $<TARGET_FILE:xiaotu-server>)
+    add_test(NAME shutdown_exit
+             COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/shutdown_exit.sh"
+                     $<TARGET_FILE:xiaotu-server>)
+    set_tests_properties(shutdown_exit PROPERTIES TIMEOUT 60)
   else()
     # 社区版必须拒绝网络版部署，而不是静默退回单机模式。
     add_test(NAME community_network_refused

@@ -110,6 +110,18 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
       bootstrap_expire_(std::chrono::steady_clock::now() + std::chrono::minutes(10)),
       sessions_(services.db),
       server_(std::make_unique<httplib::Server>()) {
+  // 优雅关闭的一次性令牌：写入数据目录下的隐藏文件（0600），成功后删除。
+  // 日志只打印路径，绝不打印令牌本身。
+  if (!info_.data_dir.empty()) {
+    const std::filesystem::path token_file =
+        std::filesystem::path(info_.data_dir) / ".shutdown-token";
+    if (shutdown_token_.issue(token_file)) {
+      log_info("关闭令牌已写入 " + token_file.string());
+    } else {
+      log_warn("关闭令牌写入失败，本次仅管理员会话可触发关闭: " + token_file.string());
+    }
+  }
+
   // 主数据导入按原始二进制上传，只给导入路径放宽到 5MB；
   // 其它接口仍在 pre-routing 里按 1MB 拦截，避免整体放大请求体上限。
   server_->set_payload_max_length(kImportMaxBytes);
@@ -260,6 +272,21 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         }
         if (path == "/api/login" && req.method == "POST") {
           return httplib::Server::HandlerResponse::Unhandled;
+        }
+        // 优雅关闭：只允许回环地址；未登录时用一次性令牌（X-Xiaotu-Shutdown-Token）
+        // 鉴权，具体判定在路由内完成。已登录时继续走下面的 CSRF / 强制改密检查。
+        if (path == "/api/system/shutdown" && req.method == "POST") {
+          if (!is_loopback_address(req.remote_addr)) {
+            json_error(res, 403, "FORBIDDEN", "仅允许本机访问");
+            return httplib::Server::HandlerResponse::Handled;
+          }
+          if (!session.has_value()) {
+            if (req.get_header_value("X-Xiaotu-Shutdown-Token").empty()) {
+              json_error(res, 401, "UNAUTHORIZED", "未登录或会话已过期");
+              return httplib::Server::HandlerResponse::Handled;
+            }
+            return httplib::Server::HandlerResponse::Unhandled;
+          }
         }
         if (!session.has_value()) {
           json_error(res, 401, "UNAUTHORIZED", "未登录或会话已过期");
@@ -598,6 +625,53 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     json_ok(res, body);
   });
 
+  // 优雅关闭：只允许回环地址；管理员会话或一次性令牌二选一。
+  // 先写审计与响应，再在独立线程里 stop：在 handler 线程内 stop 会等待自身
+  // 所在的连接/任务队列，造成死锁；在途请求由 httplib 的任务队列排空后自然完成。
+  server_->Post("/api/system/shutdown", [this](const httplib::Request& req,
+                                               httplib::Response& res) {
+    if (!is_loopback_address(req.remote_addr)) {
+      json_error(res, 403, "FORBIDDEN", "仅允许本机访问");
+      return;
+    }
+    const std::string& role = current_context().role;
+    bool authorized = false;
+    const char* source = "";
+    if (!role.empty() && role == "admin" && role_has_permission(role, "setting.write")) {
+      authorized = true;
+      source = "session";
+    } else if (shutdown_token_.consume(req.get_header_value("X-Xiaotu-Shutdown-Token"))) {
+      authorized = true;
+      source = "token";
+    }
+    if (!authorized) {
+      if (role.empty()) {
+        json_error(res, 401, "UNAUTHORIZED", "未登录或会话已过期");
+      } else {
+        json_error(res, 403, "FORBIDDEN", "仅管理员可关闭服务");
+      }
+      return;
+    }
+    // 审计写失败不应阻止关闭。
+    try {
+      std::string detail = std::string("来源=") + source + " 客户端=" + req.remote_addr;
+      services_.db.write([&](sqlite3* conn) {
+        audit_write(conn, "shutdown", "system", 0, "", detail);
+      });
+    } catch (const std::exception& error) {
+      log_warn(std::string("关闭审计写入失败: ") + error.what());
+    }
+    // 重复调用保持幂等：只触发一次 stop。
+    if (!shutdown_started_.exchange(true)) {
+      shutdown_thread_ = std::thread([this] {
+        // 给响应写出留出时间，避免关闭监听套接字时打断正在回写的响应。
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        server_->stop();
+      });
+    }
+    json_ok(res, nlohmann::json{{"status", "stopping"}});
+  });
+
   // 先注册全部 API 业务路由，再注册静态资源兜底路由，避免正则把 /api/* 吞掉。
   register_routes();
 
@@ -661,7 +735,11 @@ void HttpServer::serve_blocking() {
 }
 
 void HttpServer::stop() {
-  if (server_) {
+  if (shutdown_thread_.joinable()) {
+    shutdown_thread_.join();
+  }
+  // 关闭线程已经 stop 过监听套接字，这里不再重复调用，避免并发断言。
+  if (!shutdown_started_.load() && server_) {
     server_->stop();
   }
   if (thread_.joinable()) {

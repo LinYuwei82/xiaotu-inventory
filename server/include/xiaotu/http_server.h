@@ -10,6 +10,7 @@
 #include "xiaotu/login_limiter.h"
 #include "xiaotu/services.h"
 #include "xiaotu/session_store.h"
+#include "xiaotu/system_shutdown.h"
 
 namespace httplib {
 class Server;
@@ -59,6 +60,8 @@ class HttpServer {
   void stop();
 
   int port() const { return port_; }
+  // listen 是否仍在运行：主循环据此在服务被停止（如 /api/system/shutdown）后退出。
+  bool serving() const { return serving_.load(); }
 
  private:
   void register_routes();
@@ -74,6 +77,10 @@ class HttpServer {
 
   SessionStore sessions_;
   LoginLimiter login_limiter_;
+  // 优雅关闭的一次性令牌：启动时写入 <data_dir>/.shutdown-token。
+  ShutdownToken shutdown_token_;
+  std::atomic<bool> shutdown_started_{false};
+  std::thread shutdown_thread_;
   std::unique_ptr<httplib::Server> server_;
   std::thread thread_;
   std::atomic<bool> serving_{false};

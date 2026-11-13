@@ -9,6 +9,23 @@ on:
     branches: [main]
     tags:
       - 'v*'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'core/**'
+      - 'server/**'
+      - 'web/**'
+      - 'shell/**'
+      - 'tests/**'
+      - 'tools/**'
+      - 'cmake/**'
+      - 'packaging/**'
+      - 'deploy/**'
+      - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'VERSION'
+      - 'vcpkg.json'
+      - '.github/workflows/**'
 
 permissions:
   contents: read
@@ -34,7 +51,16 @@ jobs:
         run: cmake --build --preset windows-release
 
       - name: Test
-        run: ctest --test-dir build/windows --output-on-failure
+        run: ctest --test-dir build/windows --output-on-failure --output-junit build/windows/ctest-results.xml
+
+      - name: Upload Windows test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ctest-junit
+          path: build/windows/ctest-results.xml
+          if-no-files-found: warn
+          retention-days: 14
 
       # 壳是独立工程；这里只验证能编译，不打包、不签名。
       - name: Fetch WebView2 SDK
@@ -105,3 +131,21 @@ jobs:
             packaging/win/out/SIGNING.txt
           if-no-files-found: error
           retention-days: 14
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset macos-release
+
+      - name: Build
+        run: cmake --build --preset release
+
+      - name: Test
+        run: ctest --preset release --output-on-failure
+
+      # 只做校验，不打包、不签名、不公证。
+      - name: Repository checks
+        run: bash tools/ci/check.sh --quick

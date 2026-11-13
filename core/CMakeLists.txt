@@ -64,6 +64,11 @@ set(ARGON2_SOURCES
   "${ARGON2_DIR}/src/thread.c"
   "${ARGON2_DIR}/src/blake2/blake2b.c")
 set_source_files_properties(${ARGON2_SOURCES} PROPERTIES COMPILE_OPTIONS "-w")
+if(MSVC)
+  # 官方参考实现里有 char 下标与 int 比较等写法，MSVC 报 C4804。
+  # 只对本组 vendor 源文件加 /wd4804，不碰业务代码、不全局关警告。
+  set_source_files_properties(${ARGON2_SOURCES} PROPERTIES COMPILE_OPTIONS "/wd4804")
+endif()
 
 add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/audit.cpp"

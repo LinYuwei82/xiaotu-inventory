@@ -502,7 +502,7 @@ int main(int argc, char** argv) {
       return code;
 #else
       std::cout << "当前构建未包含 WebView 壳，请用浏览器打开上面的访问地址。" << std::endl;
-      while (!g_stop) {
+      while (!g_stop && http.serving()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
       }
       http.stop();
@@ -524,7 +524,7 @@ int main(int argc, char** argv) {
       xiaotu::log_warn("内置管理员尚未设置口令");
     }
 
-    while (!g_stop) {
+    while (!g_stop && http.serving()) {
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
     http.stop();
