@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON:-${REPO_ROOT}/tools/package/.venv/bin/python}"
 
 if [ ! -x "$PYTHON_BIN" ]; then
-  echo "SKIP: 未找到 $PYTHON_BIN（可创建 tools/package/.venv 并安装 requirements.txt）"
+  echo "SKIP: 未找到 ${PYTHON_BIN}（可创建 tools/package/.venv 并安装 requirements.txt）"
   exit 0
 fi
 if ! "$PYTHON_BIN" -c 'import cryptography' >/dev/null 2>&1; then

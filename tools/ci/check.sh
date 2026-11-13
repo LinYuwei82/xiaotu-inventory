@@ -102,7 +102,7 @@ case "$(uname -s)" in
     if [[ -f build/ci-linux/CMakeCache.txt ]]; then
       CACHED_GENERATOR="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' build/ci-linux/CMakeCache.txt)"
       if [[ -n "$CACHED_GENERATOR" && "$CACHED_GENERATOR" != "$GENERATOR_NAME" ]]; then
-        echo "    缓存中的生成器为 $CACHED_GENERATOR，与当前 $GENERATOR_NAME 不一致，清空 build/ci-linux" >&2
+        echo "    缓存中的生成器为 ${CACHED_GENERATOR}，与当前 ${GENERATOR_NAME} 不一致，清空 build/ci-linux" >&2
         rm -rf build/ci-linux
       fi
     fi
@@ -113,7 +113,7 @@ case "$(uname -s)" in
         -DCMAKE_C_COMPILER_LAUNCHER=ccache
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       )
-      echo "    ccache: 已启用（$CCACHE_DIR）"
+      echo "    ccache: 已启用（${CCACHE_DIR}）"
     fi
 
     cmake --preset linux-ci "${GENERATOR[@]}" "${LAUNCHER[@]}"
