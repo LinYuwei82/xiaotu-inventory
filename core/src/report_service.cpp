@@ -133,8 +133,8 @@ std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& fil
   std::vector<LedgerDetailRow> rows;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
-              "SELECT l.id, l.biz_time, l.biz_type, h.doc_no, i.code, i.name, w.name,"
-              " l.qty, l.amount_cents, COALESCE(h.biz_category, '')"
+              "SELECT l.id, l.biz_time, l.biz_type, h.doc_no, h.doc_date, i.code, i.name,"
+              " w.name, l.qty, l.amount_cents, COALESCE(h.biz_category, '')"
               " FROM stock_ledger l"
               " JOIN doc_header h ON h.id = l.doc_id"
               " JOIN item i ON i.id = l.item_id"
@@ -166,12 +166,13 @@ std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& fil
       row.biz_time = stmt.text(1);
       row.biz_type = stmt.text(2);
       row.doc_no = stmt.text(3);
-      row.item_code = stmt.text(4);
-      row.item_name = stmt.text(5);
-      row.warehouse_name = stmt.text(6);
-      row.qty = stmt.i64(7);
-      row.amount_cents = stmt.i64(8);
-      row.biz_category = stmt.text(9);
+      row.doc_date = stmt.text(4);
+      row.item_code = stmt.text(5);
+      row.item_name = stmt.text(6);
+      row.warehouse_name = stmt.text(7);
+      row.qty = stmt.i64(8);
+      row.amount_cents = stmt.i64(9);
+      row.biz_category = stmt.text(10);
       rows.push_back(std::move(row));
     }
   });
@@ -185,7 +186,7 @@ std::vector<GoodsFlowRow> ReportService::goods_flow(const ReportFilter& filter) 
     Stmt stmt(conn,
               "SELECT item_id, item_code, item_name, unit, warehouse_code, warehouse_name,"
               " opening_qty, in_qty, out_qty, opening_qty + in_qty - out_qty AS closing_qty,"
-              " in_amount_cents, out_amount_cents"
+              " in_amount_cents, out_amount_cents, adjust_amount_cents"
               " FROM ("
               "   SELECT i.id AS item_id, i.code AS item_code, i.name AS item_name,"
               "     i.unit, w.code AS warehouse_code, w.name AS warehouse_name,"
@@ -201,7 +202,11 @@ std::vector<GoodsFlowRow> ReportService::goods_flow(const ReportFilter& filter) 
               "              AND l.qty > 0 THEN l.amount_cents ELSE 0 END) AS in_amount_cents,"
               "     SUM(CASE WHEN l.biz_time >= ?1"
               "              AND (?2 = '' OR substr(l.biz_time, 1, 10) <= ?2)"
-              "              AND l.qty < 0 THEN -l.amount_cents ELSE 0 END) AS out_amount_cents"
+              "              AND l.qty < 0 THEN -l.amount_cents ELSE 0 END) AS out_amount_cents,"
+              // 数量为 0、只动金额的流水单列「其他调整」，不并入收入/发出两侧。
+              "     SUM(CASE WHEN l.biz_time >= ?1"
+              "              AND (?2 = '' OR substr(l.biz_time, 1, 10) <= ?2)"
+              "              AND l.qty = 0 THEN l.amount_cents ELSE 0 END) AS adjust_amount_cents"
               "   FROM stock_ledger l"
               "   JOIN item i ON i.id = l.item_id"
               "   JOIN warehouse w ON w.id = l.warehouse_id"
@@ -210,6 +215,7 @@ std::vector<GoodsFlowRow> ReportService::goods_flow(const ReportFilter& filter) 
               "   GROUP BY i.id, w.id"
               " ) t"
               " WHERE opening_qty <> 0 OR in_qty <> 0 OR out_qty <> 0"
+              "    OR in_amount_cents <> 0 OR out_amount_cents <> 0 OR adjust_amount_cents <> 0"
               " ORDER BY item_code, warehouse_code;");
     // 我们的 Stmt 只支持位置绑定，这里重复绑定同一参数值。
     stmt.bind(1, from_start)
@@ -230,6 +236,7 @@ std::vector<GoodsFlowRow> ReportService::goods_flow(const ReportFilter& filter) 
       row.closing_qty = stmt.i64(9);
       row.in_amount_cents = stmt.i64(10);
       row.out_amount_cents = stmt.i64(11);
+      row.adjust_amount_cents = stmt.i64(12);
       rows.push_back(std::move(row));
     }
   });
@@ -244,8 +251,8 @@ std::vector<InventorySummaryRow> ReportService::inventory_summary(
     Stmt stmt(conn,
               "SELECT item_id, item_code, item_name, unit,"
               " opening_qty, in_qty, out_qty, opening_qty + in_qty - out_qty AS closing_qty,"
-              " opening_amount, in_amount, out_amount,"
-              " opening_amount + in_amount - out_amount AS closing_amount"
+              " opening_amount, in_amount, out_amount, adjust_amount,"
+              " opening_amount + in_amount - out_amount + adjust_amount AS closing_amount"
               " FROM ("
               "   SELECT i.id AS item_id, i.code AS item_code, i.name AS item_name, i.unit,"
               "     SUM(CASE WHEN l.biz_time < ?1 THEN l.qty ELSE 0 END) AS opening_qty,"
@@ -255,15 +262,17 @@ std::vector<InventorySummaryRow> ReportService::inventory_summary(
               "              AND l.qty > 0 THEN l.qty ELSE 0 END) AS in_qty,"
               "     SUM(CASE WHEN l.biz_time >= ?1"
               "              AND (?2 = '' OR substr(l.biz_time, 1, 10) <= ?2)"
-              "              AND (l.qty > 0 OR (l.qty = 0 AND l.amount_cents > 0))"
-              "              THEN l.amount_cents ELSE 0 END) AS in_amount,"
+              "              AND l.qty > 0 THEN l.amount_cents ELSE 0 END) AS in_amount,"
               "     SUM(CASE WHEN l.biz_time >= ?1"
               "              AND (?2 = '' OR substr(l.biz_time, 1, 10) <= ?2)"
               "              AND l.qty < 0 THEN -l.qty ELSE 0 END) AS out_qty,"
               "     SUM(CASE WHEN l.biz_time >= ?1"
               "              AND (?2 = '' OR substr(l.biz_time, 1, 10) <= ?2)"
-              "              AND (l.qty < 0 OR (l.qty = 0 AND l.amount_cents < 0))"
-              "              THEN -l.amount_cents ELSE 0 END) AS out_amount"
+              "              AND l.qty < 0 THEN -l.amount_cents ELSE 0 END) AS out_amount,"
+              // 数量为 0、只动金额的流水单列「其他调整」，期末金额要把这一侧加回来。
+              "     SUM(CASE WHEN l.biz_time >= ?1"
+              "              AND (?2 = '' OR substr(l.biz_time, 1, 10) <= ?2)"
+              "              AND l.qty = 0 THEN l.amount_cents ELSE 0 END) AS adjust_amount"
               "   FROM stock_ledger l"
               "   JOIN item i ON i.id = l.item_id"
               "   WHERE (?3 = 0 OR l.warehouse_id = ?3)"
@@ -272,6 +281,7 @@ std::vector<InventorySummaryRow> ReportService::inventory_summary(
               " ) t"
               " WHERE opening_qty <> 0 OR in_qty <> 0 OR out_qty <> 0"
               "    OR opening_amount <> 0 OR in_amount <> 0 OR out_amount <> 0"
+              "    OR adjust_amount <> 0"
               " ORDER BY item_code;");
     stmt.bind(1, from_start)
         .bind(2, filter.to)
@@ -290,7 +300,8 @@ std::vector<InventorySummaryRow> ReportService::inventory_summary(
       row.opening_amount_cents = stmt.i64(8);
       row.in_amount_cents = stmt.i64(9);
       row.out_amount_cents = stmt.i64(10);
-      row.closing_amount_cents = stmt.i64(11);
+      row.adjust_amount_cents = stmt.i64(11);
+      row.closing_amount_cents = stmt.i64(12);
       rows.push_back(std::move(row));
     }
   });
@@ -658,11 +669,14 @@ StatementResult ReportService::partner_statement(std::string_view partner_key, i
     }
     {
       Stmt stmt(conn,
-                "SELECT id, settled_on, settle_no, amount_cents, reverses_id, note FROM settlement"
-                " WHERE partner_key = ? AND direction = ?"
-                "   AND (? = '' OR settled_on >= ?)"
-                "   AND (? = '' OR settled_on <= ?)"
-                " ORDER BY settled_on, id;");
+                "SELECT s.id, s.settled_on, s.settle_no, s.amount_cents, s.reverses_id, s.note,"
+                "       COALESCE(o.settle_no, '')"
+                " FROM settlement s"
+                " LEFT JOIN settlement o ON o.id = s.reverses_id"
+                " WHERE s.partner_key = ? AND s.direction = ?"
+                "   AND (? = '' OR s.settled_on >= ?)"
+                "   AND (? = '' OR s.settled_on <= ?)"
+                " ORDER BY s.settled_on, s.id;");
       stmt.bind(1, result.partner_key)
           .bind(2, static_cast<std::int64_t>(result.direction))
           .bind(3, from_text)
@@ -678,6 +692,8 @@ StatementResult ReportService::partner_statement(std::string_view partner_key, i
         row.line.kind = "SETTLE";
         row.line.doc_no = stmt.text(2);
         row.line.note = stmt.text(5);
+        row.line.is_reverse = stmt.i64(4) != 0;
+        row.line.reverses_no = stmt.text(6);
         const std::int64_t delta = -stmt.i64(3);
         if (delta >= 0) row.line.increase_cents = delta;
         else row.line.decrease_cents = -delta;
@@ -697,6 +713,14 @@ StatementResult ReportService::partner_statement(std::string_view partner_key, i
       row.line.balance_cents = balance;
       result.increase_cents += row.line.increase_cents;
       result.decrease_cents += row.line.decrease_cents;
+      if (row.line.kind == "SETTLE") {
+        // 净额按「减少 − 增加」口径：正常收付款为正，撤销冲回为负。
+        result.settle_net_cents += row.line.decrease_cents - row.line.increase_cents;
+        if (row.line.is_reverse) {
+          ++result.reverse_count;
+          result.reverse_cents += row.line.increase_cents;
+        }
+      }
       result.lines.push_back(std::move(row.line));
     }
     result.closing_cents = balance;

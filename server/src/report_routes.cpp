@@ -145,13 +145,53 @@ nlohmann::json balance_to_json(const StockBalanceRow& row) {
   };
 }
 
+// 库存流水的类型标签：盘盈/盘亏与各种 *_REVERSE 统一转成中文，导出与页面口径一致。
+std::string stock_biz_label(const std::string& biz_type) {
+  if (biz_type == "REVERSE") return "反审核回冲";
+  constexpr std::string_view kReverse = "_REVERSE";
+  if (biz_type.size() > kReverse.size() &&
+      biz_type.compare(biz_type.size() - kReverse.size(), kReverse.size(), kReverse) == 0) {
+    return stock_biz_label(biz_type.substr(0, biz_type.size() - kReverse.size())) + "回冲";
+  }
+  if (biz_type == "PUR_IN") return "采购入库";
+  if (biz_type == "PUR_RET") return "采购退货";
+  if (biz_type == "SAL_OUT") return "销售出库";
+  if (biz_type == "SAL_RET") return "销售退货";
+  if (biz_type == "OTH_IN") return "其他入库";
+  if (biz_type == "OTH_OUT") return "其他出库";
+  if (biz_type == "STK_TRF") return "调拨出库";
+  if (biz_type == "STK_TRF_IN") return "调拨入库";
+  if (biz_type == "STK_CNT_IN") return "盘盈";
+  if (biz_type == "STK_CNT_OUT") return "盘亏";
+  if (biz_type == "STK_CNT") return "盘点调整";
+  if (biz_type == "CST_ADJ") return "成本调整";
+  return biz_type;
+}
+
+bool is_reverse_biz(const std::string& biz_type) {
+  return biz_type == "REVERSE" || (biz_type.size() > 8 &&
+                                   biz_type.compare(biz_type.size() - 8, 8, "_REVERSE") == 0);
+}
+
+// 反审核回冲按操作日入账，但必须带上原单据日期，否则跨期回冲无法追溯。
+std::string ledger_biz_label(const LedgerDetailRow& row) {
+  const std::string label = stock_biz_label(row.biz_type);
+  if (is_reverse_biz(row.biz_type) && !row.doc_date.empty()) {
+    return label + "（原单 " + row.doc_date + "）";
+  }
+  return label;
+}
+
 nlohmann::json ledger_to_json(const LedgerDetailRow& row) {
   return nlohmann::json{
       {"id", row.id},
       {"biz_time", row.biz_time},
       {"biz_type", row.biz_type},
+      {"biz_type_label", ledger_biz_label(row)},
+      {"is_reverse", is_reverse_biz(row.biz_type)},
       {"biz_category", row.biz_category},
       {"doc_no", row.doc_no},
+      {"doc_date", row.doc_date},
       {"item_code", row.item_code},
       {"item_name", row.item_name},
       {"warehouse_name", row.warehouse_name},
@@ -174,6 +214,7 @@ nlohmann::json flow_to_json(const GoodsFlowRow& row) {
       {"closing_qty", qty_text(row.closing_qty)},
       {"in_amount_cents", row.in_amount_cents},
       {"out_amount_cents", row.out_amount_cents},
+      {"adjust_amount_cents", row.adjust_amount_cents},
   };
 }
 
@@ -190,6 +231,7 @@ nlohmann::json summary_to_json(const InventorySummaryRow& row) {
       {"opening_amount_cents", row.opening_amount_cents},
       {"in_amount_cents", row.in_amount_cents},
       {"out_amount_cents", row.out_amount_cents},
+      {"adjust_amount_cents", row.adjust_amount_cents},
       {"closing_amount_cents", row.closing_amount_cents},
   };
 }
@@ -383,28 +425,7 @@ std::string doc_type_label(const std::string& doc_type) {
   return doc_type;
 }
 
-// 库存流水的类型标签：盘盈/盘亏与各种 *_REVERSE 统一转成中文，导出与页面口径一致。
-std::string stock_biz_label(const std::string& biz_type) {
-  if (biz_type == "REVERSE") return "反审核回冲";
-  constexpr std::string_view kReverse = "_REVERSE";
-  if (biz_type.size() > kReverse.size() &&
-      biz_type.compare(biz_type.size() - kReverse.size(), kReverse.size(), kReverse) == 0) {
-    return stock_biz_label(biz_type.substr(0, biz_type.size() - kReverse.size())) + "回冲";
-  }
-  if (biz_type == "PUR_IN") return "采购入库";
-  if (biz_type == "PUR_RET") return "采购退货";
-  if (biz_type == "SAL_OUT") return "销售出库";
-  if (biz_type == "SAL_RET") return "销售退货";
-  if (biz_type == "OTH_IN") return "其他入库";
-  if (biz_type == "OTH_OUT") return "其他出库";
-  if (biz_type == "STK_TRF") return "调拨出库";
-  if (biz_type == "STK_TRF_IN") return "调拨入库";
-  if (biz_type == "STK_CNT_IN") return "盘盈";
-  if (biz_type == "STK_CNT_OUT") return "盘亏";
-  if (biz_type == "STK_CNT") return "盘点调整";
-  if (biz_type == "CST_ADJ") return "成本调整";
-  return biz_type;
-}
+// 库存流水的类型标签见文件上方的 stock_biz_label / ledger_biz_label。
 
 std::string qty_direction_label(int direction) {
   if (direction > 0) return "入库";
@@ -414,13 +435,22 @@ std::string qty_direction_label(int direction) {
 
 std::string statement_kind_label(const StatementResult& result, const StatementLine& line) {
   if (line.kind == "DOC") return "单据";
-  return result.direction == -1 ? "付款" : "收款";
+  const std::string base = result.direction == -1 ? "付款" : "收款";
+  return line.is_reverse ? base + "撤销" : base;
 }
 
 std::string statement_summary(const StatementResult& result, const StatementLine& line) {
   if (line.kind == "DOC") return doc_type_label(line.doc_type);
-  if (!line.note.empty()) return line.note;
-  return statement_kind_label(result, line);
+  if (!line.is_reverse && !line.note.empty()) return line.note;
+  std::string summary;
+  if (line.is_reverse) {
+    summary = std::string("撤销") + (result.direction == -1 ? "付款" : "收款");
+    if (!line.reverses_no.empty()) summary += "（原单 " + line.reverses_no + "）";
+  } else {
+    summary = statement_kind_label(result, line);
+  }
+  if (!line.note.empty()) summary += "；" + line.note;
+  return summary;
 }
 
 nlohmann::json statement_to_json(const StatementResult& result) {
@@ -432,6 +462,8 @@ nlohmann::json statement_to_json(const StatementResult& result) {
         {"kind_label", statement_kind_label(result, line)},
         {"doc_no", line.doc_no},
         {"summary", statement_summary(result, line)},
+        {"is_reverse", line.is_reverse},
+        {"reverses_no", line.reverses_no},
         {"increase_cents", line.increase_cents},
         {"decrease_cents", line.decrease_cents},
         {"balance_cents", line.balance_cents},
@@ -447,6 +479,9 @@ nlohmann::json statement_to_json(const StatementResult& result) {
       {"increase_cents", result.increase_cents},
       {"decrease_cents", result.decrease_cents},
       {"closing_cents", result.closing_cents},
+      {"settle_net_cents", result.settle_net_cents},
+      {"reverse_cents", result.reverse_cents},
+      {"reverse_count", result.reverse_count},
       {"lines", lines},
   };
 }
@@ -525,15 +560,17 @@ void register_report_routes(httplib::Server& server, Services& services) {
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      const ReportFilter filter = parse_filter(req);
                      const auto rows = services.reports.inventory_summary(filter);
-                     // 数量跨单位不可加总，合计行只汇总四个金额列。
+                     // 数量跨单位不可加总，合计行只汇总五个金额列。
                      std::int64_t sum_opening = 0;
                      std::int64_t sum_in = 0;
                      std::int64_t sum_out = 0;
+                     std::int64_t sum_adjust = 0;
                      std::int64_t sum_closing = 0;
                      for (const auto& row : rows) {
                        sum_opening += row.opening_amount_cents;
                        sum_in += row.in_amount_cents;
                        sum_out += row.out_amount_cents;
+                       sum_adjust += row.adjust_amount_cents;
                        sum_closing += row.closing_amount_cents;
                      }
                      if (csv_requested(req)) {
@@ -542,22 +579,24 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                     period_label(filter) + "；" +
                                         dimension_label(filter.item_id, "商品") + "；" +
                                         dimension_label(filter.warehouse_id, "仓库") +
-                                        "；按商品跨仓库汇总；数量跨单位不可加总，合计只汇总金额");
+                                        "；按商品跨仓库汇总；数量跨单位不可加总，合计只汇总金额；"
+                                        "数量为 0、只动金额的流水单列「其他调整」");
                        csv_row(csv, {"商品编码", "商品名称", "单位", "期初数量",
                                      "期初金额（元）", "入库数量", "入库金额（元）",
-                                     "出库数量", "出库金额（元）", "期末数量",
-                                     "期末金额（元）"});
+                                     "出库数量", "出库金额（元）", "其他调整（元）",
+                                     "期末数量", "期末金额（元）"});
                        for (const auto& row : rows) {
                          csv_row(csv, {row.item_code, row.item_name, row.unit,
                                        qty_text(row.opening_qty),
                                        yuan(row.opening_amount_cents),
                                        qty_text(row.in_qty), yuan(row.in_amount_cents),
                                        qty_text(row.out_qty), yuan(row.out_amount_cents),
+                                       yuan(row.adjust_amount_cents),
                                        qty_text(row.closing_qty),
                                        yuan(row.closing_amount_cents)});
                        }
                        csv_row(csv, {"合计", "", "", "", yuan(sum_opening), "",
-                                     yuan(sum_in), "", yuan(sum_out), "",
+                                     yuan(sum_in), "", yuan(sum_out), yuan(sum_adjust), "",
                                      yuan(sum_closing)});
                        send_csv(res, "inventory-summary-" + date_stamp() + ".csv", csv);
                        return;
@@ -568,11 +607,12 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                      period_label(filter) + "；" +
                                          dimension_label(filter.item_id, "商品") + "；" +
                                          dimension_label(filter.warehouse_id, "仓库") +
-                                         "；按商品跨仓库汇总；数量跨单位不可加总，合计只汇总金额");
+                                         "；按商品跨仓库汇总；数量跨单位不可加总，合计只汇总金额；"
+                                         "数量为 0、只动金额的流水单列「其他调整」");
                        sheet.add_header_row({"商品编码", "商品名称", "单位", "期初数量",
                                              "期初金额（元）", "入库数量", "入库金额（元）",
-                                             "出库数量", "出库金额（元）", "期末数量",
-                                             "期末金额（元）"});
+                                             "出库数量", "出库金额（元）", "其他调整（元）",
+                                             "期末数量", "期末金额（元）"});
                        for (const auto& row : rows) {
                          sheet.add_row({XlsxCell::text(row.item_code),
                                         XlsxCell::text(row.item_name),
@@ -583,6 +623,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                         XlsxCell::money(row.in_amount_cents),
                                         XlsxCell::text(qty_text(row.out_qty)),
                                         XlsxCell::money(row.out_amount_cents),
+                                        XlsxCell::money(row.adjust_amount_cents),
                                         XlsxCell::text(qty_text(row.closing_qty)),
                                         XlsxCell::money(row.closing_amount_cents)});
                        }
@@ -590,7 +631,8 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                       XlsxCell::text(""), XlsxCell::text(""),
                                       XlsxCell::money(sum_opening), XlsxCell::text(""),
                                       XlsxCell::money(sum_in), XlsxCell::text(""),
-                                      XlsxCell::money(sum_out), XlsxCell::text(""),
+                                      XlsxCell::money(sum_out),
+                                      XlsxCell::money(sum_adjust), XlsxCell::text(""),
                                       XlsxCell::money(sum_closing)});
                        send_xlsx(res, "inventory-summary-" + date_stamp() + ".xlsx",
                                  sheet.build());
@@ -642,7 +684,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        csv_row(csv, {"时间", "类型", "业务类型", "单据号", "商品编码", "商品名称",
                                      "仓库", "数量", "金额（元）"});
                        for (const auto& row : rows) {
-                         csv_row(csv, {row.biz_time, stock_biz_label(row.biz_type),
+                         csv_row(csv, {row.biz_time, ledger_biz_label(row),
                                        biz_category_label(row.biz_category), row.doc_no,
                                        row.item_code, row.item_name, row.warehouse_name,
                                        qty_text(row.qty), yuan(row.amount_cents)});
@@ -659,7 +701,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                              "商品名称", "仓库", "数量", "金额（元）"});
                        for (const auto& row : rows) {
                          sheet.add_row({XlsxCell::text(row.biz_time),
-                                        XlsxCell::text(stock_biz_label(row.biz_type)),
+                                        XlsxCell::text(ledger_biz_label(row)),
                                         XlsxCell::text(biz_category_label(row.biz_category)),
                                         XlsxCell::text(row.doc_no),
                                         XlsxCell::text(row.item_code),
@@ -699,32 +741,37 @@ void register_report_routes(httplib::Server& server, Services& services) {
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      const ReportFilter filter = parse_filter(req);
                      const auto rows = services.reports.goods_flow(filter);
-                     // 数量跨单位不可加总，合计行只汇总收入 / 发出金额。
+                     // 数量跨单位不可加总，合计行只汇总收入 / 发出 / 其他调整金额。
                      std::int64_t flow_in_amount = 0;
                      std::int64_t flow_out_amount = 0;
+                     std::int64_t flow_adjust_amount = 0;
                      for (const auto& row : rows) {
                        flow_in_amount += row.in_amount_cents;
                        flow_out_amount += row.out_amount_cents;
+                       flow_adjust_amount += row.adjust_amount_cents;
                      }
                      if (csv_requested(req)) {
                        std::string csv;
                        csv_preamble(csv, "收发明细",
                                     period_label(filter) + "；" +
                                         dimension_label(filter.warehouse_id, "仓库") +
-                                        "；数量跨单位不可加总，合计只汇总金额");
+                                        "；数量跨单位不可加总，合计只汇总金额；"
+                                        "数量为 0、只动金额的流水单列「其他调整」");
                        csv_row(csv, {"商品编码", "商品名称", "单位", "仓库编码", "仓库名称",
                                      "期初数量", "收入数量", "发出数量", "期末数量",
-                                     "收入金额（元）", "发出金额（元）"});
+                                     "收入金额（元）", "发出金额（元）", "其他调整（元）"});
                        for (const auto& row : rows) {
                          csv_row(csv, {row.item_code, row.item_name, row.unit,
                                        row.warehouse_code, row.warehouse_name,
                                        qty_text(row.opening_qty),
                                        qty_text(row.in_qty), qty_text(row.out_qty),
                                        qty_text(row.closing_qty),
-                                       yuan(row.in_amount_cents), yuan(row.out_amount_cents)});
+                                       yuan(row.in_amount_cents), yuan(row.out_amount_cents),
+                                       yuan(row.adjust_amount_cents)});
                        }
                        csv_row(csv, {"合计", "", "", "", "", "", "", "", "",
-                                     yuan(flow_in_amount), yuan(flow_out_amount)});
+                                     yuan(flow_in_amount), yuan(flow_out_amount),
+                                     yuan(flow_adjust_amount)});
                        send_csv(res, "goods-flow-" + date_stamp() + ".csv", csv);
                        return;
                      }
@@ -733,10 +780,12 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        xlsx_preamble(sheet, "收发明细",
                                      period_label(filter) + "；" +
                                          dimension_label(filter.warehouse_id, "仓库") +
-                                         "；数量跨单位不可加总，合计只汇总金额");
+                                         "；数量跨单位不可加总，合计只汇总金额；"
+                                         "数量为 0、只动金额的流水单列「其他调整」");
                        sheet.add_header_row({"商品编码", "商品名称", "单位", "仓库编码",
                                              "仓库名称", "期初数量", "收入数量", "发出数量",
-                                             "期末数量", "收入金额（元）", "发出金额（元）"});
+                                             "期末数量", "收入金额（元）", "发出金额（元）",
+                                             "其他调整（元）"});
                        for (const auto& row : rows) {
                          sheet.add_row({XlsxCell::text(row.item_code),
                                         XlsxCell::text(row.item_name),
@@ -748,7 +797,8 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                         XlsxCell::text(qty_text(row.out_qty)),
                                         XlsxCell::text(qty_text(row.closing_qty)),
                                         XlsxCell::money(row.in_amount_cents),
-                                        XlsxCell::money(row.out_amount_cents)});
+                                        XlsxCell::money(row.out_amount_cents),
+                                        XlsxCell::money(row.adjust_amount_cents)});
                        }
                        sheet.add_row({XlsxCell::text("合计"),
                                       XlsxCell::text(""), XlsxCell::text(""),
@@ -756,7 +806,8 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                       XlsxCell::text(""), XlsxCell::text(""),
                                       XlsxCell::text(""), XlsxCell::text(""),
                                       XlsxCell::money(flow_in_amount),
-                                      XlsxCell::money(flow_out_amount)});
+                                      XlsxCell::money(flow_out_amount),
+                                      XlsxCell::money(flow_adjust_amount)});
                        send_xlsx(res, "goods-flow-" + date_stamp() + ".xlsx", sheet.build());
                        return;
                      }
@@ -1406,7 +1457,8 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        csv_preamble(csv, "对账单",
                                     std::string("往来单位 ") + partner + "；方向 " +
                                         (direction == -1 ? "应付" : "应收") + "；期间 " + period +
-                                        "；仅统计 v7 迁移后审核的单据，已反审核单据不计入");
+                                        "；仅统计 v7 迁移后审核的单据，已反审核单据不计入；"
+                                        "撤销收付款按撤销当天入账，标注原单并单列净额");
                        csv_row(csv, {"日期", "类型", "单号", "摘要", "增加（元）", "减少（元）",
                                      "余额（元）"});
                        csv_row(csv, {"期初余额", "", "", "", "", "",
@@ -1419,6 +1471,12 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        }
                        csv_row(csv, {"本期合计", "", "", "", yuan(result.increase_cents),
                                      yuan(result.decrease_cents), yuan(result.closing_cents)});
+                       csv_row(csv, {"其中：撤销收付款", "",
+                                     std::to_string(result.reverse_count) + " 笔", "",
+                                     yuan(result.reverse_cents), "", ""});
+                       csv_row(csv, {"期间核销净额", "", "",
+                                     (direction == -1 ? "付款" : "收款") + std::string(" − 撤销回冲"),
+                                     "", yuan(result.settle_net_cents), ""});
                        send_csv(res,
                                 std::string("statement-") + (direction == -1 ? "ap" : "ar") + "-" +
                                     date_stamp() + ".csv",
@@ -1439,7 +1497,8 @@ void register_report_routes(httplib::Server& server, Services& services) {
                        xlsx_preamble(sheet, "对账单",
                                      std::string("往来单位 ") + partner + "；方向 " +
                                          (direction == -1 ? "应付" : "应收") + "；期间 " + period +
-                                         "；仅统计 v7 迁移后审核的单据，已反审核单据不计入");
+                                         "；仅统计 v7 迁移后审核的单据，已反审核单据不计入；"
+                                         "撤销收付款按撤销当天入账，标注原单并单列净额");
                        sheet.add_header_row({"日期", "类型", "单号", "摘要", "增加（元）",
                                              "减少（元）", "余额（元）"});
                        sheet.add_row({XlsxCell::text("期初余额"), XlsxCell::text(""),
@@ -1460,6 +1519,18 @@ void register_report_routes(httplib::Server& server, Services& services) {
                                       XlsxCell::money(result.increase_cents),
                                       XlsxCell::money(result.decrease_cents),
                                       XlsxCell::money(result.closing_cents)});
+                       sheet.add_row({XlsxCell::text("其中：撤销收付款"), XlsxCell::text(""),
+                                      XlsxCell::text(std::to_string(result.reverse_count) + " 笔"),
+                                      XlsxCell::text(""),
+                                      XlsxCell::money(result.reverse_cents),
+                                      XlsxCell::text(""), XlsxCell::text("")});
+                       sheet.add_row({XlsxCell::text("期间核销净额"), XlsxCell::text(""),
+                                      XlsxCell::text(""),
+                                      XlsxCell::text((direction == -1 ? "付款" : "收款") +
+                                                     std::string(" − 撤销回冲")),
+                                      XlsxCell::text(""),
+                                      XlsxCell::money(result.settle_net_cents),
+                                      XlsxCell::text("")});
                        send_xlsx(res,
                                  std::string("statement-") + (direction == -1 ? "ap" : "ar") + "-" +
                                      date_stamp() + ".xlsx",

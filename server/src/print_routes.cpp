@@ -193,6 +193,18 @@ std::string qty_direction_label(int direction) {
   return "全部";
 }
 
+// 反审核回冲按操作日入账，打印时带上原单据日期便于跨期追溯。
+std::string ledger_biz_label(const LedgerDetailRow& row) {
+  std::string label = stock_biz_label(row.biz_type);
+  if ((row.biz_type == "REVERSE" ||
+       (row.biz_type.size() > 8 &&
+        row.biz_type.compare(row.biz_type.size() - 8, 8, "_REVERSE") == 0)) &&
+      !row.doc_date.empty()) {
+    label += "（原单 " + row.doc_date + "）";
+  }
+  return label;
+}
+
 std::string stock_biz_category_label(const std::string& category) {
   if (category == "GIFT") return "赠品";
   if (category == "USAGE") return "领用";
@@ -337,7 +349,7 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
     }
     for (const auto& row : ledger_rows) {
       render.rows.push_back({{"biz_time", row.biz_time},
-                             {"biz_type", stock_biz_label(row.biz_type)},
+                             {"biz_type", ledger_biz_label(row)},
                              {"biz_category", stock_biz_category_label(row.biz_category)},
                              {"doc_no", row.doc_no},
                              {"item_code", row.item_code},
@@ -357,9 +369,11 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                       "；数量跨单位不可加总，合计只汇总金额";
     std::int64_t flow_in = 0;
     std::int64_t flow_out = 0;
+    std::int64_t flow_adjust = 0;
     for (const auto& row : services.reports.goods_flow(filter)) {
       flow_in += row.in_amount_cents;
       flow_out += row.out_amount_cents;
+      flow_adjust += row.adjust_amount_cents;
       render.rows.push_back({{"item_code", row.item_code},
                              {"item_name", row.item_name},
                              {"unit", row.unit},
@@ -370,10 +384,12 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"out_qty", qty_text(row.out_qty)},
                              {"closing_qty", qty_text(row.closing_qty)},
                              {"in_amount_cents", row.in_amount_cents},
-                             {"out_amount_cents", row.out_amount_cents}});
+                             {"out_amount_cents", row.out_amount_cents},
+                             {"adjust_amount_cents", row.adjust_amount_cents}});
     }
     render.totals = {{"text", "合计：收入金额 " + money_text(flow_in) + " 元，发出金额 " +
-                                  money_text(flow_out) + " 元"}};
+                                  money_text(flow_out) + " 元，其他调整 " +
+                                  money_text(flow_adjust) + " 元"}};
     return;
   }
 
@@ -381,15 +397,18 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
     render.subtitle = period_label(filter.from, filter.to) + "；" +
                       dimension_label(filter.item_id, "商品") + "；" +
                       dimension_label(filter.warehouse_id, "仓库") +
-                      "；按商品跨仓库汇总；数量跨单位不可加总，合计只汇总金额";
+                      "；按商品跨仓库汇总；数量跨单位不可加总，合计只汇总金额；"
+                      "数量为 0、只动金额的流水单列「其他调整」";
     std::int64_t sum_opening = 0;
     std::int64_t sum_in = 0;
     std::int64_t sum_out = 0;
+    std::int64_t sum_adjust = 0;
     std::int64_t sum_closing = 0;
     for (const auto& row : services.reports.inventory_summary(filter)) {
       sum_opening += row.opening_amount_cents;
       sum_in += row.in_amount_cents;
       sum_out += row.out_amount_cents;
+      sum_adjust += row.adjust_amount_cents;
       sum_closing += row.closing_amount_cents;
       render.rows.push_back({{"item_code", row.item_code},
                              {"item_name", row.item_name},
@@ -400,12 +419,14 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                              {"in_amount_cents", row.in_amount_cents},
                              {"out_qty", qty_text(row.out_qty)},
                              {"out_amount_cents", row.out_amount_cents},
+                             {"adjust_amount_cents", row.adjust_amount_cents},
                              {"closing_qty", qty_text(row.closing_qty)},
                              {"closing_amount_cents", row.closing_amount_cents}});
     }
     render.totals = {{"text", "合计：期初 " + money_text(sum_opening) + " 元，入库 " +
                                   money_text(sum_in) + " 元，出库 " + money_text(sum_out) +
-                                  " 元，期末 " + money_text(sum_closing) + " 元"}};
+                                  " 元，其他调整 " + money_text(sum_adjust) + " 元，期末 " +
+                                  money_text(sum_closing) + " 元"}};
     return;
   }
 
@@ -622,9 +643,19 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                     period_label(filter.from, filter.to);
   render.placeholders["partner"] = result.partner_name;
   for (const auto& line : result.lines) {
-    const std::string kind = line.kind == "DOC" ? "单据" : (direction == -1 ? "付款" : "收款");
-    std::string summary = line.kind == "DOC" ? doc_type_label(line.doc_type) : line.note;
-    if (summary.empty()) summary = kind;
+    const std::string base = direction == -1 ? "付款" : "收款";
+    const std::string kind =
+        line.kind == "DOC" ? "单据" : (line.is_reverse ? base + "撤销" : base);
+    std::string summary;
+    if (line.kind == "DOC") {
+      summary = doc_type_label(line.doc_type);
+    } else if (line.is_reverse) {
+      summary = std::string("撤销") + base;
+      if (!line.reverses_no.empty()) summary += "（原单 " + line.reverses_no + "）";
+      if (!line.note.empty()) summary += "；" + line.note;
+    } else {
+      summary = line.note.empty() ? kind : line.note;
+    }
     render.rows.push_back({{"date", line.date},
                            {"kind", kind},
                            {"doc_no", line.doc_no},
@@ -638,7 +669,12 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
                    {"decrease_cents", result.decrease_cents},
                    {"closing_cents", result.closing_cents},
                    {"opening_text", money_text(result.opening_cents)},
-                   {"closing_text", money_text(result.closing_cents)}};
+                   {"closing_text", money_text(result.closing_cents)},
+                   {"reverse_cents", result.reverse_cents},
+                   {"settle_net_cents", result.settle_net_cents},
+                   {"reverse_text", std::to_string(result.reverse_count) + " 笔 " +
+                                        money_text(result.reverse_cents) + " 元"},
+                   {"settle_net_text", money_text(result.settle_net_cents) + " 元"}};
 }
 
 void render_document(Services& services, const PrintTargetDef& target, const httplib::Request& req,

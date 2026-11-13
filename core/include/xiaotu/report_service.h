@@ -15,6 +15,7 @@ struct LedgerDetailRow {
   std::string biz_type;
   std::string biz_category;  // 其他出入库的业务类型，其余单据为空
   std::string doc_no;
+  std::string doc_date;  // 原单据日期；反审核回冲时与操作时间不同
   std::string item_code;
   std::string item_name;
   std::string warehouse_name;
@@ -35,6 +36,7 @@ struct GoodsFlowRow {
   std::int64_t closing_qty = 0;
   std::int64_t in_amount_cents = 0;
   std::int64_t out_amount_cents = 0;
+  std::int64_t adjust_amount_cents = 0;  // 数量为 0、只动金额的「其他调整」，不并入收入/发出
 };
 
 // 账龄分桶：未到期、1-30、31-60、61-90、90 天以上（按 due_date 与截止日计算）。
@@ -75,6 +77,7 @@ struct InventorySummaryRow {
   std::int64_t opening_amount_cents = 0;
   std::int64_t in_amount_cents = 0;
   std::int64_t out_amount_cents = 0;
+  std::int64_t adjust_amount_cents = 0;  // 数量为 0、只动金额的「其他调整」
   std::int64_t closing_amount_cents = 0;
 };
 
@@ -85,6 +88,8 @@ struct StatementLine {
   std::string doc_no;
   std::string doc_type;  // 单据类型（kind=DOC 时有效）
   std::string note;      // 核销备注（kind=SETTLE 时有效）
+  bool is_reverse = false;   // 撤销收付款产生的负数核销行，按撤销当天入账
+  std::string reverses_no;   // 被撤销的原收付款单号（is_reverse 时有效）
   std::int64_t increase_cents = 0;  // 应收/应付增加
   std::int64_t decrease_cents = 0;  // 应收/应付减少
   std::int64_t balance_cents = 0;
@@ -100,6 +105,10 @@ struct StatementResult {
   std::int64_t increase_cents = 0;
   std::int64_t decrease_cents = 0;
   std::int64_t closing_cents = 0;
+  // 期间核销净额 = 收款/付款总额 − 撤销冲回总额（正数表示净减少往来余额）。
+  std::int64_t settle_net_cents = 0;
+  std::int64_t reverse_cents = 0;  // 期间撤销收付款金额合计（正数）
+  std::int64_t reverse_count = 0;  // 期间撤销笔数
   std::vector<StatementLine> lines;
 };
 

@@ -938,6 +938,18 @@ int main() {
             "对账单期末应等于台账未核销余额");
       check(statement.lines.back().balance_cents == statement.closing_cents,
             "最后一行的余额应为期末余额");
+      // 撤销收付款：按撤销当天入账、标注原单，并给出期间核销净额。
+      check(statement.reverse_count == 1 && statement.reverse_cents == 1000,
+            "对账单应统计 1 笔 1000 分的撤销收付款");
+      check(statement.settle_net_cents == 3500,
+            "期间核销净额应为原收款 1000 + 合并收款 3500 − 撤销 1000");
+      bool found_reverse_line = false;
+      for (const auto& line : statement.lines) {
+        if (!line.is_reverse) continue;
+        found_reverse_line = line.reverses_no == first_settlement.settle_no &&
+                             line.increase_cents == 1000;
+      }
+      check(found_reverse_line, "对账单撤销行应带原收款单号与冲回金额");
 
       const auto later_statement =
           reports.partner_statement(customer_key, 1, kFarFuture, "");
@@ -1345,6 +1357,24 @@ int main() {
       auto adjust_balance = balance_of(adjust_item.id);
       check(adjust_balance.qty == q(10) && adjust_balance.amount_cents == 10500,
             "成本调整不应改变数量，只增加结存金额");
+      {
+        // 数量为 0、只动金额的流水在收发明细与进销存汇总里单列「其他调整」。
+        xiaotu::ReportFilter adjust_filter;
+        adjust_filter.from = kMonthStart;
+        adjust_filter.to = kToday;
+        adjust_filter.item_id = adjust_item.id;
+        const auto adjust_flows = reports.goods_flow(adjust_filter);
+        check(adjust_flows.size() == 1, "成本调整商品在收发明细中应有一行");
+        check(adjust_flows.front().in_amount_cents == 10000 &&
+                  adjust_flows.front().out_amount_cents == 0 &&
+                  adjust_flows.front().adjust_amount_cents == 500,
+              "成本调整 500 分应只落在「其他调整」，不并入收入 / 发出");
+        const auto adjust_summary = reports.inventory_summary(adjust_filter);
+        check(adjust_summary.size() == 1 &&
+                  adjust_summary.front().adjust_amount_cents == 500 &&
+                  adjust_summary.front().closing_amount_cents == 10500,
+              "进销存汇总期末金额应包含其他调整 500 分");
+      }
       const auto adjust_detail = documents.detail(adjust_doc.id);
       check(adjust_detail.lines.at(0).warehouse_id == adjust_wh &&
                 adjust_detail.lines.at(0).adjust_reason == "运费分摊",

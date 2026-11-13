@@ -351,7 +351,14 @@
       return "合计数量 " + totals.total_qty + "，合计金额 " + totals.total_amount_text + " 元";
     }
     if (totals.closing_text !== undefined) {
-      return "期初余额 " + totals.opening_text + " 元，期末余额 " + totals.closing_text + " 元";
+      let text = "期初余额 " + totals.opening_text + " 元，期末余额 " + totals.closing_text + " 元";
+      if (totals.reverse_text !== undefined) {
+        text += "；本期撤销收付款 " + totals.reverse_text;
+      }
+      if (totals.settle_net_text !== undefined) {
+        text += "，期间核销净额 " + totals.settle_net_text;
+      }
+      return text;
     }
     return "";
   }
@@ -3314,7 +3321,7 @@
              .map(
                (row) => `<tr>
                  <td>${escapeHtml(row.biz_time)}</td>
-                 <td>${escapeHtml(bizTypeText(row.biz_type))}</td>
+                 <td>${escapeHtml(row.biz_type_label || bizTypeText(row.biz_type))}</td>
                  <td>${escapeHtml(bizCategoryText(row.biz_category) || "—")}</td>
                  <td>${escapeHtml(row.doc_no)}</td>
                  <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
@@ -3328,13 +3335,15 @@
              <td>${qtyText(ledger.totals ? ledger.totals.qty : 0)}</td>
              <td>${money(ledger.totals ? ledger.totals.amount_cents : 0)}</td></tr></tfoot>`;
 
-      // 数量跨单位不可加总，合计只汇总收入 / 发出金额。
+      // 数量跨单位不可加总，合计只汇总收入 / 发出 / 其他调整金额。
       const flowInAmount = flows.reduce((sum, row) => sum + row.in_amount_cents, 0);
       const flowOutAmount = flows.reduce((sum, row) => sum + row.out_amount_cents, 0);
+      const flowAdjustAmount = flows.reduce((sum, row) => sum + (row.adjust_amount_cents || 0), 0);
       flowsTable.innerHTML = !flows.length
-        ? emptyRow("该期间无收发", 9)
+        ? emptyRow("该期间无收发", 10)
         : `<thead><tr><th>商品编码</th><th>商品名称</th><th>仓库</th><th>期初</th><th>收入</th>
-             <th>发出</th><th>期末</th><th>收入金额（元）</th><th>发出金额（元）</th></tr></thead>
+             <th>发出</th><th>期末</th><th>收入金额（元）</th><th>发出金额（元）</th>
+             <th>其他调整（元）</th></tr></thead>
            <tbody>${flows
              .map(
                (row) => `<tr>
@@ -3347,24 +3356,29 @@
                  <td class="${qtyIsNegative(row.closing_qty) ? "negative" : ""}">${qtyText(row.closing_qty)}</td>
                  <td>${money(row.in_amount_cents)}</td>
                  <td>${money(row.out_amount_cents)}</td>
+                 <td class="${(row.adjust_amount_cents || 0) < 0 ? "negative" : ""}">${money(
+                   row.adjust_amount_cents || 0
+                 )}</td>
                </tr>`
              )
              .join("")}</tbody>
            <tfoot><tr><td>合计</td><td colspan="5"></td>
              <td></td>
              <td>${money(flowInAmount)}</td>
-             <td>${money(flowOutAmount)}</td></tr></tfoot>`;
+             <td>${money(flowOutAmount)}</td>
+             <td>${money(flowAdjustAmount)}</td></tr></tfoot>`;
 
-      // 与 CSV / Excel 列保持一致：四个数量列 + 四个金额列；数量跨单位不可加总。
+      // 与 CSV / Excel 列保持一致：四个数量列 + 五个金额列；数量跨单位不可加总。
       const sumOpeningAmount = summary.reduce((sum, row) => sum + row.opening_amount_cents, 0);
       const sumInAmount = summary.reduce((sum, row) => sum + row.in_amount_cents, 0);
       const sumOutAmount = summary.reduce((sum, row) => sum + row.out_amount_cents, 0);
+      const sumAdjustAmount = summary.reduce((sum, row) => sum + (row.adjust_amount_cents || 0), 0);
       const sumClosingAmount = summary.reduce((sum, row) => sum + row.closing_amount_cents, 0);
       summaryTable.innerHTML = !summary.length
-        ? emptyRow("该期间无进销存发生", 11)
+        ? emptyRow("该期间无进销存发生", 12)
         : `<thead><tr><th>商品编码</th><th>商品名称</th><th>单位</th><th>期初数量</th>
              <th>期初金额（元）</th><th>入库数量</th><th>入库金额（元）</th>
-             <th>出库数量</th><th>出库金额（元）</th><th>期末数量</th>
+             <th>出库数量</th><th>出库金额（元）</th><th>其他调整（元）</th><th>期末数量</th>
              <th>期末金额（元）</th></tr></thead>
            <tbody>${summary
              .map(
@@ -3378,6 +3392,9 @@
                  <td>${money(row.in_amount_cents)}</td>
                  <td>${qtyText(row.out_qty)}</td>
                  <td>${money(row.out_amount_cents)}</td>
+                 <td class="${(row.adjust_amount_cents || 0) < 0 ? "negative" : ""}">${money(
+                   row.adjust_amount_cents || 0
+                 )}</td>
                  <td class="${qtyIsNegative(row.closing_qty) ? "negative" : ""}">${qtyText(row.closing_qty)}</td>
                  <td>${money(row.closing_amount_cents)}</td>
                </tr>`
@@ -3387,6 +3404,7 @@
              <td></td><td>${money(sumOpeningAmount)}</td>
              <td></td><td>${money(sumInAmount)}</td>
              <td></td><td>${money(sumOutAmount)}</td>
+             <td>${money(sumAdjustAmount)}</td>
              <td></td><td>${money(sumClosingAmount)}</td></tr></tfoot>`;
 
       // 合计行：收入、成本、毛利汇总后重算毛利率；数量跨单位不加总。
@@ -4209,11 +4227,14 @@
         (result.direction === -1 ? " 应付对账单" : " 应收对账单");
       summaryTable.innerHTML = `
         <thead><tr><th>期初余额（元）</th><th>本期增加（元）</th>
-          <th>本期减少（元）</th><th>期末余额（元）</th></tr></thead>
+          <th>本期减少（元）</th><th>其中撤销（元）</th><th>期间核销净额（元）</th>
+          <th>期末余额（元）</th></tr></thead>
         <tbody><tr>
           <td>${money(result.opening_cents)}</td>
           <td>${money(result.increase_cents)}</td>
           <td>${money(result.decrease_cents)}</td>
+          <td>${result.reverse_count ? money(result.reverse_cents) + "（" + result.reverse_count + " 笔）" : "—"}</td>
+          <td class="${result.settle_net_cents < 0 ? "negative" : ""}">${money(result.settle_net_cents)}</td>
           <td>${money(result.closing_cents)}</td>
         </tr></tbody>`;
       linesTable.innerHTML = !result.lines.length
@@ -4222,7 +4243,7 @@
              <th>增加（元）</th><th>减少（元）</th><th>余额（元）</th></tr></thead>
            <tbody>${result.lines
              .map(
-               (line) => `<tr>
+               (line) => `<tr${line.is_reverse ? ' class="reverse-row"' : ""}>
                  <td>${escapeHtml(line.date)}</td>
                  <td>${escapeHtml(line.kind_label)}</td>
                  <td>${escapeHtml(line.doc_no)}</td>
@@ -4830,7 +4851,7 @@
              .map(
                (row) => `<tr>
                  <td>${escapeHtml(row.biz_time)}</td>
-                 <td>${escapeHtml(bizTypeText(row.biz_type))}</td>
+                 <td>${escapeHtml(row.biz_type_label || bizTypeText(row.biz_type))}</td>
                  <td>${escapeHtml(row.doc_no)}</td>
                  <td>${escapeHtml(row.item_code + " " + row.item_name)}</td>
                  <td>${escapeHtml(row.warehouse_name)}</td>

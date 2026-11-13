@@ -402,6 +402,11 @@ main {
   color: var(--danger);
 }
 
+/* 撤销收付款行：按撤销当天入账，单独着色提示需结合原单核对。 */
+.table tr.reverse-row td {
+  background: #fff7e6;
+}
+
 .grid-form {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
