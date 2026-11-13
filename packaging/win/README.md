@@ -159,18 +159,119 @@ xiaotu-inventory-<版本>-win64\
   也写了一条可直接粘贴的注册表检测命令与官方下载链接
   （https://go.microsoft.com/fwlink/p/?LinkId=2124703）。
 
-## 目标机器上的用法
+## 单机与网络使用方式
 
-含壳的包：解压后双击 `xiaotu-shell.exe` 即可，数据写在
-`%LOCALAPPDATA%\com.simem.xiaotu`。
+两种用法共用同一份服务端和同一种数据目录格式，区别只在「谁监听、谁来访问」。
 
-仅服务端的包：
+| | 单机 | 网络版 |
+| --- | --- | --- |
+| 启动 | 双击 `xiaotu-shell.exe`（或直接跑服务端） | 只跑 `xiaotu-server.exe --server` |
+| 监听 | `127.0.0.1` + 系统分配的自动端口 | `0.0.0.0:8080`（可改） |
+| 访问 | 本机 WebView 窗口 / 本机浏览器 | 局域网内其他机器的浏览器 |
+| 数据 | `%LOCALAPPDATA%\com.simem.xiaotu`（可用 `--data` 改） | 同左，建议显式 `--data` 到固定磁盘 |
+
+### 可直接复制的启动命令
+
+含壳的安装包（单机，推荐）：
 
 ```powershell
-$env:XIAOTU_PASSWORD = '你的口令'
-.\xiaotu-server.exe --set-password admin
-.\xiaotu-server.exe --server --port 8080      # 浏览器打开 http://localhost:8080/
+& "$env:LOCALAPPDATA\Programs\小兔进销存\xiaotu-shell.exe"
 ```
+
+壳不解析数据目录/端口参数：它在自身目录找 `xiaotu-server.exe`，以**无参数**方式拉起
+（单机模式），工作目录与数据目录都按壳的位置和环境变量决定。
+
+只用服务端 + 本机浏览器（单机）：
+
+```powershell
+.\xiaotu-server.exe --data D:\xiaotu-data
+```
+
+启动后打印 `服务地址: http://127.0.0.1:<端口>/#t=<一次性令牌>`，把该地址贴进浏览器即可；
+令牌只用一次，刷新后按正常登录流程走。
+
+网络版（一台机器做服务器，其他人用浏览器访问）：
+
+```powershell
+# 首次：给内置 admin 设口令（至少 8 位；走环境变量，不出现在命令行历史里）
+$env:XIAOTU_PASSWORD = '换成你的口令'
+.\xiaotu-server.exe --data D:\xiaotu-data --set-password admin
+
+# 启动
+.\xiaotu-server.exe --server --listen 0.0.0.0 --port 8080 --data D:\xiaotu-data
+```
+
+### 命令行参数（`--help` 实测）
+
+| 参数 | 说明 | 默认 |
+| --- | --- | --- |
+| （无参数） | 单机模式，只监听回环 | `127.0.0.1:0`（自动端口） |
+| `--server` | 网络版 | 关 |
+| `--listen <地址>` | 网络版监听地址 | `0.0.0.0` |
+| `--port <端口>` | 网络版端口 | `8080` |
+| `--data <目录>` | 数据目录 | 系统应用数据目录（Windows 为 `%LOCALAPPDATA%\com.simem.xiaotu`） |
+| `--config <文件>` | 配置文件 | `$XIAOTU_CONFIG` → `<数据目录>/config.toml` |
+| `--backup` / `--backup-daily` / `--restore <文件>` | 立即备份 / 每日备份 / 恢复 | — |
+| `--set-password <用户名>` | 用 `XIAOTU_PASSWORD` 设口令后退出 | — |
+| `--version` / `--help` | 版本号 / 帮助 | — |
+
+优先级：命令行 > 环境变量 > `config.toml` > 内置默认。
+
+### 壳是怎么拉起服务端的
+
+- 壳在自己的目录找 `xiaotu-server.exe`，`CreateProcessW` **只传 exe 路径**（无参数），
+  工作目录为壳目录，环境变量原样继承（`XIAOTU_CONFIG`、`LOCALAPPDATA` 对子进程有效）。
+- 端口不写死：服务端以 `127.0.0.1:0` 绑定，由系统分配空闲端口；壳从子进程 stdout 读到
+  `服务地址:` 后再导航，所以不会撞固定端口。
+- 关窗即收摊：`WM_DESTROY` 里先保存窗口位置，再关闭 Job 对象
+  （`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`），子进程随之结束，另有 `TerminateProcess` 兜底；
+  壳被任务管理器强杀时，Job 句柄关闭同样会带走服务端。
+- 同一数据目录同时只允许一个服务端（`app.lock` 单实例互斥），重复启动会直接退出。
+
+### 别的机器怎么连网络版
+
+1. 在服务器机器上用**管理员** PowerShell 放行端口（按实际端口与网络位置调整）：
+
+```powershell
+netsh advfirewall firewall add rule name="小兔进销存 8080" dir=in action=allow protocol=TCP localport=8080 profile=private
+```
+
+   删除规则：
+
+```powershell
+netsh advfirewall firewall delete rule name="小兔进销存 8080"
+```
+
+2. `ipconfig` 查本机局域网 IP，确认客户端与服务器同网段；
+3. 客户端浏览器打开 `http://<服务器IP>:8080/`；
+4. 用用户名 + 口令登录。
+
+### 登录、令牌与首次改密
+
+- 初始账号：迁移种子里的 `admin`（姓名「管理员」），**口令为空**，必须先用
+  `--set-password admin` 设一次，否则网页登录不了。
+- `--set-password` 会把 `must_change_password` 置 1：首次登录后，除「改密 / 退出 / 查看自己」
+  之外接口一律返回 `403 MUST_CHANGE_PASSWORD`，改完口令才放行（本机实测）。
+- 登录接口 `POST /api/login {"username","password"}`，返回
+  `Set-Cookie: sid=…; HttpOnly; SameSite=Strict; Max-Age=1800`（30 分钟空闲超时，
+  可用 `[auth] idle_minutes` 调整），响应体带 `csrf`。
+- 之后的写操作（POST/PUT/PATCH/DELETE）必须带 `X-CSRF-Token: <csrf>`，只带 Cookie 会得到
+  `403 CSRF_INVALID`；GET 不需要。
+- Cookie 的 `Secure` 仅在反向代理送来 `X-Forwarded-Proto: https` 时添加；服务端自身不带 TLS，
+  需要 HTTPS 请放在反向代理后面。
+
+### 注意事项
+
+- **端口冲突**：绑定失败会启动失败并打印 `无法监听 <地址>:<端口>`；换 `--port`，或先查占用：
+  `Get-NetTCPConnection -LocalPort 8080`。
+- **数据目录权限**：运行账号必须能读写该目录。默认目录跟随 `LOCALAPPDATA`（按登录用户），
+  换账号或用服务方式运行时路径会变，建议显式 `--data` 并单独授权。
+- **不要放共享盘/同步盘**：代码只对 iCloud 与 OneDrive 目录告警（只告警不拦截）；
+  SMB 网络共享没有专门检测，但 SQLite 放网络文件系统上容易损坏，同样不要用。
+- **备份**：默认在 `<数据目录>\backups`，可用 `config.toml` 的 `[storage] backup_dir` 改
+  （相对路径按数据目录解析）；`--backup` 立即备份一次，`--backup-daily` 供计划任务调用。
+- **网络版是版本能力**：`--server` 会先检查 `deployment.network`，默认 full 版本可用；
+  被隐藏的版本打印 `FEATURE_UNAVAILABLE` 并以退出码 2 结束，不会悄悄退回单机。
 
 ## 边界
 
