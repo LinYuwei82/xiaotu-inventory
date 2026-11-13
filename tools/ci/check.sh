@@ -161,6 +161,21 @@ if ! grep -qF "$HTTPLIB_PATCH_MARKER" "$ROOT/third_party/httplib/httplib.h"; the
 fi
 echo "    httplib 补丁标记存在（见 docs/第三方补丁.md）"
 
+echo "==> 检查前端脚本语法（jsc）"
+JSC_BIN=""
+if command -v jsc >/dev/null 2>&1; then
+  JSC_BIN="$(command -v jsc)"
+elif [ -x "/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc" ]; then
+  JSC_BIN="/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc"
+fi
+if [ -z "$JSC_BIN" ]; then
+  echo "    跳过：未找到 jsc，web/app.js 未做语法机检（Linux CI 预期如此）" >&2
+else
+  if ! "$JSC_BIN" -e "try { new Function(readFile('$ROOT/web/app.js')); print('    web/app.js 语法通过'); } catch (e) { print('web/app.js 语法错误: ' + e); quit(1); }"; then
+    exit 1
+  fi
+fi
+
 echo "==> 检查平台专有代码是否泄漏到 core/server"
 "$ROOT/tools/ci/check_platform_leaks.sh"
 
