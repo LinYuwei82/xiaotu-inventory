@@ -445,6 +445,22 @@ main {
   flex-wrap: wrap;
   align-items: flex-end;
   gap: 10px 14px;
+  margin: 0;
+}
+
+/* 金额区间是独立的第二个筛选表单，之前与上一行 0 间距贴在一起，
+   看起来像两行叠住；这里给固定间距。 */
+.filters + .filters {
+  margin-top: 10px;
+}
+
+/* 标签与控件各自不可压缩：即使外层高度被限制，输入框也不会收缩到
+   覆盖标签（标签被输入框压住就是这种收缩导致的）。 */
+.field > span,
+.field > input,
+.field > select,
+.field > textarea {
+  flex: 0 0 auto;
 }
 
 .filters .field {
@@ -645,6 +661,12 @@ main {
     padding-top: 0;
     white-space: nowrap;
   }
+
+  /* 宽表格在卡片内部横向滚动，不再把内容顶出卡片、切在窗口边缘，
+     也不再把横向滚动条甩给整页。 */
+  .card {
+    overflow-x: auto;
+  }
 }
 
 .checkbox {
@@ -711,6 +733,51 @@ main {
 .lines input.readonly {
   background: #f9fafb;
   color: var(--muted);
+}
+
+/* 明细表头允许折行：商品名较长时，表头文字不再作为列宽下限，
+   整表按容器宽度分配，1280 与 1024 都不会被表头撑出横向滚动条。
+   限定在 screen 内，打印仍保持单行表头。 */
+@media screen {
+  .lines th {
+    white-space: normal;
+  }
+
+  /* 数量框是文本输入框，默认 size 会占近 180px；商品下拉也按列宽封顶，
+     两处收窄后整张明细表在 1280 宽下就能放进卡片。 */
+  .lines .qty-cell input {
+    width: 90px;
+  }
+
+  .lines select {
+    max-width: 190px;
+  }
+}
+
+/* 窄窗口压缩明细行列宽：1024 宽时 9 列表格仍能放进卡片，
+   不产生横向滚动条；1280 及以上保持原有列宽。 */
+@media screen and (max-width: 1180px) {
+  .lines th,
+  .lines td {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  .lines input[type="number"],
+  .lines input.readonly {
+    width: 70px;
+  }
+
+  /* 数量是文本输入框，宽度来自浏览器默认的 size，这里一并收窄。 */
+  .lines .qty-cell input {
+    width: 80px;
+  }
+
+  /* 表头折行已在全局屏幕样式中处理，这里只收窄列宽。 */
+
+  .lines select {
+    max-width: 150px;
+  }
 }
 
 /* ---------- 打印视图 ---------- */
