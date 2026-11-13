@@ -65,5 +65,19 @@ if(XIAOTU_BUILD_SHELL)
   add_subdirectory(shell)
 endif()
 
+# Windows 桌面壳（WebView2）：默认关闭，且只在 Windows 上生效。
+# 与上面的 XIAOTU_BUILD_SHELL（macOS .app）互不影响；非 Windows 上打开该开关只提示并忽略，
+# 不会引入 WebView2 SDK 或其它新依赖，macOS/Linux 的构建内容与默认配置完全一致。
+option(XIAOTU_BUILD_WIN_SHELL "在 Windows 上把 shell/win 桌面壳接入构建（需先准备 WebView2 SDK）" OFF)
+if(XIAOTU_BUILD_WIN_SHELL)
+  if(WIN32)
+    add_subdirectory(shell/win)
+  else()
+    message(WARNING "XIAOTU_BUILD_WIN_SHELL 仅支持 Windows，当前平台自动关闭")
+    set(XIAOTU_BUILD_WIN_SHELL OFF)
+  endif()
+endif()
+message(STATUS "Windows 桌面壳：${XIAOTU_BUILD_WIN_SHELL}")
+
 enable_testing()
 add_subdirectory(tests)
