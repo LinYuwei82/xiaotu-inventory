@@ -3,29 +3,49 @@
 #include <sqlite3.h>
 
 #include <string>
+#include <vector>
+
+#include "xiaotu/partner_resolve.h"
 
 namespace xiaotu {
+namespace {
+
+std::string mark_list(std::size_t count) {
+  std::string marks;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (i != 0) marks += ", ";
+    marks += "?";
+  }
+  return marks;
+}
+
+}  // namespace
 
 std::vector<ArApRow> FinanceService::entries(int direction, std::string_view partner_key,
                                              std::string_view status) const {
   std::vector<ArApRow> rows;
   db_.read([&](sqlite3* conn) {
-    Stmt stmt(conn,
-              "SELECT id, doc_id, doc_no, doc_type, direction, partner_id, partner_name,"
-              " partner_key, biz_date, due_date, amount_cents, settled_cents, status"
-              " FROM ar_ap_entry"
-              " WHERE (? = 0 OR direction = ?)"
-              "   AND (? = '' OR partner_key = ?)"
-              // 未显式指定状态时排除作废台账，与账龄报表口径一致。
-              "   AND (CASE WHEN ? = '' THEN status <> 'VOIDED' ELSE status = ? END)"
-              " ORDER BY biz_date DESC, id DESC;");
-    stmt.bind(1, static_cast<std::int64_t>(direction))
-        .bind(2, static_cast<std::int64_t>(direction))
-        // 空 string_view 的 data() 为空，直接绑定会变成 NULL，比较恒为假。
-        .bind(3, partner_key.empty() ? std::string_view{""} : partner_key)
-        .bind(4, partner_key.empty() ? std::string_view{""} : partner_key)
-        .bind(5, status.empty() ? std::string_view{""} : status)
-        .bind(6, status.empty() ? std::string_view{""} : status);
+    // 按单位筛选时展开历史键：C:/S: 与新 P: 属于同一 partner 维度。
+    const std::vector<std::string> aliases =
+        partner_key.empty() ? std::vector<std::string>{}
+                            : partner_key_aliases(conn, partner_key);
+    std::string sql =
+        "SELECT id, doc_id, doc_no, doc_type, direction, partner_id, partner_name,"
+        " partner_key, biz_date, due_date, amount_cents, settled_cents, status"
+        " FROM ar_ap_entry"
+        " WHERE (? = 0 OR direction = ?)";
+    if (!aliases.empty()) sql += " AND partner_key IN (" + mark_list(aliases.size()) + ")";
+    sql +=
+        // 未显式指定状态时排除作废台账，与账龄报表口径一致。
+        " AND (CASE WHEN ? = '' THEN status <> 'VOIDED' ELSE status = ? END)"
+        " ORDER BY biz_date DESC, id DESC;";
+    Stmt stmt(conn, sql);
+    int index = 1;
+    stmt.bind(index++, static_cast<std::int64_t>(direction))
+        .bind(index++, static_cast<std::int64_t>(direction));
+    for (const auto& alias : aliases) stmt.bind(index++, alias);
+    stmt.bind(index++, status.empty() ? std::string_view{""} : status)
+        .bind(index++, status.empty() ? std::string_view{""} : status);
     while (stmt.step()) {
       ArApRow row;
       row.id = stmt.i64(0);

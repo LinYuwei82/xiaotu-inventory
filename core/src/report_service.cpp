@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "xiaotu/db.h"
+#include "xiaotu/partner_resolve.h"
 #include "xiaotu/qty.h"
 
 namespace xiaotu {
@@ -120,6 +121,16 @@ bool numeric_id(std::string_view text) {
   if (text.empty()) return false;
   return std::all_of(text.begin(), text.end(),
                      [](char ch) { return ch >= '0' && ch <= '9'; });
+}
+
+// 生成 IN (?, ?, ...) 里的占位符串。
+std::string mark_list(std::size_t count) {
+  std::string marks;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (i != 0) marks += ", ";
+    marks += "?";
+  }
+  return marks;
 }
 
 }  // namespace
@@ -599,22 +610,31 @@ std::vector<AgingRow> ReportService::ar_ap_aging(int direction, std::string_view
   std::vector<AgingRow> rows;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
-              "SELECT partner_key, partner_name, direction,"
-              " SUM(outstanding_cents) AS total_cents,"
-              " SUM(CASE WHEN due_date = '' OR due_date >= ?1 THEN outstanding_cents ELSE 0 END)"
+              // 归集前把历史 C:/S: 键折成 partner 维度，与新 P: 键合并成一行；
+              // T: 与查不到归属的键保持自身，按名称独立。
+              "WITH key_dim AS ("
+              "  SELECT 'P:' || id AS key, 'P:' || id AS dim FROM partner"
+              "  UNION ALL SELECT 'C:' || id, 'P:' || id FROM customer"
+              "  UNION ALL SELECT 'S:' || legacy_id, 'P:' || partner_id"
+              "    FROM partner_legacy_map WHERE side = 'supplier')"
+              " SELECT COALESCE(d.dim, t.partner_key) AS dim_key,"
+              " COALESCE(NULLIF(p.name, ''), MAX(t.partner_name)) AS partner_name,"
+              " t.direction,"
+              " SUM(t.outstanding_cents) AS total_cents,"
+              " SUM(CASE WHEN t.due_date = '' OR t.due_date >= ?1 THEN t.outstanding_cents ELSE 0 END)"
               "   AS not_due_cents,"
-              " SUM(CASE WHEN due_date <> '' AND due_date < ?1"
-              "          AND CAST(julianday(?1) - julianday(due_date) AS INTEGER) BETWEEN 1 AND 30"
-              "          THEN outstanding_cents ELSE 0 END) AS d1_30_cents,"
-              " SUM(CASE WHEN due_date <> '' AND due_date < ?1"
-              "          AND CAST(julianday(?1) - julianday(due_date) AS INTEGER) BETWEEN 31 AND 60"
-              "          THEN outstanding_cents ELSE 0 END) AS d31_60_cents,"
-              " SUM(CASE WHEN due_date <> '' AND due_date < ?1"
-              "          AND CAST(julianday(?1) - julianday(due_date) AS INTEGER) BETWEEN 61 AND 90"
-              "          THEN outstanding_cents ELSE 0 END) AS d61_90_cents,"
-              " SUM(CASE WHEN due_date <> '' AND due_date < ?1"
-              "          AND CAST(julianday(?1) - julianday(due_date) AS INTEGER) > 90"
-              "          THEN outstanding_cents ELSE 0 END) AS d90_plus_cents"
+              " SUM(CASE WHEN t.due_date <> '' AND t.due_date < ?1"
+              "          AND CAST(julianday(?1) - julianday(t.due_date) AS INTEGER) BETWEEN 1 AND 30"
+              "          THEN t.outstanding_cents ELSE 0 END) AS d1_30_cents,"
+              " SUM(CASE WHEN t.due_date <> '' AND t.due_date < ?1"
+              "          AND CAST(julianday(?1) - julianday(t.due_date) AS INTEGER) BETWEEN 31 AND 60"
+              "          THEN t.outstanding_cents ELSE 0 END) AS d31_60_cents,"
+              " SUM(CASE WHEN t.due_date <> '' AND t.due_date < ?1"
+              "          AND CAST(julianday(?1) - julianday(t.due_date) AS INTEGER) BETWEEN 61 AND 90"
+              "          THEN t.outstanding_cents ELSE 0 END) AS d61_90_cents,"
+              " SUM(CASE WHEN t.due_date <> '' AND t.due_date < ?1"
+              "          AND CAST(julianday(?1) - julianday(t.due_date) AS INTEGER) > 90"
+              "          THEN t.outstanding_cents ELSE 0 END) AS d90_plus_cents"
               " FROM (SELECT e.partner_key, e.partner_name, e.direction, e.due_date,"
               "         e.amount_cents - COALESCE(("
               "           SELECT SUM(a.amount_cents) FROM settlement_allocation a"
@@ -625,8 +645,12 @@ std::vector<AgingRow> ReportService::ar_ap_aging(int direction, std::string_view
               // 时点快照：业务日期晚于截止日的不计入。
               "       WHERE e.status <> 'VOIDED' AND e.biz_date <= ?1"
               "         AND (?2 = 0 OR e.direction = ?2)) t"
-              " WHERE outstanding_cents <> 0"
-              " GROUP BY partner_key, partner_name, direction"
+              " LEFT JOIN key_dim d ON d.key = t.partner_key"
+              " LEFT JOIN partner p ON p.id = CASE"
+              "   WHEN COALESCE(d.dim, t.partner_key) LIKE 'P:%'"
+              "   THEN CAST(substr(COALESCE(d.dim, t.partner_key), 3) AS INTEGER) ELSE 0 END"
+              " WHERE t.outstanding_cents <> 0"
+              " GROUP BY COALESCE(d.dim, t.partner_key), t.direction"
               " ORDER BY total_cents DESC;");
     stmt.bind(1, std::string(as_of)).bind(2, static_cast<std::int64_t>(direction));
     while (stmt.step()) {
@@ -662,37 +686,43 @@ StatementResult ReportService::partner_statement(std::string_view partner_key, i
     if (result.partner_name.empty()) {
       result.partner_name = ledger_name(conn, result.partner_key);
     }
+    // 同一单位的历史 C:/S: 单与新 P: 单合并对账：按 partner 维度取全部别名键。
+    const std::vector<std::string> aliases = partner_key_aliases(conn, result.partner_key);
+    const std::string marks = mark_list(aliases.size());
 
     // 期初：期间开始前的单据金额减去已核销金额（含撤销产生的负数记录）。
     Stmt opening(conn,
                  "SELECT COALESCE((SELECT SUM(amount_cents) FROM ar_ap_entry"
-                 "                 WHERE partner_key = ? AND direction = ?"
+                 "                 WHERE partner_key IN (" + marks + ") AND direction = ?"
                  "                   AND status <> 'VOIDED' AND biz_date < ?), 0)"
                  "     - COALESCE((SELECT SUM(amount_cents) FROM settlement"
-                 "                 WHERE partner_key = ? AND direction = ?"
+                 "                 WHERE partner_key IN (" + marks + ") AND direction = ?"
                  "                   AND settled_on < ?), 0);");
-    opening.bind(1, result.partner_key)
-        .bind(2, static_cast<std::int64_t>(result.direction))
-        .bind(3, from_text)
-        .bind(4, result.partner_key)
-        .bind(5, static_cast<std::int64_t>(result.direction))
-        .bind(6, from_text);
+    int index = 1;
+    for (const auto& alias : aliases) opening.bind(index++, alias);
+    opening.bind(index++, static_cast<std::int64_t>(result.direction));
+    opening.bind(index++, from_text);
+    for (const auto& alias : aliases) opening.bind(index++, alias);
+    opening.bind(index++, static_cast<std::int64_t>(result.direction));
+    opening.bind(index++, from_text);
     if (opening.step()) result.opening_cents = opening.i64(0);
 
     std::vector<StatementRaw> raw;
     {
       Stmt stmt(conn,
                 "SELECT id, biz_date, doc_no, doc_type, amount_cents FROM ar_ap_entry"
-                " WHERE partner_key = ? AND direction = ? AND status <> 'VOIDED'"
+                " WHERE partner_key IN (" + marks + ") AND direction = ?"
+                "   AND status <> 'VOIDED'"
                 "   AND (? = '' OR biz_date >= ?)"
                 "   AND (? = '' OR biz_date <= ?)"
                 " ORDER BY biz_date, id;");
-      stmt.bind(1, result.partner_key)
-          .bind(2, static_cast<std::int64_t>(result.direction))
-          .bind(3, from_text)
-          .bind(4, from_text)
-          .bind(5, to_text)
-          .bind(6, to_text);
+      int line_index = 1;
+      for (const auto& alias : aliases) stmt.bind(line_index++, alias);
+      stmt.bind(line_index++, static_cast<std::int64_t>(result.direction))
+          .bind(line_index++, from_text)
+          .bind(line_index++, from_text)
+          .bind(line_index++, to_text)
+          .bind(line_index++, to_text);
       while (stmt.step()) {
         StatementRaw row;
         row.id = stmt.i64(0);
@@ -714,16 +744,17 @@ StatementResult ReportService::partner_statement(std::string_view partner_key, i
                 "       COALESCE(o.settle_no, '')"
                 " FROM settlement s"
                 " LEFT JOIN settlement o ON o.id = s.reverses_id"
-                " WHERE s.partner_key = ? AND s.direction = ?"
+                " WHERE s.partner_key IN (" + marks + ") AND s.direction = ?"
                 "   AND (? = '' OR s.settled_on >= ?)"
                 "   AND (? = '' OR s.settled_on <= ?)"
                 " ORDER BY s.settled_on, s.id;");
-      stmt.bind(1, result.partner_key)
-          .bind(2, static_cast<std::int64_t>(result.direction))
-          .bind(3, from_text)
-          .bind(4, from_text)
-          .bind(5, to_text)
-          .bind(6, to_text);
+      int settle_index = 1;
+      for (const auto& alias : aliases) stmt.bind(settle_index++, alias);
+      stmt.bind(settle_index++, static_cast<std::int64_t>(result.direction))
+          .bind(settle_index++, from_text)
+          .bind(settle_index++, from_text)
+          .bind(settle_index++, to_text)
+          .bind(settle_index++, to_text);
       while (stmt.step()) {
         StatementRaw row;
         row.id = stmt.i64(0);

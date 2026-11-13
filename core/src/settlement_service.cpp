@@ -12,9 +12,19 @@
 #include "xiaotu/context.h"
 #include "xiaotu/error.h"
 #include "xiaotu/ids.h"
+#include "xiaotu/partner_resolve.h"
 
 namespace xiaotu {
 namespace {
+
+std::string mark_list(std::size_t count) {
+  std::string marks;
+  for (std::size_t i = 0; i < count; ++i) {
+    if (i != 0) marks += ", ";
+    marks += "?";
+  }
+  return marks;
+}
 
 std::string next_settle_no(sqlite3* conn, const std::string& date, int direction) {
   std::string compact = date;
@@ -58,8 +68,7 @@ void ensure_account(sqlite3* conn, std::int64_t account_id) {
 }
 
 // C:<id> 客户、S:<id> 供应商、P:<id> 合表档案；T: 文本键没有档案，返回空由调用方回落到单据名称。
-std::string partner_name_of(sqlite3* conn, const std::string& key) {
-  try {
+std::string partner_name_of(sqlite3* conn, const std::string& key) {  try {
     if (key.rfind("C:", 0) == 0) {
       Stmt stmt(conn, "SELECT name FROM customer WHERE id = ? AND is_deleted = 0;");
       stmt.bind(1, std::stoll(key.substr(2)));
@@ -184,8 +193,10 @@ SettlementRow SettlementService::create(const SettlementCreateInput& input) {
       if (partner_key.empty()) {
         partner_key = entries.front().partner_key;
       }
+      // 历史 C:/S: 与新 P: 可能同时存在，按 partner 维度判断是否同一单位。
+      const std::string dimension = partner_dimension_key(conn, partner_key);
       for (const auto& entry : entries) {
-        if (entry.partner_key != partner_key) {
+        if (partner_dimension_key(conn, entry.partner_key) != dimension) {
           throw AppError("INVALID_INPUT", "只能核销同一往来单位、同一方向的单据");
         }
       }
@@ -363,16 +374,22 @@ std::vector<SettlementRow> SettlementService::list(int direction,
                                                    std::string_view partner_key) const {
   std::vector<SettlementRow> rows;
   db_.read([&](sqlite3* conn) {
-    Stmt stmt(conn,
-              "SELECT id, settle_no, direction, partner_key, partner_name, amount_cents,"
-              " settled_on, reverses_id, note, account_id, method, operator"
-              " FROM settlement"
-              " WHERE (? = 0 OR direction = ?) AND (? = '' OR partner_key = ?)"
-              " ORDER BY settled_on DESC, id DESC;");
-    stmt.bind(1, static_cast<std::int64_t>(direction))
-        .bind(2, static_cast<std::int64_t>(direction))
-        .bind(3, partner_key.empty() ? std::string_view{""} : partner_key)
-        .bind(4, partner_key.empty() ? std::string_view{""} : partner_key);
+    // 按单位筛选时展开历史键：C:/S: 与新 P: 属于同一 partner 维度。
+    const std::vector<std::string> aliases =
+        partner_key.empty() ? std::vector<std::string>{}
+                            : partner_key_aliases(conn, partner_key);
+    std::string sql =
+        "SELECT id, settle_no, direction, partner_key, partner_name, amount_cents,"
+        " settled_on, reverses_id, note, account_id, method, operator"
+        " FROM settlement"
+        " WHERE (? = 0 OR direction = ?)";
+    if (!aliases.empty()) sql += " AND partner_key IN (" + mark_list(aliases.size()) + ")";
+    sql += " ORDER BY settled_on DESC, id DESC;";
+    Stmt stmt(conn, sql);
+    int index = 1;
+    stmt.bind(index++, static_cast<std::int64_t>(direction))
+        .bind(index++, static_cast<std::int64_t>(direction));
+    for (const auto& alias : aliases) stmt.bind(index++, alias);
     while (stmt.step()) {
       rows.push_back(SettlementRow{.id = stmt.i64(0),
                                    .settle_no = stmt.text(1),

@@ -18,6 +18,7 @@
 #include "xiaotu/error.h"
 #include "xiaotu/ids.h"
 #include "xiaotu/masterdata_io.h"
+#include "xiaotu/partner_resolve.h"
 #include "xiaotu/qty.h"
 #include "xiaotu/xlsx_reader.h"
 
@@ -362,7 +363,9 @@ OpeningReport import_receivable_payable(Db& db, OpeningKind kind, const SheetTab
           .bind(4, static_cast<std::int64_t>(receivable ? 1 : -1))
           .bind(5, entry.partner_id)
           .bind(6, entry.partner_name)
-          .bind(7, std::string(receivable ? "C:" : "S:") + std::to_string(entry.partner_id))
+          .bind(7, partner_key_for_archive(
+                       conn, receivable ? PartnerSide::Customer : PartnerSide::Supplier,
+                       entry.partner_id, entry.partner_name, true))
           .bind(8, entry.biz_date)
           .bind(9, entry.due_date)
           .bind(10, entry.amount_cents)

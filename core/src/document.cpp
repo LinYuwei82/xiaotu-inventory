@@ -14,6 +14,7 @@
 #include "xiaotu/doc_number.h"
 #include "xiaotu/error.h"
 #include "xiaotu/ids.h"
+#include "xiaotu/partner_resolve.h"
 #include "xiaotu/qty.h"
 
 namespace xiaotu {
@@ -438,6 +439,7 @@ struct ValidatedDoc {
   std::string doc_date;
   std::string biz_time;
   std::string partner;
+  std::string partner_key;
   std::string biz_category;
   std::int64_t salesperson_id = 0;
   std::string salesperson_name;
@@ -514,7 +516,8 @@ std::string normalize_biz_category(const DocumentDefinition& definition,
 }
 
 ValidatedDoc validate_document(sqlite3* conn, const DocInput& input,
-                               const DocumentDefinition& definition, bool require_lines) {
+                               const DocumentDefinition& definition, bool require_lines,
+                               bool ensure_partner) {
   const bool cost_adjust = definition.stock_mode == StockMode::CostAdjust;
   if (!cost_adjust) {
     ensure_warehouse(conn, input.warehouse_id);
@@ -629,6 +632,11 @@ ValidatedDoc validate_document(sqlite3* conn, const DocInput& input,
     validated.total_qty += line.qty;
     validated.total_amount += mul_qty_price(line.qty, line.price_cents);
   }
+  validated.partner_key = partner_key_for_archive(
+      conn,
+      definition.partner_kind == PartnerKind::Customer ? PartnerSide::Customer
+                                                       : PartnerSide::Supplier,
+      input.partner_id, validated.partner, ensure_partner);
   return validated;
 }
 
@@ -797,16 +805,6 @@ std::string doc_detail(const std::string& doc_type, const ValidatedDoc& validate
          "\",\"amount_cents\":" + std::to_string(validated.total_amount) + "}";
 }
 
-std::string partner_key_of(PartnerKind kind, std::int64_t partner_id, const std::string& name) {
-  if (partner_id > 0) {
-    return (kind == PartnerKind::Customer ? "C:" : "S:") + std::to_string(partner_id);
-  }
-  if (!name.empty()) {
-    return "T:" + name;
-  }
-  return "T:（未指定）";
-}
-
 // 审核时生成往来台账：销售应收、采购应付，退货为负数（红字）。
 void create_ar_ap_entry(sqlite3* conn, const DocumentDefinition& definition,
                         const DocInput& input, const ValidatedDoc& validated,
@@ -816,8 +814,7 @@ void create_ar_ap_entry(sqlite3* conn, const DocumentDefinition& definition,
   }
   const std::int64_t amount =
       definition.finance_red ? -validated.total_amount : validated.total_amount;
-  const std::string partner_key =
-      partner_key_of(definition.partner_kind, input.partner_id, validated.partner);
+  const std::string partner_key = validated.partner_key;
   Stmt stmt(conn,
             "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction, partner_id,"
             " partner_name, partner_key, biz_date, due_date, amount_cents, settled_cents,"
@@ -930,7 +927,7 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input,
 
   Created created;
   db_.write([&](sqlite3* conn) {
-    const ValidatedDoc validated = validate_document(conn, input, *definition, true);
+    const ValidatedDoc validated = validate_document(conn, input, *definition, true, true);
     created.id = next_id();
     enforce_credit_limit(conn, *definition, input, validated, created.id, confirm_credit,
                          credit_limit_mode_);
@@ -964,7 +961,7 @@ DocumentEngine::Created DocumentEngine::save_draft(const DocInput& input) {
 
   Created created;
   db_.write([&](sqlite3* conn) {
-    const ValidatedDoc validated = validate_document(conn, input, *definition, false);
+    const ValidatedDoc validated = validate_document(conn, input, *definition, false, false);
     created.id = next_id();
     created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
     insert_header(conn, created.id, created.doc_no, definition->doc_type,
@@ -1005,7 +1002,7 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
       throw AppError("INVALID_INPUT", "不能修改单据类型");
     }
 
-    const ValidatedDoc validated = validate_document(conn, input, *definition, false);
+    const ValidatedDoc validated = validate_document(conn, input, *definition, false, false);
     Stmt update(conn,
                 "UPDATE doc_header SET doc_date = ?, warehouse_id = ?, target_warehouse_id = ?,"
                 " partner_id = ?, customer_id = ?, customer = ?, biz_category = ?,"
@@ -1117,7 +1114,7 @@ void DocumentEngine::approve(std::int64_t doc_id, bool confirm_credit) {
       }
     }
 
-    const ValidatedDoc validated = validate_document(conn, input, *definition, true);
+    const ValidatedDoc validated = validate_document(conn, input, *definition, true, true);
     enforce_credit_limit(conn, *definition, input, validated, doc_id, confirm_credit,
                          credit_limit_mode_);
     if (definition->affects_stock) {
@@ -1504,7 +1501,8 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
       converted_total += allocation.qty;
     }
 
-    const ValidatedDoc validated = validate_document(conn, downstream, *downstream_definition, true);
+    const ValidatedDoc validated =
+        validate_document(conn, downstream, *downstream_definition, true, true);
     result.doc_id = next_id();
     result.doc_no =
         allocate_doc_no(conn, downstream_definition->doc_no_prefix, validated.doc_date);

@@ -582,7 +582,8 @@ struct DocumentDefinition {
 
 - 页面「对账单」按往来单位输出期间对账单：期初 + 期间单据 − 期间核销 = 期末，逐行累计余额。
 - 接口：`GET /api/reports/statement?partner_key=C:<客户 id>&direction=1&from=YYYY-MM-DD&to=YYYY-MM-DD`；
-  权限码 `finance.read`，只读、不落表、无写权限。`direction` 省略时按 key 前缀推断（`C:` 应收、`S:` 应付）。
+  权限码 `finance.read`，只读、不落表、无写权限。`direction` 省略时按 key 推断：`C:` / `T:` 应收、`S:` 应付、`P:` 按 `partner` 角色位，兼买卖时以台账方向为准。
+- 往来键与归集：写入端产出 `P:{partner_id}`（新档案首次被单据或期初引用时按需补建 `partner` 与映射，不批量回填历史数据）；历史 `C:` / `S:` / `T:` 原样保留。账龄、对账单、台账筛选、收付款明细与欠款 Top N 在分组前折成 partner 维度，同一单位的历史 `C:` / `S:` 单与新 `P:` 单合成一行；`T:` 仍按名称独立。档案记录不存在或补建失败时才退回 `T:{名称}`，不会产出指向空档案的 `P:` 键。
 - 数据来源与账龄一致：单据取 `ar_ap_entry`（作废单据不计入），核销取 `settlement`（撤销产生的负数记录计入）。
   同样受 v7 统计口径限制，响应头带 `X-Xiaotu-Data-Scope`。
 - 支持 `?format=csv` / `?format=xlsx` 导出（带 BOM 的 UTF-8、金额按元两位小数）与打印视图（含单位名称、报表名、
