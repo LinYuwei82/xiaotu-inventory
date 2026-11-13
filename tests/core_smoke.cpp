@@ -7,12 +7,15 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <latch>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -27,6 +30,7 @@
 #include "xiaotu/gen/customer_service.h"
 #include "xiaotu/gen/item_service.h"
 #include "xiaotu/log.h"
+#include "xiaotu/migrations.h"
 #include "xiaotu/partner_merge.h"
 #include "xiaotu/partner_preview.h"
 #include "xiaotu/partner_resolve.h"
@@ -96,6 +100,80 @@ int main() {
         check(map_count.step() && map_count.i64(0) == 0,
               "空库迁移后 partner_legacy_map 应为 0 行");
       });
+
+      // 迁移链：空库直达最新；v1 起步再逐版升到最新，版本必须连续、不跳号。
+      {
+        const auto chain_dir = dir / "migration-chain";
+        fs::create_directories(chain_dir);
+
+        xiaotu::Db empty_db(chain_dir / "empty.db", 2);
+        xiaotu::migrate(empty_db);
+        check(empty_db.schema_version() == xiaotu::target_schema_version(),
+              "空库迁移后应等于目标 schema 版本");
+        empty_db.read([&](sqlite3* conn) {
+          xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM schema_migration;");
+          xiaotu::Stmt max_version(conn, "SELECT MAX(version) FROM schema_migration;");
+          check(count.step() && count.i64(0) == xiaotu::target_schema_version(),
+                "空库迁移应逐版记录，不跳号");
+          check(max_version.step() && max_version.i64(0) == xiaotu::target_schema_version(),
+                "空库迁移的最后一版应等于目标版本");
+        });
+
+        xiaotu::Db chain_db(chain_dir / "chain.db", 2);
+        const auto& migrations = xiaotu::all_migrations();
+        check(!migrations.empty() && migrations.front().version == 1,
+              "迁移清单应从 v1 开始");
+        const auto checksum = [](std::string_view sql) {
+          std::uint64_t hash = 1469598103934665603ULL;
+          for (const unsigned char ch : sql) {
+            hash ^= ch;
+            hash *= 1099511628211ULL;
+          }
+          char buffer[17];
+          std::snprintf(buffer, sizeof(buffer), "%016llx",
+                        static_cast<unsigned long long>(hash));
+          return std::string(buffer);
+        };
+        chain_db.write_raw([&](sqlite3* conn) {
+          char* error = nullptr;
+          sqlite3_exec(conn,
+                       "CREATE TABLE schema_migration ("
+                       "  version    INTEGER PRIMARY KEY,"
+                       "  name       TEXT NOT NULL,"
+                       "  checksum   TEXT NOT NULL,"
+                       "  applied_at TEXT NOT NULL"
+                       ");",
+                       nullptr, nullptr, &error);
+          check(error == nullptr, "应能创建 schema_migration");
+          if (error) sqlite3_free(error);
+          sqlite3_exec(conn, migrations.front().sql, nullptr, nullptr, &error);
+          check(error == nullptr, "v1 应能单独执行");
+          if (error) {
+            sqlite3_free(error);
+            return;
+          }
+          xiaotu::Stmt insert(conn,
+                              "INSERT INTO schema_migration (version, name, checksum, applied_at)"
+                              " VALUES (1, 'v1_initial_schema', ?, '2026-01-01 00:00:00');");
+          insert.bind(1, checksum(migrations.front().sql));
+          insert.step();
+        });
+
+        xiaotu::migrate(chain_db);
+        check(chain_db.schema_version() == xiaotu::target_schema_version(),
+              "v1 库应逐版升到目标 schema 版本");
+        chain_db.read([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn, "SELECT version FROM schema_migration ORDER BY version;");
+          std::vector<int> versions;
+          while (stmt.step()) versions.push_back(static_cast<int>(stmt.i64(0)));
+          bool contiguous =
+              versions.size() == static_cast<std::size_t>(xiaotu::target_schema_version());
+          for (std::size_t i = 0; i < versions.size() && contiguous; ++i) {
+            contiguous = versions[i] == static_cast<int>(i) + 1;
+          }
+          check(contiguous, "v1 起步升级后版本应连续，不跳号、不重复");
+        });
+      }
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
