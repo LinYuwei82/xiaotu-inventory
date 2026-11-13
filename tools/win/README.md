@@ -35,8 +35,14 @@
 - 非 Windows 直接退出码 2，不执行任何操作。
 - `-DataDir` 已有 `app.db` 且未加 `-AllowExistingData` 时**中止**，避免把测试跑在真实数据上。
 - 安装与卸载前会提示将写入 `%LOCALAPPDATA%`；不加 `-Yes` 时等待回车。
-- 所有临时目录用唯一名字，结束时清理；`/we7560` 检查在 `git worktree` 副本里做，不污染主仓库。
+- 所有临时目录用唯一名字，结束时清理；C7560 检查在 `git worktree` 副本里做，不污染主仓库。
 - 任何步骤的失败输出都写入 `-LogDir` 下的对应日志。
+
+## 脚本编码约定
+
+- 本目录及仓库内的 PowerShell 脚本统一保存为 **UTF-8 with BOM**。PowerShell 5.1 会把无 BOM 的 UTF-8 按当前 ANSI 代码页读取（简体中文为 936），中文注释和中文输出会变成乱码，甚至直接语法解析失败、脚本起不来。
+- 编辑脚本时保留开头的 BOM：保存为「UTF-8 with BOM」，或确认文件前三字节是 `EF BB BF`。不要改成「UTF-8 无 BOM」。
+- 当前已带 BOM 的脚本：`tools/win/verify.ps1`、`tools/win/profile-build.ps1`、`packaging/win/make-zip.ps1`、`shell/win/fetch-webview2.ps1`。新增脚本沿用同一约定。
 
 ## 退出码
 
@@ -53,7 +59,7 @@
 | MSVC 构建 | `cmake --preset windows-release` 与构建均返回 0 |
 | ctest | `ctest --preset windows-release` 返回 0；失败时列出失败用例名 |
 | 静态运行库 /MT | `dumpbin /dependents` 不含 `vcruntime140.dll`、`msvcp140.dll`、`ucrtbased.dll`；找不到 dumpbin 记 SKIP |
-| /we7560 生效 | 临时 worktree 的 `document.cpp` 追加错序指定初始化器后编译失败，且输出含 `C7560`；随后主仓库 `document.cpp` 无改动 |
+| C7560 生效 | 临时 worktree 的 `document.cpp` 追加错序指定初始化器后编译失败，且输出含 `C7560`；随后主仓库 `document.cpp` 无改动。判定依据是「C7560 被当作错误」，**不是**「`/we7560` 被识别」：本机 MSVC 14.44 对 `/we7560` 报 `D9014`（值无效），而 C7560 默认就是 error，所以该开关是否被接受不在本项验证范围内 |
 | 安装包签名状态 | `SIGNING.txt` 明确写「未签名」且不写「已签名」 |
 | 安装包 SHA256 | 记录 `Get-FileHash` 结果 |
 | 静默安装 | 安装器退出码 0。Inno 语义：0 成功、1 用户取消、2 致命错误；静默安装出现 1 视为 FAIL |
