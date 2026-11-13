@@ -4,16 +4,22 @@
   从 windows-release 构建产物生成可分发的 Windows zip（可选包含桌面壳）。
 
 .DESCRIPTION
-  读取 build\windows\server\xiaotu-server.exe，若存在 shell\win\build\xiaotu-shell.exe
-  则一并打入（壳按同目录找服务端，因此两个 exe 必须同级）。再配合
-  deploy\config.toml.example 与面向终端用户的 package-readme.md 组装后压缩。
+  读取 build\windows\server\xiaotu-server.exe，并解析桌面壳 xiaotu-shell.exe：
+  优先使用 -ShellExe 显式指定的路径；未指定时依次查找顶层构建产物
+  build\<preset>\shell\win\xiaotu-shell.exe 与旧的 shell\win\build\xiaotu-shell.exe。
+  找不到壳时报错退出，不会静默产出没有桌面窗口的安装包；确实要出无壳包请显式加 -NoShell。
+  壳按同目录找服务端，因此两个 exe 必须同级。再配合 deploy\config.toml.example
+  与面向终端用户的 package-readme.md 组装后压缩。
   不修改仓库里任何受版本控制的文件，也不打包 WebView2 SDK 缓存。
 
 .EXAMPLE
-  .\packaging\win\make-zip.ps1            # 有壳就打壳，没有只打服务端
+  .\packaging\win\make-zip.ps1            # 自动查找壳；找不到则报错
 
 .EXAMPLE
-  .\packaging\win\make-zip.ps1 -NoShell   # 强制只打服务端
+  .\packaging\win\make-zip.ps1 -ShellExe D:\build\xiaotu-shell.exe
+
+.EXAMPLE
+  .\packaging\win\make-zip.ps1 -NoShell   # 显式只打服务端
 
 .EXAMPLE
   .\packaging\win\make-zip.ps1 -NoArchive # 只生成解压后的目录
@@ -34,22 +40,48 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if (-not $BuildDir) { $BuildDir = Join-Path $root 'build\windows' }
 if (-not $OutDir) { $OutDir = Join-Path $root 'build\package\win' }
-if (-not $ShellExe) { $ShellExe = Join-Path $root 'shell\win\build\xiaotu-shell.exe' }
 
 $serverExe = Join-Path $BuildDir 'server\xiaotu-server.exe'
 if (-not (Test-Path -LiteralPath $serverExe)) {
   throw "未找到 $serverExe。请先执行：cmake --preset windows-release; cmake --build --preset windows-release"
 }
 
-# 默认策略：壳存在就打进去；不存在只打服务端并提示。
+# 壳路径解析规则（与 xiaotu-inventory.iss 保持一致）：
+#   1. 显式指定优先，指定了就必须存在，不回退；
+#   2. 否则依次查找顶层构建产物、旧的独立工程产物；
+#   3. 都找不到就报错，不能静默出无壳包；如确实需要，显式加 -NoShell。
+$shellCandidates = @(
+  (Join-Path $BuildDir 'shell\win\xiaotu-shell.exe'),
+  (Join-Path $BuildDir 'shell\win\Release\xiaotu-shell.exe'),
+  (Join-Path $root 'shell\win\build\xiaotu-shell.exe'),
+  (Join-Path $root 'shell\win\build\Release\xiaotu-shell.exe')
+)
+
 $includeShell = $false
+if ($NoShell -and $ShellExe) {
+  throw '不能同时指定 -NoShell 与 -ShellExe：前者要求无壳包，后者要求指定壳。'
+}
 if ($NoShell) {
   Write-Host '按 -NoShell 指定的模式打包：仅服务端（浏览器访问）'
-} elseif (Test-Path -LiteralPath $ShellExe) {
+} elseif ($ShellExe) {
+  if (-not (Test-Path -LiteralPath $ShellExe -PathType Leaf)) {
+    throw "指定的 -ShellExe 不存在：$ShellExe（显式指定时不会回退到其他路径）"
+  }
   $includeShell = $true
 } else {
-  Write-Warning "未找到桌面壳 $ShellExe，本次只打服务端。需要桌面窗口请先构建：" `
-    + 'cmake -S shell\win -B shell\win\build -G Ninja; cmake --build shell\win\build'
+  $found = $shellCandidates |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+    Select-Object -First 1
+  if ($found) {
+    $ShellExe = $found
+    $includeShell = $true
+  } else {
+    $searched = ($shellCandidates | ForEach-Object { "  $_" }) -join [Environment]::NewLine
+    throw ("未找到 Windows 桌面壳 xiaotu-shell.exe，已查找：`n$searched`n" +
+      '构建壳：cmake --preset windows-release -DXIAOTU_BUILD_WIN_SHELL=ON; ' +
+      "cmake --build --preset windows-release`n" +
+      '如确实要只打服务端包，请显式加 -NoShell。')
+  }
 }
 
 # 版本号取自根 CMakeLists.txt（只读，不修改）。

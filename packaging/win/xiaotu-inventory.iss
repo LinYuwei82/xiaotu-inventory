@@ -2,6 +2,11 @@
 ;
 ; 本地编译（在 Windows + Inno Setup 6 环境）：
 ;   ISCC.exe /DAppVersion=<版本> packaging\win\xiaotu-inventory.iss
+; 壳路径解析（与 make-zip.ps1 同一套规则）：
+;   1. 显式 /DShellExe=<路径> 优先，指定了就必须存在（建议传绝对路径）；
+;   2. 未指定时依次查找 build\windows\shell\win\、build\windows\shell\win\Release\、
+;      旧的 shell\win\build\、shell\win\build\Release\；
+;   3. 都找不到时编译报错，不会静默产出无壳安装包；确实需要请显式 /DXIAOTU_NO_SHELL=1。
 ; 产物默认输出到脚本同级的 out\ 目录（可用 /O 覆盖）。
 ; CI 由 .github/workflows/windows-build.yml 调用，版本号取自仓库根 VERSION。
 ;
@@ -10,6 +15,37 @@
 
 #ifndef AppVersion
   #error 请传入 /DAppVersion=<版本号>（CI 从仓库根 VERSION 读取）
+#endif
+
+; 注意：预处理器宏用 XIAOTU_NO_SHELL，不能叫 NoShell——
+; 脚本里已有同名 Pascal 函数 NoShell()，宏替换会把函数声明和 Check 参数一起改坏。
+#ifndef XIAOTU_NO_SHELL
+  #define XIAOTU_NO_SHELL 0
+#endif
+
+#define RepoRoot AddBackslash(AddBackslash(SourcePath) + "..\..")
+#define ShellCandidate1 AddBackslash(RepoRoot) + "build\windows\shell\win\xiaotu-shell.exe"
+#define ShellCandidate2 AddBackslash(RepoRoot) + "build\windows\shell\win\Release\xiaotu-shell.exe"
+#define ShellCandidate3 AddBackslash(RepoRoot) + "shell\win\build\xiaotu-shell.exe"
+#define ShellCandidate4 AddBackslash(RepoRoot) + "shell\win\build\Release\xiaotu-shell.exe"
+
+#if !XIAOTU_NO_SHELL
+  ; 只在用户未传 /DShellExe 时定义 ShellExe，避免 ISPP 重复定义宏。
+  #ifndef ShellExe
+    #if FileExists(ShellCandidate1)
+      #define ShellExe ShellCandidate1
+    #elif FileExists(ShellCandidate2)
+      #define ShellExe ShellCandidate2
+    #elif FileExists(ShellCandidate3)
+      #define ShellExe ShellCandidate3
+    #elif FileExists(ShellCandidate4)
+      #define ShellExe ShellCandidate4
+    #else
+      #error 未找到 Windows 桌面壳 xiaotu-shell.exe。已查找 build\windows\shell\win\、build\windows\shell\win\Release\、shell\win\build\、shell\win\build\Release\。构建：cmake --preset windows-release -DXIAOTU_BUILD_WIN_SHELL=ON; cmake --build --preset windows-release。如确实要无壳包，请加 /DXIAOTU_NO_SHELL=1。
+    #endif
+  #elif !FileExists(ShellExe)
+    #error 指定的 /DShellExe 指向的文件不存在；显式指定时不会回退到其他路径。
+  #endif
 #endif
 
 #ifndef OutputDir
@@ -52,9 +88,11 @@ SignedUninstaller=yes
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: checkedonce
 
 [Files]
-; 服务端必须存在；壳缺失时安装包仍可编出「仅浏览器访问」的版本。
+; 服务端必须存在；壳缺失时编译期直接失败，确实要出无壳包请显式 /DXIAOTU_NO_SHELL=1。
 Source: "..\..\build\windows\server\{#ServerExeName}"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\shell\win\build\{#AppExeName}"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+#if !XIAOTU_NO_SHELL
+Source: "{#ShellExe}"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 Source: "..\..\deploy\config.toml.example"; DestDir: "{app}"; Flags: ignoreversion; DestName: "config.toml.example"
 Source: "package-readme.md"; DestDir: "{app}"; Flags: ignoreversion; DestName: "README.md"
 
