@@ -8,7 +8,11 @@ namespace xiaotu {
 // 子进程执行结果。output 合并 stdout 与 stderr，按行保留原始文本；
 // 失败原因（如程序不存在）放在 error，便于拼进用户可见的错误信息。
 struct ProcessResult {
+  // 进程是否真的创建成功（CreateProcess / fork 成功）。
   bool started = false;
+  // 是否成功取到退出状态；started 为真时才可能为真。二者都为真时
+  // exit_code 才有意义，started 为真而 collected 为假表示收集失败。
+  bool collected = false;
   int exit_code = -1;
   std::string output;
   std::string error;
@@ -19,6 +23,10 @@ struct ProcessResult {
 // Windows 走 CreateProcess + 管道；POSIX 走 fork/execvp + 管道。
 ProcessResult run_process_capture(const std::string& program,
                                   const std::vector<std::string>& args);
+
+// 统一描述失败原因：未启动时给系统错误描述；已启动但收集失败时明确说明
+// 进程确实起来了，只是拿不到退出状态，避免被写成「无法启动」。
+std::string process_failure_text(const ProcessResult& result);
 
 // 取输出里最后一个非空行，用于错误信息；没有输出时返回空串。
 std::string last_output_line(const std::string& output);

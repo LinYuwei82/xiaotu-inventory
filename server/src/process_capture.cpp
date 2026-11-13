@@ -222,14 +222,21 @@ ProcessResult run_process_capture(const std::string& program,
   }
 
   // 先读管道再等待，避免子进程写满管道后阻塞、父进程又在等它退出。
+  result.started = true;
   result.output = read_pipe(pipe_read);
   ::CloseHandle(pipe_read);
   ::WaitForSingleObject(process.hProcess, INFINITE);
   DWORD exit_code = 1;
-  ::GetExitCodeProcess(process.hProcess, &exit_code);
+  if (::GetExitCodeProcess(process.hProcess, &exit_code) == FALSE) {
+    const DWORD code = ::GetLastError();
+    ::CloseHandle(process.hThread);
+    ::CloseHandle(process.hProcess);
+    result.error = "无法获取子进程退出状态（系统错误 " + std::to_string(code) + "）";
+    return result;
+  }
   ::CloseHandle(process.hThread);
   ::CloseHandle(process.hProcess);
-  result.started = true;
+  result.collected = true;
   result.exit_code = static_cast<int>(exit_code);
   return result;
 
@@ -251,6 +258,8 @@ ProcessResult run_process_capture(const std::string& program,
     result.error = std::string("无法创建子进程：") + std::strerror(saved_errno);
     return result;
   }
+  // fork 成功后进程已经起来了：后续即使收集退出状态失败，也不能说成「未启动」。
+  result.started = true;
   if (pid == 0) {
     ::close(pipe_fd[0]);
     ::dup2(pipe_fd[1], STDOUT_FILENO);
@@ -281,12 +290,11 @@ ProcessResult run_process_capture(const std::string& program,
     // 收集退出状态失败（例如 ECHILD，子进程已被别处回收）。此时 status 仍是
     // 初值 0，若继续往下走会被 WIFEXITED(0) 当成「正常退出、退出码 0」。
     const int saved_errno = errno;
-    result.started = false;
     result.exit_code = -1;
     result.error = std::string("无法获取子进程退出状态：") + std::strerror(saved_errno);
     return result;
   }
-  result.started = true;
+  result.collected = true;
   if (WIFEXITED(status)) {
     result.exit_code = WEXITSTATUS(status);
   } else if (WIFSIGNALED(status)) {
@@ -294,6 +302,14 @@ ProcessResult run_process_capture(const std::string& program,
   }
   return result;
 #endif
+}
+
+std::string process_failure_text(const ProcessResult& result) {
+  if (!result.started) {
+    return result.error.empty() ? "程序未能启动" : result.error;
+  }
+  return "进程已启动，但无法获取退出状态：" +
+         (result.error.empty() ? std::string("原因未知") : result.error);
 }
 
 std::string last_output_line(const std::string& output) {

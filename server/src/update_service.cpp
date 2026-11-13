@@ -53,8 +53,16 @@ bool verify_manifest_signature(const UpdateSettings& settings, const std::string
   const ProcessResult process = run_process_capture(settings.verifier_python, args);
   if (!process.started) {
     result.error_code = "UPDATE_VERIFY_UNAVAILABLE";
-    result.error_message = "无法启动验签工具：" + process_failure_detail(process);
-    log_warn("更新验签工具启动失败：" + process_failure_detail(process));
+    result.error_message = "无法启动验签工具：" + process_failure_text(process);
+    log_warn("更新验签工具启动失败：" + process_failure_text(process));
+    return false;
+  }
+  if (!process.collected) {
+    // 验签工具已经跑起来，但收不到退出状态：既不是签名无效，也不是没启动。
+    // 复用 UNAVAILABLE：验签没有完成，调用方按「不可用」处理。
+    result.error_code = "UPDATE_VERIFY_UNAVAILABLE";
+    result.error_message = "更新清单验签失败：" + process_failure_text(process);
+    log_warn("更新验签失败：" + process_failure_text(process));
     return false;
   }
   if (process.exit_code != 0) {

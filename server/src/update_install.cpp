@@ -84,8 +84,15 @@ UpdatePackageResult download_update_package(const UpdateSettings& settings,
   const ProcessResult process = run_process_capture("curl", args);
   if (!process.started) {
     result.error_code = "UPDATE_DOWNLOAD_UNAVAILABLE";
-    result.error_message = "无法启动 curl 下载安装包：" + package_command_error(process);
+    result.error_message = "无法启动 curl 下载安装包：" + process_failure_text(process);
     log_warn("更新下载失败：" + result.error_message);
+    return result;
+  }
+  if (!process.collected) {
+    // curl 已经跑起来，但收不到退出状态：失败原因不是「启动不了」。
+    result.error_code = "UPDATE_DOWNLOAD_FAILED";
+    result.error_message = "下载安装包失败：" + process_failure_text(process);
+    log_warn("更新下载失败：" + process_failure_text(process));
     return result;
   }
   if (process.exit_code != 0) {
@@ -157,7 +164,19 @@ UpdatePackageResult launch_update_package(const UpdateSettings& settings,
   return result;
 #endif
 
-  if (!process.started || process.exit_code != 0) {
+  if (!process.started) {
+    result.error_code = "UPDATE_INSTALL_FAILED";
+    result.error_message = "无法打开安装包：" + process_failure_text(process);
+    log_warn("打开更新安装包失败：" + result.error_message);
+    return result;
+  }
+  if (!process.collected) {
+    result.error_code = "UPDATE_INSTALL_FAILED";
+    result.error_message = "打开安装包失败：" + process_failure_text(process);
+    log_warn("打开更新安装包失败：" + process_failure_text(process));
+    return result;
+  }
+  if (process.exit_code != 0) {
     result.error_code = "UPDATE_INSTALL_FAILED";
     result.error_message = "无法打开安装包：" + package_command_error(process);
     log_warn("打开更新安装包失败：" + result.error_message);
