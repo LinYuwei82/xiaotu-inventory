@@ -90,7 +90,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 36, "迁移后 schema 版本应为 36");
+      check(db.schema_version() == 37, "迁移后 schema 版本应为 37");
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
       db.read([&](sqlite3* conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
@@ -2934,7 +2934,7 @@ int main() {
         });
 
         xiaotu::migrate(mig);
-        check(mig.schema_version() == 36, "有数据的模拟库应迁到 v36");
+        check(mig.schema_version() == 37, "有数据的模拟库应迁到 v37");
 
         mig.read([&](sqlite3* conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");
@@ -3437,6 +3437,161 @@ int main() {
                              "SELECT COUNT(*) FROM audit_log WHERE action = 'partner_merge';");
           check(audit.step() && audit.i64(0) == 3, "每次合并都应独立写审计日志");
         });
+      }
+
+      // 单据列表统一筛选 / 分页 / 合计：独立库，日期与金额都可控。
+      {
+        const fs::path list_dir = dir / "doc-list";
+        fs::create_directories(list_dir);
+        xiaotu::Db ldb(list_dir / "app.db", 2);
+        xiaotu::migrate(ldb);
+        check(ldb.schema_version() == 37, "列表筛选库应迁到 v37");
+        ldb.read([&](sqlite3* conn) {
+          bool has_type_date = false;
+          bool has_type_status = false;
+          // 注：读连接在迁移前已打开，先做一次普通查询让连接加载最新 schema；
+          // 内嵌 SQLite 的 PRAGMA index_list 不会自己触发这次加载。
+          {
+            xiaotu::Stmt warmup(conn, "SELECT COUNT(*) FROM doc_header;");
+            warmup.step();
+          }
+          xiaotu::Stmt indexes(conn, "PRAGMA index_list('doc_header');");
+          while (indexes.step()) {
+            const std::string name = indexes.text(1);
+            if (name == "idx_doc_header_type_date") has_type_date = true;
+            if (name == "idx_doc_header_type_status") has_type_status = true;
+          }
+          check(has_type_date && has_type_status,
+                "v37 后 doc_header 应有类型+日期与类型+状态索引");
+        });
+
+        xiaotu::gen::ItemService list_items(ldb);
+        xiaotu::gen::WarehouseService list_warehouses(ldb);
+        xiaotu::gen::EmployeeService list_employees(ldb);
+        xiaotu::DocumentEngine engine(ldb);
+        const auto list_item =
+            list_items.create(xiaotu::gen::ItemRow{.code = "L001", .name = "列表商品"});
+        const std::int64_t list_warehouse = list_warehouses.list().at(0).id;
+        const auto zhang =
+            list_employees.create(xiaotu::gen::EmployeeRow{.code = "L-E1", .name = "张三"});
+        const auto li =
+            list_employees.create(xiaotu::gen::EmployeeRow{.code = "L-E2", .name = "李四"});
+
+        const auto make_sale = [&](const std::string& date, const std::string& customer,
+                                   std::int64_t salesperson_id, std::int64_t qty,
+                                   std::int64_t price_cents) {
+          xiaotu::DocInput sale;
+          sale.doc_type = "SAL_OUT";
+          sale.warehouse_id = list_warehouse;
+          sale.doc_date = date;
+          sale.partner = customer;
+          sale.salesperson_id = salesperson_id;
+          sale.lines.push_back(
+              xiaotu::DocLineInput{.item_id = list_item.id, .qty = q(qty),
+                                   .price_cents = price_cents});
+          return engine.save_and_approve(sale);
+        };
+
+        xiaotu::DocInput stock_in;
+        stock_in.doc_type = "PUR_IN";
+        stock_in.warehouse_id = list_warehouse;
+        stock_in.doc_date = "2026-01-01";
+        stock_in.partner = "列表供应商";
+        stock_in.lines.push_back(
+            xiaotu::DocLineInput{.item_id = list_item.id, .qty = q(100),
+                                 .price_cents = 100});
+        engine.save_and_approve(stock_in);
+
+        const auto jan = make_sale("2026-01-05", "客户甲", zhang.id, 2, 1234);  // 2468
+        const auto feb = make_sale("2026-02-10", "客户乙", li.id, 1, 5000);    // 5000
+        const auto mar = make_sale("2026-03-01", "客户甲", zhang.id, 1, 800);  // 800
+        engine.reverse(mar.id);
+        const auto percent = make_sale("2026-02-12", "折扣%客户", 0, 1, 900);  // 900
+        const auto underscore = make_sale("2026-02-13", "客户_特殊", 0, 1, 700);
+
+        xiaotu::DocInput list_draft;
+        list_draft.doc_type = "SAL_OUT";
+        list_draft.warehouse_id = list_warehouse;
+        list_draft.doc_date = "2026-02-11";
+        list_draft.partner = "客户甲";
+        list_draft.salesperson_id = zhang.id;
+        list_draft.lines.push_back(
+            xiaotu::DocLineInput{.item_id = list_item.id, .qty = q(1), .price_cents = 1500});
+        const auto draft = engine.save_draft(list_draft);
+
+        const auto query = [&](std::string keyword, std::string from, std::string to,
+                               std::string status, std::int64_t min_cents,
+                               std::int64_t max_cents, int page, int page_size) {
+          return engine.list_page(xiaotu::DocListQuery{
+              .doc_type = "SAL_OUT",
+              .keyword = std::move(keyword),
+              .date_from = std::move(from),
+              .date_to = std::move(to),
+              .status = std::move(status),
+              .amount_min_cents = min_cents,
+              .amount_max_cents = max_cents,
+              .page = page,
+              .page_size = page_size,
+          });
+        };
+
+        check(query("", "", "", "", 0, 0, 1, 20).total_count == 6,
+              "SAL_OUT 共 6 张（含草稿与已反审核）");
+        check(query("客户甲", "", "", "", 0, 0, 1, 20).total_count == 3,
+              "关键字应匹配往来单位");
+        check(query("张三", "", "", "", 0, 0, 1, 20).total_count == 3,
+              "关键字应匹配业务员名称快照");
+        check(query("客户", "2026-02-01", "2026-02-28", "", 0, 0, 1, 20).total_count == 4,
+              "日期闭区间内命中四张客户名称含「客户」的销售单");
+        check(query(jan.doc_no, "", "", "", 0, 0, 1, 20).total_count == 1,
+              "关键字应能按完整单号精确命中");
+        check(query("", "2026-02-01", "2026-03-31", "", 0, 0, 1, 20).total_count == 5,
+              "日期闭区间应包含 2 月与 3 月的五张单据");
+        check(query("", "", "", "draft", 0, 0, 1, 20).total_count == 1,
+              "draft 应只返回草稿");
+        check(query("", "", "", "approved", 0, 0, 1, 20).total_count == 4,
+              "approved 应只返回已审核未反审核的单据");
+        check(query("", "", "", "reversed", 0, 0, 1, 20).total_count == 1,
+              "reversed 应映射到 VOIDED");
+        check(query("", "", "", "all", 0, 0, 1, 20).total_count == 6,
+              "status=all 应不过滤");
+        check(query("", "", "", "", 2000, 3000, 1, 20).total_count == 1,
+              "金额闭区间应只命中 2468 分的单据");
+        check(query("客户甲", "2026-02-01", "2026-02-28", "draft", 1000, 2000, 1, 20)
+                      .total_count == 1,
+              "组合条件应同时生效");
+        // LIKE 特殊字符按字面匹配，不能退化成全表匹配。
+        check(query("%", "", "", "", 0, 0, 1, 20).total_count == 1,
+              "关键字 % 应只匹配名称里真的含 % 的单据");
+        check(query("_", "", "", "", 0, 0, 1, 20).total_count == 1,
+              "关键字 _ 应只匹配名称里真的含 _ 的单据");
+
+        const auto first_page = query("", "", "", "", 0, 0, 1, 2);
+        const auto second_page = query("", "", "", "", 0, 0, 2, 2);
+        const auto third_page = query("", "", "", "", 0, 0, 3, 2);
+        check(first_page.rows.size() == 2 && second_page.rows.size() == 2 &&
+                  third_page.rows.size() == 2,
+              "page_size=2 时每页应为 2 行");
+        check(first_page.total_count == 6 && second_page.total_count == 6 &&
+                  third_page.total_count == 6,
+              "total_count 不应随 offset 变化");
+        check(first_page.total_amount_cents == 2468 + 5000 + 800 + 900 + 700 + 1500,
+              "合计金额应为筛选结果逐行之和");
+        check(first_page.total_amount_cents == second_page.total_amount_cents &&
+                  second_page.total_amount_cents == third_page.total_amount_cents,
+              "合计金额不应随分页变化");
+        bool descending = first_page.rows.at(0).id > first_page.rows.at(1).id &&
+                          second_page.rows.at(0).id > second_page.rows.at(1).id;
+        check(descending, "分页按 id 倒序输出");
+        check(query("", "2026-02-01", "2026-02-28", "", 0, 0, 1, 1000).page_size == 100,
+              "page_size 超过 100 应截断为 100");
+        check(query("", "", "", "", 0, 0, 0, 0).page == 1 &&
+                  query("", "", "", "", 0, 0, 0, 0).page_size == 20,
+              "page/page_size 非法值应回到 1 / 20");
+        check(draft.id > 0 && feb.id > jan.id && percent.id > 0 && underscore.id > 0,
+              "测试单据应全部落库");
+        (void)percent;
+        (void)underscore;
       }
     }
   } catch (const std::exception& error) {

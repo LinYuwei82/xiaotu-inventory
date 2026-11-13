@@ -1014,6 +1014,21 @@ SET partner_id = (SELECT t.partner_id FROM target t WHERE t.row_id = doc_header.
 WHERE id IN (SELECT row_id FROM target);
 )SQL";
 
+// v37：单据列表统一筛选与合计的索引。v1 的 idx_doc_header_type_date 只覆盖
+// (doc_type, doc_date)，这里重建为 (doc_type, doc_date DESC, id DESC) 以匹配
+// 「按类型 + 日期区间 + 倒序分页」；另加状态筛选索引，供「草稿 / 已审核 / 已反审核」
+// 与类型组合使用。只改索引，不动表结构与数据。
+// 回退：DROP INDEX idx_doc_header_type_status;
+//       DROP INDEX idx_doc_header_type_date;
+//       CREATE INDEX idx_doc_header_type_date ON doc_header(doc_type, doc_date);
+//       DELETE FROM schema_migration WHERE version = 37; PRAGMA user_version = 36;
+constexpr const char* kV37 = R"SQL(
+DROP INDEX IF EXISTS idx_doc_header_type_date;
+CREATE INDEX IF NOT EXISTS idx_doc_header_type_date
+  ON doc_header(doc_type, doc_date DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_doc_header_type_status ON doc_header(doc_type, status);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -1065,6 +1080,7 @@ const std::vector<Migration>& all_migrations() {
       {34, "v34_audit_client_ip_request", kV34},
       {35, "v35_doc_line_stock_ledger_batch_seam", kV35},
       {36, "v36_doc_header_partner_id_backfill", kV36},
+      {37, "v37_doc_header_list_index", kV37},
   };
   return migrations;
 }

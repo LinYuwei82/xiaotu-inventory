@@ -54,6 +54,34 @@ CostBasis current_cost_basis(sqlite3* conn) {
   return stmt.step() && stmt.text(0) == "NET" ? CostBasis::Net : CostBasis::Inclusive;
 }
 
+// LIKE 模糊匹配的转义：关键字里的 %、_ 与反斜杠按字面处理，
+// SQL 侧统一带 ESCAPE '\'。
+std::string like_escape(std::string_view value) {
+  std::string escaped;
+  escaped.reserve(value.size() + 8);
+  for (const char ch : value) {
+    if (ch == '\\' || ch == '%' || ch == '_') escaped.push_back('\\');
+    escaped.push_back(ch);
+  }
+  return escaped;
+}
+
+// 列表筛选状态别名：前端用 draft / approved / reversed，库内是 DRAFT / APPROVED / VOIDED。
+// 返回空串表示不过滤；其余未知值直接拒绝，避免静默返回全量。
+std::string status_filter_code(std::string_view status) {
+  if (status.empty() || status == "all") return {};
+  if (status == "draft") return "DRAFT";
+  if (status == "approved") return "APPROVED";
+  if (status == "reversed") return "VOIDED";
+  throw AppError("INVALID_INPUT", "未知单据状态筛选: " + std::string(status));
+}
+
+struct SqlBind {
+  bool is_text = false;
+  std::string text;
+  std::int64_t number = 0;
+};
+
 }  // namespace
 
 std::int64_t moving_average_cost(std::int64_t qty, std::int64_t /*price_cents*/,
@@ -1393,6 +1421,119 @@ std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limi
     }
   });
   return documents;
+}
+
+DocListPage DocumentEngine::list_page(const DocListQuery& query) {
+  if (find_document_definition(query.doc_type) == nullptr) {
+    throw AppError("UNKNOWN_DOC_TYPE", "未知单据类型: " + query.doc_type);
+  }
+
+  DocListPage result;
+  result.page = query.page < 1 ? 1 : query.page;
+  result.page_size = query.page_size < 1 ? 20 : std::min(query.page_size, 100);
+
+  std::string where = " WHERE h.doc_type = ?";
+  std::vector<SqlBind> binds;
+  binds.push_back(SqlBind{.is_text = true, .text = query.doc_type});
+  if (!query.keyword.empty()) {
+    const std::string pattern = "%" + like_escape(query.keyword) + "%";
+    where +=
+        " AND (h.doc_no LIKE ? ESCAPE '\\' OR h.customer LIKE ? ESCAPE '\\'"
+        " OR h.salesperson_name LIKE ? ESCAPE '\\')";
+    for (int i = 0; i < 3; ++i) {
+      binds.push_back(SqlBind{.is_text = true, .text = pattern});
+    }
+  }
+  if (!query.date_from.empty() && !query.date_to.empty()) {
+    where += " AND h.doc_date BETWEEN ? AND ?";
+    binds.push_back(SqlBind{.is_text = true, .text = query.date_from});
+    binds.push_back(SqlBind{.is_text = true, .text = query.date_to});
+  } else if (!query.date_from.empty()) {
+    where += " AND h.doc_date >= ?";
+    binds.push_back(SqlBind{.is_text = true, .text = query.date_from});
+  } else if (!query.date_to.empty()) {
+    where += " AND h.doc_date <= ?";
+    binds.push_back(SqlBind{.is_text = true, .text = query.date_to});
+  }
+  const std::string status = status_filter_code(query.status);
+  if (!status.empty()) {
+    where += " AND h.status = ?";
+    binds.push_back(SqlBind{.is_text = true, .text = status});
+  }
+  if (query.amount_min_cents > 0) {
+    where += " AND h.total_amount_cents >= ?";
+    binds.push_back(SqlBind{.number = query.amount_min_cents});
+  }
+  if (query.amount_max_cents > 0) {
+    where += " AND h.total_amount_cents <= ?";
+    binds.push_back(SqlBind{.number = query.amount_max_cents});
+  }
+
+  const auto bind_where = [&binds](Stmt& stmt) {
+    std::int64_t index = 1;
+    for (const SqlBind& bind : binds) {
+      if (bind.is_text) {
+        stmt.bind(index++, bind.text);
+      } else {
+        stmt.bind(index++, bind.number);
+      }
+    }
+    return index;
+  };
+
+  const std::int64_t offset =
+      static_cast<std::int64_t>(result.page - 1) * static_cast<std::int64_t>(result.page_size);
+  db_.read([&](sqlite3* conn) {
+    {
+      Stmt totals(conn,
+                  "SELECT COUNT(*), COALESCE(SUM(h.total_amount_cents), 0)"
+                  " FROM doc_header h" +
+                      where + ";");
+      std::int64_t index = 1;
+      for (const SqlBind& bind : binds) {
+        if (bind.is_text) {
+          totals.bind(index++, bind.text);
+        } else {
+          totals.bind(index++, bind.number);
+        }
+      }
+      if (totals.step()) {
+        result.total_count = totals.i64(0);
+        result.total_amount_cents = totals.i64(1);
+      }
+    }
+    {
+      Stmt stmt(conn,
+                "SELECT h.id, h.doc_no, h.doc_date, w.name, h.customer, h.total_qty,"
+                " h.total_amount_cents, h.status, h.order_status, h.created_at,"
+                " COALESCE((SELECT SUM(converted_qty) FROM doc_line WHERE doc_id = h.id), 0),"
+                " h.biz_category, h.salesperson_id, h.salesperson_name, h.version"
+                " FROM doc_header h JOIN warehouse w ON w.id = h.warehouse_id" +
+                    where + " ORDER BY h.id DESC LIMIT ? OFFSET ?;");
+      const std::int64_t next = bind_where(stmt);
+      stmt.bind(next, static_cast<std::int64_t>(result.page_size)).bind(next + 1, offset);
+      while (stmt.step()) {
+        DocSummary summary;
+        summary.id = stmt.i64(0);
+        summary.doc_no = stmt.text(1);
+        summary.doc_date = stmt.text(2);
+        summary.warehouse_name = stmt.text(3);
+        summary.customer = stmt.text(4);
+        summary.total_qty = stmt.i64(5);
+        summary.total_amount_cents = stmt.i64(6);
+        summary.status = stmt.text(7);
+        summary.order_status = stmt.text(8);
+        summary.created_at = stmt.text(9);
+        summary.converted_qty = stmt.i64(10);
+        summary.biz_category = stmt.text(11);
+        summary.salesperson_id = stmt.i64(12);
+        summary.salesperson_name = stmt.text(13);
+        summary.version = stmt.i64(14);
+        result.rows.push_back(std::move(summary));
+      }
+    }
+  });
+  return result;
 }
 
 void DocumentEngine::reverse(std::int64_t doc_id, std::int64_t expected_version) {

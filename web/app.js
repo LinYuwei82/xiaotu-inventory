@@ -1846,6 +1846,296 @@
     await reload();
   }
 
+  // ---------- 六类单据共用的列表：筛选条 + 服务端分页 + 服务端合计 ----------
+
+  const DOC_FILTER_PREFIX = "xt.docFilter.";
+  const DOC_FILTER_STATUS = ["", "draft", "approved", "reversed"];
+
+  function isoDateOrEmpty(value) {
+    return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : "";
+  }
+
+  // 读取上次条件：字段类型不对就整条丢弃，按默认条件（本月）处理。
+  function readSavedDocFilter(docType) {
+    let data = null;
+    try {
+      const raw = localStorage.getItem(DOC_FILTER_PREFIX + docType);
+      if (!raw) return null;
+      data = JSON.parse(raw);
+    } catch (error) {
+      return null;
+    }
+    if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+    return {
+      keyword: typeof data.keyword === "string" ? data.keyword : "",
+      date_from: isoDateOrEmpty(data.date_from),
+      date_to: isoDateOrEmpty(data.date_to),
+      status: DOC_FILTER_STATUS.includes(data.status) ? data.status : "",
+      amount_min: typeof data.amount_min === "string" ? data.amount_min : "",
+      amount_max: typeof data.amount_max === "string" ? data.amount_max : "",
+      amount_open: data.amount_open === true,
+    };
+  }
+
+  function writeSavedDocFilter(docType, filter) {
+    try {
+      localStorage.setItem(DOC_FILTER_PREFIX + docType, JSON.stringify(filter));
+    } catch (error) {
+      // 本地存储不可用时不记条件，不影响查询。
+    }
+  }
+
+  function defaultDocFilter() {
+    const now = new Date();
+    const pad = (value) => String(value).padStart(2, "0");
+    const month = now.getFullYear() + "-" + pad(now.getMonth() + 1);
+    return {
+      keyword: "",
+      date_from: month + "-01",
+      date_to:
+        now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate()),
+      status: "",
+      amount_min: "",
+      amount_max: "",
+      amount_open: false,
+    };
+  }
+
+  function documentAmountValid(value) {
+    return value === "" || /^\d+(\.\d{1,2})?$/.test(value);
+  }
+
+  // columns: [{title, cell(doc), actions?}]；返回表格 DOM 与可按 id 取行的接口。
+  function createDocumentList(options) {
+    const docType = options.docType;
+    const mount = options.mount;
+    const columns = options.columns;
+    const emptyText = options.emptyText || "没有符合条件的单据";
+    const pageSize = options.pageSize || 20;
+    let filter = readSavedDocFilter(docType) || defaultDocFilter();
+    let rows = [];
+    let totalCount = 0;
+    let totalAmountCents = 0;
+    let page = 1;
+    let loading = false;
+    let requestSeq = 0;
+
+    mount.innerHTML = `
+      <form class="filters" data-role="doc-filters">
+        <label class="field"><span>关键词</span>
+          <input type="text" data-field="keyword" placeholder="单号 / 往来单位 / 业务员" />
+        </label>
+        <label class="field"><span>开始日期</span><input type="date" data-field="date-from" /></label>
+        <label class="field"><span>结束日期</span><input type="date" data-field="date-to" /></label>
+        <label class="field"><span>状态</span>
+          <select data-field="status">
+            <option value="">全部</option>
+            <option value="draft">草稿</option>
+            <option value="approved">已审核</option>
+            <option value="reversed">已反审核</option>
+          </select>
+        </label>
+        <div class="form-actions">
+          <button class="btn" type="button" data-role="amount-toggle">金额</button>
+          <button class="btn primary" type="submit">查询</button>
+          <button class="btn" type="button" data-role="filter-reset">重置</button>
+        </div>
+      </form>
+      <form class="filters" data-role="amount-fields" hidden>
+        <label class="field"><span>金额下限（元）</span>
+          <input type="text" inputmode="decimal" data-field="amount-min" placeholder="0.00" />
+        </label>
+        <label class="field"><span>金额上限（元）</span>
+          <input type="text" inputmode="decimal" data-field="amount-max" placeholder="不限" />
+        </label>
+      </form>
+      <p class="page-sub" data-role="doc-summary"></p>
+      <table class="table" data-role="documents"></table>
+      <div class="form-actions">
+        <button class="btn" type="button" data-role="prev">上一页</button>
+        <span class="page-sub" data-role="doc-page"></span>
+        <button class="btn" type="button" data-role="next">下一页</button>
+      </div>`;
+
+    const filters = mount.querySelector('[data-role="doc-filters"]');
+    const amountFields = mount.querySelector('[data-role="amount-fields"]');
+    const amountToggle = mount.querySelector('[data-role="amount-toggle"]');
+    const keywordInput = filters.querySelector('[data-field="keyword"]');
+    const dateFromInput = filters.querySelector('[data-field="date-from"]');
+    const dateToInput = filters.querySelector('[data-field="date-to"]');
+    const statusField = filters.querySelector('[data-field="status"]');
+    const amountMinInput = amountFields.querySelector('[data-field="amount-min"]');
+    const amountMaxInput = amountFields.querySelector('[data-field="amount-max"]');
+    const summary = mount.querySelector('[data-role="doc-summary"]');
+    const table = mount.querySelector('[data-role="documents"]');
+    const pageInfo = mount.querySelector('[data-role="doc-page"]');
+    const prevButton = mount.querySelector('[data-role="prev"]');
+    const nextButton = mount.querySelector('[data-role="next"]');
+
+    function syncForm() {
+      keywordInput.value = filter.keyword;
+      dateFromInput.value = filter.date_from;
+      dateToInput.value = filter.date_to;
+      statusField.value = filter.status;
+      amountMinInput.value = filter.amount_min;
+      amountMaxInput.value = filter.amount_max;
+      amountFields.hidden = !filter.amount_open;
+      amountToggle.textContent = filter.amount_open ? "收起金额" : "金额";
+    }
+
+    // 从表单收集条件；金额只在展开时生效，收起时一律按清空处理。
+    function collectFilter() {
+      const next = {
+        keyword: keywordInput.value.trim(),
+        date_from: dateFromInput.value,
+        date_to: dateToInput.value,
+        status: DOC_FILTER_STATUS.includes(statusField.value) ? statusField.value : "",
+        amount_min: "",
+        amount_max: "",
+        amount_open: !amountFields.hidden,
+      };
+      if (next.amount_open) {
+        next.amount_min = amountMinInput.value.trim();
+        next.amount_max = amountMaxInput.value.trim();
+        if (!documentAmountValid(next.amount_min) || !documentAmountValid(next.amount_max)) {
+          showNotice("金额最多两位小数，请检查金额区间", "error");
+          return null;
+        }
+      }
+      return next;
+    }
+
+    async function fetchPage() {
+      const seq = ++requestSeq;
+      loading = true;
+      const params = new URLSearchParams();
+      params.set("doc_type", docType);
+      params.set("page", String(page));
+      params.set("page_size", String(pageSize));
+      params.set("keyword", filter.keyword);
+      params.set("date_from", filter.date_from);
+      params.set("date_to", filter.date_to);
+      params.set("status", filter.status);
+      params.set("amount_min", filter.amount_open ? filter.amount_min : "");
+      params.set("amount_max", filter.amount_open ? filter.amount_max : "");
+      try {
+        const result = await api("GET", "/api/documents?" + params.toString());
+        if (seq !== requestSeq) return;
+        rows = result && Array.isArray(result.rows) ? result.rows : [];
+        totalCount = Number(result && result.total_count) || 0;
+        totalAmountCents = Number(result && result.total_amount_cents) || 0;
+        page = Number(result && result.page) || page;
+        render();
+      } catch (error) {
+        if (seq === requestSeq) showNotice(error.message, "error");
+      } finally {
+        if (seq === requestSeq) loading = false;
+      }
+    }
+
+    async function reload() {
+      const next = collectFilter();
+      if (!next) return;
+      filter = next;
+      writeSavedDocFilter(docType, filter);
+      await fetchPage();
+    }
+
+    function render() {
+      const pages = Math.max(1, Math.ceil(totalCount / pageSize));
+      page = Math.min(Math.max(1, page), pages);
+      summary.textContent =
+        "共 " + totalCount + " 张，合计金额 " + money(totalAmountCents) + " 元";
+      pageInfo.textContent = "第 " + page + " / " + pages + " 页";
+      prevButton.disabled = page <= 1;
+      nextButton.disabled = page >= pages;
+      if (!rows.length) {
+        table.innerHTML = `<tbody><tr><td class="empty">${escapeHtml(emptyText)}</td></tr></tbody>`;
+        return;
+      }
+      table.innerHTML = `
+        <thead><tr>${columns
+          .map((column) => `<th${column.actions ? ' class="actions"' : ""}>${escapeHtml(column.title)}</th>`)
+          .join("")}</tr></thead>
+        <tbody>${rows
+          .map(
+            (doc) => `<tr data-id="${doc.id}">${columns
+              .map(
+                (column) =>
+                  `<td${column.actions ? ' class="actions"' : ""}>${column.cell(doc)}</td>`
+              )
+              .join("")}</tr>`
+          )
+          .join("")}</tbody>`;
+    }
+
+    syncForm();
+
+    filters.addEventListener("submit", (event) => {
+      event.preventDefault();
+      page = 1;
+      reload();
+    });
+    const onFilterChange = () => {
+      page = 1;
+      reload();
+    };
+    keywordInput.addEventListener("change", onFilterChange);
+    dateFromInput.addEventListener("change", onFilterChange);
+    dateToInput.addEventListener("change", onFilterChange);
+    statusField.addEventListener("change", onFilterChange);
+    amountMinInput.addEventListener("change", () => {
+      if (!amountFields.hidden) onFilterChange();
+    });
+    amountMaxInput.addEventListener("change", () => {
+      if (!amountFields.hidden) onFilterChange();
+    });
+    filters.querySelector('[data-role="filter-reset"]').addEventListener("click", () => {
+      filter = defaultDocFilter();
+      page = 1;
+      syncForm();
+      writeSavedDocFilter(docType, filter);
+      fetchPage();
+    });
+    amountToggle.addEventListener("click", () => {
+      if (amountFields.hidden) {
+        amountFields.hidden = false;
+        amountToggle.textContent = "收起金额";
+        filter = { ...filter, amount_open: true };
+        writeSavedDocFilter(docType, filter);
+        return;
+      }
+      // 收起即清空金额条件，并立即按新条件回到第一页。
+      amountFields.hidden = true;
+      amountToggle.textContent = "金额";
+      amountMinInput.value = "";
+      amountMaxInput.value = "";
+      page = 1;
+      reload();
+    });
+    prevButton.addEventListener("click", () => {
+      if (loading || page <= 1) return;
+      page -= 1;
+      fetchPage();
+    });
+    nextButton.addEventListener("click", () => {
+      if (loading) return;
+      page += 1;
+      fetchPage();
+    });
+
+    return {
+      table,
+      reload,
+      rowById(id) {
+        return rows.find((doc) => doc.id === id);
+      },
+      get rows() {
+        return rows;
+      },
+    };
+  }
+
   // ---------- 单据页面（销售出库 / 采购入库共用） ----------
 
   async function documentPage(mount, config) {
@@ -1869,7 +2159,6 @@
           ];
     let warehouses = [];
     let items = [];
-    let documents = [];
     let editingId = 0;
     // 乐观锁版本与幂等键：版本随详情/列表带回，request_id 每次新建页生成一次。
     let editingVersion = -1;
@@ -1926,9 +2215,7 @@
           </div>
         </form>
       </div>
-      <div class="card">
-        <table class="table" data-role="documents"></table>
-      </div>`;
+      <div class="card" data-role="doc-list"></div>`;
 
     const form = mount.querySelector('[data-role="form"]');
     const warehouseSelect = mount.querySelector('[data-role="warehouse"]');
@@ -1938,7 +2225,39 @@
     const partnerSelect = mount.querySelector('[data-role="partner-select"]');
     const bizCategorySelect = mount.querySelector('[data-role="biz-category"]');
     const salespersonSelect = mount.querySelector('[data-role="salesperson"]');
-    const documentsTable = mount.querySelector('[data-role="documents"]');
+
+    const documentList = createDocumentList({
+      docType,
+      mount: mount.querySelector('[data-role="doc-list"]'),
+      emptyText: `还没有${config.docLabel}单`,
+      columns: [
+        { title: "单据号", cell: (doc) => escapeHtml(doc.doc_no) },
+        { title: "日期", cell: (doc) => escapeHtml(doc.doc_date) },
+        { title: "仓库", cell: (doc) => escapeHtml(doc.warehouse_name) },
+        { title: config.partnerLabel, cell: (doc) => escapeHtml(doc.customer || "—") },
+        ...(otherDoc
+          ? [
+              {
+                title: "业务类型",
+                cell: (doc) => escapeHtml(bizCategoryText(doc.biz_category) || "—"),
+              },
+            ]
+          : []),
+        ...(salesDoc
+          ? [
+              {
+                title: "业务员",
+                cell: (doc) => escapeHtml(doc.salesperson_name || "未指定"),
+              },
+            ]
+          : []),
+        { title: "数量", cell: (doc) => (costAdjust ? "—" : qtyText(doc.total_qty)) },
+        { title: "金额（元）", cell: (doc) => money(doc.total_amount_cents) },
+        { title: "状态", cell: (doc) => statusLabel(doc.status) },
+        { title: "操作", actions: true, cell: (doc) => actionsFor(doc) },
+      ],
+    });
+    const documentsTable = documentList.table;
 
     dateInput.value = new Date().toISOString().slice(0, 10);
     if (costAdjust && !can("cost.adjust")) {
@@ -2117,53 +2436,15 @@
       return print;
     }
 
-    function renderDocuments() {
-      if (!documents.length) {
-        documentsTable.innerHTML =
-          `<tbody><tr><td class="empty">还没有${escapeHtml(config.docLabel)}单</td></tr></tbody>`;
-        return;
-      }
-      documentsTable.innerHTML = `
-        <thead><tr><th>单据号</th><th>日期</th><th>仓库</th><th>${escapeHtml(
-          config.partnerLabel
-        )}</th>${otherDoc ? "<th>业务类型</th>" : ""}${salesDoc ? "<th>业务员</th>" : ""}<th>数量</th><th>金额（元）</th><th>状态</th><th class="actions">操作</th></tr></thead>
-        <tbody>${documents
-          .map(
-            (doc) => `<tr data-id="${doc.id}">
-              <td>${escapeHtml(doc.doc_no)}</td>
-              <td>${escapeHtml(doc.doc_date)}</td>
-              <td>${escapeHtml(doc.warehouse_name)}</td>
-              <td>${escapeHtml(doc.customer || "—")}</td>
-              ${
-                otherDoc
-                  ? `<td>${escapeHtml(bizCategoryText(doc.biz_category) || "—")}</td>`
-                  : ""
-              }
-              ${
-                salesDoc
-                  ? `<td>${escapeHtml(doc.salesperson_name || "未指定")}</td>`
-                  : ""
-              }
-              <td>${costAdjust ? "—" : qtyText(doc.total_qty)}</td>
-              <td>${money(doc.total_amount_cents)}</td>
-              <td>${statusLabel(doc.status)}</td>
-              <td class="actions">${actionsFor(doc)}</td>
-            </tr>`
-          )
-          .join("")}</tbody>`;
-    }
-
     async function reload() {
-      const [warehouseList, itemList, docList, partnerList, employeeList] = await Promise.all([
+      const [warehouseList, itemList, partnerList, employeeList] = await Promise.all([
         api("GET", "/api/warehouses"),
         api("GET", "/api/items"),
-        api("GET", "/api/documents?doc_type=" + docType),
         config.partnerApi ? api("GET", config.partnerApi) : Promise.resolve([]),
         salesDoc ? api("GET", "/api/employees") : Promise.resolve([]),
       ]);
       warehouses = warehouseList;
       items = itemList;
-      documents = docList;
       if (config.partnerApi) {
         partnerSelect.innerHTML =
           '<option value="">（不指定）</option>' +
@@ -2204,7 +2485,7 @@
           targetWarehouseSelect.selectedIndex = 1;
         }
       }
-      renderDocuments();
+      await documentList.reload();
       if (!linesTable.querySelector("tbody") || !linesTable.querySelector("tbody").children.length) {
         resetLines();
       }
@@ -2546,7 +2827,7 @@
           return;
         }
         if (button.dataset.role === "pdf") {
-          const doc = documents.find((row) => row.id === id);
+          const doc = documentList.rowById(id);
           await exportPdfTarget(
             "/api/print/render?target_type=DOC&target_key=" + docType + "&doc_id=" + id,
             doc ? doc.doc_no : undefined
@@ -2565,7 +2846,7 @@
         }
         if (button.dataset.role === "reverse") {
           if (!(await askConfirm("反审核会生成反向库存流水，确认继续？"))) return;
-          const doc = documents.find((row) => row.id === id);
+          const doc = documentList.rowById(id);
           await api(
             "POST",
             "/api/documents/" + id + "/reverse",
@@ -2574,7 +2855,7 @@
           showNotice("已反审核", "ok");
         } else if (button.dataset.role === "approve") {
           if (!(await askConfirm("审核后才会写库存流水，确认继续？"))) return;
-          const doc = documents.find((row) => row.id === id);
+          const doc = documentList.rowById(id);
           await api(
             "POST",
             "/api/documents/" + id + "/approve",
@@ -2583,7 +2864,7 @@
           showNotice("已审核", "ok");
         } else if (button.dataset.role === "delete") {
           if (!(await askConfirm("确认删除这张草稿？"))) return;
-          const doc = documents.find((row) => row.id === id);
+          const doc = documentList.rowById(id);
           await api(
             "DELETE",
             "/api/documents/" + id + (doc ? "?version=" + doc.version : "")
@@ -2591,7 +2872,7 @@
           if (editingId === id) resetForm();
           showNotice("草稿已删除", "ok");
         } else if (button.dataset.role === "edit") {
-          await startEdit(documents.find((doc) => doc.id === id));
+          await startEdit(documentList.rowById(id));
           return;
         }
         await reload();
@@ -2630,7 +2911,6 @@
     let warehouses = [];
     let items = [];
     let customers = [];
-    let documents = [];
     let editingId = 0;
     let editingVersion = -1;
     let requestId = newRequestId();
@@ -2638,8 +2918,6 @@
     // 订单录入的本地草稿：只有改过表单才写，按订单类型分键。
     let formDirty = false;
     const draftEnteredAt = Date.now();
-    let page = 1;
-    const pageSize = 20;
 
     mount.innerHTML = `
       <div class="page-head">
@@ -2648,29 +2926,6 @@
           <p class="page-sub">${escapeHtml(config.subtitle)}</p>
         </div>
         <button class="btn" data-role="refresh">刷新</button>
-      </div>
-      <div class="card">
-        <form class="grid-form" data-role="filters">
-          <label class="field"><span>关键词</span>
-            <input type="text" data-field="keyword" placeholder="单号 / ${escapeHtml(
-              config.partnerLabel
-            )}" />
-          </label>
-          <label class="field"><span>状态</span>
-            <select data-field="status">
-              <option value="">全部</option>
-              <option value="DRAFT">草稿</option>
-              <option value="CONFIRMED">已确认</option>
-              <option value="PARTIAL">${escapeHtml(config.partialLabel)}</option>
-              <option value="CONVERTED">${escapeHtml(config.convertedLabel)}</option>
-              <option value="CLOSED">已关闭</option>
-            </select>
-          </label>
-          <div class="form-actions">
-            <button class="btn primary" type="submit">查询</button>
-            <button class="btn" type="button" data-role="filter-reset">重置</button>
-          </div>
-        </form>
       </div>
       <div class="card">
         <form class="doc-form" data-role="form">
@@ -2724,33 +2979,44 @@
           <button class="btn" type="button" data-role="convert-cancel">取消</button>
         </div>
       </div>
-      <div class="card">
-        <table class="table" data-role="documents"></table>
-        <div class="form-actions">
-          <button class="btn" type="button" data-role="prev">上一页</button>
-          <span class="page-sub" data-role="page-info"></span>
-          <button class="btn" type="button" data-role="next">下一页</button>
-        </div>
-      </div>`;
+      <div class="card" data-role="doc-list"></div>`;
 
-    const filters = mount.querySelector('[data-role="filters"]');
     const form = mount.querySelector('[data-role="form"]');
     const warehouseSelect = mount.querySelector('[data-role="warehouse"]');
     const dateInput = mount.querySelector('[data-role="date"]');
     const customerSelect = mount.querySelector('[data-role="customer"]');
     const salespersonSelect = mount.querySelector('[data-role="salesperson"]');
     const linesTable = mount.querySelector('[data-role="lines"]');
-    const documentsTable = mount.querySelector('[data-role="documents"]');
     const convertCard = mount.querySelector('[data-role="convert-card"]');
     const convertTitle = mount.querySelector('[data-role="convert-title"]');
     const convertWarehouse = mount.querySelector('[data-role="convert-warehouse"]');
     const convertDate = mount.querySelector('[data-role="convert-date"]');
     const convertLines = mount.querySelector('[data-role="convert-lines"]');
-    const prevButton = mount.querySelector('[data-role="prev"]');
-    const nextButton = mount.querySelector('[data-role="next"]');
-    const pageInfo = mount.querySelector('[data-role="page-info"]');
-    const keywordField = filters.querySelector('[data-field="keyword"]');
-    const statusField = filters.querySelector('[data-field="status"]');
+
+    const documentList = createDocumentList({
+      docType,
+      mount: mount.querySelector('[data-role="doc-list"]'),
+      emptyText: config.emptyLabel,
+      columns: [
+        { title: "订单号", cell: (doc) => escapeHtml(doc.doc_no) },
+        { title: "日期", cell: (doc) => escapeHtml(doc.doc_date) },
+        { title: "仓库", cell: (doc) => escapeHtml(doc.warehouse_name) },
+        { title: config.partnerLabel, cell: (doc) => escapeHtml(doc.customer || "—") },
+        ...(docType === "SAL_ORDER"
+          ? [
+              {
+                title: "业务员",
+                cell: (doc) => escapeHtml(doc.salesperson_name || "未指定"),
+              },
+            ]
+          : []),
+        { title: "数量", cell: (doc) => qtyText(doc.total_qty) },
+        { title: "金额（元）", cell: (doc) => money(doc.total_amount_cents) },
+        { title: "状态", cell: (doc) => orderStatusLabel(doc) },
+        { title: "操作", actions: true, cell: (doc) => actionsFor(doc) },
+      ],
+    });
+    const documentsTable = documentList.table;
 
     dateInput.value = new Date().toISOString().slice(0, 10);
     convertDate.value = dateInput.value;
@@ -2854,73 +3120,16 @@
       return print;
     }
 
-    function filteredDocuments() {
-      const keyword = keywordField.value.trim().toLowerCase();
-      const status = statusField.value;
-      return documents.filter((doc) => {
-        if (status && orderState(doc) !== status) return false;
-        if (!keyword) return true;
-        return (
-          doc.doc_no.toLowerCase().includes(keyword) ||
-          (doc.customer || "").toLowerCase().includes(keyword)
-        );
-      });
-    }
-
-    function renderDocuments() {
-      const rows = filteredDocuments();
-      const total = rows.length;
-      const pages = Math.max(1, Math.ceil(total / pageSize));
-      page = Math.min(Math.max(1, page), pages);
-      const start = (page - 1) * pageSize;
-      const visible = rows.slice(start, start + pageSize);
-      pageInfo.textContent = "第 " + page + " / " + pages + " 页 · 共 " + total + " 条";
-      prevButton.disabled = page <= 1;
-      nextButton.disabled = page >= pages;
-      if (!visible.length) {
-        documentsTable.innerHTML = `<tbody><tr><td class="empty">${escapeHtml(
-          documents.length ? "没有符合条件的订单" : config.emptyLabel
-        )}</td></tr></tbody>`;
-        return;
-      }
-      documentsTable.innerHTML = `
-        <thead><tr><th>订单号</th><th>日期</th><th>仓库</th><th>${escapeHtml(
-          config.partnerLabel
-        )}</th>${docType === "SAL_ORDER" ? "<th>业务员</th>" : ""}<th>数量</th>
-          <th>金额（元）</th><th>状态</th><th class="actions">操作</th></tr></thead>
-        <tbody>${visible
-          .map(
-            (doc) => `<tr data-id="${doc.id}">
-              <td>${escapeHtml(doc.doc_no)}</td>
-              <td>${escapeHtml(doc.doc_date)}</td>
-              <td>${escapeHtml(doc.warehouse_name)}</td>
-              <td>${escapeHtml(doc.customer || "—")}</td>
-              ${
-                docType === "SAL_ORDER"
-                  ? `<td>${escapeHtml(doc.salesperson_name || "未指定")}</td>`
-                  : ""
-              }
-              <td>${qtyText(doc.total_qty)}</td>
-              <td>${money(doc.total_amount_cents)}</td>
-              <td>${orderStatusLabel(doc)}</td>
-              <td class="actions">${actionsFor(doc)}</td>
-            </tr>`
-          )
-          .join("")}</tbody>`;
-    }
-
     async function reload() {
-      const [warehouseList, itemList, docList, customerList, employeeList] = await Promise.all([
+      const [warehouseList, itemList, customerList, employeeList] = await Promise.all([
         api("GET", "/api/warehouses"),
         api("GET", "/api/items"),
-        api("GET", "/api/documents?doc_type=" + docType),
         api("GET", config.partnerApi),
         docType === "SAL_ORDER" ? api("GET", "/api/employees") : Promise.resolve([]),
       ]);
       warehouses = warehouseList;
       items = itemList;
       customers = customerList;
-      documents = docList;
       const warehouseOptions = warehouses
         .filter((warehouse) => warehouse.status)
         .map(
@@ -2953,7 +3162,7 @@
             )
             .join("");
       }
-      renderDocuments();
+      await documentList.reload();
       if (!linesTable.querySelector("tbody") || !linesTable.querySelector("tbody").children.length) {
         resetLines();
       }
@@ -3229,25 +3438,6 @@
       convertCard.hidden = true;
       convertingId = 0;
     });
-    filters.addEventListener("submit", (event) => {
-      event.preventDefault();
-      page = 1;
-      renderDocuments();
-    });
-    filters.querySelector('[data-role="filter-reset"]').addEventListener("click", () => {
-      keywordField.value = "";
-      statusField.value = "";
-      page = 1;
-      renderDocuments();
-    });
-    prevButton.addEventListener("click", () => {
-      page -= 1;
-      renderDocuments();
-    });
-    nextButton.addEventListener("click", () => {
-      page += 1;
-      renderDocuments();
-    });
 
     documentsTable.addEventListener("click", async (event) => {
       const button = event.target.closest("button");
@@ -3264,7 +3454,7 @@
           return;
         }
         if (button.dataset.role === "pdf") {
-          const doc = documents.find((row) => row.id === id);
+          const doc = documentList.rowById(id);
           await exportPdfTarget(
             "/api/print/render?target_type=DOC&target_key=" + docType + "&doc_id=" + id,
             doc ? doc.doc_no : undefined
@@ -3273,7 +3463,7 @@
         }
         if (button.dataset.role === "approve") {
           if (!(await askConfirm(`确认订单后不可再改单，只能${config.convertTitle}或关闭。继续？`))) return;
-          const doc = documents.find((row) => row.id === id);
+          const doc = documentList.rowById(id);
           await api(
             "POST",
             "/api/documents/" + id + "/approve",
@@ -3281,11 +3471,11 @@
           );
           showNotice("订单已确认", "ok");
         } else if (button.dataset.role === "edit") {
-          await startEdit(documents.find((doc) => doc.id === id));
+          await startEdit(documentList.rowById(id));
           return;
         } else if (button.dataset.role === "delete") {
           if (!(await askConfirm("确认删除这张订单草稿？"))) return;
-          const doc = documents.find((row) => row.id === id);
+          const doc = documentList.rowById(id);
           await api(
             "DELETE",
             "/api/documents/" + id + (doc ? "?version=" + doc.version : "")
@@ -3293,7 +3483,7 @@
           if (editingId === id) resetForm();
           showNotice("订单草稿已删除", "ok");
         } else if (button.dataset.role === "convert") {
-          await openConvert(documents.find((doc) => doc.id === id));
+          await openConvert(documentList.rowById(id));
           return;
         } else if (button.dataset.role === "close") {
           if (!(await askConfirm(`关闭后订单不能再${config.convertTitle}，确认？`))) return;

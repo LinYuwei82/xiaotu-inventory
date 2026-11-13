@@ -17,7 +17,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 ## 0. 数据库结构版本
 
-当前 schema 为 **v36**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
+当前 schema 为 **v37**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -57,6 +57,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v34 | 审计来源：`audit_log.client_ip` 与 `request_id`，记录 HTTP 来源地址与客户端请求号；历史行为空串 |
 | v35 | 批次/保质期预留：`doc_line` 与 `stock_ledger` 各加 `batch_no`、`expiry_date`（默认空串），当前不写入、不显示、不参与计算 |
 | v36 | 历史销售单据 `doc_header.partner_id` 回填：只填 `partner_id = 0` 且 `customer_id > 0`、能按 `partner` 档案（含合并链）精确映射的行；有值不动，无档案与 `T:` 文本单位保持 0，不按名称硬匹配；不改结构，可单独回退 |
+| v37 | 单据列表统一筛选与合计的索引：重建 `idx_doc_header_type_date` 为 `(doc_type, doc_date DESC, id DESC)`，新增 `idx_doc_header_type_status`（`doc_type, status`）；只改索引，不动表结构与数据 |
 
 ## 1. 环境要求
 
@@ -776,5 +777,5 @@ Linux 上该脚本等价于 CI：使用 `linux-ci` preset（`XIAOTU_BUILD_SHELL=
 
 - 用户手册（面向使用者）：`docs/用户手册.md`
 - 技术方案：`docs/进销存技术方案.md`
-- 数据库结构：`core/src/migrations.cpp`（v36）
+- 数据库结构：`core/src/migrations.cpp`（v37）
 - API：`/api/health`、`/api/session`、`/api/items`、`/api/items/import`、`/api/items/export`、`/api/items/template`、`/api/warehouses`、`/api/suppliers`、`/api/suppliers/import`、`/api/suppliers/export`、`/api/suppliers/template`、`/api/customers`、`/api/customers/import`、`/api/customers/export`、`/api/customers/template`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/fund-ledger`、`/api/reports/fund-balances`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/cost-adjustments/drafts`、`/api/fund-accounts`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`、`/api/stock/cost-recalc`
