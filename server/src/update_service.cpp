@@ -41,7 +41,14 @@ bool verify_manifest_signature(const UpdateSettings& settings, const std::string
   const std::string command = shell_quote(settings.verifier_python) + " " +
                               shell_quote(settings.verifier_script) + " verify --manifest " +
                               shell_quote(manifest_file) + " --pub " +
-                              shell_quote(settings.public_key_file) + " >/dev/null 2>&1";
+                              shell_quote(settings.public_key_file) +
+                              // std::system 在 Windows 走 cmd.exe，不识别 /dev/null；
+                              // 用 NUL 丢弃输出，其余平台保持原有重定向。
+#if defined(_WIN32)
+                              " >NUL 2>&1";
+#else
+                              " >/dev/null 2>&1";
+#endif
   if (std::system(command.c_str()) != 0) {
     result.error_code = "UPDATE_SIGNATURE_INVALID";
     result.error_message = "更新清单签名校验失败";
