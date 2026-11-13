@@ -38,6 +38,16 @@ add_executable(xiaotu-server "${CMAKE_CURRENT_SOURCE_DIR}/src/cli_main.cpp")
 target_link_libraries(xiaotu-server PRIVATE xiaotu_server)
 target_compile_definitions(xiaotu-server PRIVATE XIAOTU_VERSION="${PROJECT_VERSION}")
 
+# Windows 下给控制台 exe 写版本资源，让「属性 → 详细信息」能看到 FileVersion。
+# 版本号取项目级 PROJECT_VERSION（来自仓库根 VERSION），与壳和 XIAOTU_VERSION 宏同源。
+if(WIN32)
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/version.rc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/version.rc"
+    @ONLY)
+  target_sources(xiaotu-server PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/version.rc")
+endif()
+
 if(XIAOTU_DEV_WEB)
   target_compile_definitions(xiaotu_server PUBLIC XIAOTU_DEV_WEB=1)
 endif()

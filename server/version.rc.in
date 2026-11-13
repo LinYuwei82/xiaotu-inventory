@@ -1,0 +1,36 @@
+// 服务端 exe 的版本资源模板。产品版本来自根 VERSION（PROJECT_VERSION），
+// 与 macOS/Windows 壳、XIAOTU_VERSION 宏同源，不另建一份版本号。
+// 模板与生成的 version.rc 都是无 BOM 的 UTF-8，含中文「小兔进销存」；
+// rc.exe 默认按系统代码页（中文 Windows 为 936）解析，会把 UTF-8 字节读错行，
+// 报 RC2132；显式声明 65001 后按 UTF-8 解析，无需给模板加 BOM。
+#pragma code_page(65001)
+
+#include <windows.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "080404b0"
+    BEGIN
+      VALUE "CompanyName", "si_mem"
+      VALUE "FileDescription", "小兔进销存 服务端"
+      VALUE "FileVersion", "@PROJECT_VERSION@"
+      VALUE "InternalName", "xiaotu-server"
+      VALUE "OriginalFilename", "xiaotu-server.exe"
+      VALUE "ProductName", "小兔进销存"
+      VALUE "ProductVersion", "@PROJECT_VERSION@"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x804, 1200
+  END
+END

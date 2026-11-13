@@ -57,6 +57,7 @@
 - [ ] 从 CI artifact `xiaotu-win-installer` 下载，记录完整文件名与大小。
 - [ ] 打开包内 `SIGNING.txt`，记录全文。
 - [ ] 确认它明确写「未签名」（例如「未签名：未配置 WINDOWS_CERT_PFX_BASE64」），不能出现「已签名」。
+- [ ] 右键包内 `xiaotu-server.exe` → 属性 → 详细信息，`文件版本`应为 0.9.0（与仓库根 `VERSION` 一致，不能为空）；`xiaotu-shell.exe` 同样有值。
 
 文件名：______；大小：______；`SIGNING.txt`：______。
 
