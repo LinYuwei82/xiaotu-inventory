@@ -17,6 +17,8 @@ if(MSVC)
   # 指定初始化器顺序与声明不一致在 MSVC 下是 C7560；它只在部分配置暴露过，
   # 这里直接升级为错误，避免漂到 main。
   add_compile_options(/we7560)
+  # Windows 分发包用静态运行库：安装后不依赖 VC++ Redistributable。
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
   # Clang/GCC 默认警告、且不同版本 flag 名不一致；探测到支持才加，release 与 dev 共用。
   include(CheckCXXCompilerFlag)

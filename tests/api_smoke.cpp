@@ -3,10 +3,22 @@
 #include <httplib.h>
 #include <sqlite3.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <utility>
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -40,6 +52,47 @@ std::string session_cookie(const httplib::Result& result) {
 std::string body_field(const httplib::Result& result, const char* key) {
   const auto body = nlohmann::json::parse(result->body);
   return body.value(key, std::string{});
+}
+
+// 发一帧不带 Content-Length 的 POST，返回耗时（毫秒）与响应首行。
+// 服务端应在读完请求头后立即按空 body 处理，而不是等满读超时。
+std::pair<long long, std::string> post_without_content_length(int port, const std::string& path) {
+  const auto started = std::chrono::steady_clock::now();
+#if defined(_WIN32)
+  WSADATA data{};
+  WSAStartup(MAKEWORD(2, 2), &data);
+  const SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+  const auto close_socket = [](SOCKET handle) { closesocket(handle); };
+  const bool valid = sock != INVALID_SOCKET;
+#else
+  const int sock = socket(AF_INET, SOCK_STREAM, 0);
+  const auto close_socket = [](int handle) { ::close(handle); };
+  const bool valid = sock >= 0;
+#endif
+  std::string first_line;
+  if (valid) {
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(static_cast<unsigned short>(port));
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (::connect(sock, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
+      const std::string request = "POST " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+      ::send(sock, request.data(), static_cast<int>(request.size()), 0);
+      char buffer[256] = {};
+      const int received = static_cast<int>(::recv(sock, buffer, sizeof(buffer) - 1, 0));
+      if (received > 0) {
+        buffer[received] = '\0';
+        first_line.assign(buffer);
+        const auto end = first_line.find("\r\n");
+        if (end != std::string::npos) first_line.resize(end);
+      }
+    }
+    close_socket(sock);
+  }
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - started)
+                           .count();
+  return {elapsed, first_line};
 }
 
 std::int64_t audit_count(xiaotu::Db& db, const std::string& action,
@@ -128,6 +181,13 @@ void run_server_mode(const std::filesystem::path& dir) {
   const nlohmann::json health_body =
       health ? nlohmann::json::parse(health->body) : nlohmann::json::object();
   const bool community = health_body.value("edition", "") == "community";
+
+  // 缺少 Content-Length 的 POST 必须立即按空 body 处理（回归：曾等满 15s 读超时）。
+  const auto [no_length_ms, no_length_line] = post_without_content_length(port, "/api/session");
+  check(no_length_ms < 2000,
+        "缺少 Content-Length 的 POST 应立即处理，实际耗时 " + std::to_string(no_length_ms) + "ms");
+  check(no_length_line.rfind("HTTP/1.1", 0) == 0,
+        "缺少 Content-Length 的 POST 应返回 HTTP 响应");
   check(health_body.contains("api_version") && health_body.contains("capabilities") &&
             health_body["capabilities"].contains("features") &&
             health_body["capabilities"].contains("quotas"),

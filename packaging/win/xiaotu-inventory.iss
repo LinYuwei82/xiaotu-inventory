@@ -27,7 +27,9 @@ AppId={{6E2A9B4D-5C1F-4F3B-9D2E-7A8B1C3D5E6F}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
-DefaultDirName={pf}\{#AppName}
+; 当前用户安装：不请求管理员权限，数据目录与提权账户无关。
+PrivilegesRequired=lowest
+DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir={#OutputDir}
@@ -55,10 +57,10 @@ Source: "..\..\deploy\config.toml.example"; DestDir: "{app}"; Flags: ignoreversi
 Source: "package-readme.md"; DestDir: "{app}"; Flags: ignoreversion; DestName: "README.md"
 
 [Icons]
-; 有壳时快捷方式指向桌面窗口；仅服务端时给出「浏览器访问」入口。
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Check: HasShell
-Name: "{group}\{#AppName}（浏览器访问）"; Filename: "{app}\{#ServerExeName}"; Parameters: "--server"; WorkingDir: "{app}"; Check: NoShell
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon; Check: HasShell
+; 当前用户安装：开始菜单与桌面快捷方式都写当前用户配置，不涉及公共目录。
+Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Check: HasShell
+Name: "{userprograms}\{#AppName}（浏览器访问）"; Filename: "{app}\{#ServerExeName}"; Parameters: "--server"; WorkingDir: "{app}"; Check: NoShell
+Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon; Check: HasShell
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "启动{#AppName}"; Flags: postinstall nowait skipifsilent; Check: HasShell

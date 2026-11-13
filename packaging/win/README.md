@@ -39,16 +39,21 @@ $version = (Get-Content VERSION -Raw).Trim()
 
 安装包行为：
 
+- **当前用户安装**：`PrivilegesRequired=lowest`，不请求管理员权限，默认装到
+  `%LOCALAPPDATA%\Programs\小兔进销存`；开始菜单与桌面快捷方式也写当前用户配置。
 - 安装 `xiaotu-server.exe` 与（若已构建）`xiaotu-shell.exe`，两者保持同级；
   附 `config.toml.example` 与面向用户的 `README.md`。
 - 开始菜单创建「小兔进销存」；有壳时桌面也创建快捷方式。只有服务端时，开始菜单给
   「浏览器访问」入口（`--server`）。
 - 卸载项显示名称与版本；卸载后**保留数据目录并弹窗提示路径**，不自动删除。
-- 数据目录页默认 `%LOCALAPPDATA%\com.simem.xiaotu`，允许用户改选；选择非默认目录且
-  尚无 `config.toml` 时，安装器在默认目录写入 `[storage] data_dir = "..."`。
-  已存在 `config.toml` 时该页锁定不改写，避免覆盖用户配置。
+- 数据目录页默认 `%LOCALAPPDATA%\com.simem.xiaotu`，允许用户改选；因为不再提权，
+  该路径始终属于当前用户，不会被管理员账户影响。选择非默认目录且尚无 `config.toml`
+  时，安装器在默认目录写入 `[storage] data_dir = "..."`；已存在 `config.toml` 时
+  该页锁定不改写，避免覆盖用户配置。
 - 安装阶段读注册表检测 WebView2 Runtime（机器级 x64/x86 与用户级）；缺失且装了壳时，
   完成页给出官方安装入口并弹提示，纯浏览器模式不拦。
+- 服务端与壳均以静态运行库（`/MT`，Debug 为 `/MTd`）构建，**不需要安装
+  VC++ 2015-2022 Redistributable**。
 
 ### CI 产物
 
@@ -83,10 +88,10 @@ $version = (Get-Content VERSION -Raw).Trim()
 ### 尚未验证的边界
 
 - 真实 Authenticode 签名：需要证书，未验。
-- 安装 / 升级 / 卸载的真实行为（快捷方式、数据目录页、WebView2 提示、保留数据弹窗）：
-  需要在 Windows 机器上实际跑一次，未验；CI 只保证脚本能编出安装包。
-- VC++ 运行库：当前按 MSVC 默认动态运行库构建，干净 Windows 机器可能缺
-  VC++ 2015-2022 Redistributable；正式发布前需确认是否随包分发或改为静态运行库。
+- 安装 / 升级 / 卸载的真实行为（当前用户安装、快捷方式、数据目录页、WebView2 提示、
+  保留数据弹窗）：需要在 Windows 机器上实际跑一次，未验；CI 只保证脚本能编出安装包。
+- 静态运行库（`/MT`）：CMake 配置已覆盖服务端与壳，但实际 MSVC 产物仍需 Windows CI
+  编一次确认，本机（macOS）无法验证。
 
 ## 两种打包模式
 

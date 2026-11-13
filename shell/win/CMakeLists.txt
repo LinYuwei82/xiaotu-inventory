@@ -23,6 +23,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# 与顶层工程一致：静态运行库（Release /MT、Debug /MTd），不依赖 VC++ Redistributable。
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 set(XIAOTU_WEBVIEW2_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.cache/webview2" CACHE PATH
     "WebView2 SDK 目录（由 fetch-webview2.ps1 准备）")
 
