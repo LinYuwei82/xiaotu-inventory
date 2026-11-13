@@ -127,19 +127,29 @@ ProcessResult run_process_capture(const std::string& program,
                       ? std::wstring(comspec)
                       : std::wstring(L"C:\\Windows\\System32\\cmd.exe");
     command_line = quote_windows_arg(application) + L" /c \"" + command_line + L"\"";
+  } else if (application.find_first_of(L"\\/") == std::wstring::npos) {
+    // CreateProcessW 的 lpApplicationName 传纯文件名时不做 PATH 搜索，直接
+    // ERROR_FILE_NOT_FOUND（exit=2，例如下载用的 "curl"）。纯文件名先解析成
+    // 绝对路径；解析不到才原样交给系统。
+    wchar_t resolved[MAX_PATH * 4] = {};
+    const DWORD resolved_length =
+        ::SearchPathW(nullptr, application.c_str(), L".exe", MAX_PATH * 4, resolved, nullptr);
+    if (resolved_length > 0 && resolved_length < MAX_PATH * 4) {
+      application.assign(resolved, resolved_length);
+    }
   }
 
   SECURITY_ATTRIBUTES inherit{};
   inherit.nLength = sizeof(inherit);
   inherit.bInheritHandle = TRUE;
 
-  HANDLE read_pipe = INVALID_HANDLE_VALUE;
+  HANDLE pipe_read = INVALID_HANDLE_VALUE;
   HANDLE write_pipe = INVALID_HANDLE_VALUE;
-  if (::CreatePipe(&read_pipe, &write_pipe, &inherit, 0) == FALSE) {
+  if (::CreatePipe(&pipe_read, &write_pipe, &inherit, 0) == FALSE) {
     result.error = "无法创建输出管道";
     return result;
   }
-  ::SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
+  ::SetHandleInformation(pipe_read, HANDLE_FLAG_INHERIT, 0);
 
   // stdin 必须绑定到 NUL：无控制台宿主里 GetStdHandle 拿到的是无效句柄，
   // 读取 stdin 的子进程会异常退出，被误判成业务失败。
@@ -163,14 +173,14 @@ ProcessResult run_process_capture(const std::string& program,
     ::CloseHandle(null_device);
   }
   if (created == FALSE) {
-    ::CloseHandle(read_pipe);
+    ::CloseHandle(pipe_read);
     result.error = "无法启动程序（exit=" + std::to_string(::GetLastError()) + "）";
     return result;
   }
 
   // 先读管道再等待，避免子进程写满管道后阻塞、父进程又在等它退出。
-  result.output = read_pipe(read_pipe);
-  ::CloseHandle(read_pipe);
+  result.output = read_pipe(pipe_read);
+  ::CloseHandle(pipe_read);
   ::WaitForSingleObject(process.hProcess, INFINITE);
   DWORD exit_code = 1;
   ::GetExitCodeProcess(process.hProcess, &exit_code);

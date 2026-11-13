@@ -9,6 +9,8 @@
 
 两者都读取同一批产物：服务端 exe 为必需，桌面壳按同一套顺序解析：显式指定 → `build\windows\shell\win\xiaotu-shell.exe` → `build\windows\shell\win\Release\xiaotu-shell.exe` → 旧的 `shell\win\build\xiaotu-shell.exe` → `shell\win\build\Release\xiaotu-shell.exe`。**都找不到时脚本报错退出/编译失败**，不会静默产出无壳包；确实需要无壳包时显式加 `-NoShell` / `/DXIAOTU_NO_SHELL=1`。
 
+`tools\win\verify.ps1` 的「安装包含桌面壳」与 `/MT` 检查使用**同一套候选顺序**（也可用 `-ShellExe` 显式指定，语义同 `/DShellExe`），因此旧目录布局与顶层构建布局都能验到壳，不需要改包或放宽断言。
+
 ## 前置
 
 ```powershell
@@ -93,11 +95,19 @@ $version = (Get-Content VERSION -Raw).Trim()
 
 ### 尚未验证的边界
 
-- 真实 Authenticode 签名：需要证书，未验。
-- 安装 / 升级 / 卸载的真实行为（当前用户安装、快捷方式、数据目录页、WebView2 提示、
-  保留数据弹窗）：需要在 Windows 机器上实际跑一次，未验；CI 只保证脚本能编出安装包。
-- 静态运行库（`/MT`）：CMake 配置已覆盖服务端与壳，但实际 MSVC 产物仍需 Windows CI
-  编一次确认，本机（macOS）无法验证。
+- 真实 Authenticode 签名：需要证书，未验（本地产物为未签名，`SIGNING.txt` 已注明）。
+- 保留数据弹窗与「仅卸载不删数据」的交互提示：静默卸载已验「数据目录与 `app.db` 保留」，
+  但交互模式下的提示文案与按钮仍需人工看一眼。
+- WebView2 缺失提示、窗口位置记忆、打印对话框、SmartScreen 表现：见
+  `tools/win/README.md` 的 MANUAL 项。
+
+已在 Windows 实机（`12600k`，Inno Setup 6.7.3）验过的部分：
+
+- 静默安装 → 同版本覆盖安装 → 静默卸载整条链路，21 项断言全 PASS
+  （脚本 `tools/win/verify.ps1`，含签名状态、SHA256、安装路径、开始菜单/桌面快捷方式、
+  数据目录、单机版启动与接口、业务冒烟、停止服务、覆盖安装后 `app.db` 哈希一致、
+  卸载后数据保留）。
+- 静态运行库（`/MT`）：服务端与壳的产物都不导入 `vcruntime140.dll` / `msvcp140.dll`。
 
 ## 两种打包模式
 

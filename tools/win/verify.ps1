@@ -14,6 +14,7 @@ param(
     [switch]$SkipBuild,
     [switch]$SkipInstall,
     [switch]$AllowExistingData,
+    [string]$ShellExe = "",
     [switch]$Yes
 )
 
@@ -21,6 +22,7 @@ $ErrorActionPreference = "Stop"
 $script:Results = New-Object System.Collections.ArrayList
 $script:HasFail = $false
 $script:TempDirs = New-Object System.Collections.ArrayList
+$script:Csrf = ""
 
 function Write-Result([string]$Name, [string]$Status, [string]$Detail) {
     $line = "[{0}] {1} - {2}" -f $Status, $Name, $Detail
@@ -40,6 +42,30 @@ function Invoke-Check([string]$Name, [scriptblock]$Body) {
         Fail $Name ("异常: " + $msg)
         Write-Host ("  详细: " + ($_ | Out-String))
     }
+}
+
+# 解析打包实际会用的桌面壳，顺序与 packaging/win/xiaotu-inventory.iss 完全一致：
+#   1. 显式 -ShellExe 优先（等价 iss 的 /DShellExe），给了就必须存在，不回退；
+#   2. build\windows\shell\win\（顶层构建）→ ...\Release\ → 旧 shell\win\build\ → ...\Release\；
+#   3. 都没有则报错。不能为了让某种布局通过而放宽：两种布局都必须解析到真实文件。
+function Resolve-SourceShell {
+    if ($ShellExe) {
+        if (-not (Test-Path $ShellExe)) {
+            throw "指定的 -ShellExe 不存在: $ShellExe（显式指定时不回退到其它路径）"
+        }
+        return (Resolve-Path $ShellExe).Path
+    }
+    $candidates = @(
+        (Join-Path $Repo "build\windows\shell\win\xiaotu-shell.exe"),
+        (Join-Path $Repo "build\windows\shell\win\Release\xiaotu-shell.exe"),
+        (Join-Path $Repo "shell\win\build\xiaotu-shell.exe"),
+        (Join-Path $Repo "shell\win\build\Release\xiaotu-shell.exe")
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+    throw ("未找到桌面壳 xiaotu-shell.exe，已按 iss 的顺序查找：" + ($candidates -join "；") +
+        "。构建：cmake --preset windows-release -DXIAOTU_BUILD_WIN_SHELL=ON; cmake --build --preset windows-release")
 }
 
 # 原生命令统一出口。git/cmake/ctest 会往 stderr 写正常提示（例如
@@ -66,6 +92,10 @@ function Get-HttpResult([string]$Method, [string]$Url, $Body, $WebSession) {
         $params["Body"] = [Text.Encoding]::UTF8.GetBytes($Body)
         $params["ContentType"] = "application/json; charset=utf-8"
     }
+    # 写操作必须带 CSRF 令牌，否则服务端直接 403；令牌从 /api/me 的 csrf 字段取得。
+    if ($script:Csrf -and $Method -ne "GET") {
+        $params["Headers"] = @{ "X-CSRF-Token" = $script:Csrf }
+    }
     if ($null -ne $WebSession) { $params["WebSession"] = $WebSession }
     try {
         $r = Invoke-WebRequest @params
@@ -88,7 +118,9 @@ function Wait-Server([string]$OutFile, [int]$Seconds) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $deadline) {
         if (Test-Path $OutFile) {
-            $text = Get-Content -Raw $OutFile -ErrorAction SilentlyContinue
+            # 服务端输出是 UTF-8（无 BOM）。PowerShell 5.1 的 Get-Content 默认按 ANSI
+            # 代码页（936）读，中文会变乱码，"服务地址:" 永远匹配不上，必须显式指定 UTF8。
+            $text = Get-Content -Raw $OutFile -Encoding UTF8 -ErrorAction SilentlyContinue
             if ($text -match "服务地址:\s*(http://127\.0\.0\.1:(\d+))") {
                 $port = [int]$Matches[2]
                 $token = ""
@@ -136,7 +168,7 @@ if ((Test-Path (Join-Path $DataDir "app.db")) -and $AllowExistingData) {
 
 $installDir = Join-Path $env:LOCALAPPDATA "Programs\小兔进销存"
 $serverExe = Join-Path $installDir "xiaotu-server.exe"
-$shellExe = Join-Path $installDir "xiaotu-shell.exe"
+$installedShellExe = Join-Path $installDir "xiaotu-shell.exe"
 
 # ---------- 1. 编译 ----------
 if ($SkipBuild) {
@@ -188,9 +220,11 @@ Invoke-Check "静态运行库 /MT" {
     $builtServer = Join-Path $Repo "build\windows\server\xiaotu-server.exe"
     if (Test-Path $builtServer) { $targets += $builtServer }
     if (Test-Path $serverExe) { $targets += $serverExe }
-    $builtShell = Join-Path $Repo "shell\win\build\xiaotu-shell.exe"
-    if (Test-Path $builtShell) { $targets += $builtShell }
-    if (Test-Path $shellExe) { $targets += $shellExe }
+    # 壳按 iss 同一套候选顺序解析（细见 Resolve-SourceShell），不写死旧目录。
+    $builtShell = $null
+    try { $builtShell = Resolve-SourceShell } catch { $builtShell = $null }
+    if ($builtShell) { $targets += $builtShell }
+    if (Test-Path $installedShellExe) { $targets += $installedShellExe }
     if ($targets.Count -eq 0) { Skip "静态运行库 /MT" "找不到已构建的 exe"; return }
     $bad = @()
     foreach ($exe in $targets) {
@@ -257,6 +291,26 @@ if ($SkipInstall) {
         Pass "安装包 SHA256" ("{0}  {1}" -f $h.Hash, $h.Path)
     }
 
+    Invoke-Check "安装包含桌面壳" {
+        # 断言对象是「iss 实际会引用的那个文件」，因此按 iss 的候选顺序解析，
+        # 而不是写死 shell\win\build（顶层构建时壳在 build\windows\shell\win）。
+        $srcShell = Resolve-SourceShell
+        $stamp = (Get-Item $srcShell).LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
+        Pass "安装包含桌面壳" ("源壳 " + $srcShell + "（" + $stamp + "）")
+    }
+
+    Invoke-Check "安装前无残留数据" {
+        $leftover = Join-Path $installDir "app.db"
+        if (Test-Path $leftover) { throw "安装目录里已有 app.db: $leftover，先确认是否为上次残留" }
+        if ($AllowExistingData) {
+            Pass "安装前无残留数据" "安装目录无 app.db；-AllowExistingData 已显式允许 -DataDir 内现有数据"
+        } else {
+            if (Test-Path (Join-Path $DataDir "app.db")) { throw "-DataDir 内已有 app.db: $DataDir" }
+            $items = @(Get-ChildItem -Path $DataDir -Force -ErrorAction SilentlyContinue)
+            Pass "安装前无残留数据" ("安装目录无 app.db；-DataDir 起跑前为空（{0} 项）" -f $items.Count)
+        }
+    }
+
     if (-not $Yes) {
         Write-Host "即将静默安装到 $installDir，并写入 %LOCALAPPDATA%；按 Enter 继续，Ctrl+C 取消。"
         Read-Host | Out-Null
@@ -278,6 +332,12 @@ if ($SkipInstall) {
         if (Test-Path (Join-Path $env:ProgramFiles "小兔进销存")) { throw "在 Program Files 发现安装目录，疑似提权安装" }
         Pass "安装路径" $serverExe
     }
+    Invoke-Check "安装目录含桌面壳" {
+        if (-not (Test-Path $installedShellExe)) {
+            throw "安装目录缺少 xiaotu-shell.exe（$installedShellExe）：包不完整，后续安装检查结论不作数"
+        }
+        Pass "安装目录含桌面壳" ("{0}（{1:N0} 字节）" -f $installedShellExe, (Get-Item $installedShellExe).Length)
+    }
     Invoke-Check "开始菜单快捷方式" {
         $start = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
         $found = Get-ChildItem -Path $start -Recurse -Filter "*小兔进销存*.lnk" -ErrorAction SilentlyContinue
@@ -285,7 +345,7 @@ if ($SkipInstall) {
         Pass "开始菜单快捷方式" $found[0].FullName
     }
     Invoke-Check "桌面快捷方式" {
-        $hasShell = Test-Path $shellExe
+        $hasShell = Test-Path $installedShellExe
         $desktop = Join-Path $env:USERPROFILE "Desktop"
         $found = Get-ChildItem -Path $desktop -Filter "*小兔进销存*.lnk" -ErrorAction SilentlyContinue
         if ($hasShell -and -not $found) { throw "有壳但桌面没有快捷方式" }
@@ -317,6 +377,8 @@ if ($SkipInstall) {
         if ($hv -ne $ExpectedVersion) { throw "版本号 $hv，期望 $ExpectedVersion" }
         $me = Get-HttpResult "GET" ($info.Base + "/api/me") $null $script:WebSession
         if ($me.Status -ne 200) { throw "/api/me HTTP $($me.Status)" }
+        $script:Csrf = ($me.Body | ConvertFrom-Json).csrf
+        if (-not $script:Csrf) { throw "/api/me 未返回 csrf，后续写操作会被 403" }
         # 数据必须落在指定的 -DataDir，而不是其它位置（默认目录/上次的目录）。
         $db = Join-Path $DataDir "app.db"
         if (-not (Test-Path $db)) { throw "启动后未在 -DataDir 生成 app.db: $db" }
@@ -365,10 +427,14 @@ if ($SkipInstall) {
         ) -Wait -PassThru
         if ($p.ExitCode -ne 0) { throw "覆盖安装退出码 $($p.ExitCode)" }
         if (-not (Test-Path $db)) { throw "覆盖安装后 app.db 丢失" }
+        $after = (Get-FileHash -Algorithm SHA256 $db).Hash
+        if ($after -ne $before) {
+            throw ("覆盖安装改动了 app.db：{0} -> {1}" -f $before, $after)
+        }
         $stale = Get-ChildItem -Path $installDir -Recurse -ErrorAction SilentlyContinue |
             Where-Object { $_.Extension -eq ".old" -or $_.Extension -eq ".tmp" }
         if ($stale) { throw ("程序目录残留旧文件: " + (($stale | ForEach-Object { $_.Name }) -join ", ")) }
-        Pass "同版本覆盖安装" "app.db 保留，程序目录无 .old/.tmp"
+        Pass "同版本覆盖安装" "app.db 哈希一致，程序目录无 .old/.tmp"
     }
 
     # ---------- 10. 卸载 ----------
@@ -382,6 +448,7 @@ if ($SkipInstall) {
         Start-Sleep -Seconds 2
         if (Test-Path (Join-Path $installDir "xiaotu-server.exe")) { throw "卸载后程序仍在" }
         if (-not (Test-Path $DataDir)) { throw "卸载后数据目录被删除，应保留" }
+        if (-not (Test-Path (Join-Path $DataDir "app.db"))) { throw "卸载后 app.db 被删除，应保留" }
         $start = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
         $lnk = Get-ChildItem -Path $start -Recurse -Filter "*小兔进销存*.lnk" -ErrorAction SilentlyContinue
         if ($lnk) { throw "卸载后快捷方式仍在" }
