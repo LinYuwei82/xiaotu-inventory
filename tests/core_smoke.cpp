@@ -82,7 +82,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 26, "迁移后 schema 版本应为 26");
+      check(db.schema_version() == 27, "迁移后 schema 版本应为 27");
 
       xiaotu::gen::ItemService items(db);
       xiaotu::gen::WarehouseService warehouses(db);
@@ -1664,6 +1664,78 @@ int main() {
       candidate.columns.push_back(
           {.column_key = "biz_time", .position = 3, .visible = true});
       check(rejects(candidate), "同一模板重复列应拒绝");
+
+      // 打印布局计划：纸型、可打印宽度、缩放与告警在服务端一次算清，页面 / 打印 / PDF 共用。
+      // 预设：A4 纵向、页边距 12mm → 可打印宽 186mm；241×140 连续纸 → 可打印宽 217mm。
+      const auto plan_for = [](xiaotu::PrintTemplate tmpl) {
+        return xiaotu::plan_print_layout(tmpl, xiaotu::resolved_print_columns(tmpl));
+      };
+      const auto sheet_a4 = [&](const char* key) {
+        auto tmpl = xiaotu::builtin_print_template("REPORT", key);
+        tmpl.page_size = "A4";
+        tmpl.orientation = "PORTRAIT";
+        tmpl.paper_kind = "SHEET";
+        tmpl.scale_mode = "FIT_WIDTH";
+        tmpl.margin_mm = 12;
+        tmpl.font_size_pt = 10;
+        return plan_for(tmpl);
+      };
+
+      const auto purchase_a4 = sheet_a4("purchase-detail");
+      check(purchase_a4.table_width_mm == 252 && purchase_a4.printable_width_mm == 186,
+            "采购明细表宽应为 252mm，A4 纵向可打印 186mm");
+      check(purchase_a4.scale_percent == 73 && purchase_a4.warn == "none",
+            "采购明细按纸宽自适应应缩到 73%");
+      check(static_cast<int>(purchase_a4.effective_font_pt * 10) == 73,
+            "采购明细缩放后字号应约 7.3pt");
+
+      const auto fund_a4 = sheet_a4("fund-ledger");
+      check(fund_a4.table_width_mm == 214 && fund_a4.scale_percent == 86,
+            "资金流水 214mm 应缩到 86%");
+      check(static_cast<int>(fund_a4.effective_font_pt * 10) == 86,
+            "资金流水缩放后字号应约 8.6pt");
+
+      const auto flow_a4 = sheet_a4("goods-flow");
+      check(flow_a4.table_width_mm == 200 && flow_a4.scale_percent == 93,
+            "收发明细 200mm 应缩到 93%");
+
+      auto doc_tmpl = xiaotu::builtin_print_template("DOC", "SAL_OUT");
+      check(xiaotu::plan_print_layout(doc_tmpl, xiaotu::resolved_print_columns(doc_tmpl))
+                    .table_width_mm == 210,
+            "单据明细列宽合计应为 210mm（金额列改名不改宽度）");
+
+      auto continuous = xiaotu::builtin_print_template("REPORT", "purchase-detail");
+      continuous.page_size = "CUSTOM";
+      continuous.paper_width_mm = 241;
+      continuous.paper_height_mm = 140;
+      continuous.paper_kind = "CONTINUOUS";
+      continuous.scale_mode = "FIT_WIDTH";
+      continuous.margin_mm = 12;
+      const auto continuous_plan = plan_for(continuous);
+      check(continuous_plan.printable_width_mm == 217 && continuous_plan.scale_percent == 100 &&
+                continuous_plan.overflow_mm == 35 && continuous_plan.warn == "continuous_overflow",
+            "连续纸不参与缩放，超宽 35mm 应明确告警");
+
+      auto original = xiaotu::builtin_print_template("REPORT", "purchase-detail");
+      original.scale_mode = "ORIGINAL";
+      original.margin_mm = 12;
+      const auto original_plan = plan_for(original);
+      check(original_plan.scale_percent == 100 && original_plan.overflow_mm == 66 &&
+                original_plan.warn == "original_overflow" && original_plan.suggest_landscape,
+            "原始尺寸超宽应告警并建议改横向");
+
+      auto landscape = xiaotu::builtin_print_template("REPORT", "purchase-detail");
+      landscape.orientation = "LANDSCAPE";
+      landscape.margin_mm = 12;
+      const auto landscape_plan = plan_for(landscape);
+      check(landscape_plan.printable_width_mm == 273 && landscape_plan.scale_percent == 100 &&
+                landscape_plan.warn == "none",
+            "A4 横向 273mm 应容下采购明细，无需缩放");
+
+      auto tiny = xiaotu::builtin_print_template("REPORT", "purchase-detail");
+      tiny.font_size_pt = 9;
+      tiny.margin_mm = 12;
+      check(plan_for(tiny).warn == "font_too_small", "缩放后字号低于 7pt 应提示精简列");
 
       // 销售订单：确认不动库存/流水，转出库受累计数量约束。
       auto ordered = items.create(xiaotu::gen::ItemRow{.code = "SO001", .name = "订单商品"});

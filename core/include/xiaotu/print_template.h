@@ -56,6 +56,9 @@ struct PrintTemplate {
   int paper_width_mm = 0;              // 仅 CUSTOM 使用
   int paper_height_mm = 0;             // 仅 CUSTOM 使用
   int margin_mm = 12;
+  // SHEET 单页纸按纸宽缩放；CONTINUOUS 连续纸（针式）固定原始尺寸与套打位置，不参与缩放。
+  std::string paper_kind = "SHEET";          // SHEET / CONTINUOUS
+  std::string scale_mode = "FIT_WIDTH";      // FIT_WIDTH / ORIGINAL
   int font_size_pt = 10;
   std::string header_text;
   std::string footer_text;
@@ -78,6 +81,31 @@ struct PrintRenderColumn {
   int font_size_pt = 0;
   bool bold = false;
 };
+
+// 解析模板纸张的物理尺寸（mm）；方向为横向时宽高互换。
+struct PrintPaperSize {
+  int width_mm = 210;
+  int height_mm = 297;
+  bool known = true;  // 自定义但宽高缺失时为 false
+};
+PrintPaperSize print_paper_size(const PrintTemplate& tmpl);
+
+// 打印布局计划：页面、打印与 PDF 共用，避免三处各算一套。
+struct PrintLayoutPlan {
+  int width_mm = 210;
+  int height_mm = 297;
+  int printable_width_mm = 186;
+  int table_width_mm = 0;
+  int auto_columns = 0;
+  int overflow_mm = 0;
+  int scale_percent = 100;
+  double effective_font_pt = 10.0;
+  bool suggest_landscape = false;
+  std::string warn = "none";  // none / paper_unknown / continuous_overflow / original_overflow / font_too_small
+  std::string warn_text;
+};
+PrintLayoutPlan plan_print_layout(const PrintTemplate& tmpl,
+                                  const std::vector<PrintRenderColumn>& columns);
 
 // 内置默认模板：来自代码注册表，不落库。未知目标返回无列的通用兜底。
 PrintTemplate builtin_print_template(std::string_view target_type, std::string_view target_key);

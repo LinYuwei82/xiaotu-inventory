@@ -19,7 +19,7 @@ constexpr const char* kTemplateSelect =
     "SELECT id, code, name, target_type, target_key, page_size, orientation,"
     " paper_width_mm, paper_height_mm, margin_mm, font_size_pt, header_text, footer_text,"
     " show_page_no, is_default, status, version, is_deleted,"
-    " created_at, created_by, updated_at, updated_by FROM print_template";
+    " created_at, created_by, updated_at, updated_by, paper_kind, scale_mode FROM print_template";
 
 PrintColumnDef column_def(std::string key, std::string label, std::string type,
                           std::string align, int width_mm) {
@@ -276,6 +276,10 @@ PrintTemplate template_from_row(const Stmt& stmt) {
   row.created_by = stmt.text(19);
   row.updated_at = stmt.text(20);
   row.updated_by = stmt.text(21);
+  row.paper_kind = stmt.text(22);
+  row.scale_mode = stmt.text(23);
+  if (row.paper_kind.empty()) row.paper_kind = "SHEET";
+  if (row.scale_mode.empty()) row.scale_mode = "FIT_WIDTH";
   return row;
 }
 
@@ -324,6 +328,12 @@ const PrintTargetDef& validate_template(PrintTemplate& tmpl) {
   }
   if (tmpl.margin_mm < 0 || tmpl.margin_mm > 50) {
     throw AppError("INVALID_INPUT", "页边距需在 0-50mm 之间");
+  }
+  if (tmpl.paper_kind != "SHEET" && tmpl.paper_kind != "CONTINUOUS") {
+    throw AppError("INVALID_INPUT", "纸张类型只能是单页纸或连续纸");
+  }
+  if (tmpl.scale_mode != "FIT_WIDTH" && tmpl.scale_mode != "ORIGINAL") {
+    throw AppError("INVALID_INPUT", "缩放方式只能是按纸宽自适应或原始尺寸");
   }
   if (tmpl.font_size_pt < 6 || tmpl.font_size_pt > 24) {
     throw AppError("INVALID_INPUT", "字号需在 6-24pt 之间");
@@ -402,6 +412,70 @@ void insert_columns(sqlite3* conn, std::int64_t template_id,
 }
 
 }  // namespace
+
+PrintPaperSize print_paper_size(const PrintTemplate& tmpl) {
+  PrintPaperSize size;
+  if (tmpl.page_size == "A5") {
+    size.width_mm = 148;
+    size.height_mm = 210;
+  } else if (tmpl.page_size == "CUSTOM") {
+    if (tmpl.paper_width_mm > 0 && tmpl.paper_height_mm > 0) {
+      size.width_mm = tmpl.paper_width_mm;
+      size.height_mm = tmpl.paper_height_mm;
+    } else {
+      size.known = false;
+    }
+  }
+  if (tmpl.orientation == "LANDSCAPE") std::swap(size.width_mm, size.height_mm);
+  return size;
+}
+
+PrintLayoutPlan plan_print_layout(const PrintTemplate& tmpl,
+                                  const std::vector<PrintRenderColumn>& columns) {
+  PrintLayoutPlan plan;
+  const PrintPaperSize paper = print_paper_size(tmpl);
+  plan.width_mm = paper.width_mm;
+  plan.height_mm = paper.height_mm;
+  plan.printable_width_mm = std::max(0, paper.width_mm - 2 * tmpl.margin_mm);
+  for (const auto& column : columns) {
+    if (column.width_mm > 0) {
+      plan.table_width_mm += column.width_mm;
+    } else {
+      ++plan.auto_columns;
+      plan.table_width_mm += 18;  // 未配宽度的列按 18mm 估算，仅用于溢出提示。
+    }
+  }
+  const bool continuous = tmpl.paper_kind == "CONTINUOUS";
+  const bool fit_width = tmpl.scale_mode == "FIT_WIDTH" && !continuous;
+  if (fit_width && plan.table_width_mm > plan.printable_width_mm &&
+      plan.table_width_mm > 0) {
+    plan.scale_percent =
+        std::max(10, plan.printable_width_mm * 100 / plan.table_width_mm);
+  }
+  const bool overflow = plan.table_width_mm > plan.printable_width_mm;
+  plan.overflow_mm = overflow ? plan.table_width_mm - plan.printable_width_mm : 0;
+  plan.effective_font_pt = static_cast<double>(tmpl.font_size_pt * plan.scale_percent) / 100.0;
+  const int landscape_width = std::max(0, paper.height_mm - 2 * tmpl.margin_mm);
+  plan.suggest_landscape = overflow && landscape_width >= plan.table_width_mm;
+  if (!paper.known) {
+    plan.warn = "paper_unknown";
+    plan.warn_text = "自定义纸张宽高缺失，已按 A4 处理";
+  } else if (continuous && overflow) {
+    plan.warn = "continuous_overflow";
+    plan.warn_text = "连续纸固定原始尺寸与套打位置，超出可打印宽度 " +
+                     std::to_string(plan.overflow_mm) +
+                     "mm，请调整纸宽或精简列；不会自动缩放";
+  } else if (!fit_width && overflow) {
+    plan.warn = "original_overflow";
+    plan.warn_text = "原始尺寸超出可打印宽度 " + std::to_string(plan.overflow_mm) +
+                     "mm，请改横向或精简列，否则内容会被裁切";
+  } else if (fit_width && overflow && tmpl.font_size_pt * plan.scale_percent < 700) {
+    plan.warn = "font_too_small";
+    plan.warn_text = "按纸宽缩放后字号约 " + std::to_string(plan.effective_font_pt) +
+                     "pt，低于 7pt 不易阅读，建议改横向或精简列";
+  }
+  return plan;
+}
 
 const std::vector<PrintTargetDef>& print_targets() {
   static const std::vector<PrintTargetDef> targets = make_targets();
@@ -537,8 +611,9 @@ PrintTemplate PrintTemplateService::create(const PrintTemplate& input) {
               " (code, name, target_type, target_key, page_size, orientation,"
               "  paper_width_mm, paper_height_mm, margin_mm, font_size_pt,"
               "  header_text, footer_text, show_page_no, is_default, status, version,"
-              "  is_deleted, created_at, created_by, updated_at, updated_by)"
-              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?);");
+              "  is_deleted, created_at, created_by, updated_at, updated_by,"
+              "  paper_kind, scale_mode)"
+              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?, ?, ?);");
     stmt.bind(1, tmpl.code)
         .bind(2, tmpl.name)
         .bind(3, tmpl.target_type)
@@ -558,6 +633,8 @@ PrintTemplate PrintTemplateService::create(const PrintTemplate& input) {
         .bind(17, stamp.by)
         .bind(18, stamp.at)
         .bind(19, stamp.by)
+        .bind(20, tmpl.paper_kind)
+        .bind(21, tmpl.scale_mode)
         .run();
     tmpl.id = sqlite3_last_insert_rowid(conn);
     tmpl.version = 1;
@@ -587,7 +664,7 @@ PrintTemplate PrintTemplateService::update(std::int64_t id, const PrintTemplate&
                 " page_size = ?, orientation = ?, paper_width_mm = ?, paper_height_mm = ?,"
                 " margin_mm = ?, font_size_pt = ?, header_text = ?, footer_text = ?,"
                 " show_page_no = ?, is_default = ?, status = ?, version = version + 1,"
-                " updated_at = ?, updated_by = ?"
+                " updated_at = ?, updated_by = ?, paper_kind = ?, scale_mode = ?"
                 " WHERE id = ? AND version = ? AND is_deleted = 0;");
       stmt.bind(1, tmpl.code)
           .bind(2, tmpl.name)
@@ -606,8 +683,10 @@ PrintTemplate PrintTemplateService::update(std::int64_t id, const PrintTemplate&
           .bind(15, static_cast<std::int64_t>(tmpl.active ? 1 : 0))
           .bind(16, stamp.at)
           .bind(17, stamp.by)
-          .bind(18, id)
-          .bind(19, tmpl.version)
+          .bind(18, tmpl.paper_kind)
+          .bind(19, tmpl.scale_mode)
+          .bind(20, id)
+          .bind(21, tmpl.version)
           .run();
       if (sqlite3_changes(conn) == 0) {
         Stmt check(conn, "SELECT 1 FROM print_template WHERE id = ? AND is_deleted = 0;");

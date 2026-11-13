@@ -810,6 +810,13 @@ ALTER TABLE doc_line ADD COLUMN tax_cents INTEGER NOT NULL DEFAULT 0;
 UPDATE doc_line SET net_cents = amount_cents;
 )SQL";
 
+// v27：打印纸型与缩放。paper_kind 区分单页纸与连续纸（针式），
+// scale_mode 区分按纸宽自适应与原始尺寸；连续纸固定原始尺寸，不跟随缩放。
+constexpr const char* kV27 = R"SQL(
+ALTER TABLE print_template ADD COLUMN paper_kind TEXT NOT NULL DEFAULT 'SHEET';
+ALTER TABLE print_template ADD COLUMN scale_mode TEXT NOT NULL DEFAULT 'FIT_WIDTH';
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -851,6 +858,7 @@ const std::vector<Migration>& all_migrations() {
       {24, "v24_session_timeout", kV24},
       {25, "v25_item_barcode_backfill", kV25},
       {26, "v26_doc_line_tax", kV26},
+      {27, "v27_print_scale_paper", kV27},
   };
   return migrations;
 }

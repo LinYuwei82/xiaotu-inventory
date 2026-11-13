@@ -50,6 +50,8 @@ nlohmann::json template_to_json(const PrintTemplate& tmpl) {
       {"paper_width_mm", tmpl.paper_width_mm},
       {"paper_height_mm", tmpl.paper_height_mm},
       {"margin_mm", tmpl.margin_mm},
+      {"paper_kind", tmpl.paper_kind},
+      {"scale_mode", tmpl.scale_mode},
       {"font_size_pt", tmpl.font_size_pt},
       {"header_text", tmpl.header_text},
       {"footer_text", tmpl.footer_text},
@@ -86,6 +88,8 @@ PrintTemplate template_from_json(const nlohmann::json& body) {
   tmpl.paper_width_mm = body.value("paper_width_mm", 0);
   tmpl.paper_height_mm = body.value("paper_height_mm", 0);
   tmpl.margin_mm = body.value("margin_mm", 12);
+  tmpl.paper_kind = body.value("paper_kind", std::string{"SHEET"});
+  tmpl.scale_mode = body.value("scale_mode", std::string{"FIT_WIDTH"});
   tmpl.font_size_pt = body.value("font_size_pt", 10);
   tmpl.header_text = body.value("header_text", std::string{});
   tmpl.footer_text = body.value("footer_text", std::string{});
@@ -820,8 +824,9 @@ void respond_render(Services& services, const httplib::Request& req, httplib::Re
   render.placeholders["company_phone"] = company.phone;
   render.placeholders["company_address"] = company.address;
 
+  const std::vector<PrintRenderColumn> resolved = resolved_print_columns(tmpl);
   nlohmann::json columns = nlohmann::json::array();
-  for (const auto& column : resolved_print_columns(tmpl)) {
+  for (const auto& column : resolved) {
     columns.push_back({{"key", column.def.key},
                        {"label", column.def.label},
                        {"type", column.def.type},
@@ -834,11 +839,33 @@ void respond_render(Services& services, const httplib::Request& req, httplib::Re
   std::string source = "BUILTIN";
   if (tmpl.id > 0) source = tmpl.is_default ? "DEFAULT" : "EXPLICIT";
 
+  // 打印布局：纸型、可打印宽度、表宽、缩放与告警一次算清，页面 / 打印 / PDF 共用。
+  const PrintLayoutPlan plan = plan_print_layout(tmpl, resolved);
+  const nlohmann::json layout = {
+      {"page_size", tmpl.page_size},
+      {"orientation", tmpl.orientation},
+      {"paper_kind", tmpl.paper_kind},
+      {"scale_mode", tmpl.scale_mode},
+      {"width_mm", plan.width_mm},
+      {"height_mm", plan.height_mm},
+      {"margin_mm", tmpl.margin_mm},
+      {"printable_width_mm", plan.printable_width_mm},
+      {"table_width_mm", plan.table_width_mm},
+      {"auto_columns", plan.auto_columns},
+      {"overflow_mm", plan.overflow_mm},
+      {"scale_percent", plan.scale_percent},
+      {"effective_font_pt", plan.effective_font_pt},
+      {"suggest_landscape", plan.suggest_landscape},
+      {"warn", plan.warn},
+      {"warn_text", plan.warn_text},
+  };
+
   nlohmann::json body;
   body["target"] = {{"type", target->type}, {"key", target->key}, {"name", target->name}};
   body["template"] = template_to_json(tmpl);
   body["template_source"] = source;
   body["columns"] = columns;
+  body["layout"] = layout;
   body["title"] = render.title;
   body["subtitle"] = render.subtitle;
   body["printed_at"] = now_text();

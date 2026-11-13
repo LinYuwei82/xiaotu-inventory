@@ -16,18 +16,47 @@
 
 // 前端导出与打印的桥：WKWebView 不处理 a[download] 与 window.print()，
 // 这里用 NSSavePanel 保存 CSV、用 WKWebView 的打印操作走系统打印面板。
+// 把模板纸张与边距落到 NSPrintInfo：PDF 的 MediaBox 与真实打印纸一致。
+// 连续纸（针式）同样是精确尺寸 + 模板边距，不做额外缩放，保证套打位置不漂。
+static void XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper) {
+  if (info == nil || ![paper isKindOfClass:[NSDictionary class]]) {
+    return;
+  }
+  const double mm_to_pt = 72.0 / 25.4;
+  NSNumber* width = paper[@"width_mm"];
+  NSNumber* height = paper[@"height_mm"];
+  if ([width isKindOfClass:[NSNumber class]] && [height isKindOfClass:[NSNumber class]] &&
+      width.doubleValue > 0 && height.doubleValue > 0) {
+    [info setPaperSize:NSMakeSize(width.doubleValue * mm_to_pt, height.doubleValue * mm_to_pt)];
+  }
+  NSNumber* margin = paper[@"margin_mm"];
+  if ([margin isKindOfClass:[NSNumber class]] && margin.doubleValue >= 0) {
+    const CGFloat value = margin.doubleValue * mm_to_pt;
+    [info setLeftMargin:value];
+    [info setRightMargin:value];
+    [info setTopMargin:value];
+    [info setBottomMargin:value];
+  }
+  // 套打与自定义纸不接受系统居中，否则位置会随纸宽漂移。
+  [info setHorizontallyCentered:NO];
+  [info setVerticallyCentered:NO];
+}
+
 @interface XiaotuScriptHandler : NSObject <WKScriptMessageHandler>
 @property(nonatomic, weak) WKWebView* webview;
 @property(nonatomic, weak) NSWindow* window;
-- (void)printDocument:(id)sender;
-- (void)savePdfWithFilename:(NSString*)filename;
+- (void)printDocumentWithPaper:(NSDictionary*)paper;
+- (void)savePdfWithFilename:(NSString*)filename paper:(NSDictionary*)paper;
 @end
 
 @implementation XiaotuScriptHandler
 - (void)userContentController:(WKUserContentController*)controller
       didReceiveScriptMessage:(WKScriptMessage*)message {
   if ([message.name isEqualToString:@"xiaotuPrint"]) {
-    [self printDocument:nil];
+    NSDictionary* body = [message.body isKindOfClass:[NSDictionary class]] ? message.body : nil;
+    NSDictionary* paper =
+        [body[@"paper"] isKindOfClass:[NSDictionary class]] ? body[@"paper"] : nil;
+    [self printDocumentWithPaper:paper];
     return;
   }
   if ([message.name isEqualToString:@"xiaotuPrintPdf"]) {
@@ -36,7 +65,11 @@
         [body isKindOfClass:[NSDictionary class]] && [body[@"filename"] isKindOfClass:[NSString class]]
             ? body[@"filename"]
             : @"export.pdf";
-    [self savePdfWithFilename:filename];
+    NSDictionary* paper =
+        [body isKindOfClass:[NSDictionary class]] && [body[@"paper"] isKindOfClass:[NSDictionary class]]
+            ? body[@"paper"]
+            : nil;
+    [self savePdfWithFilename:filename paper:paper];
     return;
   }
   if (![message.name isEqualToString:@"xiaotuExport"]) {
@@ -73,12 +106,14 @@
                 }];
 }
 
-- (void)printDocument:(id)sender {
+- (void)printDocumentWithPaper:(NSDictionary*)paper {
   if (self.webview == nil) {
     return;
   }
-  NSPrintOperation* operation =
-      [self.webview printOperationWithPrintInfo:[NSPrintInfo sharedPrintInfo]];
+  // 复制一份共享设置，避免本次模板的纸型 / 边距留在进程级单例里影响后续打印。
+  NSPrintInfo* info = [[NSPrintInfo sharedPrintInfo] copy];
+  XiaotuApplyPaper(info, paper);
+  NSPrintOperation* operation = [self.webview printOperationWithPrintInfo:info];
   if (operation != nil) {
     [operation runOperation];
   }
@@ -92,7 +127,7 @@
   [self.webview evaluateJavaScript:script completionHandler:nil];
 }
 
-- (void)savePdfWithFilename:(NSString*)filename {
+- (void)savePdfWithFilename:(NSString*)filename paper:(NSDictionary*)paper {
   if (self.webview == nil) {
     return;
   }
@@ -110,7 +145,8 @@
                     [strong_self finishPdfWithResult:@"cancel"];
                     return;
                   }
-                  NSPrintInfo* info = [NSPrintInfo sharedPrintInfo];
+                  NSPrintInfo* info = [[NSPrintInfo sharedPrintInfo] copy];
+                  XiaotuApplyPaper(info, paper);
                   [info setJobDisposition:NSPrintSaveJob];
                   [[info dictionary] setObject:panel.URL forKey:NSPrintJobSavingURL];
                   NSPrintOperation* operation =

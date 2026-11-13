@@ -241,6 +241,19 @@ void run_server_mode(const std::filesystem::path& dir) {
     const auto render = nlohmann::json::parse(printed->body);
     check(render.value("header_text", "") == "冒烟公司",
           "模板抬头为空时应默认打印公司名称");
+    // 版式布局由服务端一次算清，页面 / 打印 / PDF 共用同一份数字。
+    check(render.contains("layout"), "打印渲染应返回共享的版式布局");
+    if (render.contains("layout")) {
+      const auto& layout = render["layout"];
+      check(layout.value("width_mm", 0) == 210 && layout.value("height_mm", 0) == 297 &&
+                layout.value("page_size", "") == "A4",
+            "内置模板的布局应为 A4 210×297mm");
+      check(layout.value("table_width_mm", 0) == 150 &&
+                layout.value("printable_width_mm", 0) == 186 &&
+                layout.value("scale_percent", 0) == 100,
+            "销售毛利 150mm 在 A4 上应 100% 输出");
+      check(layout.value("warn", "") == "none", "宽度足够时不应告警");
+    }
   }
 
   // 诊断信息：只读、无敏感字段、数值与当前库一致。
@@ -248,8 +261,8 @@ void run_server_mode(const std::filesystem::path& dir) {
   check(diagnostic && diagnostic->status == 200, "诊断信息应返回 200");
   if (diagnostic) {
     const auto data = nlohmann::json::parse(diagnostic->body);
-    check(data.value("schema_version", 0) == 26, "诊断信息里的 schema 应为 26");
-    check(data.value("migrations", 0) == 26, "诊断信息里的迁移条数应为 26");
+    check(data.value("schema_version", 0) == 27, "诊断信息里的 schema 应为 27");
+    check(data.value("migrations", 0) == 27, "诊断信息里的迁移条数应为 27");
     check(data.value("mode", "") == "server", "网络版诊断信息 mode 应为 server");
     check(!data.value("data_dir", "").empty(), "诊断信息应包含数据目录");
     check(data.value("database_bytes", 0LL) > 0, "诊断信息应包含大于 0 的数据库大小");

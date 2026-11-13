@@ -346,13 +346,19 @@
     URL.revokeObjectURL(url);
   }
 
-  function printPage() {
+  function printPage(layout) {
     const handlers = window.webkit && window.webkit.messageHandlers;
     if (handlers && handlers.xiaotuPrint) {
-      handlers.xiaotuPrint.postMessage("");
+      handlers.xiaotuPrint.postMessage({ paper: layout || null });
     } else {
       window.print();
     }
+  }
+
+  function nativePrintBridge() {
+    const handlers = window.webkit && window.webkit.messageHandlers;
+    if (!handlers) return null;
+    return handlers.xiaotuPrintPdf || handlers.xiaotuPrint || null;
   }
 
   // ---------- 自定义打印模板 ----------
@@ -395,7 +401,10 @@
   // 模板只提供展示配置，所有数据都按纯文本转义后拼进打印视图。
   function printViewHtml(data) {
     const tmpl = data.template || {};
+    const layout = data.layout || {};
     const columns = data.columns || [];
+    const scale = Math.max(10, Math.min(100, Number(layout.scale_percent) || 100));
+    const tableWidth = Number(layout.table_width_mm) || 0;
     const colgroup = columns
       .map((column) =>
         column.width_mm > 0 ? `<col style="width:${Number(column.width_mm)}mm" />` : "<col />"
@@ -443,27 +452,36 @@
         <h1 class="print-title">${escapeHtml(data.title || "")}</h1>
         <div class="print-subtitle">${escapeHtml(data.subtitle || "")}</div>
         ${fields ? `<div class="print-fields">${fields}</div>` : ""}
-        <table class="print-table">
-          <colgroup>${colgroup}</colgroup>
-          <thead><tr>${head}</tr></thead>
-          <tbody>${body}</tbody>
-        </table>
+        <div class="print-table-wrap" style="zoom:${scale / 100};width:${
+          tableWidth > 0 ? tableWidth + "mm" : "auto"
+        }">
+          <table class="print-table">
+            <colgroup>${colgroup}</colgroup>
+            <thead><tr>${head}</tr></thead>
+            <tbody>${body}</tbody>
+          </table>
+        </div>
         ${totals ? `<div class="print-totals">${escapeHtml(totals)}</div>` : ""}
         <div class="print-meta">打印时间：${escapeHtml(data.printed_at || "")}</div>
         ${footerText}
       </div>`;
   }
 
-  function printPageCss(tmpl) {
+  function printPageCss(tmpl, layout, native) {
     const size =
-      tmpl.page_size === "CUSTOM"
-        ? `${Number(tmpl.paper_width_mm)}mm ${Number(tmpl.paper_height_mm)}mm`
-        : tmpl.page_size || "A4";
-    const orientation = tmpl.orientation === "LANDSCAPE" ? " landscape" : " portrait";
+      layout && layout.width_mm && layout.height_mm
+        ? `${Number(layout.width_mm)}mm ${Number(layout.height_mm)}mm`
+        : tmpl.page_size === "CUSTOM"
+          ? `${Number(tmpl.paper_width_mm)}mm ${Number(tmpl.paper_height_mm)}mm`
+          : tmpl.orientation === "LANDSCAPE"
+            ? "297mm 210mm"
+            : "210mm 297mm";
+    // 原生打印由 NSPrintInfo 设置纸张与边距，这里把页边距归零避免叠加。
+    const margin = native ? 0 : Number(tmpl.margin_mm) || 0;
     const pageNumber = tmpl.show_page_no
       ? ' @bottom-right { content: "第 " counter(page) " 页"; font-size: 9pt; }'
       : "";
-    return `@page { size: ${size}${orientation}; margin: ${Number(tmpl.margin_mm)}mm;${pageNumber} }`;
+    return `@page { size: ${size}; margin: ${margin}mm;${pageNumber} }`;
   }
 
   function mountPrintView(data) {
@@ -475,7 +493,7 @@
     document.body.appendChild(view);
     const style = document.createElement("style");
     style.dataset.printView = "1";
-    style.textContent = printPageCss(data.template || {});
+    style.textContent = printPageCss(data.template || {}, data.layout || {}, !!nativePrintBridge());
     document.head.appendChild(style);
     document.body.classList.add("print-mode");
     return () => {
@@ -485,11 +503,22 @@
     };
   }
 
-  function printWithTemplate(data) {
+  async function confirmPrintLayout(layout) {
+    if (!layout || !layout.warn || layout.warn === "paper_unknown") return true;
+    let message = layout.warn_text || "打印内容超出纸张，可能被裁切。";
+    if (layout.suggest_landscape) message += "\n\n可把纸张方向改为横向后再试。";
+    return askConfirm(message + "\n\n仍要继续吗？", {
+      okText: "继续",
+      cancelText: "返回调整",
+    });
+  }
+
+  async function printWithTemplate(data) {
+    if (!(await confirmPrintLayout(data.layout))) return;
     const cleanup = mountPrintView(data);
     // 浏览器打印结束（含取消）后清理；单机版桥接不触发时，下次打印会先清掉旧视图。
     window.addEventListener("afterprint", cleanup, { once: true });
-    printPage();
+    printPage(data.layout);
   }
 
   function pdfBridge() {
@@ -511,6 +540,7 @@
     }
     try {
       const data = await api("GET", path);
+      if (!(await confirmPrintLayout(data.layout))) return;
       const cleanup = mountPrintView(data);
       window.xiaotuPdfDone = (result) => {
         cleanup();
@@ -518,7 +548,7 @@
         if (result === "ok") showNotice("PDF 已导出", "ok");
         else if (result === "error") showNotice("PDF 导出失败", "error");
       };
-      bridge.postMessage({ filename: pdfFileName(filename || data.title) });
+      bridge.postMessage({ filename: pdfFileName(filename || data.title), paper: data.layout });
     } catch (error) {
       showNotice(error.message, "error");
     }
@@ -526,7 +556,7 @@
 
   async function printTarget(path) {
     try {
-      printWithTemplate(await api("GET", path));
+      await printWithTemplate(await api("GET", path));
     } catch (error) {
       showNotice(error.message, "error");
     }
@@ -4483,6 +4513,18 @@
                 <option value="LANDSCAPE">横向</option>
               </select>
             </label>
+            <label class="field"><span>纸张类别</span>
+              <select data-role="paper-kind">
+                <option value="SHEET">单页纸</option>
+                <option value="CONTINUOUS">连续纸（针式）</option>
+              </select>
+            </label>
+            <label class="field"><span>缩放</span>
+              <select data-role="scale-mode">
+                <option value="FIT_WIDTH">按纸宽自适应</option>
+                <option value="ORIGINAL">原始尺寸</option>
+              </select>
+            </label>
             <label class="field"><span>页边距（mm）</span>
               <input type="number" min="0" max="50" data-role="margin" />
             </label>
@@ -4505,6 +4547,7 @@
             <label class="checkbox"><input type="checkbox" data-role="is-default" />设为该目标默认</label>
             <label class="checkbox"><input type="checkbox" data-role="active" />启用</label>
           </div>
+          <p class="page-sub" data-role="layout-hint"></p>
           <table class="table print-columns" data-role="columns"></table>
           <div class="form-actions">
             <button class="btn primary" type="button" data-role="save">保存</button>
@@ -4524,6 +4567,9 @@
     const codeInput = mount.querySelector('[data-role="code"]');
     const pageSizeSelect = mount.querySelector('[data-role="page-size"]');
     const orientationSelect = mount.querySelector('[data-role="orientation"]');
+    const paperKindSelect = mount.querySelector('[data-role="paper-kind"]');
+    const scaleModeSelect = mount.querySelector('[data-role="scale-mode"]');
+    const layoutHint = mount.querySelector('[data-role="layout-hint"]');
     const marginInput = mount.querySelector('[data-role="margin"]');
     const fontInput = mount.querySelector('[data-role="font-size"]');
     const paperWidthInput = mount.querySelector('[data-role="paper-width"]');
@@ -4609,9 +4655,64 @@
       if (preset) {
         paperWidthInput.value = preset.width;
         paperHeightInput.value = preset.height;
+        // 针式预设默认走连续纸，避免和 A4 的按纸宽缩放混在一起。
+        paperKindSelect.value = "CONTINUOUS";
+      } else if (pageSizeSelect.value === "A4" || pageSizeSelect.value === "A5") {
+        paperKindSelect.value = "SHEET";
       }
       const custom = pageSizeSelect.value === "CUSTOM";
       for (const field of customSizeFields) field.hidden = !custom;
+      updateLayoutHint();
+    }
+
+    function pageDimensionsMm() {
+      const preset = paperPresets[pageSizeSelect.value];
+      let width = 210;
+      let height = 297;
+      if (preset) {
+        width = preset.width;
+        height = preset.height;
+      } else if (pageSizeSelect.value === "A5") {
+        width = 148;
+        height = 210;
+      } else if (pageSizeSelect.value === "CUSTOM") {
+        width = Number(paperWidthInput.value || 0) || 210;
+        height = Number(paperHeightInput.value || 0) || 297;
+      }
+      if (orientationSelect.value === "LANDSCAPE") [width, height] = [height, width];
+      return { width, height };
+    }
+
+    function updateLayoutHint() {
+      if (!layoutHint) return;
+      const { width } = pageDimensionsMm();
+      const margin = Number(marginInput.value || 0);
+      const printable = Math.max(0, width - margin * 2);
+      const tableWidth = editingColumns
+        .filter((column) => column.visible)
+        .reduce((sum, column) => sum + (Number(column.width_mm) || 18), 0);
+      const continuous = paperKindSelect.value === "CONTINUOUS";
+      const scaleMode = scaleModeSelect.value;
+      let text = `可打印宽 ${printable}mm，当前可见列合计 ${tableWidth}mm。`;
+      if (continuous) {
+        text += " 连续纸固定原始尺寸与套打位置，不参与缩放。";
+        if (tableWidth > printable) {
+          text += ` 超出 ${tableWidth - printable}mm，请调整纸宽或精简列。`;
+        }
+      } else if (scaleMode === "ORIGINAL") {
+        text += " 原始尺寸";
+        text += tableWidth > printable
+          ? `，超出 ${tableWidth - printable}mm，打印/导出前会提示改横向或精简列。`
+          : "，不会缩放。";
+      } else if (tableWidth > printable) {
+        const scale = Math.max(10, Math.floor((printable * 100) / tableWidth));
+        const font = ((Number(fontInput.value || 10) * scale) / 100).toFixed(1);
+        text += ` 将按 ${scale}% 缩放，字号约 ${font}pt`;
+        text += Number(font) < 7 ? "，低于 7pt，建议改横向或精简列。" : "。";
+      } else {
+        text += " 宽度足够，按 100% 输出。";
+      }
+      layoutHint.textContent = text;
     }
 
     function renderColumns() {
@@ -4690,6 +4791,8 @@
       isDefaultInput.checked = template ? template.is_default : false;
       activeInput.checked = template ? template.active : true;
       updateCustomSize();
+      paperKindSelect.value = template ? template.paper_kind || "SHEET" : paperKindSelect.value;
+      scaleModeSelect.value = template ? template.scale_mode || "FIT_WIDTH" : "FIT_WIDTH";
       if (template) {
         editingColumns = template.columns.map((column) => ({ ...column }));
       } else {
@@ -4697,6 +4800,7 @@
         editingColumns = builtinColumns(parts.type, parts.key);
       }
       renderColumns();
+      updateLayoutHint();
       editorCard.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
@@ -4768,6 +4872,8 @@
         target_key: parts.key,
         page_size: paperPreset ? "CUSTOM" : pageSizeSelect.value,
         orientation: orientationSelect.value,
+        paper_kind: paperKindSelect.value,
+        scale_mode: scaleModeSelect.value,
         paper_width_mm: paperPreset
           ? paperPreset.width
           : Number(paperWidthInput.value || 0),
@@ -4813,6 +4919,20 @@
       renderColumns();
     });
     pageSizeSelect.addEventListener("change", updateCustomSize);
+    for (const select of [orientationSelect, paperKindSelect, scaleModeSelect]) {
+      select.addEventListener("change", updateLayoutHint);
+    }
+    for (const input of [marginInput, fontInput, paperWidthInput, paperHeightInput]) {
+      input.addEventListener("input", updateLayoutHint);
+    }
+    columnsTable.addEventListener("input", () => {
+      syncColumnsFromDom();
+      updateLayoutHint();
+    });
+    columnsTable.addEventListener("change", () => {
+      syncColumnsFromDom();
+      updateLayoutHint();
+    });
     mount.querySelector('[data-role="save"]').addEventListener("click", saveEditor);
     mount.querySelector('[data-role="cancel"]').addEventListener("click", closeEditor);
     mount.querySelector('[data-role="copy-default"]').addEventListener("click", () => {
