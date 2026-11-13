@@ -1,14 +1,133 @@
 #include "xiaotu/update_service.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <vector>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include <nlohmann/json.hpp>
 
 namespace xiaotu {
 namespace {
+
+#if defined(_WIN32)
+
+std::wstring utf8_to_wide(const std::string& value) {
+  if (value.empty()) {
+    return std::wstring();
+  }
+  const int length = ::MultiByteToWideChar(CP_UTF8, 0, value.data(),
+                                           static_cast<int>(value.size()), nullptr, 0);
+  if (length <= 0) {
+    return std::wstring();
+  }
+  std::wstring wide(static_cast<std::size_t>(length), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), wide.data(),
+                        length);
+  return wide;
+}
+
+// 按 CommandLineToArgvW 的规则给单个参数加引号：反斜杠数量按官方算法翻倍，
+// 保证含空格或引号的路径原样传到子进程。
+std::wstring quote_windows_arg(const std::wstring& value) {
+  if (!value.empty() && value.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
+    return value;
+  }
+  std::wstring quoted = L"\"";
+  std::size_t index = 0;
+  while (true) {
+    std::size_t backslashes = 0;
+    while (index < value.size() && value[index] == L'\\') {
+      ++index;
+      ++backslashes;
+    }
+    if (index == value.size()) {
+      quoted.append(backslashes * 2, L'\\');
+      break;
+    }
+    if (value[index] == L'"') {
+      quoted.append(backslashes * 2 + 1, L'\\');
+    } else {
+      quoted.append(backslashes, L'\\');
+    }
+    quoted.push_back(value[index]);
+    ++index;
+  }
+  quoted.push_back(L'"');
+  return quoted;
+}
+
+bool is_batch_script(const std::string& path) {
+  std::string extension = std::filesystem::path(path).extension().string();
+  std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::tolower(ch));
+  });
+  return extension == ".bat" || extension == ".cmd";
+}
+
+// 不经 shell：可执行程序与参数分开交给 CreateProcess，StdOut/StdErr 直接挂到 NUL。
+// 只有 .bat/.cmd 这类脚本必须由 cmd.exe 解释，此时按 cmd /c ""<脚本>" <参数>" 的规则
+// 在整条命令外再加一层引号，否则 cmd 会剥掉首尾引号、把含空格的路径截断。
+int run_verifier_process(const std::string& program, const std::vector<std::string>& args) {
+  std::wstring command_line = quote_windows_arg(utf8_to_wide(program));
+  for (const std::string& arg : args) {
+    command_line += L' ';
+    command_line += quote_windows_arg(utf8_to_wide(arg));
+  }
+
+  std::wstring application = utf8_to_wide(program);
+  if (is_batch_script(program)) {
+    wchar_t comspec[MAX_PATH] = {};
+    const DWORD comspec_length = ::GetEnvironmentVariableW(L"ComSpec", comspec, MAX_PATH);
+    application = (comspec_length > 0 && comspec_length < MAX_PATH)
+                      ? std::wstring(comspec)
+                      : std::wstring(L"C:\\Windows\\System32\\cmd.exe");
+    command_line = quote_windows_arg(application) + L" /c \"" + command_line + L"\"";
+  }
+
+  SECURITY_ATTRIBUTES inherit{};
+  inherit.nLength = sizeof(inherit);
+  inherit.bInheritHandle = TRUE;
+  HANDLE null_device = ::CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                     &inherit, OPEN_EXISTING, 0, nullptr);
+
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESTDHANDLES;
+  startup.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+  startup.hStdOutput = null_device;
+  startup.hStdError = null_device;
+
+  PROCESS_INFORMATION process{};
+  if (::CreateProcessW(application.c_str(), command_line.data(), nullptr, nullptr, TRUE,
+                       CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) == FALSE) {
+    if (null_device != INVALID_HANDLE_VALUE) {
+      ::CloseHandle(null_device);
+    }
+    return -1;
+  }
+  ::WaitForSingleObject(process.hProcess, INFINITE);
+  DWORD exit_code = 1;
+  ::GetExitCodeProcess(process.hProcess, &exit_code);
+  ::CloseHandle(process.hThread);
+  ::CloseHandle(process.hProcess);
+  if (null_device != INVALID_HANDLE_VALUE) {
+    ::CloseHandle(null_device);
+  }
+  return static_cast<int>(exit_code);
+}
+
+#else
 
 std::string shell_quote(const std::string& value) {
   std::string quoted = "'";
@@ -22,6 +141,8 @@ std::string shell_quote(const std::string& value) {
   quoted += "'";
   return quoted;
 }
+
+#endif
 
 // 用发布侧同一套 Python 工具验签，确保规范化规则与生成侧一致。
 bool verify_manifest_signature(const UpdateSettings& settings, const std::string& manifest_file,
@@ -38,18 +159,19 @@ bool verify_manifest_signature(const UpdateSettings& settings, const std::string
     result.error_message = "验签工具或公钥不可用";
     return false;
   }
+#if defined(_WIN32)
+  const std::vector<std::string> verifier_args = {
+      settings.verifier_script, "verify", "--manifest", manifest_file, "--pub",
+      settings.public_key_file};
+  const bool verified = run_verifier_process(settings.verifier_python, verifier_args) == 0;
+#else
   const std::string command = shell_quote(settings.verifier_python) + " " +
                               shell_quote(settings.verifier_script) + " verify --manifest " +
                               shell_quote(manifest_file) + " --pub " +
-                              shell_quote(settings.public_key_file) +
-                              // std::system 在 Windows 走 cmd.exe，不识别 /dev/null；
-                              // 用 NUL 丢弃输出，其余平台保持原有重定向。
-#if defined(_WIN32)
-                              " >NUL 2>&1";
-#else
-                              " >/dev/null 2>&1";
+                              shell_quote(settings.public_key_file) + " >/dev/null 2>&1";
+  const bool verified = std::system(command.c_str()) == 0;
 #endif
-  if (std::system(command.c_str()) != 0) {
+  if (!verified) {
     result.error_code = "UPDATE_SIGNATURE_INVALID";
     result.error_message = "更新清单签名校验失败";
     return false;
