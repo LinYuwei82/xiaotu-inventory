@@ -1,7 +1,10 @@
 #include <filesystem>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <iterator>
 #include <string>
+#include <vector>
 
 #include "xiaotu/db.h"
 #include "xiaotu/document.h"
@@ -11,6 +14,8 @@
 #include "xiaotu/migrations.h"
 #include "xiaotu/qty.h"
 #include "xiaotu/report_service.h"
+#include "xiaotu/xlsx.h"
+#include "xiaotu/xlsx_reader.h"
 
 namespace {
 int failures = 0;
@@ -133,6 +138,101 @@ int main() {
     const auto ledger_totals = reports.stock_ledger_totals(filter);
     check(ledger_totals.rows == 3, "库存流水共 3 条");
     check(ledger_page.size() == 1, "分页每页 1 行应只返回 1 行");
+
+    // 流式取数：与一次性取数结果一致；回调返回 false 立即停止。
+    std::vector<xiaotu::LedgerDetailRow> streamed_ledger;
+    const bool ledger_completed = reports.stream_stock_ledger(
+        filter, [&](const xiaotu::LedgerDetailRow& row) {
+          streamed_ledger.push_back(row);
+          return true;
+        });
+    check(ledger_completed && streamed_ledger.size() == 3,
+          "流式库存流水应返回全部 3 条（实际 " + std::to_string(streamed_ledger.size()) + "）");
+    std::size_t stopped_after = 0;
+    reports.stream_stock_ledger(filter, [&](const xiaotu::LedgerDetailRow&) {
+      ++stopped_after;
+      return false;
+    });
+    check(stopped_after == 1, "流式回调返回 false 应立即停止");
+
+    std::vector<xiaotu::SalesDetailRow> streamed_detail;
+    const bool detail_completed = reports.stream_sales_detail(
+        filter, [&](const xiaotu::SalesDetailRow& row) {
+          streamed_detail.push_back(row);
+          return true;
+        });
+    check(detail_completed && streamed_detail.size() == detail.size(),
+          "流式销售明细行数应与一次性取数一致");
+
+    // 采购明细：退货按负数冲减；合计按全量算，不受分页 offset 影响。
+    auto purchase = [&](const char* type, std::int64_t qty) {
+      xiaotu::DocInput input;
+      input.doc_type = type;
+      input.warehouse_id = 1;
+      input.doc_date = today;
+      input.partner = "报表供应商";
+      input.lines.push_back(xiaotu::DocLineInput{
+          .item_id = item.id, .qty = qty, .price_cents = 500});
+      return engine.save_and_approve(input);
+    };
+    purchase("PUR_IN", xiaotu::qty_from_int(10));
+    purchase("PUR_RET", xiaotu::qty_from_int(2));
+
+    xiaotu::ReportFilter purchase_filter;
+    purchase_filter.from = today;
+    purchase_filter.to = today;
+    const auto purchase_rows = reports.purchase_detail(purchase_filter);
+    check(purchase_rows.size() == 2, "采购明细应有入库与退货两行");
+    const auto purchase_totals = reports.purchase_detail_totals(purchase_filter);
+    check(purchase_totals.rows == 2 && purchase_totals.qty == xiaotu::qty_from_int(8) &&
+              purchase_totals.amount_cents == 4000,
+          "采购合计应为净数量 8、净金额 40.00");
+
+    std::vector<xiaotu::PurchaseDetailRow> streamed_purchase;
+    const bool purchase_completed = reports.stream_purchase_detail(
+        purchase_filter, [&](const xiaotu::PurchaseDetailRow& row) {
+          streamed_purchase.push_back(row);
+          return true;
+        });
+    check(purchase_completed && streamed_purchase.size() == purchase_rows.size(),
+          "流式采购明细行数应与一次性取数一致");
+
+    xiaotu::ReportFilter purchase_page;
+    purchase_page.from = today;
+    purchase_page.to = today;
+    purchase_page.limit = 1;
+    purchase_page.offset = 1;
+    check(reports.purchase_detail(purchase_page).size() == 1, "采购明细分页应只返回 1 行");
+    check(reports.purchase_detail_totals(purchase_page).rows == 2,
+          "采购合计按全量计算，不受分页 offset 影响");
+
+    // 流式 xlsx：分批写入 3000 行，生成的文件应能被读取器完整读出。
+    xiaotu::XlsxStreamWriter writer("流式导出");
+    check(writer.ok(), "流式 xlsx 写入器应能创建临时文件");
+    writer.add_header_row({"序号", "金额（元）"});
+    for (int i = 0; i < 3000; ++i) {
+      writer.add_row({xiaotu::XlsxCell::text("行" + std::to_string(i)),
+                      xiaotu::XlsxCell::money(12345)});
+    }
+    const std::string xlsx_path = writer.finish();
+    check(!xlsx_path.empty(), "流式 xlsx 应组装出文件");
+    if (!xlsx_path.empty()) {
+      std::ifstream stream(xlsx_path, std::ios::binary);
+      const std::string bytes{std::istreambuf_iterator<char>(stream),
+                              std::istreambuf_iterator<char>()};
+      stream.close();
+      const auto table = xiaotu::read_first_sheet(bytes);
+      check(table.header == std::vector<std::string>{"序号", "金额（元）"},
+            "流式 xlsx 表头应完整");
+      check(table.rows.size() == 3000, "流式 xlsx 应保留全部 3000 行");
+      if (table.rows.size() == 3000) {
+        const auto& last = table.rows.back();
+        check(last.cells.size() == 2 && last.cells[0] == "行2999" && last.cells[1] == "123.45",
+              "流式 xlsx 末行内容应正确");
+      }
+      std::error_code remove_error;
+      std::filesystem::remove(xlsx_path, remove_error);
+    }
   }
   std::error_code error;
   std::filesystem::remove_all(dir, error);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -279,6 +280,13 @@ class ReportService {
   std::vector<SalesProfitRow> sales_profit(const ReportFilter& filter) const;
   // 采购明细与汇总：默认含采购入库与采购退货，退货按负数冲减。
   std::vector<PurchaseDetailRow> purchase_detail(const ReportFilter& filter) const;
+
+  // 大报表导出用的逐行取数：limit <= 0 表示不限行数，offset 仍按 filter 生效；
+  // 回调返回 false 立即停止并返回 false，内存占用与总行数无关。
+  bool stream_stock_ledger(const ReportFilter& filter,
+                           const std::function<bool(const LedgerDetailRow&)>& sink) const;
+  bool stream_purchase_detail(const ReportFilter& filter,
+                              const std::function<bool(const PurchaseDetailRow&)>& sink) const;
   std::vector<PurchaseSupplierSummaryRow> purchase_summary_by_supplier(
       const ReportFilter& filter) const;
   std::vector<PurchaseItemSummaryRow> purchase_summary_by_item(
@@ -290,6 +298,8 @@ class ReportService {
                                              std::string_view dimension) const;
   std::vector<SalesDetailRow> sales_detail(const ReportFilter& filter,
                                            std::string_view dimension) const;
+  bool stream_sales_detail(const ReportFilter& filter,
+                           const std::function<bool(const SalesDetailRow&)>& sink) const;
   SalesDetailTotals sales_detail_totals(const ReportFilter& filter) const;
   // 经营看板：today 传 YYYY-MM-DD，本月按自然月 1 号起算。
   DashboardResult dashboard(std::string_view today) const;

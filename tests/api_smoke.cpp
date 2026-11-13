@@ -11,10 +11,13 @@
 #include <nlohmann/json.hpp>
 
 #include "xiaotu/db.h"
+#include "xiaotu/document.h"
 #include "xiaotu/http_server.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/permissions.h"
+#include "xiaotu/qty.h"
 #include "xiaotu/services.h"
+#include "xiaotu/xlsx_reader.h"
 
 namespace {
 
@@ -397,6 +400,59 @@ void run_server_mode(const std::filesystem::path& dir) {
   const auto xlsx = client.Get("/api/items/export?format=xlsx");
   check(xlsx && xlsx->status == 200, "主数据导出 XLSX 应返回 200");
   check(audit_count(db, "export") == 2, "两次导出应各写一条审计");
+
+  // 报表导出流式化：不再有 100000 行截断，导出忽略分页参数并按全量输出。
+  {
+    xiaotu::DocumentEngine engine(db);
+    xiaotu::DocInput smoke_in;
+    smoke_in.doc_type = "OTH_IN";
+    smoke_in.warehouse_id = 1;
+    smoke_in.doc_date = xiaotu::today_text();
+    smoke_in.partner = "冒烟期初";
+    smoke_in.lines.push_back(xiaotu::DocLineInput{.item_id = item_body.value("id", 0LL),
+                                                  .qty = xiaotu::qty_from_int(5),
+                                                  .price_cents = 1000});
+    engine.save_and_approve(smoke_in);
+
+    const auto ledger_csv = client.Get("/api/reports/stock-ledger?format=csv&limit=1");
+    check(ledger_csv && ledger_csv->status == 200 &&
+              ledger_csv->get_header_value("Content-Type").rfind("text/csv", 0) == 0,
+          "库存流水流式 CSV 应返回 200");
+    if (ledger_csv) {
+      check(ledger_csv->body.rfind("\xEF\xBB\xBF", 0) == 0, "CSV 应带 UTF-8 BOM");
+      check(ledger_csv->body.find("100000") == std::string::npos,
+            "流式导出不应再出现 100000 行上限提示");
+      check(ledger_csv->body.find("其他入库") != std::string::npos,
+            "库存流水 CSV 应包含导出期间的流水行");
+      check(ledger_csv->body.find("合计") != std::string::npos, "CSV 应包含合计行");
+    }
+
+    const auto ledger_xlsx = client.Get("/api/reports/stock-ledger?format=xlsx");
+    check(ledger_xlsx && ledger_xlsx->status == 200 &&
+              ledger_xlsx->get_header_value("Content-Type").find("spreadsheetml") !=
+                  std::string::npos,
+          "库存流水流式 XLSX 应返回 200");
+    if (ledger_xlsx) {
+      const auto table = xiaotu::read_first_sheet(ledger_xlsx->body);
+      check(!table.rows.empty(), "XLSX 应包含表头与数据行");
+      bool has_header = false;
+      bool has_total = false;
+      for (const auto& row : table.rows) {
+        if (!row.cells.empty() && row.cells[0] == "时间") has_header = true;
+        if (!row.cells.empty() && row.cells[0] == "合计") has_total = true;
+      }
+      check(has_header && has_total, "XLSX 应包含表头与合计行");
+    }
+
+    const auto purchase_csv = client.Get("/api/reports/purchase-detail?format=csv");
+    check(purchase_csv && purchase_csv->status == 200 &&
+              purchase_csv->body.find("采购明细") != std::string::npos,
+          "采购明细导出应走流式且包含标题");
+    const auto sales_csv = client.Get("/api/reports/sales-detail?format=csv");
+    check(sales_csv && sales_csv->status == 200 &&
+              sales_csv->body.find("销售明细") != std::string::npos,
+          "销售明细导出应走流式且包含标题");
+  }
 
   // 系统参数：默认三项为空，保存后回读一致，每个变化的键各一条审计。
   const auto settings = client.Get("/api/settings");

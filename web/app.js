@@ -3840,10 +3840,6 @@
     const purchaseWarehouseSelect = mount.querySelector('[data-role="purchase-warehouse"]');
     const purchaseDetailTable = mount.querySelector('[data-role="purchase-detail"]');
     const purchaseDetailHint = mount.querySelector('[data-role="purchase-detail-hint"]');
-    // 导出侧的服务端上限；超过时要明确告知，不能静默截断。
-    const reportExportLimit = 100000;
-    let purchaseDetailTotal = 0;
-    let ledgerTotal = 0;
     const purchaseSummaryTable = mount.querySelector('[data-role="purchase-summary"]');
     const otherFlowCategorySelect = mount.querySelector('[data-role="other-flow-category"]');
     const otherFlowWarehouseSelect = mount.querySelector('[data-role="other-flow-warehouse"]');
@@ -4091,13 +4087,12 @@
              <td>${money(balanceAmount)}</td></tr></tfoot>`;
 
       const ledgerRows = ledger.rows || [];
-      ledgerTotal = ledger.total || 0;
       ledgerCached = ledger;
       ledgerHint.textContent =
         ledger.total > ledgerRows.length
           ? `共 ${ledger.total} 行，当前显示第 ${ledger.offset + 1}–${
               ledger.offset + ledgerRows.length
-            } 行；可翻页或导出 CSV / Excel 查看全部（单次导出上限 100000 行）`
+            } 行；可翻页或导出 CSV / Excel 查看全部`
           : `共 ${ledger.total || 0} 行`;
       renderPager(ledgerPager, ledger, ledgerPage, (page) => {
         ledgerPage = page;
@@ -4261,12 +4256,11 @@
            </tr></tfoot>`;
 
       const purchaseRows = purchaseDetail.rows || [];
-      purchaseDetailTotal = purchaseDetail.total || 0;
       purchaseDetailHint.textContent =
         purchaseDetail.total > purchaseRows.length
           ? `共 ${purchaseDetail.total} 行，当前显示第 ${purchaseDetail.offset + 1}–${
               purchaseDetail.offset + purchaseRows.length
-            } 行；可翻页或导出 CSV / Excel 查看全部（单次导出上限 100000 行）`
+            } 行；可翻页或导出 CSV / Excel 查看全部`
           : `共 ${purchaseDetail.total || 0} 行`;
       renderPager(purchasePager, purchaseDetail, purchasePage, (page) => {
         purchasePage = page;
@@ -4380,20 +4374,12 @@
              .join("")}</tbody>`;
     }
 
-    // totalFn 返回服务端真实总行数；超过导出上限时提示实际导出范围。
-    function wireExport(role, pathFn, totalFn) {
+    // 报表导出统一走后端流式写出，不再有单次行数上限。
+    function wireExport(role, pathFn) {
       mount.querySelector(`[data-role="${role}"]`).addEventListener("click", async () => {
         try {
           await downloadCsv(pathFn());
-          const total = totalFn ? totalFn() : 0;
-          if (total > reportExportLimit) {
-            showNotice(
-              `共 ${total} 行，单次导出上限 ${reportExportLimit} 行，已导出前 ${reportExportLimit} 行`,
-              "error"
-            );
-          } else {
-            showNotice("已导出 CSV", "ok");
-          }
+          showNotice("已导出 CSV", "ok");
         } catch (error) {
           showNotice(error.message, "error");
         }
@@ -4403,8 +4389,7 @@
     wireExport("export-balance", () => "/api/reports/stock-balance" + balanceQuery() + "&format=csv");
     wireExport(
       "export-ledger",
-      () => "/api/reports/stock-ledger" + ledgerQuery() + "&format=csv",
-      () => ledgerTotal
+      () => "/api/reports/stock-ledger" + ledgerQuery() + "&format=csv"
     );
     wireExport("export-flows", () => "/api/reports/goods-flow" + periodQuery() + "&format=csv");
     wireExport(
@@ -4414,8 +4399,7 @@
     wireExport("export-profit", () => "/api/reports/sales-profit" + periodQuery() + "&format=csv");
     wireExport(
       "export-purchase-detail",
-      () => "/api/reports/purchase-detail" + purchaseQuery() + "&format=csv",
-      () => purchaseDetailTotal
+      () => "/api/reports/purchase-detail" + purchaseQuery() + "&format=csv"
     );
     wireExport(
       "export-purchase-summary",
@@ -4448,19 +4432,11 @@
       () => "/api/reports/fund-balances?as_of=" + encodeURIComponent(toInput.value) + "&format=csv"
     );
 
-    function wireExcel(role, pathFn, totalFn) {
+    function wireExcel(role, pathFn) {
       mount.querySelector(`[data-role="${role}"]`).addEventListener("click", async () => {
         try {
           await downloadXlsx(pathFn());
-          const total = totalFn ? totalFn() : 0;
-          if (total > reportExportLimit) {
-            showNotice(
-              `共 ${total} 行，单次导出上限 ${reportExportLimit} 行，已导出前 ${reportExportLimit} 行`,
-              "error"
-            );
-          } else {
-            showNotice("已导出 Excel", "ok");
-          }
+          showNotice("已导出 Excel", "ok");
         } catch (error) {
           showNotice(error.message, "error");
         }
@@ -4470,8 +4446,7 @@
     wireExcel("excel-balance", () => "/api/reports/stock-balance" + balanceQuery() + "&format=xlsx");
     wireExcel(
       "excel-ledger",
-      () => "/api/reports/stock-ledger" + ledgerQuery() + "&format=xlsx",
-      () => ledgerTotal
+      () => "/api/reports/stock-ledger" + ledgerQuery() + "&format=xlsx"
     );
     wireExcel("excel-flows", () => "/api/reports/goods-flow" + periodQuery() + "&format=xlsx");
     wireExcel(
@@ -4481,8 +4456,7 @@
     wireExcel("excel-profit", () => "/api/reports/sales-profit" + periodQuery() + "&format=xlsx");
     wireExcel(
       "excel-purchase-detail",
-      () => "/api/reports/purchase-detail" + purchaseQuery() + "&format=xlsx",
-      () => purchaseDetailTotal
+      () => "/api/reports/purchase-detail" + purchaseQuery() + "&format=xlsx"
     );
     wireExcel(
       "excel-purchase-summary",

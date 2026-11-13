@@ -3,6 +3,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <fstream>
+#include <functional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -120,10 +123,96 @@ void xlsx_preamble(XlsxSheet& sheet, const std::string& title, const std::string
   sheet.add_text_row({});
 }
 
+void xlsx_preamble(XlsxStreamWriter& sheet, const std::string& title, const std::string& scope) {
+  sheet.add_text_row({"报表", title});
+  sheet.add_text_row({"筛选条件", scope});
+  sheet.add_text_row({"导出时间", now_text()});
+  sheet.add_text_row({"金额说明",
+                      "金额单位为元，由整数分按 1 元 = 100 分换算并保留两位小数，无浮点误差"});
+  sheet.add_text_row({});
+}
+
 void send_xlsx(httplib::Response& res, const std::string& filename, const std::string& body) {
   res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
   res.set_content(body,
                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+}
+
+constexpr const char* kXlsxContentType =
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+// 大报表 CSV 的写缓冲：攒够一块就交给 HTTP sink，内存占用与导出行数无关。
+class CsvStream {
+ public:
+  CsvStream() { buffer_ = "\xEF\xBB\xBF"; }
+
+  bool raw(httplib::DataSink& sink, const std::string& text) {
+    buffer_ += text;
+    return buffer_.size() < kFlushBytes || flush(sink);
+  }
+
+  bool row(httplib::DataSink& sink, std::initializer_list<std::string> fields) {
+    csv_row(buffer_, fields);
+    return buffer_.size() < kFlushBytes || flush(sink);
+  }
+
+  bool flush(httplib::DataSink& sink) {
+    if (buffer_.empty()) return true;
+    const bool ok = sink.write(buffer_.data(), buffer_.size());
+    buffer_.clear();
+    return ok;
+  }
+
+ private:
+  static constexpr std::size_t kFlushBytes = 256 * 1024;
+  std::string buffer_;
+};
+
+// 流式 CSV：提供者只被调用一次，写入过程按块推给客户端；返回 false 表示中途写失败。
+void send_csv_stream(httplib::Response& res, const std::string& filename,
+                     std::function<bool(httplib::DataSink&, CsvStream&)> body) {
+  res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+  res.set_chunked_content_provider(
+      "text/csv; charset=utf-8",
+      [body = std::move(body)](std::size_t, httplib::DataSink& sink) {
+        CsvStream out;
+        const bool ok = body(sink, out) && out.flush(sink);
+        sink.done();
+        return ok;
+      });
+}
+
+// 把已生成的 xlsx 临时文件按块写给客户端，响应结束后删掉临时文件。
+void send_xlsx_file(httplib::Response& res, const std::string& filename,
+                    const std::string& path) {
+  auto file = std::make_shared<std::ifstream>(path, std::ios::binary);
+  if (!file->is_open()) {
+    std::remove(path.c_str());
+    json_error(res, 500, "EXPORT_FAILED", "导出文件生成失败");
+    return;
+  }
+  file->seekg(0, std::ios::end);
+  const auto length = static_cast<std::size_t>(file->tellg());
+  file->seekg(0, std::ios::beg);
+  res.set_header("Content-Disposition", "attachment; filename=\"" + filename + "\"");
+  res.set_content_provider(
+      length, kXlsxContentType,
+      [file](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
+        file->clear();
+        file->seekg(static_cast<std::streamoff>(offset));
+        std::vector<char> buffer(64 * 1024);
+        std::size_t remaining = length;
+        while (remaining > 0) {
+          const std::size_t chunk = std::min(remaining, buffer.size());
+          file->read(buffer.data(), static_cast<std::streamsize>(chunk));
+          const auto got = static_cast<std::size_t>(file->gcount());
+          if (got == 0) return false;
+          if (!sink.write(buffer.data(), got)) return false;
+          remaining -= got;
+        }
+        return true;
+      },
+      [path](bool) { std::remove(path.c_str()); });
 }
 
 std::string date_stamp() {
@@ -665,17 +754,9 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      if (req.has_param("biz_category")) {
                        filter.biz_category = req.get_param_value("biz_category");
                      }
-                     if (csv_requested(req) || xlsx_requested(req)) {
-                       filter.limit = 100000;
-                       filter.offset = 0;
-                     }
-                     const auto rows = services.reports.stock_ledger(filter);
                      const auto totals = services.reports.stock_ledger_totals(filter);
                      const auto settings = services.settings.load();
-                     const std::int64_t last_row =
-                         static_cast<std::int64_t>(filter.offset + rows.size());
-                     const bool truncated = totals.rows > last_row;
-                     const std::string scope =
+                     const std::string base_scope =
                          period_label(filter) + "；" +
                          dimension_label(filter.item_id, "商品") + "；" +
                          dimension_label(filter.warehouse_id, "仓库") + "；方向 " +
@@ -683,56 +764,86 @@ void register_report_routes(httplib::Server& server, Services& services) {
                          (filter.biz_category.empty() ? std::string("全部")
                                                       : biz_category_label(filter.biz_category)) +
                          "；成本口径 " + cost_basis_label(settings) + "；共 " +
-                         std::to_string(totals.rows) + " 行" +
+                         std::to_string(totals.rows) + " 行";
+                     if (csv_requested(req) || xlsx_requested(req)) {
+                       // 导出不分页、不截断：边查边写，内存占用与总行数无关。
+                       ReportFilter export_filter = filter;
+                       export_filter.limit = 0;
+                       export_filter.offset = 0;
+                       const std::string scope = base_scope + "；全部导出";
+                       if (csv_requested(req)) {
+                         send_csv_stream(
+                             res, "stock-ledger-" + date_stamp() + ".csv",
+                             [&services, export_filter, scope, totals](httplib::DataSink& sink,
+                                                                       CsvStream& out) {
+                               std::string preamble;
+                               csv_preamble(preamble, "库存流水明细", scope);
+                               if (!out.raw(sink, preamble)) return false;
+                               if (!out.row(sink, {"时间", "类型", "业务类型", "单据号",
+                                                   "商品编码", "商品名称", "仓库", "数量",
+                                                   "金额（元）"})) {
+                                 return false;
+                               }
+                               const bool streamed = services.reports.stream_stock_ledger(
+                                   export_filter, [&](const LedgerDetailRow& row) {
+                                     return out.row(
+                                         sink, {row.biz_time, ledger_biz_label(row),
+                                                biz_category_label(row.biz_category),
+                                                row.doc_no, row.item_code, row.item_name,
+                                                row.warehouse_name, qty_text(row.qty),
+                                                yuan(row.amount_cents)});
+                                   });
+                               if (!streamed) return false;
+                               return out.row(sink, {"合计", "", "", "", "", "", "",
+                                                     qty_text(totals.qty),
+                                                     yuan(totals.amount_cents)});
+                             });
+                         return;
+                       }
+                       XlsxStreamWriter sheet("库存流水明细");
+                       xlsx_preamble(sheet, "库存流水明细", scope);
+                       sheet.add_header_row({"时间", "类型", "业务类型", "单据号", "商品编码",
+                                             "商品名称", "仓库", "数量", "金额（元）"});
+                       const bool streamed = services.reports.stream_stock_ledger(
+                           export_filter, [&](const LedgerDetailRow& row) {
+                             sheet.add_row({XlsxCell::text(row.biz_time),
+                                            XlsxCell::text(ledger_biz_label(row)),
+                                            XlsxCell::text(biz_category_label(row.biz_category)),
+                                            XlsxCell::text(row.doc_no),
+                                            XlsxCell::text(row.item_code),
+                                            XlsxCell::text(row.item_name),
+                                            XlsxCell::text(row.warehouse_name),
+                                            XlsxCell::text(qty_text(row.qty)),
+                                            XlsxCell::money(row.amount_cents)});
+                             return sheet.ok();
+                           });
+                       if (streamed) {
+                         sheet.add_row({XlsxCell::text("合计"),
+                                        XlsxCell::text(""), XlsxCell::text(""),
+                                        XlsxCell::text(""), XlsxCell::text(""),
+                                        XlsxCell::text(""), XlsxCell::text(""),
+                                        XlsxCell::text(qty_text(totals.qty)),
+                                        XlsxCell::money(totals.amount_cents)});
+                       }
+                       const std::string path = sheet.finish();
+                       if (path.empty()) {
+                         json_error(res, 500, "EXPORT_FAILED", "导出文件生成失败");
+                         return;
+                       }
+                       send_xlsx_file(res, "stock-ledger-" + date_stamp() + ".xlsx", path);
+                       return;
+                     }
+                     const auto rows = services.reports.stock_ledger(filter);
+                     const std::int64_t last_row =
+                         static_cast<std::int64_t>(filter.offset + rows.size());
+                     const bool truncated = totals.rows > last_row;
+                     const std::string scope =
+                         base_scope +
                          (rows.empty() ? std::string()
                                        : "，当前显示第 " +
                                              std::to_string(filter.offset + 1) + "–" +
                                              std::to_string(last_row) + " 行") +
-                         (truncated ? "；导出查看全部（单次上限 100000 行）" : std::string());
-                     if (csv_requested(req)) {
-                       std::string csv;
-                       csv_preamble(csv, "库存流水明细", scope);
-                       csv_row(csv, {"时间", "类型", "业务类型", "单据号", "商品编码", "商品名称",
-                                     "仓库", "数量", "金额（元）"});
-                       for (const auto& row : rows) {
-                         csv_row(csv, {row.biz_time, ledger_biz_label(row),
-                                       biz_category_label(row.biz_category), row.doc_no,
-                                       row.item_code, row.item_name, row.warehouse_name,
-                                       qty_text(row.qty), yuan(row.amount_cents)});
-                       }
-                       csv_row(csv, {"合计", "", "", "", "", "", "", qty_text(totals.qty),
-                                     yuan(totals.amount_cents)});
-                       send_csv(res, "stock-ledger-" + date_stamp() + ".csv", csv);
-                       return;
-                     }
-                     if (xlsx_requested(req)) {
-                       XlsxSheet sheet("库存流水明细");
-                       xlsx_preamble(sheet, "库存流水明细", scope);
-                       sheet.add_header_row({"时间", "类型", "业务类型", "单据号", "商品编码",
-                                             "商品名称", "仓库", "数量", "金额（元）"});
-                       for (const auto& row : rows) {
-                         sheet.add_row({XlsxCell::text(row.biz_time),
-                                        XlsxCell::text(ledger_biz_label(row)),
-                                        XlsxCell::text(biz_category_label(row.biz_category)),
-                                        XlsxCell::text(row.doc_no),
-                                        XlsxCell::text(row.item_code),
-                                        XlsxCell::text(row.item_name),
-                                        XlsxCell::text(row.warehouse_name),
-                                        XlsxCell::text(qty_text(row.qty)),
-                                        XlsxCell::money(row.amount_cents)});
-                       }
-                       sheet.add_row({XlsxCell::text("合计"),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(qty_text(totals.qty)),
-                                      XlsxCell::money(totals.amount_cents)});
-                       send_xlsx(res, "stock-ledger-" + date_stamp() + ".xlsx", sheet.build());
-                       return;
-                     }
+                         (truncated ? "；可翻页或导出查看全部" : std::string());
                      nlohmann::json list = nlohmann::json::array();
                      for (const auto& row : rows) {
                        list.push_back(ledger_to_json(row));
@@ -1067,66 +1178,90 @@ void register_report_routes(httplib::Server& server, Services& services) {
              guard("finance.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      ReportFilter filter = parse_filter(req);
-                     const bool export_all = csv_requested(req) || xlsx_requested(req);
-                     if (export_all) {
-                       filter.limit = 100000;
-                       filter.offset = 0;
-                     }
-                     const auto rows = services.reports.sales_detail(filter, "customer");
                      const auto totals = services.reports.sales_detail_totals(filter);
                      const std::string title = "销售明细";
-                     if (csv_requested(req)) {
-                       std::string csv;
-                       csv_preamble(csv, title,
-                                    period_label(filter) + "；只计已审核的销售出库与销售退货");
-                       csv_row(csv, {"日期", "单号", "客户", "业务员", "商品编码", "商品名称",
-                                     "规格", "单位", "数量", "单价（元）", "金额（元）",
-                                     "成本（元）", "毛利（元）"});
-                       for (const auto& row : rows) {
-                         csv_row(csv, {row.date, row.doc_no, row.customer, row.salesperson,
-                                       row.item_code, row.item_name, row.spec, row.unit,
-                                       qty_text(row.qty), yuan(row.price_cents),
-                                       yuan(row.amount_cents), yuan(row.cost_cents),
-                                       yuan(row.amount_cents - row.cost_cents)});
+                     const std::string scope =
+                         period_label(filter) + "；只计已审核的销售出库与销售退货；共 " +
+                         std::to_string(totals.rows) + " 行";
+                     if (csv_requested(req) || xlsx_requested(req)) {
+                       // 导出不分页、不截断：边查边写，内存占用与总行数无关。
+                       ReportFilter export_filter = filter;
+                       export_filter.limit = 0;
+                       export_filter.offset = 0;
+                       if (csv_requested(req)) {
+                         send_csv_stream(
+                             res, "sales-detail-" + date_stamp() + ".csv",
+                             [&services, export_filter, title, scope,
+                              totals](httplib::DataSink& sink, CsvStream& out) {
+                               std::string preamble;
+                               csv_preamble(preamble, title, scope + "；全部导出");
+                               if (!out.raw(sink, preamble)) return false;
+                               if (!out.row(sink, {"日期", "单号", "客户", "业务员", "商品编码",
+                                                   "商品名称", "规格", "单位", "数量",
+                                                   "单价（元）", "金额（元）", "成本（元）",
+                                                   "毛利（元）"})) {
+                                 return false;
+                               }
+                               const bool streamed = services.reports.stream_sales_detail(
+                                   export_filter, [&](const SalesDetailRow& row) {
+                                     return out.row(
+                                         sink, {row.date, row.doc_no, row.customer,
+                                                row.salesperson, row.item_code, row.item_name,
+                                                row.spec, row.unit, qty_text(row.qty),
+                                                yuan(row.price_cents), yuan(row.amount_cents),
+                                                yuan(row.cost_cents),
+                                                yuan(row.amount_cents - row.cost_cents)});
+                                   });
+                               if (!streamed) return false;
+                               return out.row(sink, {"合计", "", "", "", "", "", "", "",
+                                                     qty_text(totals.qty), "",
+                                                     yuan(totals.amount_cents),
+                                                     yuan(totals.cost_cents),
+                                                     yuan(totals.profit_cents)});
+                             });
+                         return;
                        }
-                       csv_row(csv, {"合计", "", "", "", "", "", "", "", qty_text(totals.qty),
-                                     "", yuan(totals.amount_cents), yuan(totals.cost_cents),
-                                     yuan(totals.profit_cents)});
-                       send_csv(res, "sales-detail-" + date_stamp() + ".csv", csv);
-                       return;
-                     }
-                     if (xlsx_requested(req)) {
-                       XlsxSheet sheet(title);
-                       xlsx_preamble(sheet, title,
-                                     period_label(filter) + "；只计已审核的销售出库与销售退货");
+                       XlsxStreamWriter sheet(title);
+                       xlsx_preamble(sheet, title, scope + "；全部导出");
                        sheet.add_header_row({"日期", "单号", "客户", "业务员", "商品编码",
                                              "商品名称", "规格", "单位", "数量", "单价（元）",
                                              "金额（元）", "成本（元）", "毛利（元）"});
-                       for (const auto& row : rows) {
-                         sheet.add_row({XlsxCell::text(row.date), XlsxCell::text(row.doc_no),
-                                        XlsxCell::text(row.customer),
-                                        XlsxCell::text(row.salesperson),
-                                        XlsxCell::text(row.item_code),
-                                        XlsxCell::text(row.item_name),
-                                        XlsxCell::text(row.spec), XlsxCell::text(row.unit),
-                                        XlsxCell::text(qty_text(row.qty)),
-                                        XlsxCell::money(row.price_cents),
-                                        XlsxCell::money(row.amount_cents),
-                                        XlsxCell::money(row.cost_cents),
-                                        XlsxCell::money(row.amount_cents - row.cost_cents)});
+                       const bool streamed = services.reports.stream_sales_detail(
+                           export_filter, [&](const SalesDetailRow& row) {
+                             sheet.add_row({XlsxCell::text(row.date),
+                                            XlsxCell::text(row.doc_no),
+                                            XlsxCell::text(row.customer),
+                                            XlsxCell::text(row.salesperson),
+                                            XlsxCell::text(row.item_code),
+                                            XlsxCell::text(row.item_name),
+                                            XlsxCell::text(row.spec), XlsxCell::text(row.unit),
+                                            XlsxCell::text(qty_text(row.qty)),
+                                            XlsxCell::money(row.price_cents),
+                                            XlsxCell::money(row.amount_cents),
+                                            XlsxCell::money(row.cost_cents),
+                                            XlsxCell::money(row.amount_cents - row.cost_cents)});
+                             return sheet.ok();
+                           });
+                       if (streamed) {
+                         sheet.add_row({XlsxCell::text("合计"), XlsxCell::text(""),
+                                        XlsxCell::text(""), XlsxCell::text(""),
+                                        XlsxCell::text(""), XlsxCell::text(""),
+                                        XlsxCell::text(""), XlsxCell::text(""),
+                                        XlsxCell::text(qty_text(totals.qty)),
+                                        XlsxCell::text(""),
+                                        XlsxCell::money(totals.amount_cents),
+                                        XlsxCell::money(totals.cost_cents),
+                                        XlsxCell::money(totals.profit_cents)});
                        }
-                       sheet.add_row({XlsxCell::text("合计"), XlsxCell::text(""),
-                                      XlsxCell::text(""), XlsxCell::text(""),
-                                      XlsxCell::text(""), XlsxCell::text(""),
-                                      XlsxCell::text(""), XlsxCell::text(""),
-                                      XlsxCell::text(qty_text(totals.qty)),
-                                      XlsxCell::text(""),
-                                      XlsxCell::money(totals.amount_cents),
-                                      XlsxCell::money(totals.cost_cents),
-                                      XlsxCell::money(totals.profit_cents)});
-                       send_xlsx(res, "sales-detail-" + date_stamp() + ".xlsx", sheet.build());
+                       const std::string path = sheet.finish();
+                       if (path.empty()) {
+                         json_error(res, 500, "EXPORT_FAILED", "导出文件生成失败");
+                         return;
+                       }
+                       send_xlsx_file(res, "sales-detail-" + date_stamp() + ".xlsx", path);
                        return;
                      }
+                     const auto rows = services.reports.sales_detail(filter, "customer");
                      nlohmann::json list = nlohmann::json::array();
                      for (const auto& row : rows) list.push_back(sales_detail_to_json(row));
                      json_ok(res, nlohmann::json{
@@ -1180,74 +1315,95 @@ void register_report_routes(httplib::Server& server, Services& services) {
              guard("finance.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      ReportFilter filter = parse_filter(req);
-                     if (csv_requested(req) || xlsx_requested(req)) {
-                       filter.limit = 100000;
-                       filter.offset = 0;
-                     }
-                     const auto rows = services.reports.purchase_detail(filter);
                      const auto totals = services.reports.purchase_detail_totals(filter);
-                     const std::int64_t last_row =
-                         static_cast<std::int64_t>(filter.offset + rows.size());
-                     const bool truncated = totals.rows > last_row;
-                     const std::string scope =
-                         purchase_scope(filter) + "；共 " + std::to_string(totals.rows) + " 行" +
-                         (rows.empty() ? std::string()
-                                       : "，当前显示第 " +
-                                             std::to_string(filter.offset + 1) + "–" +
-                                             std::to_string(last_row) + " 行") +
-                         (truncated ? "；导出查看全部（单次上限 100000 行）" : std::string());
-                     if (csv_requested(req)) {
-                       std::string csv;
-                       csv_preamble(csv, "采购明细", scope);
-                       csv_row(csv, {"日期", "单号", "类型", "供应商", "商品编码", "商品名称",
-                                     "规格", "单位", "仓库", "数量", "单价（元）", "金额（元）"});
-                       for (const auto& row : rows) {
-                         csv_row(csv, {row.date, row.doc_no, row.kind, row.supplier,
-                                       row.item_code, row.item_name, row.spec, row.unit,
-                                       row.warehouse_name, qty_text(row.qty),
-                                       yuan(row.price_cents), yuan(row.amount_cents)});
+                     const std::string base_scope =
+                         purchase_scope(filter) + "；共 " + std::to_string(totals.rows) + " 行";
+                     if (csv_requested(req) || xlsx_requested(req)) {
+                       // 导出不分页、不截断：边查边写，内存占用与总行数无关。
+                       ReportFilter export_filter = filter;
+                       export_filter.limit = 0;
+                       export_filter.offset = 0;
+                       const std::string scope = base_scope + "；全部导出";
+                       if (csv_requested(req)) {
+                         send_csv_stream(
+                             res, "purchase-detail-" + date_stamp() + ".csv",
+                             [&services, export_filter, scope, totals](httplib::DataSink& sink,
+                                                                      CsvStream& out) {
+                               std::string preamble;
+                               csv_preamble(preamble, "采购明细", scope);
+                               if (!out.raw(sink, preamble)) return false;
+                               if (!out.row(sink, {"日期", "单号", "类型", "供应商",
+                                                   "商品编码", "商品名称", "规格", "单位",
+                                                   "仓库", "数量", "单价（元）",
+                                                   "金额（元）"})) {
+                                 return false;
+                               }
+                               const bool streamed = services.reports.stream_purchase_detail(
+                                   export_filter, [&](const PurchaseDetailRow& row) {
+                                     return out.row(
+                                         sink, {row.date, row.doc_no, row.kind, row.supplier,
+                                                row.item_code, row.item_name, row.spec,
+                                                row.unit, row.warehouse_name,
+                                                qty_text(row.qty), yuan(row.price_cents),
+                                                yuan(row.amount_cents)});
+                                   });
+                               if (!streamed) return false;
+                               return out.row(sink, {"合计", "", "", "", "", "", "", "", "",
+                                                     qty_text(totals.qty), "",
+                                                     yuan(totals.amount_cents)});
+                             });
+                         return;
                        }
-                       csv_row(csv, {"合计", "", "", "", "", "", "", "", "",
-                                     qty_text(totals.qty), "", yuan(totals.amount_cents)});
-                       send_csv(res, "purchase-detail-" + date_stamp() + ".csv", csv);
-                       return;
-                     }
-                     if (xlsx_requested(req)) {
-                       XlsxSheet sheet("采购明细");
+                       XlsxStreamWriter sheet("采购明细");
                        xlsx_preamble(sheet, "采购明细", scope);
                        sheet.add_header_row({"日期", "单号", "类型", "供应商", "商品编码",
                                              "商品名称", "规格", "单位", "仓库", "数量",
                                              "单价（元）", "金额（元）"});
-                       for (const auto& row : rows) {
-                         sheet.add_row({XlsxCell::text(row.date),
-                                        XlsxCell::text(row.doc_no),
-                                        XlsxCell::text(row.kind),
-                                        XlsxCell::text(row.supplier),
-                                        XlsxCell::text(row.item_code),
-                                        XlsxCell::text(row.item_name),
-                                        XlsxCell::text(row.spec),
-                                        XlsxCell::text(row.unit),
-                                        XlsxCell::text(row.warehouse_name),
-                                        XlsxCell::text(qty_text(row.qty)),
-                                        XlsxCell::money(row.price_cents),
-                                        XlsxCell::money(row.amount_cents)});
+                       const bool streamed = services.reports.stream_purchase_detail(
+                           export_filter, [&](const PurchaseDetailRow& row) {
+                             sheet.add_row({XlsxCell::text(row.date),
+                                            XlsxCell::text(row.doc_no),
+                                            XlsxCell::text(row.kind),
+                                            XlsxCell::text(row.supplier),
+                                            XlsxCell::text(row.item_code),
+                                            XlsxCell::text(row.item_name),
+                                            XlsxCell::text(row.spec),
+                                            XlsxCell::text(row.unit),
+                                            XlsxCell::text(row.warehouse_name),
+                                            XlsxCell::text(qty_text(row.qty)),
+                                            XlsxCell::money(row.price_cents),
+                                            XlsxCell::money(row.amount_cents)});
+                             return sheet.ok();
+                           });
+                       if (streamed) {
+                         sheet.add_row({XlsxCell::text("合计"),
+                                        XlsxCell::text(""), XlsxCell::text(""),
+                                        XlsxCell::text(""), XlsxCell::text(""),
+                                        XlsxCell::text(""), XlsxCell::text(""),
+                                        XlsxCell::text(""), XlsxCell::text(""),
+                                        XlsxCell::text(qty_text(totals.qty)),
+                                        XlsxCell::text(""),
+                                        XlsxCell::money(totals.amount_cents)});
                        }
-                       sheet.add_row({XlsxCell::text("合计"),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(""),
-                                      XlsxCell::text(qty_text(totals.qty)),
-                                      XlsxCell::text(""),
-                                      XlsxCell::money(totals.amount_cents)});
-                       send_xlsx(res, "purchase-detail-" + date_stamp() + ".xlsx",
-                                 sheet.build());
+                       const std::string path = sheet.finish();
+                       if (path.empty()) {
+                         json_error(res, 500, "EXPORT_FAILED", "导出文件生成失败");
+                         return;
+                       }
+                       send_xlsx_file(res, "purchase-detail-" + date_stamp() + ".xlsx", path);
                        return;
                      }
+                     const auto rows = services.reports.purchase_detail(filter);
+                     const std::int64_t last_row =
+                         static_cast<std::int64_t>(filter.offset + rows.size());
+                     const bool truncated = totals.rows > last_row;
+                     const std::string scope =
+                         base_scope +
+                         (rows.empty() ? std::string()
+                                       : "，当前显示第 " +
+                                             std::to_string(filter.offset + 1) + "–" +
+                                             std::to_string(last_row) + " 行") +
+                         (truncated ? "；可翻页或导出查看全部" : std::string());
                      nlohmann::json list = nlohmann::json::array();
                      for (const auto& row : rows) {
                        list.push_back(purchase_detail_to_json(row));

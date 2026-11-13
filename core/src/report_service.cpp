@@ -3,6 +3,7 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <string>
 #include <utility>
@@ -43,9 +44,9 @@ struct StatementRaw {
 
 // 采购报表统一取数：采购入库与采购退货都取已审核单据的明细行。
 // 退货行数量、金额取负；单价保持正数（退货单价）。limit <= 0 表示不限行数。
-std::vector<PurchaseDetailRow> load_purchase_rows(sqlite3* conn, const ReportFilter& filter,
-                                                  std::int64_t limit) {
-  std::vector<PurchaseDetailRow> rows;
+// 回调返回 false 时立即停止；返回 false 表示中途被调用方终止。
+bool for_each_purchase_row(sqlite3* conn, const ReportFilter& filter, std::int64_t limit,
+                           const std::function<bool(const PurchaseDetailRow&)>& sink) {
   Stmt stmt(conn,
             "SELECT h.doc_date, h.doc_no, h.doc_type,"
             " COALESCE(NULLIF(s.name, ''), NULLIF(h.customer, ''), '未指定供应商'),"
@@ -96,8 +97,18 @@ std::vector<PurchaseDetailRow> load_purchase_rows(sqlite3* conn, const ReportFil
     row.price_cents = stmt.i64(12);
     const std::int64_t amount = stmt.i64(13);
     row.amount_cents = is_return ? -amount : amount;
-    rows.push_back(std::move(row));
+    if (!sink(row)) return false;
   }
+  return true;
+}
+
+std::vector<PurchaseDetailRow> load_purchase_rows(sqlite3* conn, const ReportFilter& filter,
+                                                  std::int64_t limit) {
+  std::vector<PurchaseDetailRow> rows;
+  for_each_purchase_row(conn, filter, limit, [&](const PurchaseDetailRow& row) {
+    rows.push_back(row);
+    return true;
+  });
   return rows;
 }
 
@@ -199,8 +210,10 @@ int partner_key_direction(sqlite3* conn, std::string_view partner_key) {
   return 1;
 }
 
-std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& filter) const {
-  std::vector<LedgerDetailRow> rows;
+bool ReportService::stream_stock_ledger(
+    const ReportFilter& filter,
+    const std::function<bool(const LedgerDetailRow&)>& sink) const {
+  bool completed = true;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
               "SELECT l.id, l.biz_time, l.biz_type, h.doc_no, h.doc_date, i.code, i.name,"
@@ -243,8 +256,20 @@ std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& fil
       row.qty = stmt.i64(8);
       row.amount_cents = stmt.i64(9);
       row.biz_category = stmt.text(10);
-      rows.push_back(std::move(row));
+      if (!sink(row)) {
+        completed = false;
+        break;
+      }
     }
+  });
+  return completed;
+}
+
+std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& filter) const {
+  std::vector<LedgerDetailRow> rows;
+  stream_stock_ledger(filter, [&rows](const LedgerDetailRow& row) {
+    rows.push_back(row);
+    return true;
   });
   return rows;
 }
@@ -431,6 +456,16 @@ std::vector<PurchaseDetailRow> ReportService::purchase_detail(const ReportFilter
   return rows;
 }
 
+bool ReportService::stream_purchase_detail(
+    const ReportFilter& filter,
+    const std::function<bool(const PurchaseDetailRow&)>& sink) const {
+  bool completed = true;
+  db_.read([&](sqlite3* conn) {
+    completed = for_each_purchase_row(conn, filter, filter.limit, sink);
+  });
+  return completed;
+}
+
 std::vector<PurchaseSupplierSummaryRow> ReportService::purchase_summary_by_supplier(
     const ReportFilter& filter) const {
   // 汇总需要全部明细，不受分页 limit 影响；键 = 供应商名称 + ID，天然按名称升序。
@@ -578,13 +613,40 @@ std::vector<OtherFlowSummaryRow> ReportService::other_flow_summary(
 }
 
 ReportTotals ReportService::purchase_detail_totals(const ReportFilter& filter) const {
-  // 复用明细取数（不限行）再求和，保证合计与导出/汇总口径完全一致。
+  // 直接在库里聚合，避免导出时把全表明细读进内存；口径与 load_purchase_rows 一致
+  // （退货数量与金额取负、同样的关联与筛选）。合计按全量算，不受分页 offset 影响。
   ReportTotals totals;
   db_.read([&](sqlite3* conn) {
-    for (const auto& row : load_purchase_rows(conn, filter, 0)) {
-      ++totals.rows;
-      totals.qty += row.qty;
-      totals.amount_cents += row.amount_cents;
+    Stmt stmt(conn,
+              "SELECT COUNT(*),"
+              " COALESCE(SUM(CASE WHEN h.doc_type = 'PUR_RET' THEN -l.qty ELSE l.qty END), 0),"
+              " COALESCE(SUM(CASE WHEN h.doc_type = 'PUR_RET' THEN -l.amount_cents"
+              "                   ELSE l.amount_cents END), 0)"
+              " FROM doc_header h"
+              " JOIN doc_line l ON l.doc_id = h.id"
+              " JOIN item i ON i.id = l.item_id"
+              " JOIN warehouse w ON w.id = h.warehouse_id"
+              " LEFT JOIN supplier s ON s.id = h.partner_id"
+              " WHERE h.doc_type IN ('PUR_IN', 'PUR_RET') AND h.status = 'APPROVED'"
+              "   AND (? = '' OR h.doc_date >= ?)"
+              "   AND (? = '' OR h.doc_date <= ?)"
+              "   AND (? = 0 OR h.partner_id = ?)"
+              "   AND (? = 0 OR l.item_id = ?)"
+              "   AND (? = 0 OR h.warehouse_id = ?);");
+    stmt.bind(1, filter.from)
+        .bind(2, filter.from)
+        .bind(3, filter.to)
+        .bind(4, filter.to)
+        .bind(5, filter.supplier_id)
+        .bind(6, filter.supplier_id)
+        .bind(7, filter.item_id)
+        .bind(8, filter.item_id)
+        .bind(9, filter.warehouse_id)
+        .bind(10, filter.warehouse_id);
+    if (stmt.step()) {
+      totals.rows = stmt.i64(0);
+      totals.qty = stmt.i64(1);
+      totals.amount_cents = stmt.i64(2);
     }
   });
   return totals;
@@ -885,10 +947,10 @@ std::vector<SalesSummaryRow> ReportService::sales_summary(const ReportFilter& fi
   return rows;
 }
 
-std::vector<SalesDetailRow> ReportService::sales_detail(const ReportFilter& filter,
-                                                        std::string_view dimension) const {
-  (void)dimension;  // 两个维度的明细列相同，只是默认排序与汇总分组不同
-  std::vector<SalesDetailRow> rows;
+bool ReportService::stream_sales_detail(
+    const ReportFilter& filter,
+    const std::function<bool(const SalesDetailRow&)>& sink) const {
+  bool completed = true;
   db_.read([&](sqlite3* conn) {
     Stmt stmt(conn,
               "SELECT h.doc_date, h.doc_no,"
@@ -941,8 +1003,22 @@ std::vector<SalesDetailRow> ReportService::sales_detail(const ReportFilter& filt
       row.price_cents = stmt.i64(9);
       row.amount_cents = stmt.i64(10);
       row.cost_cents = stmt.i64(11);
-      rows.push_back(std::move(row));
+      if (!sink(row)) {
+        completed = false;
+        break;
+      }
     }
+  });
+  return completed;
+}
+
+std::vector<SalesDetailRow> ReportService::sales_detail(const ReportFilter& filter,
+                                                        std::string_view dimension) const {
+  (void)dimension;  // 两个维度的明细列相同，只是默认排序与汇总分组不同
+  std::vector<SalesDetailRow> rows;
+  stream_sales_detail(filter, [&rows](const SalesDetailRow& row) {
+    rows.push_back(row);
+    return true;
   });
   return rows;
 }
