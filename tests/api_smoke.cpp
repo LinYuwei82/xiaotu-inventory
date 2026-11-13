@@ -554,6 +554,92 @@ void run_server_mode(const std::filesystem::path& dir) {
           "销售明细导出应走流式且包含标题");
   }
 
+  // 单据列表：不带新参数仍返回数组；带 page_size / status / 金额 / 日期时返回
+  // {rows,total_count,total_amount_cents,page,page_size}，合计不受分页影响。
+  {
+    xiaotu::DocumentEngine engine(db);
+    const std::int64_t item_id = item_body.value("id", 0LL);
+    engine.save_and_approve(xiaotu::DocInput{
+        .doc_type = "PUR_IN",
+        .warehouse_id = 1,
+        .doc_date = "2026-01-05",
+        .partner = "列表供应商",
+        .lines = {xiaotu::DocLineInput{.item_id = item_id, .qty = xiaotu::qty_from_int(2),
+                                       .price_cents = 1234}}});
+    engine.save_and_approve(xiaotu::DocInput{
+        .doc_type = "PUR_IN",
+        .warehouse_id = 1,
+        .doc_date = "2026-02-10",
+        .partner = "列表供应商",
+        .lines = {xiaotu::DocLineInput{.item_id = item_id, .qty = xiaotu::qty_from_int(1),
+                                       .price_cents = 5000}}});
+    engine.save_draft(xiaotu::DocInput{
+        .doc_type = "PUR_IN",
+        .warehouse_id = 1,
+        .doc_date = "2026-02-11",
+        .partner = "列表供应商",
+        .lines = {xiaotu::DocLineInput{.item_id = item_id, .qty = xiaotu::qty_from_int(1),
+                                       .price_cents = 1500}}});
+
+    const auto legacy = client.Get("/api/documents?doc_type=PUR_IN");
+    check(legacy && legacy->status == 200, "无筛选参数时应返回 200");
+    if (legacy) {
+      const auto body = nlohmann::json::parse(legacy->body);
+      check(body.is_array() && body.size() == 3,
+            "无新参数时应保持数组响应且包含三张采购入库单");
+    }
+
+    const auto paged = client.Get("/api/documents?doc_type=PUR_IN&page_size=2");
+    check(paged && paged->status == 200, "带 page_size 应返回 200");
+    if (paged) {
+      const auto body = nlohmann::json::parse(paged->body);
+      check(body.is_object() && body.contains("rows"), "带 page_size 应返回对象");
+      check(body["rows"].size() == 2, "page_size=2 应只返回两行");
+      check(body.value("total_count", 0LL) == 3, "total_count 应为筛选后的总数");
+      check(body.value("total_amount_cents", 0LL) == 2468 + 5000 + 1500,
+            "total_amount_cents 应为筛选结果逐行之和");
+      check(body.value("page", 0) == 1 && body.value("page_size", 0) == 2,
+            "应回传当前页码与每页条数");
+    }
+
+    const auto second = client.Get("/api/documents?doc_type=PUR_IN&page=2&page_size=2");
+    if (second) {
+      const auto body = nlohmann::json::parse(second->body);
+      check(body["rows"].size() == 1 && body.value("total_count", 0LL) == 3,
+            "第二页应只返回一行且 total_count 不变");
+    }
+
+    const auto drafts = client.Get("/api/documents?doc_type=PUR_IN&status=draft");
+    if (drafts) {
+      const auto body = nlohmann::json::parse(drafts->body);
+      check(body.value("total_count", 0LL) == 1 && body["rows"].size() == 1 &&
+                body["rows"][0].value("status", "") == "DRAFT",
+            "status=draft 应只返回草稿");
+    }
+
+    const auto combined = client.Get(
+        "/api/documents?doc_type=PUR_IN&status=approved&date_from=2026-02-01"
+        "&date_to=2026-02-28");
+    if (combined) {
+      const auto body = nlohmann::json::parse(combined->body);
+      check(body.value("total_count", 0LL) == 1 &&
+                body.value("total_amount_cents", 0LL) == 5000,
+            "日期与状态组合应只命中 2 月已审核单据");
+    }
+
+    const auto amount = client.Get(
+        "/api/documents?doc_type=PUR_IN&amount_min=20.00&amount_max=50.00");
+    if (amount) {
+      const auto body = nlohmann::json::parse(amount->body);
+      check(body.value("total_count", 0LL) == 2 &&
+                body.value("total_amount_cents", 0LL) == 2468 + 5000,
+            "金额按元接收并换算成分，闭区间应命中两张单据");
+    }
+
+    const auto bad_status = client.Get("/api/documents?doc_type=PUR_IN&status=ghost");
+    check(bad_status && bad_status->status == 400, "未知状态筛选应明确拒绝");
+  }
+
   // 审计来源：HTTP 请求带来源 IP，单据请求号可一起筛出；历史行与 CLI 路径两列为空。
   {
     nlohmann::json doc_body{
@@ -950,8 +1036,8 @@ void run_server_mode(const std::filesystem::path& dir) {
   check(diagnostic && diagnostic->status == 200, "诊断信息应返回 200");
   if (diagnostic) {
     const auto data = nlohmann::json::parse(diagnostic->body);
-    check(data.value("schema_version", 0) == 36, "诊断信息里的 schema 应为 36");
-    check(data.value("migrations", 0) == 36, "诊断信息里的迁移条数应为 36");
+    check(data.value("schema_version", 0) == 37, "诊断信息里的 schema 应为 37");
+    check(data.value("migrations", 0) == 37, "诊断信息里的迁移条数应为 37");
     check(data.value("mode", "") == "server", "网络版诊断信息 mode 应为 server");
     check(!data.value("data_dir", "").empty(), "诊断信息应包含数据目录");
     check(data.value("backup_dir", "") == (dir / "backups").string(),

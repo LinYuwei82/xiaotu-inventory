@@ -136,6 +136,29 @@ struct OrderConversion {
   std::string order_status;
 };
 
+// 单据列表筛选：六类业务单据共用一套条件，服务端一条 WHERE 同时用于
+// 分页行查询与合计查询。空串 / 0 表示该条件不参与过滤。
+struct DocListQuery {
+  std::string doc_type;
+  std::string keyword;      // 单号 / 往来单位 / 业务员，模糊匹配
+  std::string date_from;    // ISO 日期，闭区间；空串不限
+  std::string date_to;      // ISO 日期，闭区间；空串不限
+  std::string status;       // draft / approved / reversed / all / 空
+  std::int64_t amount_min_cents = 0;  // 金额下限（分），闭区间；0 不限
+  std::int64_t amount_max_cents = 0;  // 金额上限（分），闭区间；0 不限
+  int page = 1;
+  int page_size = 20;
+};
+
+// 列表分页结果：合计来自后端 COUNT / SUM，不是当前页逐行求和。
+struct DocListPage {
+  std::vector<DocSummary> rows;
+  std::int64_t total_count = 0;
+  std::int64_t total_amount_cents = 0;
+  int page = 1;
+  int page_size = 20;
+};
+
 // 单据通用引擎：保存即审核，在同一事务内完成单据、库存流水与余额。
 class DocumentEngine {
  public:
@@ -161,6 +184,8 @@ class DocumentEngine {
                std::int64_t expected_version = -1);
   DocDetail detail(std::int64_t doc_id);
   std::vector<DocSummary> list(std::string_view doc_type, int limit = 100);
+  // 带筛选与分页的列表：行查询与合计查询共用同一段 WHERE。
+  DocListPage list_page(const DocListQuery& query);
   void reverse(std::int64_t doc_id, std::int64_t expected_version = -1);
   // 订单：确认沿用 approve；转出库生成一张销售出库单并累加已转数量。
   OrderConversion convert_order(std::int64_t order_id, const OrderConvertInput& input);

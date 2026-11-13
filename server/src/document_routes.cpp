@@ -1,8 +1,10 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cstdio>
 #include <map>
+#include <stdexcept>
 #include <string>
 
 #include "xiaotu/document.h"
@@ -205,6 +207,79 @@ void append_csv_row(std::string& out, const std::vector<std::string>& fields) {
   out += "\r\n";
 }
 
+// 单据列表面板的新参数：任一出现即走「筛选 + 分页 + 合计」分支，
+// 完全不带时仍返回原来的 JSON 数组，老前端不受影响。
+bool has_list_filter(const httplib::Request& req) {
+  static const char* const kNames[] = {"page",       "page_size",  "keyword",
+                                       "date_from",  "date_to",    "status",
+                                       "amount_min", "amount_max"};
+  for (const char* name : kNames) {
+    if (req.has_param(name)) return true;
+  }
+  return false;
+}
+
+std::string param_or_empty(const httplib::Request& req, const char* name) {
+  return req.has_param(name) ? req.get_param_value(name) : std::string{};
+}
+
+// 分页参数按十进制整数解析，非法值明确报错而不是静默取默认。
+std::int64_t parse_int_param(const httplib::Request& req, const char* name,
+                             std::int64_t fallback) {
+  if (!req.has_param(name)) return fallback;
+  const std::string raw = req.get_param_value(name);
+  if (raw.empty()) return fallback;
+  try {
+    std::size_t consumed = 0;
+    const std::int64_t value = std::stoll(raw, &consumed, 10);
+    if (consumed != raw.size()) throw std::invalid_argument(raw);
+    return value;
+  } catch (const std::exception&) {
+    throw AppError("INVALID_INPUT", std::string("参数格式不正确: ") + name);
+  }
+}
+
+// 金额按「元」字符串接收（最多两位小数），全程整数解析后换算成分，不用浮点累加。
+std::int64_t parse_yuan_cents(const std::string& raw) {
+  std::string text;
+  for (const char ch : raw) {
+    if (ch != ' ' && ch != '\t') text.push_back(ch);
+  }
+  if (text.empty()) return 0;
+  bool negative = false;
+  std::size_t index = 0;
+  if (text[0] == '+' || text[0] == '-') {
+    negative = text[0] == '-';
+    index = 1;
+  }
+  std::string whole;
+  std::string fraction;
+  bool has_dot = false;
+  for (; index < text.size(); ++index) {
+    const char ch = text[index];
+    if (ch == '.') {
+      if (has_dot) throw AppError("INVALID_INPUT", "金额格式不正确: " + raw);
+      has_dot = true;
+      continue;
+    }
+    if (ch < '0' || ch > '9') throw AppError("INVALID_INPUT", "金额格式不正确: " + raw);
+    (has_dot ? fraction : whole).push_back(ch);
+  }
+  if (whole.empty() && fraction.empty()) {
+    throw AppError("INVALID_INPUT", "金额格式不正确: " + raw);
+  }
+  if (fraction.size() > 2) {
+    throw AppError("INVALID_INPUT", "金额最多两位小数: " + raw);
+  }
+  if (negative) throw AppError("INVALID_INPUT", "金额不能为负数: " + raw);
+  while (fraction.size() < 2) fraction.push_back('0');
+  try {
+    return std::stoll((whole.empty() ? "0" : whole) + fraction, nullptr, 10);
+  } catch (const std::exception&) {
+    throw AppError("INVALID_INPUT", "金额超出范围: " + raw);
+  }
+}
+
 }  // namespace
 
 void register_document_routes(httplib::Server& server, Services& services) {
@@ -214,11 +289,38 @@ void register_document_routes(httplib::Server& server, Services& services) {
                      const std::string doc_type = req.has_param("doc_type")
                                                       ? req.get_param_value("doc_type")
                                                       : "SAL_OUT";
-                     nlohmann::json list = nlohmann::json::array();
-                     for (const auto& summary : services.docs.list(doc_type)) {
-                       list.push_back(summary_to_json(summary));
+                     if (!has_list_filter(req)) {
+                       // 兼容分支：没有任何筛选参数时保持原来的数组响应。
+                       nlohmann::json list = nlohmann::json::array();
+                       for (const auto& summary : services.docs.list(doc_type)) {
+                         list.push_back(summary_to_json(summary));
+                       }
+                       json_ok(res, list);
+                       return;
                      }
-                     json_ok(res, list);
+                     DocListQuery query;
+                     query.doc_type = doc_type;
+                     query.keyword = param_or_empty(req, "keyword");
+                     query.date_from = param_or_empty(req, "date_from");
+                     query.date_to = param_or_empty(req, "date_to");
+                     query.status = param_or_empty(req, "status");
+                     // 金额按「元」字符串接收，服务端整数换算成分。
+                     query.amount_min_cents = parse_yuan_cents(param_or_empty(req, "amount_min"));
+                     query.amount_max_cents = parse_yuan_cents(param_or_empty(req, "amount_max"));
+                     query.page = static_cast<int>(std::clamp<std::int64_t>(
+                         parse_int_param(req, "page", 1), 1, 1000000));
+                     query.page_size = static_cast<int>(std::clamp<std::int64_t>(
+                         parse_int_param(req, "page_size", 20), 1, 100));
+                     const DocListPage page = services.docs.list_page(query);
+                     nlohmann::json rows = nlohmann::json::array();
+                     for (const auto& summary : page.rows) {
+                       rows.push_back(summary_to_json(summary));
+                     }
+                     json_ok(res, nlohmann::json{{"rows", rows},
+                                                 {"total_count", page.total_count},
+                                                 {"total_amount_cents", page.total_amount_cents},
+                                                 {"page", page.page},
+                                                 {"page_size", page.page_size}});
                    }));
 
   server.Get(R"(/api/documents/(\d+))",
