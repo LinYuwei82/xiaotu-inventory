@@ -79,6 +79,43 @@ class ManifestTest(unittest.TestCase):
         self.assertIn('sparkle:version="2026111301"', xml)
         self.assertIn("sparkle:shortVersionString=\"1.4.2\"", xml)
 
+    def test_resign_only_changes_rollout(self) -> None:
+        resigned = um.resign_manifest(self.body, self.private, rollout=10)
+        um.verify_manifest(resigned, self.public)
+        left = {k: v for k, v in self.body.items() if k not in {"signature", "rollout_percent"}}
+        right = {k: v for k, v in resigned.items() if k not in {"signature", "rollout_percent"}}
+        self.assertEqual(left, right)
+        self.assertEqual(resigned["rollout_percent"], 10)
+
+    def test_resign_idempotent(self) -> None:
+        first = um.resign_manifest(self.body, self.private, rollout=10)
+        second = um.resign_manifest(first, self.private, rollout=10)
+        dump = lambda body: json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True)
+        self.assertEqual(dump(first), dump(second))
+
+    def test_resign_invalid_rollout_rejected(self) -> None:
+        for value in (0, 101, -1):
+            with self.assertRaises(ValueError):
+                um.resign_manifest(self.body, self.private, rollout=value)
+
+    def test_resign_invalid_channel_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            um.resign_manifest(self.body, self.private, channel="nightly")
+
+    def test_resign_requires_existing_signature(self) -> None:
+        unsigned = dict(self.body)
+        del unsigned["signature"]
+        with self.assertRaises(ValueError):
+            um.resign_manifest(unsigned, self.private, rollout=10)
+
+    def test_tamper_after_resign_is_detected(self) -> None:
+        # 重签会合法化输入内容，所以预期的失败点是“重签之后再篡改”；
+        # 对已篡改内容重签属于有意的重新发布，工具无法也不应阻止。
+        resigned = um.resign_manifest(self.body, self.private, rollout=10)
+        resigned["url"] = "https://evil.example.com/a.dmg"
+        with self.assertRaises(Exception):
+            um.verify_manifest(resigned, self.public)
+
     def test_public_key_roundtrip(self) -> None:
         raw = self.public.public_bytes(
             serialization.Encoding.PEM,

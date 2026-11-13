@@ -143,18 +143,19 @@ XIAOTU_UPDATE_TOOL=/opt/xiaotu/tools/package/update_manifest.py \
 
 ### 5. 灰度放行与回滚
 
-清单是签名的，**不能直接改 `rollout_percent`**（会导致签名失效）。每次放量都要用原参数重新生成并签名：
+清单是签名的，**不能直接改 `rollout_percent`**（会导致签名失效）。使用 `resign` 只改放量比例并重新签名，其余字段原样保留：
 
 ```bash
-tools/package/.venv/bin/python tools/package/update_manifest.py generate \
-  --file releases/macos/1.4.2/xiaotu-1.4.2.dmg \
-  --version 1.4.2 --build 2026111301 \
-  --url https://cdn.example.com/releases/macos/1.4.2/xiaotu-1.4.2.dmg \
-  --schema-min 28 --schema-max 40 --api-min 1 --api-max 1 \
-  --rollout 10 \
-  --key ~/keys/update_signing.pem --key-id 2026-01 \
-  --out build/package/latest.json --appcast build/package/appcast.xml
+# 1% → 10% → 50% → 100%
+tools/package/.venv/bin/python tools/package/update_manifest.py resign \
+  --manifest build/package/latest.json \
+  --key ~/keys/update_signing.pem \
+  --rollout 10
 ```
+
+- 不加 `--out` 时原地覆盖输入清单；建议先归档原始清单。
+- `resign` 只接受 `--rollout`（1–100）与 `--channel`（stable/beta），版本、构建号、URL、sha256、强制理由等不可在重签时改写。
+- 重签后的清单可直接被 `verify` 与 core 解析器接受；同一输入连续重签同一值输出一致（Ed25519 确定性签名，`published_at` 沿用原值，不参与刷新）。
 
 放量步骤：1% → 10% → 50% → 100%，每档观察至少 24 小时；替换清单与 appcast 后 purge CDN，确认 `/api/update/check` 返回符合预期。服务端读取 `min(清单 rollout, 配置 rollout_percent)`。
 

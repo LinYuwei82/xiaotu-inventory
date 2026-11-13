@@ -147,6 +147,52 @@ def appcast_xml(
 """
 
 
+def resign_manifest(
+    body: dict[str, Any],
+    private_key: Ed25519PrivateKey,
+    rollout: int | None = None,
+    channel: str | None = None,
+) -> dict[str, Any]:
+    """只允许改 rollout_percent / channel，其余字段与签名前的规范化规则保持不变。"""
+    if not isinstance(body.get("signature"), str) or not body["signature"]:
+        raise ValueError("输入清单缺少 signature，拒绝重签")
+    missing = REQUIRED_FIELDS - set(body)
+    if missing:
+        raise ValueError(f"清单缺少字段：{', '.join(sorted(missing))}")
+    if rollout is not None and not 1 <= int(rollout) <= 100:
+        raise ValueError("rollout 必须在 1–100 之间（core 解析器不接受 0）")
+    if channel is not None and channel not in {"stable", "beta"}:
+        raise ValueError("channel 只能是 stable 或 beta")
+
+    updated = dict(body)
+    updated.pop("signature", None)
+    if rollout is not None:
+        updated["rollout_percent"] = int(rollout)
+    if channel is not None:
+        updated["channel"] = channel
+    return sign_manifest(updated, private_key)
+
+
+def command_resign(args: argparse.Namespace) -> None:
+    path = Path(args.manifest)
+    body = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        resigned = resign_manifest(
+            body,
+            load_private_key(Path(args.key)),
+            rollout=args.rollout,
+            channel=args.channel,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    out = Path(args.out) if args.out else path
+    out.write_text(
+        json.dumps(resigned, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(f"已重签：{out}（rollout_percent={resigned.get('rollout_percent')}）")
+
+
 def command_generate(args: argparse.Namespace) -> None:
     package = Path(args.file)
     if not package.is_file():
@@ -263,6 +309,14 @@ def build_parser() -> argparse.ArgumentParser:
     ver.add_argument("--pub", required=True)
     ver.add_argument("--file", default="")
     ver.set_defaults(func=command_verify)
+
+    res = sub.add_parser("resign", help="只改 rollout/channel 并重新签名")
+    res.add_argument("--manifest", required=True, help="已有的已签名清单")
+    res.add_argument("--key", required=True, help="Ed25519 私钥 PEM")
+    res.add_argument("--rollout", type=int, default=None)
+    res.add_argument("--channel", default=None, choices=["stable", "beta"])
+    res.add_argument("--out", default="", help="输出路径；默认覆盖输入清单")
+    res.set_defaults(func=command_resign)
     return parser
 
 
