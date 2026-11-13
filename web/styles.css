@@ -7,12 +7,16 @@
   --accent: #2563eb;
   --danger: #c0392b;
   --ok: #15803d;
-  /* 表单控件统一尺寸：按钮与下拉共用同一组值，避免各页面各写一套。 */
+  /* 表单控件统一尺寸：按钮、输入框、下拉共用同一组值，避免各页面各写一套。
+     高度统一由 height 决定，不再靠 padding 撑；行高按「高度 - 上下边框」算，
+     与按钮的 flex 居中在视觉上对齐。 */
   --control-height: 32px;
   --control-radius: 6px;
   --control-border: var(--line);
   --control-padding-x: 10px;
   --control-font-size: 13px;
+  --control-line-height: calc(var(--control-height) - 2px);
+  --control-select-padding-right: 28px;
 }
 
 * {
@@ -297,24 +301,29 @@ main {
   margin: 0;
 }
 
+/* 工具栏小按钮只收窄横向留白，高度、字号、边框仍与普通按钮/下拉同源。 */
 .btn.small {
-  padding: 3px 8px;
-  font-size: 12px;
+  padding: 0 8px;
 }
 
 .btn {
   appearance: none;
-  border: 1px solid var(--line);
+  border: 1px solid var(--control-border);
   background: #fff;
   color: var(--text);
-  padding: 6px 12px;
-  min-height: var(--control-height);
+  /* 高度写死并用 flex 垂直居中：不再用上下 padding 撑盒模型，
+     否则文字行高变化会让按钮比下拉高矮 1~2px。 */
+  height: var(--control-height);
+  padding: 0 var(--control-padding-x);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--control-radius);
   cursor: pointer;
+  font-family: inherit;
   font-size: var(--control-font-size);
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .btn:hover {
@@ -514,22 +523,25 @@ main {
   display: none;
 }
 
-/* 输入框与下拉共用同一套字段尺寸，避免原生 select 在 WKWebView 里偏矮。 */
-.field input,
+/* 输入框与下拉共用同一套字段尺寸，避免原生 select 在 WKWebView 里偏矮。
+   复选框/单选框是原生小方块，不参与 32px 高度与内边距，否则会被拉成方块。 */
+.field input:not([type="checkbox"]):not([type="radio"]),
 .field select,
-.lines input,
+.lines input:not([type="checkbox"]):not([type="radio"]),
 .lines select,
-.toolbar input,
+.toolbar input:not([type="checkbox"]):not([type="radio"]),
 .toolbar select,
-.print-columns input,
+.print-columns input:not([type="checkbox"]):not([type="radio"]),
 .print-columns select {
+  box-sizing: border-box;
   height: var(--control-height);
   border: 1px solid var(--control-border);
   border-radius: var(--control-radius);
   padding: 0 var(--control-padding-x);
   font-family: inherit;
   font-size: var(--control-font-size);
-  line-height: calc(var(--control-height) - 2px);
+  /* 原生输入框/下拉不能 flex 排版，用与按钮等高的行高实现同样的垂直居中。 */
+  line-height: var(--control-line-height);
   color: var(--text);
   background: #fff;
 }
@@ -541,7 +553,7 @@ main {
 .print-columns select {
   -webkit-appearance: none;
   appearance: none;
-  padding-right: 26px;
+  padding-right: var(--control-select-padding-right);
   background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='none' stroke='%236b7280' stroke-width='1.5' d='M1 1l4 4 4-4'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 8px center;
@@ -570,12 +582,13 @@ main {
     appearance: none;
     height: var(--control-height);
     max-width: 100%;
+    box-sizing: border-box;
     border: 1px solid var(--control-border);
     border-radius: var(--control-radius);
-    padding: 0 28px 0 var(--control-padding-x);
+    padding: 0 var(--control-select-padding-right) 0 var(--control-padding-x);
     font-family: inherit;
     font-size: var(--control-font-size);
-    line-height: calc(var(--control-height) - 2px);
+    line-height: var(--control-line-height);
     color: var(--text);
     background-color: #fff;
     background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='none' stroke='%236b7280' stroke-width='1.5' d='M1 1l4 4 4-4'/%3E%3C/svg%3E");
@@ -620,11 +633,15 @@ main {
   }
 
   /* 卡片头的下拉与按钮同高，基线一致。 */
-  .card-head select {
-    flex: 0 1 auto;
+  .card-head select,
+  .card-head .btn {
+    flex: 0 0 auto;
   }
 
+  /* 复选框本身是原生小方块，无法拉到 32px；让整组（勾选框 + 文字）
+     至少占到控件高度并垂直居中，视觉上与下拉、按钮同一水平线。 */
   .card-head .checkbox {
+    min-height: var(--control-height);
     padding-top: 0;
     white-space: nowrap;
   }
@@ -634,7 +651,8 @@ main {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;  color: var(--text);
+  font-size: var(--control-font-size);
+  color: var(--text);
   padding-top: 18px;
 }
 
