@@ -165,6 +165,12 @@
     );
   }
 
+  // 各报表页共用的空行片段。放在模块作用域：经营看板、销售报表、
+  // 资金/库存报表都引用它，留在单个页面函数里会导致其余页面 ReferenceError。
+  function emptyRow(text, colspan) {
+    return `<tbody><tr><td class="empty" colspan="${colspan}">${text}</td></tr></tbody>`;
+  }
+
   function money(cents) {
     const value = Number(cents || 0);
     return (value / 100).toFixed(2);
@@ -4079,10 +4085,6 @@
     const otherFlowCategorySelect = mount.querySelector('[data-role="other-flow-category"]');
     const otherFlowWarehouseSelect = mount.querySelector('[data-role="other-flow-warehouse"]');
     const otherFlowTable = mount.querySelector('[data-role="other-flow"]');
-
-    function emptyRow(text, colspan) {
-      return `<tbody><tr><td class="empty" colspan="${colspan}">${text}</td></tr></tbody>`;
-    }
 
     function periodQuery() {
       return (
