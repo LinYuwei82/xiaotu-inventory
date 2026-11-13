@@ -33,6 +33,10 @@ NS_ASSUME_NONNULL_BEGIN
 // 无 Sparkle 返回 UNAVAILABLE，无待安装版本返回 NO_PENDING_UPDATE。
 - (void)installUpdateWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
 
+// 清除“连续启动失败”的暂停标记与失败计数，并立即恢复一次自动检查。
+// 未暂停时返回 NOT_PAUSED（幂等，不视为错误）。
+- (void)resumeWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
+
 - (NSDictionary<NSString*, id>*)status;
 
 @end

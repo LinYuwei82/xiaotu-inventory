@@ -3,7 +3,10 @@
 #import <Foundation/Foundation.h>
 
 #include <cstdlib>
+#include <optional>
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 #include "xiaotu/log.h"
 #include "xiaotu/update.h"
@@ -25,6 +28,9 @@ NSString* const kPendingVersionKey = @"XiaotuPendingVersion";
 NSString* const kPendingReasonKey = @"XiaotuPendingReason";
 NSString* const kPendingNotesKey = @"XiaotuPendingNotes";
 NSString* const kMandatoryKey = @"XiaotuPendingMandatory";
+NSString* const kIntermediateVersionKey = @"XiaotuIntermediateVersion";
+NSString* const kIntermediateBuildKey = @"XiaotuIntermediateBuild";
+NSString* const kIntermediateSchemaKey = @"XiaotuIntermediateSchema";
 NSString* const kPausedKey = @"XiaotuUpdatePaused";
 NSString* const kLastCheckKey = @"XiaotuLastCheckAt";
 NSString* const kLastManualCheckKey = @"XiaotuLastManualCheckAt";
@@ -44,6 +50,7 @@ NSString* const kResultNoUpdate = @"NO_UPDATE";
 NSString* const kResultUpdateAvailable = @"UPDATE_AVAILABLE";
 NSString* const kResultSkipped = @"SKIPPED";
 NSString* const kResultIncompatible = @"INCOMPATIBLE_SCHEMA";
+NSString* const kResultIntermediate = @"INTERMEDIATE_REQUIRED";
 
 NSDictionary* fetch_json(NSURL* url) {
   __block NSDictionary* result = nil;
@@ -98,6 +105,31 @@ std::int64_t pending_build(NSUserDefaults* defaults) {
   return [defaults objectForKey:kPendingBuildKey] != nil
              ? static_cast<std::int64_t>([defaults integerForKey:kPendingBuildKey])
              : 0;
+}
+
+// 只把 upgrade_path 交给 core 解析与选择，避免在 Objective-C++ 里重写字段规则；
+// 清单其余字段仍按原有流程判定，不因 upgrade_path 引入额外前置条件。
+std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int local_schema) {
+  id path = manifest[@"upgrade_path"];
+  if (path == nil || [path isKindOfClass:[NSNull class]]) {
+    return std::nullopt;
+  }
+  NSData* data = [NSJSONSerialization dataWithJSONObject:path options:0 error:nil];
+  if (data == nil || data.length == 0) {
+    return std::nullopt;
+  }
+  const auto* begin = static_cast<const char*>(data.bytes);
+  nlohmann::json array = nlohmann::json::parse(begin, begin + data.length, nullptr, false);
+  if (array.is_discarded()) {
+    return std::nullopt;
+  }
+  std::vector<xiaotu::UpgradeStep> steps;
+  xiaotu::ManifestError error;
+  if (!xiaotu::parse_upgrade_path(array, steps, error)) {
+    xiaotu::log_warn("更新：清单 upgrade_path 非法（" + error.code + "），本次不提供中间版本");
+    return std::nullopt;
+  }
+  return xiaotu::select_intermediate_step(steps, local_schema);
 }
 }  // namespace
 
@@ -173,7 +205,7 @@ std::int64_t pending_build(NSUserDefaults* defaults) {
   });
 }
 
-// 清除待更新记录；不触碰跳过版本与定时。
+// 清除待更新与中间版本记录（两者互斥）；不触碰跳过版本与定时。
 - (void)clearPending {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   [defaults removeObjectForKey:kPendingBuildKey];
@@ -181,6 +213,9 @@ std::int64_t pending_build(NSUserDefaults* defaults) {
   [defaults removeObjectForKey:kPendingReasonKey];
   [defaults removeObjectForKey:kPendingNotesKey];
   [defaults setBool:NO forKey:kMandatoryKey];
+  [defaults removeObjectForKey:kIntermediateVersionKey];
+  [defaults removeObjectForKey:kIntermediateBuildKey];
+  [defaults removeObjectForKey:kIntermediateSchemaKey];
 }
 
 - (void)skipVersion:(id)version
@@ -284,6 +319,42 @@ std::int64_t pending_build(NSUserDefaults* defaults) {
 #endif
 }
 
+- (void)resumeWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion {
+  void (^respond)(NSDictionary*) = ^(NSDictionary* result) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(result);
+    });
+  };
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  const BOOL paused = [defaults boolForKey:kPausedKey];
+  // 无论是否处于暂停，都清掉失败计数，避免恢复后因旧计数立刻再次暂停。
+  [defaults setBool:NO forKey:kPausedKey];
+  [defaults setInteger:0 forKey:kLaunchAttemptsKey];
+
+  if (xiaotu::decide_resume(paused) == xiaotu::ResumeDecision::kNotPaused) {
+    respond(@{
+      @"ok" : @YES,
+      @"code" : @"NOT_PAUSED",
+      @"status" : [self status],
+    });
+    return;
+  }
+
+  // 立即做一次自动检查，并重新安排下一周期；未配置清单时只清除暂停标记。
+  if (self.running && self.manifestURL.length > 0) {
+    dispatch_async(self.queue, ^{
+      [self scheduleNextCheck];
+      [self performCheckWithCompletion:nil];
+    });
+  }
+  xiaotu::log_info("更新：已恢复自动更新");
+  respond(@{
+    @"ok" : @YES,
+    @"code" : @"RESUMED",
+    @"status" : [self status],
+  });
+}
+
 - (void)checkNowWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion {
   void (^respond)(NSDictionary*) = ^(NSDictionary* result) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -348,8 +419,22 @@ std::int64_t pending_build(NSUserDefaults* defaults) {
   const BOOL mandatory = updateAvailable && [defaults boolForKey:kMandatoryKey];
   NSString* reason = mandatory ? [defaults stringForKey:kPendingReasonKey] : nil;
   NSString* notes = updateAvailable ? [defaults stringForKey:kPendingNotesKey] : nil;
+  NSString* lastResult = [defaults stringForKey:kLastResultKey];
   id reasonValue = reason.length > 0 ? reason : [NSNull null];
+  // 单机版无法直接升级到最新版且没有中间版本时，用 reason 明确表达不兼容。
+  if (!mandatory && [lastResult isEqualToString:kResultIncompatible]) {
+    reasonValue = kResultIncompatible;
+  }
   id notesValue = notes.length > 0 ? notes : [NSNull null];
+  NSString* intermediateVersion = [defaults stringForKey:kIntermediateVersionKey];
+  id intermediateValue = [NSNull null];
+  if (intermediateVersion.length > 0) {
+    intermediateValue = @{
+      @"version" : intermediateVersion,
+      @"build" : @([defaults integerForKey:kIntermediateBuildKey]),
+      @"schema" : @([defaults integerForKey:kIntermediateSchemaKey]),
+    };
+  }
   return @{
     @"enabled" : @(self.manifestURL.length > 0),
     @"channel" : self.channel ?: @"stable",
@@ -359,15 +444,15 @@ std::int64_t pending_build(NSUserDefaults* defaults) {
     @"skipped_version" : [defaults stringForKey:kSkippedVersionKey] ?: [NSNull null],
     @"skip_until" : @([defaults doubleForKey:kSkipUntilKey]),
     @"last_check_at" : @([defaults doubleForKey:kLastCheckKey]),
-    @"last_result" : [defaults stringForKey:kLastResultKey] ?: [NSNull null],
+    @"last_result" : lastResult ?: [NSNull null],
     @"pending_version" : pendingVersion ?: [NSNull null],
     @"pending_build" : @(updateAvailable ? pending : 0),
     @"update_available" : @(updateAvailable),
     @"mandatory" : @(mandatory),
     @"reason" : reasonValue,
     @"release_notes_url" : notesValue,
-    // 原生只处理静态清单，不解析 upgrade_path；中间版本由网络版接口给出。
-    @"intermediate" : [NSNull null],
+    // 本地 schema 低于 schema_min 时由清单 upgrade_path 选出的中间版本；其余情况为 null。
+    @"intermediate" : intermediateValue,
   };
 }
 
@@ -452,7 +537,25 @@ std::int64_t pending_build(NSUserDefaults* defaults) {
     finish(kResultCheckFailed);
     return;
   }
-  if (localSchema < schemaMin || localSchema > schemaMax) {
+  if (localSchema < schemaMin) {
+    // 与服务端同一条规则：从清单 upgrade_path 选出最接近的更大 schema 作为中间版本。
+    const std::optional<xiaotu::UpgradeStep> step = intermediate_step(manifest, localSchema);
+    [self clearPending];
+    if (!step.has_value()) {
+      xiaotu::log_warn("更新：目标版本与当前数据版本不兼容，且清单未给出中间版本");
+      finish(kResultIncompatible);
+      return;
+    }
+    NSUserDefaults* intermediateDefaults = [NSUserDefaults standardUserDefaults];
+    [intermediateDefaults setObject:[NSString stringWithUTF8String:step->version.c_str()]
+                             forKey:kIntermediateVersionKey];
+    [intermediateDefaults setInteger:step->build forKey:kIntermediateBuildKey];
+    [intermediateDefaults setInteger:step->schema forKey:kIntermediateSchemaKey];
+    xiaotu::log_info("更新：当前数据版本过旧，需先升级到 " + step->version);
+    finish(kResultIntermediate);
+    return;
+  }
+  if (localSchema > schemaMax) {
     xiaotu::log_warn("更新：目标版本与当前数据版本不兼容，已跳过");
     [self clearPending];
     finish(kResultIncompatible);

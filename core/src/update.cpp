@@ -326,35 +326,9 @@ bool parse_manifest(const nlohmann::json& body, UpdateManifest& out, ManifestErr
   parsed.rollout_percent = static_cast<int>(rollout);
 
   if (const auto it = body.find("upgrade_path"); it != body.end() && !it->is_null()) {
-    if (!it->is_array()) {
-      set_error(error, "MANIFEST_UPGRADE_PATH_INVALID", "upgrade_path 必须是数组");
+    if (!parse_upgrade_path(*it, parsed.upgrade_path, error)) {
       return false;
     }
-    for (const auto& item : *it) {
-      if (!item.is_object()) {
-        set_error(error, "MANIFEST_UPGRADE_PATH_INVALID", "upgrade_path 元素必须是对象");
-        return false;
-      }
-      UpgradeStep step;
-      std::int64_t step_schema = 0;
-      std::int64_t step_build = 0;
-      if (!read_int(item, "schema", step_schema, true, error) ||
-          !read_string(item, "version", step.version, true, error) ||
-          !read_int(item, "build", step_build, true, error)) {
-        return false;
-      }
-      ProductVersion step_version;
-      if (step_schema <= 0 || step_build <= 0 ||
-          !parse_product_version(step.version, step_version)) {
-        set_error(error, "MANIFEST_UPGRADE_PATH_INVALID", "upgrade_path 字段值非法");
-        return false;
-      }
-      step.schema = static_cast<int>(step_schema);
-      step.build = step_build;
-      parsed.upgrade_path.push_back(std::move(step));
-    }
-    std::sort(parsed.upgrade_path.begin(), parsed.upgrade_path.end(),
-              [](const UpgradeStep& a, const UpgradeStep& b) { return a.schema < b.schema; });
   }
 
   if (parsed.key_id.empty()) {
@@ -434,6 +408,54 @@ bool parse_manifest(const nlohmann::json& body, UpdateManifest& out, ManifestErr
   return true;
 }
 
+bool parse_upgrade_path(const nlohmann::json& path, std::vector<UpgradeStep>& out,
+                        ManifestError& error) {
+  if (!path.is_array()) {
+    set_error(error, "MANIFEST_UPGRADE_PATH_INVALID", "upgrade_path 必须是数组");
+    return false;
+  }
+  for (const auto& item : path) {
+    if (!item.is_object()) {
+      set_error(error, "MANIFEST_UPGRADE_PATH_INVALID", "upgrade_path 元素必须是对象");
+      return false;
+    }
+    UpgradeStep step;
+    std::int64_t step_schema = 0;
+    std::int64_t step_build = 0;
+    if (!read_int(item, "schema", step_schema, true, error) ||
+        !read_string(item, "version", step.version, true, error) ||
+        !read_int(item, "build", step_build, true, error)) {
+      return false;
+    }
+    ProductVersion step_version;
+    if (step_schema <= 0 || step_build <= 0 ||
+        !parse_product_version(step.version, step_version)) {
+      set_error(error, "MANIFEST_UPGRADE_PATH_INVALID", "upgrade_path 字段值非法");
+      return false;
+    }
+    step.schema = static_cast<int>(step_schema);
+    step.build = step_build;
+    out.push_back(std::move(step));
+  }
+  std::sort(out.begin(), out.end(),
+            [](const UpgradeStep& a, const UpgradeStep& b) { return a.schema < b.schema; });
+  return true;
+}
+
+std::optional<UpgradeStep> select_intermediate_step(const std::vector<UpgradeStep>& path,
+                                                    int local_schema) {
+  const UpgradeStep* chosen = nullptr;
+  for (const auto& step : path) {
+    if (step.schema > local_schema && (chosen == nullptr || step.schema < chosen->schema)) {
+      chosen = &step;
+    }
+  }
+  if (chosen == nullptr) {
+    return std::nullopt;
+  }
+  return *chosen;
+}
+
 int rollout_bucket(std::string_view install_id, std::int64_t build) {
   const std::string material = std::string(install_id) + ":" + std::to_string(build);
   const auto digest = sha256(material);
@@ -472,6 +494,10 @@ InstallDecision decide_install(bool installer_available, std::int64_t pending_bu
   return InstallDecision::kStarted;
 }
 
+ResumeDecision decide_resume(bool paused) {
+  return paused ? ResumeDecision::kResumed : ResumeDecision::kNotPaused;
+}
+
 UpdateDecision evaluate_manifest(const UpdateManifest& manifest, const UpdateQuery& query,
                                  std::int64_t now_epoch) {
   UpdateDecision decision;
@@ -491,14 +517,9 @@ UpdateDecision evaluate_manifest(const UpdateManifest& manifest, const UpdateQue
   }
   if (query.schema_version < manifest.schema_min) {
     // 旧库无法直接迁移到最新版：按 upgrade_path 给出应先升级到的中间版本。
-    const UpgradeStep* chosen = nullptr;
-    for (const auto& step : manifest.upgrade_path) {
-      if (step.schema > query.schema_version &&
-          (chosen == nullptr || step.schema < chosen->schema)) {
-        chosen = &step;
-      }
-    }
-    if (chosen != nullptr) {
+    // 与服务端共用 select_intermediate_step，保证两处选出的版本一致。
+    if (const auto chosen = select_intermediate_step(manifest.upgrade_path,
+                                                     query.schema_version)) {
       decision.code = "INTERMEDIATE_REQUIRED";
       decision.intermediate_required = true;
       decision.intermediate = *chosen;

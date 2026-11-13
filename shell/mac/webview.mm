@@ -217,6 +217,12 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
     }];
     return;
   }
+  if ([message.name isEqualToString:@"xiaotuUpdateResume"]) {
+    [[XiaotuUpdater shared] resumeWithCompletion:^(NSDictionary* result) {
+      [self callUpdateCallback:@"xiaotuUpdateResumeDone" payload:result];
+    }];
+    return;
+  }
 }
 
 - (void)printDocumentWithPaper:(NSDictionary*)paper {
@@ -396,6 +402,7 @@ int run_webview(const std::string& url, const std::string& title) {
     [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateStatus"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateSkip"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateInstall"];
+    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateResume"];
     configuration.userContentController = controller;
     WKWebView* webview = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
     [webview setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];

@@ -69,6 +69,15 @@ struct ManifestError {
 // 解析并校验清单；失败时返回 false，error 带稳定错误码。
 bool parse_manifest(const nlohmann::json& body, UpdateManifest& out, ManifestError& error);
 
+// 解析清单中的可选字段 upgrade_path；非法时返回 false 并设 MANIFEST_UPGRADE_PATH_INVALID。
+bool parse_upgrade_path(const nlohmann::json& path, std::vector<UpgradeStep>& out,
+                        ManifestError& error);
+
+// 选出中间版本：schema 严格大于 local_schema 且最接近的一步；没有则返回 nullopt。
+// 服务端 evaluate_manifest 与 macOS 原生桥共用这一条规则，避免两套判定。
+std::optional<UpgradeStep> select_intermediate_step(const std::vector<UpgradeStep>& path,
+                                                    int local_schema);
+
 struct UpdateQuery {
   std::string version;
   std::int64_t build = 0;
@@ -116,6 +125,10 @@ enum class InstallDecision { kStarted, kUnavailable, kNoPendingUpdate };
 // 无安装器时优先返回不可用；有待安装版本（pending_build > current_build）才可启动安装。
 InstallDecision decide_install(bool installer_available, std::int64_t pending_build,
                                std::int64_t current_build);
+
+// resume 桥方法的结果：RESUMED / NOT_PAUSED。
+enum class ResumeDecision { kResumed, kNotPaused };
+ResumeDecision decide_resume(bool paused);
 
 // ISO 8601 UTC（YYYY-MM-DDTHH:MM:SSZ）与 epoch 互转；解析失败返回 nullopt。
 std::optional<std::int64_t> parse_iso8601_utc(std::string_view text);

@@ -236,6 +236,48 @@ int main() {
   check(xiaotu::decide_install(true, 2026111301, 2026100101) == InstallDecision::kStarted,
         "有待更新且安装器可用时启动");
 
+  // 中间版本选择：原生桥与服务端 evaluate_manifest 共用同一条规则。
+  const std::vector<xiaotu::UpgradeStep> upgrade_path{
+      {28, "1.4.0", 2026100101},
+      {25, "1.3.5", 2026040101},
+      {30, "1.4.2", 2026111301}};
+  const auto pick_low = xiaotu::select_intermediate_step(upgrade_path, 20);
+  check(pick_low.has_value() && pick_low->schema == 25, "中间版本取最接近的更大 schema");
+  const auto pick_exact = xiaotu::select_intermediate_step(upgrade_path, 25);
+  check(pick_exact.has_value() && pick_exact->schema == 28, "schema 相等时跳过该步");
+  check(!xiaotu::select_intermediate_step(upgrade_path, 30).has_value(),
+        "没有更大的 schema 时返回空");
+  check(!xiaotu::select_intermediate_step({}, 20).has_value(), "空路径返回空");
+
+  auto consistent_body = base_manifest();
+  consistent_body["upgrade_path"] = nlohmann::json::array(
+      {{{"schema", 28}, {"version", "1.4.0"}, {"build", 2026100101}},
+       {{"schema", 25}, {"version", "1.3.5"}, {"build", 2026040101}},
+       {{"schema", 30}, {"version", "1.4.2"}, {"build", 2026111301}}});
+  xiaotu::UpdateManifest consistent;
+  check(xiaotu::parse_manifest(consistent_body, consistent, error), "带 upgrade_path 的清单解析通过");
+  for (const int local : {20, 25}) {
+    auto q = query();
+    q.schema_version = local;
+    const auto decision = xiaotu::evaluate_manifest(consistent, q, 0);
+    const auto expected = xiaotu::select_intermediate_step(consistent.upgrade_path, local);
+    check(expected.has_value() && decision.code == "INTERMEDIATE_REQUIRED" &&
+              decision.intermediate.schema == expected->schema &&
+              decision.intermediate.version == expected->version &&
+              decision.intermediate.build == expected->build,
+          "evaluate_manifest 与 select_intermediate_step 选出同一中间版本");
+  }
+  auto above_min = query();
+  above_min.schema_version = 30;
+  check(xiaotu::evaluate_manifest(consistent, above_min, 0).code == "UPDATE_AVAILABLE",
+        "schema 达到最低要求时不再要求中间版本");
+
+  // resume：暂停时可恢复，未暂停时给出可识别状态而不是错误。
+  using xiaotu::ResumeDecision;
+  check(xiaotu::decide_resume(true) == ResumeDecision::kResumed, "暂停时恢复自动更新");
+  check(xiaotu::decide_resume(false) == ResumeDecision::kNotPaused,
+        "未暂停时返回 NOT_PAUSED 语义");
+
   if (failures == 0) {
     std::cout << "update_smoke 全部通过" << std::endl;
   }
