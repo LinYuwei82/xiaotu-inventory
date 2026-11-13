@@ -79,6 +79,10 @@ struct DocInput {
   std::string biz_category;
   // 业务员：仅销售订单 / 销售出库 / 销售退货使用，0 表示未指定；名称由服务端快照。
   std::int64_t salesperson_id = 0;
+  // 幂等键：同一个 request_id 重复提交只生成一张单据；空串表示老客户端（不做幂等）。
+  std::string request_id;
+  // 乐观锁：更新类操作要求客户端持有的版本号；-1 表示老客户端未提供，跳过校验。
+  std::int64_t version = -1;
   std::vector<DocLineInput> lines;
 };
 
@@ -97,6 +101,7 @@ struct DocDetail {
   std::string salesperson_name;
   std::string status;
   std::string order_status;  // 仅订单：'' / CONFIRMED / CONVERTED / CLOSED
+  std::int64_t version = 0;  // 乐观锁版本，编辑页提交时原样带回
   std::int64_t total_qty = 0;
   std::int64_t total_amount_cents = 0;
   // 含税口径：净额 + 税额 = 价税合计，均按行汇总（历史单据 tax = 0）。
@@ -132,6 +137,7 @@ class DocumentEngine {
   struct Created {
     std::int64_t id = 0;
     std::string doc_no;
+    std::int64_t version = 0;
   };
 
   explicit DocumentEngine(Db& db) : db_(db) {}
@@ -142,13 +148,15 @@ class DocumentEngine {
   Created save_and_approve(const DocInput& input, bool confirm_credit = false);
   // 草稿：只写单据与明细，不动库存流水。
   Created save_draft(const DocInput& input);
+  // version < 0 表示老客户端未带版本，跳过乐观锁校验（写日志）。
   void update_draft(std::int64_t doc_id, const DocInput& input);
-  void delete_draft(std::int64_t doc_id);
+  void delete_draft(std::int64_t doc_id, std::int64_t expected_version = -1);
   // 审核草稿：在写事务内校验并生成库存流水。
-  void approve(std::int64_t doc_id, bool confirm_credit = false);
+  void approve(std::int64_t doc_id, bool confirm_credit = false,
+               std::int64_t expected_version = -1);
   DocDetail detail(std::int64_t doc_id);
   std::vector<DocSummary> list(std::string_view doc_type, int limit = 100);
-  void reverse(std::int64_t doc_id);
+  void reverse(std::int64_t doc_id, std::int64_t expected_version = -1);
   // 订单：确认沿用 approve；转出库生成一张销售出库单并累加已转数量。
   OrderConversion convert_order(std::int64_t order_id, const OrderConvertInput& input);
   // 订单关闭：未转完时手动结束，关闭后禁止继续转出。

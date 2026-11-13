@@ -38,7 +38,7 @@ void json_from_exception(httplib::Response& res, const AppError& error) {
     status = 404;
   } else if (code == "FORBIDDEN") {
     status = 403;
-  } else if (code.rfind("DUPLICATE", 0) == 0) {
+  } else if (code.rfind("DUPLICATE", 0) == 0 || code == "VERSION_CONFLICT") {
     status = 409;
   } else if (code == "BIND_FAILED" || code == "INTERNAL") {
     status = 500;

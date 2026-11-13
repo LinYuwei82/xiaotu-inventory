@@ -952,6 +952,13 @@ CREATE INDEX idx_partner_merge_target ON partner_merge_log(target_partner_id);
 CREATE INDEX idx_partner_merge_created ON partner_merge_log(created_at);
 )SQL";
 
+// 单据幂等与乐观锁：request_id 空串不占唯一位（部分索引），历史行 version=0。
+constexpr const char* kV31 = R"SQL(
+ALTER TABLE doc_header ADD COLUMN request_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE doc_header ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+CREATE UNIQUE INDEX uk_doc_header_request ON doc_header(request_id) WHERE request_id <> '';
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -997,6 +1004,7 @@ const std::vector<Migration>& all_migrations() {
       {28, "v28_partner_table_1to1", kV28},
       {29, "v29_partner_origin", kV29},
       {30, "v30_partner_merge_log", kV30},
+      {31, "v31_doc_request_version", kV31},
   };
   return migrations;
 }

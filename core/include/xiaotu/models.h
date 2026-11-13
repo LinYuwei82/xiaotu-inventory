@@ -62,6 +62,7 @@ struct DocSummary {
   std::int64_t total_amount_cents = 0;
   std::string status;
   std::string order_status;
+  std::int64_t version = 0;  // 行级审核/反审核/删除时回传，做乐观锁
   std::string created_at;
 };
 

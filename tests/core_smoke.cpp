@@ -86,7 +86,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 30, "迁移后 schema 版本应为 30");
+      check(db.schema_version() == 31, "迁移后 schema 版本应为 31");
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
       db.read([&](sqlite3* conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
@@ -2545,6 +2545,64 @@ int main() {
                                                        .name = "额度客户",
                                                        .credit_limit_cents = 100000});
 
+      // ---- 单据幂等与乐观锁 ----
+      {
+        const auto doc_customer = credit_customers.create(xiaotu::gen::CustomerRow{
+            .code = "C-DOC", .name = "幂等客户", .credit_limit_cents = 0});
+        const auto idem_item =
+            items.create(xiaotu::gen::ItemRow{.code = "IDEM01", .name = "幂等商品"});
+        xiaotu::DocInput opening;
+        opening.doc_type = "OTH_IN";
+        opening.warehouse_id = warehouse_list.at(0).id;
+        opening.doc_date = kToday;
+        opening.partner = "期初";
+        opening.lines.push_back(
+            xiaotu::DocLineInput{.item_id = idem_item.id, .qty = q(500), .price_cents = 1000});
+        documents.save_and_approve(opening);
+        const auto idem_sale = [&](const std::string& request_id) {
+          xiaotu::DocInput sale;
+          sale.doc_type = "SAL_OUT";
+          sale.warehouse_id = warehouse_list.at(0).id;
+          sale.doc_date = kToday;
+          sale.partner_id = doc_customer.id;
+          sale.partner = doc_customer.name;
+          sale.request_id = request_id;
+          sale.lines.push_back(
+              xiaotu::DocLineInput{.item_id = idem_item.id, .qty = q(1), .price_cents = 1000});
+          return sale;
+        };
+        const auto first = documents.save_and_approve(idem_sale("req-idem-1"));
+        const auto replay = documents.save_and_approve(idem_sale("req-idem-1"));
+        check(first.id == replay.id && first.doc_no == replay.doc_no,
+              "同一 request_id 重复提交应返回首次创建的单据");
+        check(first.version == 1 && replay.version == 1, "新建即审核的单据版本应为 1");
+        std::int64_t headers = 0;
+        db.read([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn, "SELECT COUNT(*) FROM doc_header WHERE request_id = ?;");
+          stmt.bind(1, "req-idem-1");
+          if (stmt.step()) headers = stmt.i64(0);
+        });
+        check(headers == 1, "同一 request_id 只应产生一张单据");
+
+        const auto draft = documents.save_draft(idem_sale("req-idem-2"));
+        check(draft.version == 0, "草稿版本应为 0");
+        documents.approve(draft.id, false, 0);
+        check(documents.detail(draft.id).version == 1, "审核成功后版本应递增");
+        bool concurrent_conflict = false;
+        try {
+          documents.approve(draft.id, false, 0);
+        } catch (const xiaotu::AppError& error) {
+          concurrent_conflict = error.code() == "VERSION_CONFLICT";
+        }
+        check(concurrent_conflict, "两人拿同一版本审核，第二个应返回冲突");
+
+        // 老客户端：不带 request_id / version 仍能保存、审核、反审核。
+        const auto legacy = documents.save_and_approve(idem_sale(""));
+        check(legacy.id > 0, "不带 request_id 的老请求仍能保存审核");
+        documents.reverse(legacy.id);
+        check(documents.detail(legacy.id).status == "VOIDED", "不带 version 的老请求仍能反审核");
+      }
+
       // 备份与恢复：快照可校验，恢复后 schema 一致，覆盖前留安全备份。
       const auto backup_root =
           std::filesystem::temp_directory_path() / "xiaotu-backup-smoke";
@@ -2582,6 +2640,9 @@ int main() {
                            "DROP TABLE partner_merge_log;"
                            "DROP TABLE partner_legacy_map;"
                            "DROP TABLE partner;"
+                           "DROP INDEX IF EXISTS uk_doc_header_request;"
+                           "ALTER TABLE doc_header DROP COLUMN request_id;"
+                           "ALTER TABLE doc_header DROP COLUMN version;"
                            "DELETE FROM schema_migration WHERE version >= 28;"
                            "PRAGMA user_version = 27;",
                            nullptr, nullptr, nullptr);
@@ -2620,7 +2681,7 @@ int main() {
         });
 
         xiaotu::migrate(mig);
-        check(mig.schema_version() == 30, "有数据的模拟库应迁到 v30");
+        check(mig.schema_version() == 31, "有数据的模拟库应迁到 v31");
 
         mig.read([&](sqlite3* conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");

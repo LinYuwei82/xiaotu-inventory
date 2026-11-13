@@ -14,6 +14,7 @@
 #include "xiaotu/doc_number.h"
 #include "xiaotu/error.h"
 #include "xiaotu/ids.h"
+#include "xiaotu/log.h"
 #include "xiaotu/partner_resolve.h"
 #include "xiaotu/qty.h"
 
@@ -738,6 +739,32 @@ std::int64_t header_warehouse_id(const DocumentDefinition& definition, const Doc
   return input.warehouse_id;
 }
 
+// 乐观锁：expected < 0 是老客户端，按无版本校验放行但要留痕。
+void ensure_doc_version(std::int64_t doc_id, std::int64_t current, std::int64_t expected,
+                        std::string_view action) {
+  if (expected < 0) {
+    log_warn("单据更新未带 version，按无版本校验放行: doc_id=" + std::to_string(doc_id) +
+             " action=" + std::string(action));
+    return;
+  }
+  if (current != expected) {
+    throw AppError("VERSION_CONFLICT", "单据已被他人修改，请刷新后重试");
+  }
+}
+
+// 幂等键：同一个 request_id 只生成一张单据，重复提交返回首次创建的那张。
+bool find_doc_by_request(sqlite3* conn, const std::string& request_id, std::int64_t& id,
+                         std::string& doc_no, std::int64_t& version) {
+  if (request_id.empty()) return false;
+  Stmt stmt(conn, "SELECT id, doc_no, version FROM doc_header WHERE request_id = ?;");
+  stmt.bind(1, request_id);
+  if (!stmt.step()) return false;
+  id = stmt.i64(0);
+  doc_no = stmt.text(1);
+  version = stmt.i64(2);
+  return true;
+}
+
 void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
                    std::string_view doc_type, PartnerKind partner_kind, const DocInput& input,
                    std::int64_t warehouse_id, const ValidatedDoc& validated, bool approved,
@@ -752,8 +779,8 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
                 " target_warehouse_id, partner_id, customer_id, customer, biz_category,"
                 " salesperson_id, salesperson_name,"
                 " status, order_status, total_qty, total_amount_cents, created_at, created_by,"
-                " approved_at, approved_by)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?);");
+                " approved_at, approved_by, request_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?);");
     header.bind(1, id)
         .bind(2, doc_no)
         .bind(3, doc_type)
@@ -773,6 +800,7 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
         .bind(17, stamp.by)
         .bind(18, stamp.at)
         .bind(19, stamp.by)
+        .bind(20, input.request_id)
         .run();
     return;
   }
@@ -782,8 +810,8 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
               " target_warehouse_id, partner_id, customer_id, customer, biz_category,"
               " salesperson_id, salesperson_name,"
               " status, order_status, total_qty, total_amount_cents, created_at, created_by,"
-              " approved_at, approved_by)"
-              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, NULL, NULL);");
+              " approved_at, approved_by, request_id)"
+              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, NULL, NULL, ?);");
   header.bind(1, id)
       .bind(2, doc_no)
       .bind(3, doc_type)
@@ -801,6 +829,7 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
       .bind(15, validated.total_amount)
       .bind(16, stamp.at)
       .bind(17, stamp.by)
+      .bind(18, input.request_id)
       .run();
 }
 
@@ -941,6 +970,14 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input,
 
   Created created;
   db_.write([&](sqlite3* conn) {
+    // 幂等：同一个 request_id 只生成一张单据，重复提交直接返回首次创建的那张。
+    if (find_doc_by_request(conn, input.request_id, created.id, created.doc_no,
+                            created.version)) {
+      return;
+    }
+    if (input.request_id.empty()) {
+      log_warn("保存单据未带 request_id（无幂等键）: doc_type=" + input.doc_type);
+    }
     const ValidatedDoc validated = validate_document(conn, input, *definition, true, true);
     created.id = next_id();
     enforce_credit_limit(conn, *definition, input, validated, created.id, confirm_credit,
@@ -950,6 +987,12 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input,
                   definition->partner_kind, input, header_warehouse_id(*definition, input),
                   validated, true,
                   definition->role == DocumentRole::Order ? "CONFIRMED" : "");
+    {
+      // 新建即审核：版本从 0 走到 1，与「审核成功 version+1」保持一致。
+      Stmt bump(conn, "UPDATE doc_header SET version = 1 WHERE id = ?;");
+      bump.bind(1, created.id).run();
+      created.version = 1;
+    }
     const std::vector<std::int64_t> line_ids =
         insert_lines(conn, created.id, input.lines,
                      definition->stock_mode == StockMode::CostAdjust);
@@ -975,6 +1018,14 @@ DocumentEngine::Created DocumentEngine::save_draft(const DocInput& input) {
 
   Created created;
   db_.write([&](sqlite3* conn) {
+    // 幂等：重复提交返回首次创建的草稿。
+    if (find_doc_by_request(conn, input.request_id, created.id, created.doc_no,
+                            created.version)) {
+      return;
+    }
+    if (input.request_id.empty()) {
+      log_warn("保存草稿未带 request_id（无幂等键）: doc_type=" + input.doc_type);
+    }
     const ValidatedDoc validated = validate_document(conn, input, *definition, false, false);
     created.id = next_id();
     created.doc_no = allocate_doc_no(conn, definition->doc_no_prefix, validated.doc_date);
@@ -999,8 +1050,9 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
     std::string status;
     std::string doc_type;
     std::string doc_no;
+    std::int64_t current_version = 0;
     {
-      Stmt header(conn, "SELECT status, doc_type, doc_no FROM doc_header WHERE id = ?;");
+      Stmt header(conn, "SELECT status, doc_type, doc_no, version FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
@@ -1008,6 +1060,7 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
       status = header.text(0);
       doc_type = header.text(1);
       doc_no = header.text(2);
+      current_version = header.i64(3);
     }
     if (status != "DRAFT") {
       throw AppError("INVALID_STATUS", "只有草稿可以编辑");
@@ -1015,13 +1068,16 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
     if (doc_type != definition->doc_type) {
       throw AppError("INVALID_INPUT", "不能修改单据类型");
     }
+    ensure_doc_version(doc_id, current_version, input.version, "update_draft");
 
     const ValidatedDoc validated = validate_document(conn, input, *definition, false, false);
+    const std::string guard = input.version >= 0 ? " AND version = ?" : "";
     Stmt update(conn,
                 "UPDATE doc_header SET doc_date = ?, warehouse_id = ?, target_warehouse_id = ?,"
                 " partner_id = ?, customer_id = ?, customer = ?, biz_category = ?,"
                 " salesperson_id = ?, salesperson_name = ?, total_qty = ?,"
-                " total_amount_cents = ? WHERE id = ?;");
+                " total_amount_cents = ?, version = version + 1 WHERE id = ?" +
+                    guard + ";");
     const std::int64_t supplier_id =
         definition->partner_kind == PartnerKind::Supplier ? input.partner_id : 0;
     const std::int64_t customer_id =
@@ -1037,8 +1093,14 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
         .bind(9, validated.salesperson_name)
         .bind(10, validated.total_qty)
         .bind(11, validated.total_amount)
-        .bind(12, doc_id)
-        .run();
+        .bind(12, doc_id);
+    if (input.version >= 0) {
+      update.bind(13, input.version);
+    }
+    update.run();
+    if (sqlite3_changes(conn) == 0) {
+      throw AppError("VERSION_CONFLICT", "单据已被他人修改，请刷新后重试");
+    }
 
     Stmt clear(conn, "DELETE FROM doc_line WHERE doc_id = ?;");
     clear.bind(1, doc_id).run();
@@ -1049,41 +1111,54 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
   });
 }
 
-void DocumentEngine::delete_draft(std::int64_t doc_id) {
+void DocumentEngine::delete_draft(std::int64_t doc_id, std::int64_t expected_version) {
   db_.write([&](sqlite3* conn) {
     std::string status;
     std::string doc_no;
+    std::int64_t current_version = 0;
     {
-      Stmt header(conn, "SELECT status, doc_no FROM doc_header WHERE id = ?;");
+      Stmt header(conn, "SELECT status, doc_no, version FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
       }
       status = header.text(0);
       doc_no = header.text(1);
+      current_version = header.i64(2);
     }
     if (status != "DRAFT") {
       throw AppError("INVALID_STATUS", "只有草稿可以删除");
     }
+    ensure_doc_version(doc_id, current_version, expected_version, "delete_draft");
     Stmt lines(conn, "DELETE FROM doc_line WHERE doc_id = ?;");
     lines.bind(1, doc_id).run();
-    Stmt header(conn, "DELETE FROM doc_header WHERE id = ?;");
-    header.bind(1, doc_id).run();
+    if (expected_version >= 0) {
+      Stmt header(conn, "DELETE FROM doc_header WHERE id = ? AND version = ?;");
+      header.bind(1, doc_id).bind(2, expected_version).run();
+      if (sqlite3_changes(conn) == 0) {
+        throw AppError("VERSION_CONFLICT", "单据已被他人修改，请刷新后重试");
+      }
+    } else {
+      Stmt header(conn, "DELETE FROM doc_header WHERE id = ?;");
+      header.bind(1, doc_id).run();
+    }
     audit_write(conn, "delete_draft", "document", doc_id, doc_no);
   });
 }
 
-void DocumentEngine::approve(std::int64_t doc_id, bool confirm_credit) {
+void DocumentEngine::approve(std::int64_t doc_id, bool confirm_credit,
+                             std::int64_t expected_version) {
   db_.write([&](sqlite3* conn) {
     DocInput input;
     std::string status;
     std::string doc_no;
     std::int64_t supplier_id = 0;
     std::int64_t customer_id = 0;
+    std::int64_t current_version = 0;
     {
       Stmt header(conn,
                   "SELECT doc_type, status, warehouse_id, doc_date, customer, partner_id, doc_no,"
-                  " target_warehouse_id, customer_id, biz_category, salesperson_id"
+                  " target_warehouse_id, customer_id, biz_category, salesperson_id, version"
                   " FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
@@ -1100,7 +1175,11 @@ void DocumentEngine::approve(std::int64_t doc_id, bool confirm_credit) {
       customer_id = header.i64(8);
       input.biz_category = header.text(9);
       input.salesperson_id = header.i64(10);
+      current_version = header.i64(11);
     }
+    // 先判版本再判状态：并发审核时第二个请求应看到「已被他人修改」，
+    // 而不是含糊的「只有草稿可以审核」。
+    ensure_doc_version(doc_id, current_version, expected_version, "approve");
     if (status != "DRAFT") {
       throw AppError("INVALID_STATUS", "只有草稿可以审核");
     }
@@ -1136,18 +1215,26 @@ void DocumentEngine::approve(std::int64_t doc_id, bool confirm_credit) {
                         input.target_warehouse_id, validated.biz_time, input.lines, line_ids);
     }
     const AuditStamp stamp = audit_stamp();
+    const std::string guard = expected_version >= 0 ? " AND version = ?" : "";
     Stmt update(conn,
                 "UPDATE doc_header SET status = 'APPROVED', total_qty = ?, total_amount_cents = ?,"
-                " salesperson_id = ?, salesperson_name = ?, approved_at = ?, approved_by = ?"
-                " WHERE id = ?;");
+                " salesperson_id = ?, salesperson_name = ?, approved_at = ?, approved_by = ?,"
+                " version = version + 1 WHERE id = ?" +
+                    guard + ";");
     update.bind(1, validated.total_qty)
         .bind(2, validated.total_amount)
         .bind(3, validated.salesperson_id)
         .bind(4, validated.salesperson_name)
         .bind(5, stamp.at)
         .bind(6, stamp.by)
-        .bind(7, doc_id)
-        .run();
+        .bind(7, doc_id);
+    if (expected_version >= 0) {
+      update.bind(8, expected_version);
+    }
+    update.run();
+    if (sqlite3_changes(conn) == 0) {
+      throw AppError("VERSION_CONFLICT", "单据已被他人修改，请刷新后重试");
+    }
     if (definition->role == DocumentRole::Order) {
       // 订单的「审核」即确认；确认后不可再改单，只能转出库或关闭。
       Stmt confirm(conn, "UPDATE doc_header SET order_status = 'CONFIRMED' WHERE id = ?;");
@@ -1169,7 +1256,7 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
       Stmt header(conn,
                   "SELECT id, doc_no, doc_type, doc_date, warehouse_id, target_warehouse_id,"
                   " partner_id, customer_id, customer, status, order_status, total_qty,"
-                  " total_amount_cents, biz_category, salesperson_id, salesperson_name"
+                  " total_amount_cents, biz_category, salesperson_id, salesperson_name, version"
                   " FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
@@ -1191,6 +1278,7 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
       detail.biz_category = header.text(13);
       detail.salesperson_id = header.i64(14);
       detail.salesperson_name = header.text(15);
+      detail.version = header.i64(16);
       const DocumentDefinition* definition = find_document_definition(detail.doc_type);
       detail.partner_id = definition != nullptr && definition->partner_kind == PartnerKind::Customer
                               ? customer_id
@@ -1237,7 +1325,7 @@ std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limi
               "SELECT h.id, h.doc_no, h.doc_date, w.name, h.customer, h.total_qty,"
               " h.total_amount_cents, h.status, h.order_status, h.created_at,"
               " COALESCE((SELECT SUM(converted_qty) FROM doc_line WHERE doc_id = h.id), 0),"
-              " h.biz_category, h.salesperson_id, h.salesperson_name"
+              " h.biz_category, h.salesperson_id, h.salesperson_name, h.version"
               " FROM doc_header h JOIN warehouse w ON w.id = h.warehouse_id"
               " WHERE h.doc_type = ? ORDER BY h.id DESC LIMIT ?;");
     stmt.bind(1, doc_type).bind(2, static_cast<std::int64_t>(limit));
@@ -1257,20 +1345,22 @@ std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limi
       summary.biz_category = stmt.text(11);
       summary.salesperson_id = stmt.i64(12);
       summary.salesperson_name = stmt.text(13);
+      summary.version = stmt.i64(14);
       documents.push_back(std::move(summary));
     }
   });
   return documents;
 }
 
-void DocumentEngine::reverse(std::int64_t doc_id) {
+void DocumentEngine::reverse(std::int64_t doc_id, std::int64_t expected_version) {
   db_.write([&](sqlite3* conn) {
     std::string doc_type;
     std::string status;
     std::string doc_no;
+    std::int64_t current_version = 0;
     {
       Stmt header(conn,
-                  "SELECT doc_type, status, doc_no FROM doc_header WHERE id = ?;");
+                  "SELECT doc_type, status, doc_no, version FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
         throw AppError("NOT_FOUND", "单据不存在");
@@ -1278,7 +1368,9 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
       doc_type = header.text(0);
       status = header.text(1);
       doc_no = header.text(2);
+      current_version = header.i64(3);
     }
+    ensure_doc_version(doc_id, current_version, expected_version, "reverse");
     if (status != "APPROVED") {
       throw AppError("INVALID_STATUS", "只有已审核的单据可以反审核");
     }
@@ -1375,8 +1467,18 @@ void DocumentEngine::reverse(std::int64_t doc_id) {
       apply_balance_delta(conn, row.warehouse_id, row.item_id, -row.qty, -row.amount);
     }
 
-    Stmt update(conn, "UPDATE doc_header SET status = 'VOIDED' WHERE id = ?;");
-    update.bind(1, doc_id).run();
+    const std::string guard = expected_version >= 0 ? " AND version = ?" : "";
+    Stmt update(conn,
+                "UPDATE doc_header SET status = 'VOIDED', version = version + 1 WHERE id = ?" +
+                    guard + ";");
+    update.bind(1, doc_id);
+    if (expected_version >= 0) {
+      update.bind(2, expected_version);
+    }
+    update.run();
+    if (sqlite3_changes(conn) == 0) {
+      throw AppError("VERSION_CONFLICT", "单据已被他人修改，请刷新后重试");
+    }
     release_order_conversions(conn, doc_id);
 
     if (const DocumentDefinition* definition = find_document_definition(doc_type)) {

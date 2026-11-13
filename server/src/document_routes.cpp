@@ -63,6 +63,7 @@ nlohmann::json summary_to_json(const DocSummary& summary) {
       {"total_amount_cents", summary.total_amount_cents},
       {"status", summary.status},
       {"order_status", summary.order_status},
+      {"version", summary.version},
       {"created_at", summary.created_at},
   };
 }
@@ -101,6 +102,7 @@ nlohmann::json detail_to_json(const DocDetail& detail) {
       {"salesperson_name", detail.salesperson_name},
       {"status", detail.status},
       {"order_status", detail.order_status},
+      {"version", detail.version},
       {"total_qty", qty_text(detail.total_qty)},
       {"total_amount_cents", detail.total_amount_cents},
       {"total_net_cents", detail.total_net_cents},
@@ -108,6 +110,23 @@ nlohmann::json detail_to_json(const DocDetail& detail) {
       {"total_with_tax_cents", detail.total_with_tax_cents},
       {"lines", lines},
   };
+}
+
+// 乐观锁版本：老客户端不带 version，返回 -1 表示跳过校验（core 会写日志）。
+std::int64_t request_version(const httplib::Request& req) {
+  if (req.has_param("version")) {
+    return std::stoll(req.get_param_value("version"));
+  }
+  if (req.body.empty()) return -1;
+  try {
+    const nlohmann::json body = nlohmann::json::parse(req.body);
+    if (body.contains("version") && body["version"].is_number()) {
+      return body["version"].get<std::int64_t>();
+    }
+  } catch (const nlohmann::json::exception&) {
+    // 没有合法 JSON body：按老客户端处理
+  }
+  return -1;
 }
 
 DocInput input_from_json(const nlohmann::json& body) {
@@ -120,6 +139,11 @@ DocInput input_from_json(const nlohmann::json& body) {
   input.partner = body.value("partner", std::string{});
   input.biz_category = body.value("biz_category", std::string{});
   input.salesperson_id = body.value("salesperson_id", std::int64_t{0});
+  // 幂等键与乐观锁版本：老客户端不传时保持空串 / -1，按无幂等、无版本校验放行。
+  input.request_id = body.value("request_id", std::string{});
+  if (body.contains("version") && !body["version"].is_null()) {
+    input.version = body.value("version", std::int64_t{-1});
+  }
   if (body.contains("lines") && body["lines"].is_array()) {
     for (const auto& item : body["lines"]) {
       DocLineInput line;
@@ -328,6 +352,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
                       nlohmann::json result;
                       result["id"] = created.id;
                       result["doc_no"] = created.doc_no;
+                      result["version"] = created.version;
                       json_ok(res, result);
                     }));
 
@@ -344,7 +369,12 @@ void register_document_routes(httplib::Server& server, Services& services) {
                 guard("document.write",
                       [&services](const httplib::Request& req, httplib::Response& res) {
                         const auto id = std::stoll(req.matches[1].str());
-                        services.docs.delete_draft(id);
+                        // DELETE 带不了 body，版本走查询参数；不传按老客户端放行。
+                        const std::int64_t version =
+                            req.has_param("version")
+                                ? std::stoll(req.get_param_value("version"))
+                                : -1;
+                        services.docs.delete_draft(id, version);
                         nlohmann::json body;
                         body["ok"] = true;
                         json_ok(res, body);
@@ -358,7 +388,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
                       const bool confirm_credit =
                           req.has_param("confirm_credit") &&
                           req.get_param_value("confirm_credit") == "1";
-                      services.docs.approve(id, confirm_credit);
+                      services.docs.approve(id, confirm_credit, request_version(req));
                       json_ok(res, detail_to_json(services.docs.detail(id)));
                     }));
 
@@ -367,7 +397,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
                     [&services](const httplib::Request& req, httplib::Response& res) {
                       const auto id = std::stoll(req.matches[1].str());
                       require_doc_audit(services.docs.detail(id).doc_type);
-                      services.docs.reverse(id);
+                      services.docs.reverse(id, request_version(req));
                       nlohmann::json body;
                       body["ok"] = true;
                       json_ok(res, body);

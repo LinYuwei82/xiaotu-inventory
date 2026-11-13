@@ -600,6 +600,15 @@
     }
   }
 
+  // 新建单据的幂等键：进入新建页生成一个，提交成功后作废，重试复用同一个。
+  // 服务端按 request_id 唯一索引返回首次创建的单据，避免双击/断线重试重复建单。
+  function newRequestId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return window.crypto.randomUUID();
+    }
+    return "rid-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+  }
+
   // 打印路径的 target_key=… 已带 ?，报表查询串也从 ? 开始；直接相加会得到
   // target_key=purchase-detail?from=…，服务端把 "?from" 并进 target_key 后报
   // 「未知的打印目标」。这里把首个 ? 换成 &，让查询参数真正成为独立参数。
@@ -1706,6 +1715,9 @@
     let items = [];
     let documents = [];
     let editingId = 0;
+    // 乐观锁版本与幂等键：版本随详情/列表带回，request_id 每次新建页生成一次。
+    let editingVersion = -1;
+    let requestId = newRequestId();
     // 录入页的脏标记：任一字段变动即置脏，保存成功、重置或切换单据后清除。
     let dirty = false;
 
@@ -2044,6 +2056,9 @@
 
     function resetForm() {
       editingId = 0;
+      editingVersion = -1;
+      // 提交成功/取消后作废幂等键，下一次新建重新生成。
+      requestId = newRequestId();
       dirty = false;
       mount.querySelector('[data-role="cancel-edit"]').hidden = true;
       form.querySelector('[data-role="partner"]').value = "";
@@ -2131,15 +2146,19 @@
       };
       const submit = async (confirmCredit) => {
         if (editingId) {
-          await api("PUT", "/api/documents/" + editingId, {
+          // 带上读取时的版本；被他人改过会返回 VERSION_CONFLICT。
+          const updated = await api("PUT", "/api/documents/" + editingId, {
             ...body,
             confirm_credit: confirmCredit,
+            version: editingVersion,
           });
+          editingVersion = updated ? updated.version ?? editingVersion : editingVersion;
           if (!draft) {
             await api(
               "POST",
               "/api/documents/" + editingId + "/approve" +
-                (confirmCredit ? "?confirm_credit=1" : "")
+                (confirmCredit ? "?confirm_credit=1" : ""),
+              { version: editingVersion }
             );
           }
           return null;
@@ -2148,6 +2167,7 @@
           ...body,
           save_as_draft: draft,
           confirm_credit: confirmCredit,
+          request_id: requestId,
         });
       };
       const finish = async (result) => {
@@ -2186,6 +2206,7 @@
       try {
         const detail = await api("GET", "/api/documents/" + doc.id);
         editingId = doc.id;
+        editingVersion = detail.version ?? -1;
         warehouseSelect.value = String(detail.warehouse_id);
         dateInput.value = detail.doc_date;
         if (config.twoWarehouse && detail.target_warehouse_id) {
@@ -2259,15 +2280,29 @@
         }
         if (button.dataset.role === "reverse") {
           if (!(await askConfirm("反审核会生成反向库存流水，确认继续？"))) return;
-          await api("POST", "/api/documents/" + id + "/reverse");
+          const doc = documents.find((row) => row.id === id);
+          await api(
+            "POST",
+            "/api/documents/" + id + "/reverse",
+            doc ? { version: doc.version } : {}
+          );
           showNotice("已反审核", "ok");
         } else if (button.dataset.role === "approve") {
           if (!(await askConfirm("审核后才会写库存流水，确认继续？"))) return;
-          await api("POST", "/api/documents/" + id + "/approve");
+          const doc = documents.find((row) => row.id === id);
+          await api(
+            "POST",
+            "/api/documents/" + id + "/approve",
+            doc ? { version: doc.version } : {}
+          );
           showNotice("已审核", "ok");
         } else if (button.dataset.role === "delete") {
           if (!(await askConfirm("确认删除这张草稿？"))) return;
-          await api("DELETE", "/api/documents/" + id);
+          const doc = documents.find((row) => row.id === id);
+          await api(
+            "DELETE",
+            "/api/documents/" + id + (doc ? "?version=" + doc.version : "")
+          );
           if (editingId === id) resetForm();
           showNotice("草稿已删除", "ok");
         } else if (button.dataset.role === "edit") {
@@ -2310,6 +2345,8 @@
     let customers = [];
     let documents = [];
     let editingId = 0;
+    let editingVersion = -1;
+    let requestId = newRequestId();
     let convertingId = 0;
     let page = 1;
     const pageSize = 20;
@@ -2634,6 +2671,8 @@
 
     function resetForm() {
       editingId = 0;
+      editingVersion = -1;
+      requestId = newRequestId();
       mount.querySelector('[data-role="cancel-edit"]').hidden = true;
       customerSelect.value = "";
       if (salespersonSelect) salespersonSelect.value = "0";
@@ -2678,11 +2717,23 @@
       };
       try {
         if (editingId) {
-          await api("PUT", "/api/documents/" + editingId, body);
-          if (!draft) await api("POST", "/api/documents/" + editingId + "/approve");
+          const updated = await api("PUT", "/api/documents/" + editingId, {
+            ...body,
+            version: editingVersion,
+          });
+          editingVersion = updated ? updated.version ?? editingVersion : editingVersion;
+          if (!draft) {
+            await api("POST", "/api/documents/" + editingId + "/approve", {
+              version: editingVersion,
+            });
+          }
           showNotice(draft ? "订单草稿已保存" : "订单已确认", "ok");
         } else {
-          const result = await api("POST", "/api/documents", { ...body, save_as_draft: draft });
+          const result = await api("POST", "/api/documents", {
+            ...body,
+            save_as_draft: draft,
+            request_id: requestId,
+          });
           showNotice((draft ? "已存为草稿：" : "订单已确认：") + result.doc_no, "ok");
         }
         resetForm();
@@ -2696,6 +2747,7 @@
       try {
         const detail = await api("GET", "/api/documents/" + doc.id);
         editingId = doc.id;
+        editingVersion = detail.version ?? -1;
         warehouseSelect.value = String(detail.warehouse_id);
         dateInput.value = detail.doc_date;
         customerSelect.value = detail.partner_id ? String(detail.partner_id) : "";
@@ -2838,14 +2890,23 @@
         }
         if (button.dataset.role === "approve") {
           if (!(await askConfirm(`确认订单后不可再改单，只能${config.convertTitle}或关闭。继续？`))) return;
-          await api("POST", "/api/documents/" + id + "/approve");
+          const doc = documents.find((row) => row.id === id);
+          await api(
+            "POST",
+            "/api/documents/" + id + "/approve",
+            doc ? { version: doc.version } : {}
+          );
           showNotice("订单已确认", "ok");
         } else if (button.dataset.role === "edit") {
           await startEdit(documents.find((doc) => doc.id === id));
           return;
         } else if (button.dataset.role === "delete") {
           if (!(await askConfirm("确认删除这张订单草稿？"))) return;
-          await api("DELETE", "/api/documents/" + id);
+          const doc = documents.find((row) => row.id === id);
+          await api(
+            "DELETE",
+            "/api/documents/" + id + (doc ? "?version=" + doc.version : "")
+          );
           if (editingId === id) resetForm();
           showNotice("订单草稿已删除", "ok");
         } else if (button.dataset.role === "convert") {
