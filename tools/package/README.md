@@ -32,13 +32,17 @@ XIAOTU_UPDATE_PUBKEY="$(cat ~/keys/update_signing.pub.b64)" \
 tools/package/make_dmg.sh
 ```
 
-- `XIAOTU_BUILD` 必须是纯数字且单调递增；不设置时沿用 CMake 缓存值，脚本结束时打印实际构建号。构建号不变时 Sparkle 会判为“没有更新”。
+- `XIAOTU_BUILD` 必填：纯数字且单调递增，缺失或非数字时脚本直接退出 1，不再沿用 CMake 缓存默认值。构建号不变时 Sparkle 会判为“没有更新”。
 - 更新三项（`XIAOTU_UPDATE_MANIFEST_URL` / `XIAOTU_UPDATE_FEED_URL` / `XIAOTU_UPDATE_PUBKEY`）必须同时提供或同时留空：
   - 全部留空：脚本打印“更新功能关闭”警告，应用内 `status.enabled=false`，仍会正常出包；
   - 只给一部分：直接报错退出，不猜测意图。
 - 两个地址必须是 `https://`；公钥是 Sparkle 的 `SUPublicEDKey`（base64，解码后 32 字节的 Ed25519 公钥）。任一项不合法直接退出，不会静默降级成无更新配置。
 - 构建完成后脚本用 `PlistBuddy` 回读三键，与传入值不一致即失败，避免 CMake 缓存残留或转义问题。
 - “有更新”的最小闭环还需要 `SUFeedURL` 指向的 appcast 与安装包（见下节）。
+
+本地开发不经过本脚本：`cmake --preset macos-dev`（或直接 `macos-release`）允许不传构建号，但配置阶段会打印
+“构建号 2026111301 是开发默认值，此产物不可用于发布”的警告。出包与 CI 走
+`-DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=<纯数字>`：缺号、非数字或仍为默认值都会在 configure 阶段失败。
 
 ## 签名与公证
 

@@ -19,7 +19,7 @@
 #   XIAOTU_SIGN_IDENTITY  签名证书名称（默认空，使用 ad-hoc）
 #   XIAOTU_NOTARY_PROFILE notarytool keychain profile（默认空，跳过公证）
 #   XIAOTU_DIST_DIR       产物目录（默认 <repo>/build/package）
-#   XIAOTU_BUILD          构建号（纯数字，单调递增）；不设则沿用 CMake 缓存
+#   XIAOTU_BUILD          构建号（纯数字，单调递增）；必填，缺失即失败
 #   XIAOTU_UPDATE_MANIFEST_URL  单机版清单地址（https）
 #   XIAOTU_UPDATE_FEED_URL      Sparkle appcast 地址（https）
 #   XIAOTU_UPDATE_PUBKEY        Sparkle 公钥（Ed25519，base64，32 字节）
@@ -47,7 +47,7 @@ usage() {
   XIAOTU_SIGN_IDENTITY  签名证书名称；为空则 ad-hoc 签名
   XIAOTU_NOTARY_PROFILE notarytool keychain profile；为空则跳过公证并打印日志
   XIAOTU_DIST_DIR       产物目录（默认 <repo>/build/package）
-  XIAOTU_BUILD          构建号（纯数字）；为空则沿用 CMake 缓存并在结束时打印
+  XIAOTU_BUILD          构建号（纯数字，单调递增）；必填，缺失退出 1
   XIAOTU_UPDATE_MANIFEST_URL  单机版清单地址（https）
   XIAOTU_UPDATE_FEED_URL      Sparkle appcast 地址（https）
   XIAOTU_UPDATE_PUBKEY        Sparkle 公钥（base64，解码后 32 字节）
@@ -108,31 +108,30 @@ if [ "$UPDATE_CONFIG_COUNT" -eq 3 ]; then
 fi
 
 BUILD_NUMBER="${XIAOTU_BUILD:-}"
-if [ -n "$BUILD_NUMBER" ]; then
-  case "$BUILD_NUMBER" in
-    *[!0-9]*)
-      echo "XIAOTU_BUILD 必须是纯数字：$BUILD_NUMBER" >&2
-      exit 1
-      ;;
-  esac
+if [ -z "$BUILD_NUMBER" ]; then
+  echo "打包必须显式设置 XIAOTU_BUILD（纯数字、单调递增），例如：" >&2
+  echo "  XIAOTU_BUILD=$(date -u +%Y%m%d%H) tools/package/make_dmg.sh" >&2
+  exit 1
 fi
+case "$BUILD_NUMBER" in
+  *[!0-9]*)
+    echo "XIAOTU_BUILD 必须是纯数字：$BUILD_NUMBER" >&2
+    exit 1
+    ;;
+esac
 
 # 显式传入（含空值），避免 CMake 缓存把上一次的更新配置带到本次包。
 CMAKE_ARGS=(
   --preset macos-release
   -DXIAOTU_BUILD_SHELL=ON
+  -DXIAOTU_RELEASE_BUILD=ON
+  "-DXIAOTU_BUILD=$BUILD_NUMBER"
   "-DXIAOTU_UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
   "-DXIAOTU_UPDATE_FEED_URL=$UPDATE_FEED_URL"
   "-DXIAOTU_UPDATE_PUBKEY=$UPDATE_PUBKEY"
 )
-if [ -n "$BUILD_NUMBER" ]; then
-  CMAKE_ARGS+=("-DXIAOTU_BUILD=$BUILD_NUMBER")
-  BUILD_HINT="${BUILD_NUMBER}（来自 XIAOTU_BUILD）"
-else
-  BUILD_HINT="未设置 XIAOTU_BUILD，沿用 CMake 缓存（结束时打印实际值）"
-fi
 echo "===== 构建（macos-release，版本 ${VERSION}）"
-echo "构建号：${BUILD_HINT}"
+echo "构建号：${BUILD_NUMBER}（来自 XIAOTU_BUILD）"
 cmake "${CMAKE_ARGS[@]}"
 cmake --build --preset release
 
@@ -150,7 +149,7 @@ if [ "$PLIST_VERSION" != "$VERSION" ]; then
 fi
 
 PLIST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
-if [ -n "$BUILD_NUMBER" ] && [ "$PLIST_BUILD" != "$BUILD_NUMBER" ]; then
+if [ "$PLIST_BUILD" != "$BUILD_NUMBER" ]; then
   echo "Info.plist 构建号（${PLIST_BUILD}）与 XIAOTU_BUILD（${BUILD_NUMBER}）不一致。" >&2
   exit 1
 fi

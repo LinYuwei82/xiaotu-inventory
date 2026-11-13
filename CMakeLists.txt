@@ -45,8 +45,29 @@ endif()
 set(XIAOTU_EDITION "full" CACHE STRING "版本：full（全功能版）或 community（社区版）")
 message(STATUS "版本：${XIAOTU_EDITION}")
 
-# 构建号：单调递增，发布时由流水线显式传入；本地默认值只用于开发。
-set(XIAOTU_BUILD "2026111301" CACHE STRING "构建号（单调递增）")
+# 构建号：单调递增。出包与 CI 必须显式传入；本地开发留空时回落到开发默认值并告警，
+# 让“这是默认值、不可发布”在配置阶段就可见，而不是悄悄生效。
+set(XIAOTU_DEFAULT_BUILD "2026111301")
+option(XIAOTU_RELEASE_BUILD "发布/出包构建：XIAOTU_BUILD 必须显式提供" OFF)
+set(XIAOTU_BUILD "" CACHE STRING "构建号（发布构建必填；开发态留空使用默认值）")
+if(XIAOTU_RELEASE_BUILD)
+  if(XIAOTU_BUILD STREQUAL "")
+    message(FATAL_ERROR "发布/出包构建必须显式指定 -DXIAOTU_BUILD=<纯数字构建号>")
+  endif()
+  if(NOT XIAOTU_BUILD MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "XIAOTU_BUILD 必须是纯数字：${XIAOTU_BUILD}")
+  endif()
+  if(XIAOTU_BUILD STREQUAL XIAOTU_DEFAULT_BUILD)
+    message(FATAL_ERROR "发布/出包构建不能使用开发默认构建号 ${XIAOTU_DEFAULT_BUILD}")
+  endif()
+  # 只对本次配置生效：避免缓存把发布态带到同一目录后续的开发构建。
+  unset(XIAOTU_RELEASE_BUILD CACHE)
+elseif(XIAOTU_BUILD STREQUAL "")
+  set(XIAOTU_BUILD "${XIAOTU_DEFAULT_BUILD}" CACHE STRING "" FORCE)
+endif()
+if(XIAOTU_BUILD STREQUAL XIAOTU_DEFAULT_BUILD)
+  message(WARNING "构建号 ${XIAOTU_BUILD} 是开发默认值，此产物不可用于发布；出包请用 tools/package/make_dmg.sh 并显式设置 XIAOTU_BUILD")
+endif()
 # 单机版更新配置：由 tools/package/make_dmg.sh 在打包时注入 Info.plist。
 # 三者都为空表示更新功能关闭；只提供一部分视为配置错误。
 set(XIAOTU_UPDATE_MANIFEST_URL "" CACHE STRING "单机版清单地址（https）")

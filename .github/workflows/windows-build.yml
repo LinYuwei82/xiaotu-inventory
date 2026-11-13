@@ -44,8 +44,12 @@ jobs:
         with:
           arch: x64
 
+      - name: 计算构建号
+        shell: bash
+        run: echo "XIAOTU_BUILD=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"
+
       - name: Configure
-        run: cmake --preset windows-release
+        run: cmake --preset windows-release -DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=${{ env.XIAOTU_BUILD }}
 
       - name: Build
         run: cmake --build --preset windows-release
@@ -137,8 +141,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 计算构建号
+        shell: bash
+        run: echo "XIAOTU_BUILD=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"
+
       - name: Configure
-        run: cmake --preset macos-release
+        run: cmake --preset macos-release -DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=${{ env.XIAOTU_BUILD }}
 
       - name: Build
         run: cmake --build --preset release

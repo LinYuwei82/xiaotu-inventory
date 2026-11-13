@@ -68,10 +68,22 @@ print_ccache_stats() {
 
 print_toolchain
 
+# 构建号：发布/出包路径必须显式给号。CI 未注入时按 UTC 时间生成一个，
+# 既保证每次构建都有明确构建号，也避免本地验证被迫手编。
+BUILD_NUMBER="${XIAOTU_BUILD:-$(date -u +%Y%m%d%H%M)}"
+case "$BUILD_NUMBER" in
+  *[!0-9]*)
+    echo "XIAOTU_BUILD 必须是纯数字：$BUILD_NUMBER" >&2
+    exit 1
+    ;;
+esac
+BUILD_ARGS=(-DXIAOTU_RELEASE_BUILD=ON "-DXIAOTU_BUILD=$BUILD_NUMBER")
+echo "==> 构建号：${BUILD_NUMBER}"
+
 case "$(uname -s)" in
   Darwin)
     echo "==> 构建 release（macOS 全量，含壳）"
-    cmake --preset macos-release
+    cmake --preset macos-release "${BUILD_ARGS[@]}"
     cmake --build --preset release --parallel
 
     echo "==> 运行 ctest"
@@ -79,14 +91,14 @@ case "$(uname -s)" in
 
     # 社区版只保留基础能力，额度与 hidden 能力的拦截路径必须单独构建验证。
     echo "==> 构建 community（能力与额度限制）"
-    cmake --preset macos-community
+    cmake --preset macos-community "${BUILD_ARGS[@]}"
     cmake --build --preset community --parallel
     echo "==> 运行 community ctest"
     ctest --test-dir build/community --output-on-failure
 
     if [[ "$QUICK" -eq 0 ]]; then
       echo "==> 构建 windows-release（XIAOTU_BUILD_SHELL=OFF）"
-      cmake --preset windows-release
+      cmake --preset windows-release "${BUILD_ARGS[@]}"
       cmake --build --preset windows-release --parallel
       echo "==> 运行 windows-release ctest"
       ctest --test-dir build/windows --output-on-failure
@@ -123,7 +135,7 @@ case "$(uname -s)" in
       echo "    ccache: 已启用（${CCACHE_DIR}）"
     fi
 
-    cmake --preset linux-ci "${GENERATOR[@]}" "${LAUNCHER[@]}"
+    cmake --preset linux-ci "${GENERATOR[@]}" "${LAUNCHER[@]}" "${BUILD_ARGS[@]}"
     cmake --build --preset linux-ci --parallel
 
     echo "==> 运行 ctest"
