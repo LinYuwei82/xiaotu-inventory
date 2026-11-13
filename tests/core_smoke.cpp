@@ -90,7 +90,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 38, "迁移后 schema 版本应为 38");
+      check(db.schema_version() == 39, "迁移后 schema 版本应为 39");
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
       db.read([&](sqlite3* conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
@@ -2971,6 +2971,7 @@ int main() {
                            "DROP TABLE partner_merge_log;"
                            "DROP TABLE partner_legacy_map;"
                            "DROP TABLE partner;"
+                           "DROP TABLE local_remember_token;"
                            "DROP INDEX IF EXISTS uk_doc_header_request;"
                            "ALTER TABLE doc_header DROP COLUMN request_id;"
                            "ALTER TABLE doc_header DROP COLUMN version;"
@@ -3033,7 +3034,7 @@ int main() {
         });
 
         xiaotu::migrate(mig);
-        check(mig.schema_version() == 38, "有数据的模拟库应迁到 v38");
+        check(mig.schema_version() == 39, "有数据的模拟库应迁到 v39");
 
         mig.read([&](sqlite3* conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");
@@ -3544,10 +3545,10 @@ int main() {
         fs::create_directories(list_dir);
         xiaotu::Db ldb(list_dir / "app.db", 2);
         xiaotu::migrate(ldb);
-        check(ldb.schema_version() == 38, "列表筛选库应迁到 v38");
-        // 幂等：每次启动都会跑 migrate，已应用的 v38 只能跳过，不能重复加列。
+        check(ldb.schema_version() == 39, "列表筛选库应迁到 v39");
+        // 幂等：每次启动都会跑 migrate，已应用的 v39 只能跳过。
         xiaotu::migrate(ldb);
-        check(ldb.schema_version() == 38, "重复迁移应保持 v38，不重复加 remark 列");
+        check(ldb.schema_version() == 39, "重复迁移应保持 v39，不重复建 token 表");
         ldb.read([&](sqlite3* conn) {
           bool has_type_date = false;
           bool has_type_status = false;

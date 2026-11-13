@@ -15,6 +15,8 @@
     csrf: "",
     permissions: [],
     edition: "",
+    mode: "",
+    localGate: {},
   };
 
   // 版本能力表由 tools/codegen 从 editions.json 生成，与后端 edition_caps.h 同源；
@@ -72,6 +74,40 @@
   notifyShellDirty.lastSent = null;
 
   setInterval(notifyShellDirty, 500);
+
+  // 单机版「本机免输」：桌面壳用 WKScriptMessageHandlerWithReply 提供钥匙串桥，
+  // 浏览器里没有这个通道。钥匙串只存服务端签发的随机 token，不存口令。
+  function keychainBridge() {
+    return window.webkit && window.webkit.messageHandlers
+      ? window.webkit.messageHandlers.xiaotuKeychain
+      : null;
+  }
+
+  function keychainAvailable() {
+    return Boolean(keychainBridge());
+  }
+
+  async function keychainCall(action, payload) {
+    const bridge = keychainBridge();
+    if (!bridge) return { ok: false, error: "当前环境不支持系统钥匙串" };
+    try {
+      const result = await bridge.postMessage(Object.assign({ action }, payload || {}));
+      return result || { ok: false, error: "系统钥匙串没有返回结果" };
+    } catch (error) {
+      return { ok: false, error: error && error.message ? error.message : String(error) };
+    }
+  }
+
+  async function saveRememberToken(token) {
+    if (!token || !keychainAvailable()) return false;
+    const result = await keychainCall("set", { token });
+    return result.ok === true;
+  }
+
+  async function clearRememberToken() {
+    if (!keychainAvailable()) return;
+    await keychainCall("delete");
+  }
 
   // WKWebView 没有实现 WKUIDelegate 的 confirm 面板，window.confirm 会静默返回
   // false；离开确认改用页内确认层，不依赖浏览器原生对话框。
@@ -6624,6 +6660,11 @@
   // 只开放公司抬头三项；编号规则、日期与金额格式仍是固定口径，只读展示。
   async function settingPage(mount) {
     const writable = can("setting.write");
+    const showLocalRemember =
+      state.mode === "local" &&
+      (state.localGate || {}).password_required === true &&
+      writable &&
+      keychainAvailable();
     mount.innerHTML = `
       <div class="page-head">
         <div>
@@ -6662,7 +6703,22 @@
         <p class="page-sub">单据编号：前缀 + 日期 YYYYMMDD + 4 位序号，例如 XSCK20261113-0001；前缀按单据类型固定，暂不可改。</p>
         <p class="page-sub">日期显示固定 YYYY-MM-DD；金额为人民币元、2 位小数；数量小数位跟随商品单位设置（0–4 位）。</p>
         <p class="page-sub">打印占位符：{{company_name}}、{{company_phone}}、{{company_address}}；模板抬头为空时默认打印公司名称。</p>
-      </div>`;
+      </div>
+      ${
+        showLocalRemember
+          ? `<div class="card" data-role="local-remember">
+        <h3>本机免输</h3>
+        <p class="page-sub">钥匙串只保存服务端签发的随机凭据，不保存本机口令；凭据 30 天后失效。</p>
+        <label class="inline-check"><input type="radio" name="local-remember" value="on" /> <span>30 天内免输本机口令</span></label>
+        <label class="inline-check"><input type="radio" name="local-remember" value="off" /> <span>每次启动都要输入本机口令</span></label>
+        <p class="page-sub" data-role="local-remember-state"></p>
+        <div class="form-actions">
+          <button class="btn" type="button" data-role="local-remember-save">保存本机免输设置</button>
+          <button class="btn" type="button" data-role="local-remember-clear">清除本机记忆</button>
+        </div>
+      </div>`
+          : ""
+      }`;
 
     const form = mount.querySelector('[data-role="form"]');
     const input = (name) => form.querySelector('[data-field="' + name + '"]');
@@ -6723,6 +6779,71 @@
         showNotice(error.message, "error");
       }
     });
+
+    // 单机版「本机免输」：开关改服务端策略，凭据本体在 macOS 钥匙串里。
+    const rememberCard = mount.querySelector('[data-role="local-remember"]');
+    if (rememberCard) {
+      const rememberState = rememberCard.querySelector('[data-role="local-remember-state"]');
+      const onInput = rememberCard.querySelector('input[value="on"]');
+      const offInput = rememberCard.querySelector('input[value="off"]');
+      async function refreshRemember() {
+        const data = await api("GET", "/api/local/remember/setting");
+        const enabled = data.enabled !== false;
+        onInput.checked = enabled;
+        offInput.checked = !enabled;
+        rememberState.textContent = enabled
+          ? data.has_token
+            ? "当前：30 天内免输；系统钥匙串中已有凭据。"
+            : "当前：30 天内免输；下次输入口令后写入系统钥匙串。"
+          : "当前：每次启动都要输入本机口令。";
+      }
+      try {
+        await refreshRemember();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+      rememberCard
+        .querySelector('[data-role="local-remember-save"]')
+        .addEventListener("click", async () => {
+          const enabled = onInput.checked;
+          try {
+            const result = await api("PUT", "/api/local/remember/setting", { enabled });
+            if (enabled && result.remember_token) {
+              if (!(await saveRememberToken(result.remember_token))) {
+                showNotice("设置已保存，但未能写入系统钥匙串；下次启动仍需输入口令", "error");
+                await refreshRemember();
+                return;
+              }
+            } else if (!enabled) {
+              await clearRememberToken();
+            }
+            await refreshRemember();
+            showNotice("本机免输设置已保存", "ok");
+          } catch (error) {
+            showNotice(error.message, "error");
+          }
+        });
+      rememberCard
+        .querySelector('[data-role="local-remember-clear"]')
+        .addEventListener("click", async () => {
+          if (
+            !(await askConfirm("清除后，下次启动需要重新输入本机口令。", {
+              okText: "清除",
+              cancelText: "取消",
+            }))
+          ) {
+            return;
+          }
+          try {
+            await api("POST", "/api/local/remember/clear");
+            await clearRememberToken();
+            await refreshRemember();
+            showNotice("本机记忆已清除", "ok");
+          } catch (error) {
+            showNotice(error.message, "error");
+          }
+        });
+    }
   }
 
   // ---------- 关于与诊断 ----------
@@ -7567,6 +7688,43 @@
   }
 
   // 单机版本机口令门禁：只收口令，内部仍按内置 admin 登录；不带用户名输入框。
+  // 登录成功后按「30 天免输 / 每次都要输」决定是否把服务端签发的凭据写进钥匙串。
+  async function localPasswordLogin(password) {
+    const gate = state.localGate || {};
+    const remember = gate.remember_enabled !== false && keychainAvailable();
+    const result = await api("POST", "/api/login", {
+      username: "admin",
+      password,
+      remember,
+    });
+    state.csrf = result.csrf || "";
+    if (result.remember_token) {
+      await saveRememberToken(result.remember_token);
+    } else {
+      await clearRememberToken();
+    }
+    return result;
+  }
+
+  // 钥匙串里有凭据就先换会话；过期、被清除或时钟回拨时清掉本地凭据并回口令页。
+  async function tryRememberedLogin() {
+    if (!keychainAvailable()) return { ok: false, message: "" };
+    const stored = await keychainCall("get");
+    const token = stored && stored.ok ? stored.token : "";
+    if (!token) return { ok: false, message: "" };
+    try {
+      const result = await api("POST", "/api/local/remember", { token });
+      state.csrf = result.csrf || "";
+      return { ok: true };
+    } catch (error) {
+      if (error.status === 401 || error.code === "REMEMBER_TOKEN_INVALID") {
+        await clearRememberToken();
+        return { ok: false, message: error.message || "本机免输已失效，请重新输入口令" };
+      }
+      return { ok: false, message: "" };
+    }
+  }
+
   function renderLocalGate(message) {
     state.current = null;
     nav.innerHTML = "";
@@ -7593,11 +7751,7 @@
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       try {
-        const result = await api("POST", "/api/login", {
-          username: "admin",
-          password: form.password.value,
-        });
-        state.csrf = result.csrf || "";
+        await localPasswordLogin(form.password.value);
         clearBootstrapHash();
         await bootstrap();
       } catch (error) {
@@ -7643,11 +7797,7 @@
       }
       try {
         await api("POST", "/api/local/password", { password: form.password.value });
-        const result = await api("POST", "/api/login", {
-          username: "admin",
-          password: form.password.value,
-        });
-        state.csrf = result.csrf || "";
+        await localPasswordLogin(form.password.value);
         clearBootstrapHash();
         await bootstrap();
       } catch (error) {
@@ -7761,6 +7911,8 @@
       state.edition = health.edition || "";
       const isLocal = health.mode === "local";
       const localGate = health.local_gate || {};
+      state.mode = health.mode || "";
+      state.localGate = localGate;
       document.getElementById("mode-label").textContent = isLocal ? "单机版" : "网络版";
       document.getElementById("health").textContent =
         "v" + health.version + " · schema v" + health.schema_version;
@@ -7772,37 +7924,42 @@
         if (error.status !== 401) throw error;
       }
       if (!me) {
-        // 已设本机口令：先出门禁页，启动链接里的一次性 token 不参与自动登录。
+        // 已设本机口令：先试钥匙串里的长期凭据，失败再出门禁页；
+        // 启动链接里的一次性 token 不参与自动登录。
         if (isLocal && localGate.password_required) {
           clearBootstrapHash();
-          renderLocalGate();
-          return;
-        }
-        // 有数据但从未设过口令：问一次；新装无数据不打扰。
-        if (isLocal && localGate.prompt_set_password) {
+          const remembered = await tryRememberedLogin();
+          if (!remembered.ok) {
+            renderLocalGate(remembered.message);
+            return;
+          }
+          me = await api("GET", "/api/me");
+        } else if (isLocal && localGate.prompt_set_password) {
+          // 有数据但从未设过口令：问一次；新装无数据不打扰。
           renderLocalPasswordSetup();
           return;
-        }
-        const hash = location.hash || "";
-        const match = /(?:^#|&)t=([0-9a-f]+)/.exec(hash);
-        if (match) {
-          try {
-            const session = await api("POST", "/api/session", { token: match[1] });
-            state.csrf = session.csrf || "";
-          } catch (error) {
-            // health 读取后口令被另一个页面设置：同样回到门禁页。
-            if (error.code === "LOCAL_PASSWORD_REQUIRED") {
-              clearBootstrapHash();
-              renderLocalGate();
-              return;
-            }
-            throw error;
-          }
-          clearBootstrapHash();
-          me = await api("GET", "/api/me");
         } else {
-          renderLogin("请使用用户名与口令登录");
-          return;
+          const hash = location.hash || "";
+          const match = /(?:^#|&)t=([0-9a-f]+)/.exec(hash);
+          if (match) {
+            try {
+              const session = await api("POST", "/api/session", { token: match[1] });
+              state.csrf = session.csrf || "";
+            } catch (error) {
+              // health 读取后口令被另一个页面设置：同样回到门禁页。
+              if (error.code === "LOCAL_PASSWORD_REQUIRED") {
+                clearBootstrapHash();
+                renderLocalGate();
+                return;
+              }
+              throw error;
+            }
+            clearBootstrapHash();
+            me = await api("GET", "/api/me");
+          } else {
+            renderLogin("请使用用户名与口令登录");
+            return;
+          }
         }
       }
       state.csrf = me.csrf || state.csrf;

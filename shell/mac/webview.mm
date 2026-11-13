@@ -1,4 +1,5 @@
 #import <Cocoa/Cocoa.h>
+#import <Security/Security.h>
 #import <WebKit/WebKit.h>
 
 #include <string>
@@ -50,6 +51,97 @@ static BOOL XiaotuConfirmExitIfDirty(void) {
 }
 
 @interface XiaotuWindowDelegate : NSObject <NSWindowDelegate>
+@end
+
+// 单机版「本机免输」：钥匙串里只放服务端签发的随机 token，不存口令或口令派生值。
+// token 的 30 天到期、时钟回拨与作废都在服务端判断，壳只负责存取。
+static NSString* const kXiaotuKeychainService = @"com.simem.xiaotu.local-remember";
+static NSString* const kXiaotuKeychainAccount = @"admin";
+
+static NSMutableDictionary* XiaotuKeychainQuery(void) {
+  return [@{
+    (__bridge id)kSecClass : (__bridge id)kSecClassGenericPassword,
+    (__bridge id)kSecAttrService : kXiaotuKeychainService,
+    (__bridge id)kSecAttrAccount : kXiaotuKeychainAccount,
+  } mutableCopy];
+}
+
+static NSDictionary* XiaotuKeychainGet(void) {
+  NSMutableDictionary* query = XiaotuKeychainQuery();
+  query[(__bridge id)kSecReturnData] = @YES;
+  query[(__bridge id)kSecMatchLimit] = (__bridge id)kSecMatchLimitOne;
+  CFTypeRef result = NULL;
+  const OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+  if (status == errSecItemNotFound) {
+    return @{@"ok" : @YES, @"token" : [NSNull null]};
+  }
+  if (status != errSecSuccess) {
+    return @{@"ok" : @NO,
+             @"error" : [NSString stringWithFormat:@"钥匙串读取失败（%d）", (int)status]};
+  }
+  NSData* data = CFBridgingRelease(result);
+  NSString* token = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  if (token.length == 0) {
+    return @{@"ok" : @YES, @"token" : [NSNull null]};
+  }
+  return @{@"ok" : @YES, @"token" : token};
+}
+
+static NSDictionary* XiaotuKeychainSet(NSString* token) {
+  if (token.length == 0) {
+    return @{@"ok" : @NO, @"error" : @"凭据为空"};
+  }
+  NSData* data = [token dataUsingEncoding:NSUTF8StringEncoding];
+  NSMutableDictionary* query = XiaotuKeychainQuery();
+  NSDictionary* update = @{(__bridge id)kSecValueData : data};
+  OSStatus status =
+      SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)update);
+  if (status == errSecItemNotFound) {
+    NSMutableDictionary* add = XiaotuKeychainQuery();
+    add[(__bridge id)kSecValueData] = data;
+    status = SecItemAdd((__bridge CFDictionaryRef)add, NULL);
+  }
+  if (status != errSecSuccess) {
+    return @{@"ok" : @NO,
+             @"error" : [NSString stringWithFormat:@"钥匙串写入失败（%d）", (int)status]};
+  }
+  return @{@"ok" : @YES};
+}
+
+static NSDictionary* XiaotuKeychainDelete(void) {
+  const OSStatus status = SecItemDelete((__bridge CFDictionaryRef)XiaotuKeychainQuery());
+  if (status == errSecSuccess || status == errSecItemNotFound) {
+    return @{@"ok" : @YES};
+  }
+  return @{@"ok" : @NO,
+           @"error" : [NSString stringWithFormat:@"钥匙串删除失败（%d）", (int)status]};
+}
+
+// 使用 WKScriptMessageHandlerWithReply：JS 侧 postMessage 直接拿到 Promise 结果。
+@interface XiaotuKeychainHandler : NSObject <WKScriptMessageHandlerWithReply>
+@end
+
+@implementation XiaotuKeychainHandler
+- (void)userContentController:(WKUserContentController*)controller
+      didReceiveScriptMessage:(WKScriptMessage*)message
+                 replyHandler:(void (^)(id _Nullable, NSString* _Nullable))replyHandler {
+  NSDictionary* body = [message.body isKindOfClass:[NSDictionary class]] ? message.body : @{};
+  NSString* action = [body[@"action"] isKindOfClass:[NSString class]] ? body[@"action"] : @"";
+  if ([action isEqualToString:@"get"]) {
+    replyHandler(XiaotuKeychainGet(), nil);
+    return;
+  }
+  if ([action isEqualToString:@"set"]) {
+    NSString* token = [body[@"token"] isKindOfClass:[NSString class]] ? body[@"token"] : @"";
+    replyHandler(XiaotuKeychainSet(token), nil);
+    return;
+  }
+  if ([action isEqualToString:@"delete"]) {
+    replyHandler(XiaotuKeychainDelete(), nil);
+    return;
+  }
+  replyHandler(nil, @"未知的钥匙串操作");
+}
 @end
 
 @implementation XiaotuWindowDelegate
@@ -462,6 +554,13 @@ int run_webview(const std::string& url, const std::string& title) {
     [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateSkip"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateInstall"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateResume"];
+    static XiaotuKeychainHandler* g_keychainHandler = nil;
+    if (g_keychainHandler == nil) {
+      g_keychainHandler = [[XiaotuKeychainHandler alloc] init];
+    }
+    [controller addScriptMessageHandlerWithReply:g_keychainHandler
+                                    contentWorld:[WKContentWorld pageWorld]
+                                            name:@"xiaotuKeychain"];
     configuration.userContentController = controller;
     WKWebView* webview = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
     [webview setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];

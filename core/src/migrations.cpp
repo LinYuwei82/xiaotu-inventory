@@ -1038,6 +1038,21 @@ constexpr const char* kV38 = R"SQL(
 ALTER TABLE doc_header ADD COLUMN remark TEXT NOT NULL DEFAULT '';
 )SQL";
 
+// v39：单机版「本机免输」长期凭据。只存随机 token 的哈希与签发/到期时间，
+// 不存原始口令或其派生值。与 app_session 独立：改口令不会顺带删除它，
+// 需要用户在系统参数页显式「清除本机记忆」。
+// 回退：DROP TABLE local_remember_token; DELETE FROM schema_migration WHERE version = 39;
+constexpr const char* kV39 = R"SQL(
+CREATE TABLE local_remember_token (
+  id           INTEGER PRIMARY KEY,
+  token_hash   TEXT    NOT NULL,
+  issued_at    TEXT    NOT NULL,
+  expires_at   TEXT    NOT NULL,
+  last_used_at TEXT    NOT NULL
+);
+CREATE UNIQUE INDEX uk_local_remember_token_hash ON local_remember_token(token_hash);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -1091,6 +1106,7 @@ const std::vector<Migration>& all_migrations() {
       {36, "v36_doc_header_partner_id_backfill", kV36},
       {37, "v37_doc_header_list_index", kV37},
       {38, "v38_doc_header_remark", kV38},
+      {39, "v39_local_remember_token", kV39},
   };
   return migrations;
 }

@@ -27,6 +27,7 @@
 #include "xiaotu/resources.h"
 #include "xiaotu/restore_wizard.h"
 #include "xiaotu/routes.h"
+#include "xiaotu/token_hash.h"
 #include "xiaotu/update.h"
 #include "xiaotu/update_install.h"
 #include "xiaotu/update_service.h"
@@ -70,6 +71,126 @@ std::string read_setting_value(sqlite3* conn, const char* key) {
   Stmt stmt(conn, "SELECT value FROM app_setting WHERE key = ?;");
   stmt.bind(1, key);
   return stmt.step() ? stmt.text(0) : std::string{};
+}
+
+// 单机版「本机免输」：钥匙串里放服务端签发的随机 token，这里只存哈希与时间。
+constexpr const char* kLocalRememberSettingKey = "local_remember_enabled";
+constexpr int kLocalRememberDays = 30;
+
+void write_setting_value(sqlite3* conn, const char* key, const std::string& value) {
+  Stmt stmt(conn,
+            "INSERT INTO app_setting (key, value, updated_at, updated_by)"
+            " VALUES (?, ?, ?, 'system')"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value,"
+            " updated_at = excluded.updated_at;");
+  stmt.bind(1, key).bind(2, value).bind(3, now_text()).run();
+}
+
+// 默认 30 天免输；只有显式写 '0' 才表示「每次都要输」。
+bool local_remember_enabled(Db& db) {
+  bool enabled = true;
+  db.read([&](sqlite3* conn) {
+    enabled = read_setting_value(conn, kLocalRememberSettingKey) != "0";
+  });
+  return enabled;
+}
+
+bool has_local_remember_token(Db& db) {
+  bool exists = false;
+  db.read([&](sqlite3* conn) {
+    Stmt stmt(conn, "SELECT EXISTS(SELECT 1 FROM local_remember_token);");
+    exists = stmt.step() && stmt.i64(0) != 0;
+  });
+  return exists;
+}
+
+struct IssuedRememberToken {
+  std::string token;
+  std::string expires_at;
+};
+
+// 同一时刻只保留一枚有效凭据：签发新凭据即让旧凭据失效。
+IssuedRememberToken issue_local_remember_token(Db& db, std::int64_t user_id,
+                                               const std::string& username) {
+  IssuedRememberToken issued;
+  issued.token = random_hex(32);
+  const std::string digest = hash_token(issued.token);
+  db.write([&](sqlite3* conn) {
+    Stmt clear(conn, "DELETE FROM local_remember_token;");
+    clear.run();
+    Stmt insert(conn,
+                "INSERT INTO local_remember_token"
+                " (token_hash, issued_at, expires_at, last_used_at)"
+                " VALUES (?, datetime('now'), datetime('now', ?), datetime('now'));");
+    insert.bind(1, digest)
+        .bind(2, std::string("+") + std::to_string(kLocalRememberDays) + " days")
+        .run();
+    Stmt select(conn, "SELECT expires_at FROM local_remember_token WHERE token_hash = ?;");
+    select.bind(1, digest);
+    if (select.step()) {
+      issued.expires_at = select.text(0);
+    }
+    audit_write_as(conn, username, "remember_issue", "auth", user_id, username,
+                   "签发本机免输凭据");
+  });
+  return issued;
+}
+
+void clear_local_remember_tokens(Db& db, std::int64_t user_id, const std::string& username,
+                                 const char* detail) {
+  db.write([&](sqlite3* conn) {
+    Stmt clear(conn, "DELETE FROM local_remember_token;");
+    clear.run();
+    audit_write_as(conn, username, "remember_clear", "auth", user_id, username, detail);
+  });
+}
+
+// 到期与时钟回拨都在服务端判断：
+// - now >= expires_at 视为过期；
+// - now < issued_at 或 now < last_used_at 说明系统时间被回拨，一律作废，
+//   不顺着回拨延长有效期。
+bool validate_local_remember_token(Db& db, const std::string& token, std::string* failure) {
+  if (token.empty()) {
+    *failure = "缺少本机免输凭据";
+    return false;
+  }
+  const std::string digest = hash_token(token);
+  bool found = false;
+  bool expired = false;
+  bool rolled_back = false;
+  db.read([&](sqlite3* conn) {
+    Stmt stmt(conn,
+              "SELECT expires_at <= datetime('now'),"
+              " issued_at > datetime('now'),"
+              " last_used_at > datetime('now')"
+              " FROM local_remember_token WHERE token_hash = ? LIMIT 1;");
+    stmt.bind(1, digest);
+    if (stmt.step()) {
+      found = true;
+      expired = stmt.i64(0) != 0;
+      rolled_back = stmt.i64(1) != 0 || stmt.i64(2) != 0;
+    }
+  });
+  if (!found) {
+    *failure = "本机免输凭据无效，请重新输入口令";
+    return false;
+  }
+  if (expired || rolled_back) {
+    db.write([&](sqlite3* conn) {
+      Stmt stmt(conn, "DELETE FROM local_remember_token WHERE token_hash = ?;");
+      stmt.bind(1, digest).run();
+    });
+    *failure = rolled_back ? "系统时间早于凭据签发时间，本机免输已失效"
+                           : "本机免输已过期，请重新输入口令";
+    return false;
+  }
+  db.write([&](sqlite3* conn) {
+    Stmt stmt(conn,
+              "UPDATE local_remember_token SET last_used_at = datetime('now')"
+              " WHERE token_hash = ?;");
+    stmt.bind(1, digest).run();
+  });
+  return true;
 }
 
 // 恢复只接受备份目录内的文件名：拒绝路径分隔符与 . / ..，避免调到任意文件。
@@ -304,6 +425,10 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
             req.method == "POST") {
           return httplib::Server::HandlerResponse::Unhandled;
         }
+        // 用钥匙串里的长期凭据换会话同样发生在登录之前。
+        if (path == "/api/local/remember" && req.method == "POST") {
+          return httplib::Server::HandlerResponse::Unhandled;
+        }
         if (path == "/api/login" && req.method == "POST") {
           return httplib::Server::HandlerResponse::Unhandled;
         }
@@ -366,7 +491,8 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     body["data_dir_warning"] = info_.data_dir_warning;
     // 单机版本机口令门禁：前端据此决定是否先显示口令页或首次设置提示。
     body["local_gate"] = {{"password_required", local_password_required()},
-                          {"prompt_set_password", local_password_prompt_pending()}};
+                          {"prompt_set_password", local_password_prompt_pending()},
+                          {"remember_enabled", local_remember_enabled(services_.db)}};
 
     const std::filesystem::path backup_dir =
         info_.backup_dir.empty() ? std::filesystem::path(info_.data_dir) / "backups"
@@ -932,6 +1058,100 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                   json_ok(res, nlohmann::json{{"ok", true}});
                 });
 
+  // 用 macOS 钥匙串里的长期凭据换正常会话：凭据是服务端签发的随机 token，
+  // 原始口令不进入钥匙串。到期、时钟回拨与作废都在服务端判断。
+  server_->Post("/api/local/remember", [this](const httplib::Request& req,
+                                              httplib::Response& res) {
+    if (info_.mode != "local") {
+      json_error(res, 403, "FORBIDDEN", "仅单机版支持本机免输");
+      return;
+    }
+    if (!local_password_required()) {
+      json_error(res, 401, "REMEMBER_TOKEN_INVALID", "本机口令门禁未启用");
+      return;
+    }
+    const std::string token = json_body(req).value("token", std::string{});
+    std::string failure;
+    if (!validate_local_remember_token(services_.db, token, &failure)) {
+      json_error(res, 401, "REMEMBER_TOKEN_INVALID", failure);
+      return;
+    }
+    const UserRow admin = services_.users.find_by_username("admin");
+    if (!admin.active) {
+      json_error(res, 403, "USER_DISABLED", "内置管理员已停用");
+      return;
+    }
+    const SessionPolicy policy = services_.settings.session_policy();
+    const CreatedSession session = sessions_.create(admin.id, policy.idle_minutes);
+    res.set_header("Set-Cookie",
+                   "sid=" + session.id + cookie_attributes(req, policy.idle_minutes * 60));
+    services_.db.write([&](sqlite3* conn) {
+      audit_write_as(conn, admin.username, "login", "auth", admin.id, admin.username,
+                     "本机免输");
+    });
+    nlohmann::json result;
+    result["ok"] = true;
+    result["user"] = admin.username;
+    result["role"] = admin.role;
+    result["csrf"] = session.csrf;
+    result["must_change_password"] = admin.must_change_password;
+    json_ok(res, result);
+  });
+
+  // 本机免输设置：默认 30 天免输；切到「每次都要输」时立即作废服务端凭据。
+  server_->Get("/api/local/remember/setting",
+               guard("setting.write",
+                     [this](const httplib::Request&, httplib::Response& res) {
+                       if (info_.mode != "local") {
+                         json_error(res, 403, "FORBIDDEN", "仅单机版支持本机免输");
+                         return;
+                       }
+                       json_ok(res, nlohmann::json{
+                                        {"enabled", local_remember_enabled(services_.db)},
+                                        {"has_token", has_local_remember_token(services_.db)}});
+                     }));
+
+  server_->Put("/api/local/remember/setting",
+               guard("setting.write",
+                     [this](const httplib::Request& req, httplib::Response& res) {
+                       if (info_.mode != "local") {
+                         json_error(res, 403, "FORBIDDEN", "仅单机版支持本机免输");
+                         return;
+                       }
+                       const bool enabled = json_body(req).value("enabled", true);
+                       services_.db.write([&](sqlite3* conn) {
+                         write_setting_value(conn, kLocalRememberSettingKey,
+                                             enabled ? "1" : "0");
+                       });
+                       const UserRow admin = services_.users.find_by_username("admin");
+                       const std::string actor = current_context().user;
+                       if (!enabled) {
+                         clear_local_remember_tokens(services_.db, admin.id, actor,
+                                                     "切换为每次都要输");
+                         json_ok(res, nlohmann::json{{"ok", true}, {"enabled", false}});
+                         return;
+                       }
+                       const IssuedRememberToken issued =
+                           issue_local_remember_token(services_.db, admin.id, actor);
+                       json_ok(res, nlohmann::json{{"ok", true},
+                                                   {"enabled", true},
+                                                   {"remember_token", issued.token},
+                                                   {"expires_at", issued.expires_at}});
+                     }));
+
+  server_->Post("/api/local/remember/clear",
+                guard("setting.write",
+                      [this](const httplib::Request&, httplib::Response& res) {
+                        if (info_.mode != "local") {
+                          json_error(res, 403, "FORBIDDEN", "仅单机版支持本机免输");
+                          return;
+                        }
+                        const UserRow admin = services_.users.find_by_username("admin");
+                        clear_local_remember_tokens(services_.db, admin.id,
+                                                    current_context().user, "用户清除本机记忆");
+                        json_ok(res, nlohmann::json{{"ok", true}});
+                      }));
+
   // 口令登录：失败计数落库（按账号），达到 5 次锁定 15 分钟；成功即清零。
   // 不存在的用户名仍走内存限流，避免枚举时被无限试探。
   server_->Post("/api/login", [this](const httplib::Request& req, httplib::Response& res) {
@@ -978,6 +1198,14 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     result["role"] = user.role;
     result["csrf"] = session.csrf;
     result["must_change_password"] = user.must_change_password;
+    // 单机版口令登录成功后按设置签发长期凭据，由前端写入 macOS 钥匙串。
+    if (info_.mode == "local" && body.value("remember", false) &&
+        local_password_required()) {
+      const IssuedRememberToken issued =
+          issue_local_remember_token(services_.db, user.id, user.username);
+      result["remember_token"] = issued.token;
+      result["remember_expires_at"] = issued.expires_at;
+    }
     json_ok(res, result);
   });
 

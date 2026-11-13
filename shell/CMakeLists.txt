@@ -22,7 +22,8 @@ target_link_libraries(xiaotu-inventory PRIVATE xiaotu_server)
 target_compile_definitions(xiaotu-inventory PRIVATE XIAOTU_VERSION="${PROJECT_VERSION}"
                                                      XIAOTU_WEBVIEW_SHELL=1)
 
-target_link_libraries(xiaotu-inventory PRIVATE "-framework Cocoa" "-framework WebKit")
+target_link_libraries(xiaotu-inventory PRIVATE "-framework Cocoa" "-framework WebKit"
+                                             "-framework Security")
 set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/mac/webview.mm"
   PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/mac/updater.mm"
