@@ -70,6 +70,13 @@ class HttpServer {
  private:
   void register_routes();
   bool consume_bootstrap_token(const std::string& token);
+  // 单机版本机口令：直接复用 app_user 里的内置管理员口令，不另建表。
+  // required 表示用户已在本机启用口令门禁，启动时先显示门禁页。
+  bool local_password_required() const;
+  // 已有业务数据、未设置口令且从未选择过跳过（新装无数据不询问）。
+  bool local_password_prompt_pending() const;
+  // 记录首次询问结果：true=设置口令并启用门禁，false=跳过。
+  void save_local_password_choice(bool enabled);
   // 用服务端自身的版本与 schema 组装更新查询，前端不参与版本判定。
   UpdateQuery self_update_query() const;
   UpdateSettings update_settings() const;

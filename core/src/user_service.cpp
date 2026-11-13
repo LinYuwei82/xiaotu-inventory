@@ -330,16 +330,19 @@ bool UserService::has_password(std::int64_t id) const {
   return found;
 }
 
-void UserService::set_password(std::int64_t id, std::string_view password) {
+void UserService::set_password(std::int64_t id, std::string_view password,
+                               bool force_change_on_first_set) {
   validate_password(password);
   const std::string hash = hash_password(password);
+  // 只有首次设置（原散列为空）才要求下次登录强制改密；管理员重设已有口令
+  // 不再触发改密页，避免每次跑 --set-password 后登录都弹一次。
+  const std::string must_change =
+      force_change_on_first_set ? "CASE WHEN password_hash = '' THEN 1 ELSE 0 END" : "0";
   db_.write([&](sqlite3* conn) {
     ensure_user_exists(conn, id);
-    // 只有首次设置（原散列为空）才要求下次登录强制改密；管理员重设已有口令
-    // 不再触发改密页，避免每次跑 --set-password 后登录都弹一次。
     Stmt stmt(conn,
               "UPDATE app_user SET password_hash = ?,"
-              " must_change_password = CASE WHEN password_hash = '' THEN 1 ELSE 0 END,"
+              " must_change_password = " + must_change + ","
               " failed_count = 0, locked_until = '', updated_at = ?, updated_by = ?"
               " WHERE id = ? AND is_deleted = 0;");
     const AuditStamp stamp = audit_stamp();

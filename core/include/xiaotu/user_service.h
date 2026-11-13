@@ -47,8 +47,11 @@ class UserService {
   UserRow authenticate(std::string_view username, std::string_view password,
                        std::string_view source = {});
   bool has_password(std::int64_t id) const;
-  // 管理员重置口令：清空失败计数与锁定，并置 must_change_password=1。
-  void set_password(std::int64_t id, std::string_view password);
+  // 设置口令：清空失败计数与锁定。默认只有首次设置（原口令为空）才置
+  // must_change_password=1；force_change_on_first_set=false 用于单机版本机
+  // 口令，门禁页本身就是口令入口，不再叠加改密流程。
+  void set_password(std::int64_t id, std::string_view password,
+                    bool force_change_on_first_set = true);
   // 用户自助改密：校验原口令，成功后清空失败计数、锁定与强制改密标记。
   void change_password(std::int64_t id, std::string_view old_password,
                        std::string_view new_password);

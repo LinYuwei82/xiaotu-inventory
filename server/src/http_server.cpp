@@ -63,6 +63,15 @@ bool state_changing(const std::string& method) {
   return method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH";
 }
 
+// 单机版本机口令开关：键不存在=从未询问，'1'=已启用门禁，'0'=已选择跳过。
+constexpr const char* kLocalPasswordSettingKey = "local_password_enabled";
+
+std::string read_setting_value(sqlite3* conn, const char* key) {
+  Stmt stmt(conn, "SELECT value FROM app_setting WHERE key = ?;");
+  stmt.bind(1, key);
+  return stmt.step() ? stmt.text(0) : std::string{};
+}
+
 // 恢复只接受备份目录内的文件名：拒绝路径分隔符与 . / ..，避免调到任意文件。
 bool safe_backup_name(const std::string& name) {
   if (name.empty() || name == "." || name == "..") {
@@ -290,6 +299,11 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         if (path == "/api/session" && req.method == "POST") {
           return httplib::Server::HandlerResponse::Unhandled;
         }
+        // 单机版本机口令的设置与跳过发生在登录之前，按路径放行，具体判定在路由内。
+        if ((path == "/api/local/password" || path == "/api/local/password/skip") &&
+            req.method == "POST") {
+          return httplib::Server::HandlerResponse::Unhandled;
+        }
         if (path == "/api/login" && req.method == "POST") {
           return httplib::Server::HandlerResponse::Unhandled;
         }
@@ -350,6 +364,9 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     body["schema_version"] = services_.db.schema_version();
     body["embedded_resources"] = resources::count();
     body["data_dir_warning"] = info_.data_dir_warning;
+    // 单机版本机口令门禁：前端据此决定是否先显示口令页或首次设置提示。
+    body["local_gate"] = {{"password_required", local_password_required()},
+                          {"prompt_set_password", local_password_prompt_pending()}};
 
     const std::filesystem::path backup_dir =
         info_.backup_dir.empty() ? std::filesystem::path(info_.data_dir) / "backups"
@@ -846,6 +863,11 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
       json_error(res, 403, "FORBIDDEN", "网络版请使用用户名与口令登录");
       return;
     }
+    // 启用本机口令门禁后，启动链接里的一次性 token 不再能绕开门禁。
+    if (local_password_required()) {
+      json_error(res, 403, "LOCAL_PASSWORD_REQUIRED", "已设置本机口令，请先输入口令");
+      return;
+    }
     const auto body = json_body(req);
     const std::string token = body.value("token", std::string{});
     if (!consume_bootstrap_token(token)) {
@@ -873,6 +895,42 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     result["must_change_password"] = admin.must_change_password;
     json_ok(res, result);
   });
+
+  // 单机版首次设置本机口令：仅在尚未设置口令时可用，写内置 admin 的 password_hash。
+  // 不走「首次设置强制改密」：门禁页本身已经要求输入口令，再弹改密页没有意义。
+  server_->Post("/api/local/password",
+                [this](const httplib::Request& req, httplib::Response& res) {
+                  if (info_.mode != "local") {
+                    json_error(res, 403, "FORBIDDEN", "仅单机版支持本机口令");
+                    return;
+                  }
+                  const auto body = json_body(req);
+                  const std::string password = body.value("password", std::string{});
+                  const UserRow admin = services_.users.find_by_username("admin");
+                  if (!admin.active) {
+                    json_error(res, 403, "USER_DISABLED", "内置管理员已停用");
+                    return;
+                  }
+                  if (services_.users.has_password(admin.id)) {
+                    json_error(res, 409, "LOCAL_PASSWORD_ALREADY_SET",
+                               "本机口令已设置；如需重置，请在数据目录上执行 --set-password");
+                    return;
+                  }
+                  services_.users.set_password(admin.id, password, /*force_change_on_first_set=*/false);
+                  save_local_password_choice(/*enabled=*/true);
+                  json_ok(res, nlohmann::json{{"ok", true}});
+                });
+
+  // 跳过首次设置提示：记下「已询问」，之后保持一次性 token 自动登录的现状。
+  server_->Post("/api/local/password/skip",
+                [this](const httplib::Request&, httplib::Response& res) {
+                  if (info_.mode != "local") {
+                    json_error(res, 403, "FORBIDDEN", "仅单机版支持本机口令");
+                    return;
+                  }
+                  save_local_password_choice(/*enabled=*/false);
+                  json_ok(res, nlohmann::json{{"ok", true}});
+                });
 
   // 口令登录：失败计数落库（按账号），达到 5 次锁定 15 分钟；成功即清零。
   // 不存在的用户名仍走内存限流，避免枚举时被无限试探。
@@ -1114,6 +1172,66 @@ std::filesystem::path HttpServer::update_download_dir() const {
 }
 
 void HttpServer::register_routes() { register_all_routes(*server_, services_); }
+
+bool HttpServer::local_password_required() const {
+  if (info_.mode != "local") {
+    return false;
+  }
+  try {
+    const UserRow admin = services_.users.find_by_username("admin");
+    if (!admin.active || !services_.users.has_password(admin.id)) {
+      return false;
+    }
+    bool enabled = false;
+    services_.db.read([&](sqlite3* conn) {
+      enabled = read_setting_value(conn, kLocalPasswordSettingKey) == "1";
+    });
+    return enabled;
+  } catch (const AppError&) {
+    // 内置管理员缺失时按未启用处理，由 /api/session 的原有错误路径兜底。
+    return false;
+  }
+}
+
+bool HttpServer::local_password_prompt_pending() const {
+  if (info_.mode != "local") {
+    return false;
+  }
+  std::string choice;
+  bool has_data = false;
+  services_.db.read([&](sqlite3* conn) {
+    choice = read_setting_value(conn, kLocalPasswordSettingKey);
+    // 只用业务数据判断「老库」：新装会预置仓库、单位等基础种子，不能当作用户数据。
+    Stmt stmt(conn,
+              "SELECT EXISTS(SELECT 1 FROM item WHERE is_deleted = 0)"
+              " OR EXISTS(SELECT 1 FROM partner WHERE is_deleted = 0)"
+              " OR EXISTS(SELECT 1 FROM doc_header);");
+    has_data = stmt.step() && stmt.i64(0) != 0;
+  });
+  if (choice == "0") {
+    return false;
+  }
+  try {
+    const UserRow admin = services_.users.find_by_username("admin");
+    return has_data && admin.active && !services_.users.has_password(admin.id);
+  } catch (const AppError&) {
+    return false;
+  }
+}
+
+void HttpServer::save_local_password_choice(bool enabled) {
+  services_.db.write([&](sqlite3* conn) {
+    Stmt stmt(conn,
+              "INSERT INTO app_setting (key, value, updated_at, updated_by)"
+              " VALUES (?, ?, ?, 'system')"
+              " ON CONFLICT(key) DO UPDATE SET value = excluded.value,"
+              " updated_at = excluded.updated_at;");
+    stmt.bind(1, kLocalPasswordSettingKey)
+        .bind(2, enabled ? std::string("1") : std::string("0"))
+        .bind(3, now_text())
+        .run();
+  });
+}
 
 bool HttpServer::consume_bootstrap_token(const std::string& token) {
   std::lock_guard<std::mutex> lock(bootstrap_mutex_);

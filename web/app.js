@@ -7559,6 +7559,111 @@
       });
   }
 
+  // 门禁页出现后，启动链接里的 #t= 一次性 token 已不再使用，清掉避免刷新时误判。
+  function clearBootstrapHash() {
+    if (location.hash) {
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  }
+
+  // 单机版本机口令门禁：只收口令，内部仍按内置 admin 登录；不带用户名输入框。
+  function renderLocalGate(message) {
+    state.current = null;
+    nav.innerHTML = "";
+    document.getElementById("mode-label").textContent = "单机版";
+    document.getElementById("health").textContent = "";
+    notice.hidden = true;
+    main.querySelectorAll(":scope > *").forEach((node) => {
+      if (node !== notice && node.id !== "data-warning" && node.id !== "network-warning") {
+        node.remove();
+      }
+    });
+    const card = document.createElement("div");
+    card.className = "login-card";
+    card.innerHTML = `
+        <h2>小兔进销存</h2>
+        <p class="hint">${escapeHtml(message || "请输入本机口令")}</p>
+        <form data-role="local-gate-form">
+          <label>本机口令<input name="password" type="password" autocomplete="current-password" required /></label>
+          <button class="btn" type="submit">进入</button>
+        </form>`;
+    main.appendChild(card);
+    updateNetworkBanner();
+    const form = card.querySelector("form");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try {
+        const result = await api("POST", "/api/login", {
+          username: "admin",
+          password: form.password.value,
+        });
+        state.csrf = result.csrf || "";
+        clearBootstrapHash();
+        await bootstrap();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+  }
+
+  // 老库第一次升级：已有数据但没有本机口令，问一次；跳过就保持 token 自动登录。
+  function renderLocalPasswordSetup() {
+    state.current = null;
+    nav.innerHTML = "";
+    document.getElementById("mode-label").textContent = "单机版";
+    document.getElementById("health").textContent = "";
+    notice.hidden = true;
+    main.querySelectorAll(":scope > *").forEach((node) => {
+      if (node !== notice && node.id !== "data-warning" && node.id !== "network-warning") {
+        node.remove();
+      }
+    });
+    const card = document.createElement("div");
+    card.className = "login-card";
+    card.innerHTML = `
+        <h2>设置本机口令</h2>
+        <p class="hint">这台机器已有数据。设置口令后，下次启动需要先输入口令才能进入；也可以跳过，跳过则保持双击直接进入。</p>
+        <form data-role="local-password-setup">
+          <label>口令<input name="password" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <label>确认口令<input name="confirm" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <p class="hint">口令长度 8–128 个字符</p>
+          <div class="form-actions">
+            <button class="btn primary" type="submit">设置口令</button>
+            <button class="btn" type="button" data-role="skip">跳过</button>
+          </div>
+        </form>`;
+    main.appendChild(card);
+    updateNetworkBanner();
+    const form = card.querySelector("form");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (form.password.value !== form.confirm.value) {
+        showNotice("两次输入的口令不一致", "error");
+        return;
+      }
+      try {
+        await api("POST", "/api/local/password", { password: form.password.value });
+        const result = await api("POST", "/api/login", {
+          username: "admin",
+          password: form.password.value,
+        });
+        state.csrf = result.csrf || "";
+        clearBootstrapHash();
+        await bootstrap();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+    card.querySelector('[data-role="skip"]').addEventListener("click", async () => {
+      try {
+        await api("POST", "/api/local/password/skip");
+        await bootstrap();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+  }
+
   function renderLogin(message) {
     state.current = null;
     nav.innerHTML = "";
@@ -7651,14 +7756,55 @@
 
   async function bootstrap() {
     try {
-      const hash = location.hash || "";
-      const match = /(?:^#|&)t=([0-9a-f]+)/.exec(hash);
-      if (match) {
-        const session = await api("POST", "/api/session", { token: match[1] });
-        state.csrf = session.csrf || "";
-        history.replaceState(null, "", location.pathname + location.search);
+      // health 免登录，先拿单机版门禁状态；网络版这些字段恒为 false。
+      const health = await api("GET", "/api/health");
+      state.edition = health.edition || "";
+      const isLocal = health.mode === "local";
+      const localGate = health.local_gate || {};
+      document.getElementById("mode-label").textContent = isLocal ? "单机版" : "网络版";
+      document.getElementById("health").textContent =
+        "v" + health.version + " · schema v" + health.schema_version;
+
+      let me = null;
+      try {
+        me = await api("GET", "/api/me");
+      } catch (error) {
+        if (error.status !== 401) throw error;
       }
-      const me = await api("GET", "/api/me");
+      if (!me) {
+        // 已设本机口令：先出门禁页，启动链接里的一次性 token 不参与自动登录。
+        if (isLocal && localGate.password_required) {
+          clearBootstrapHash();
+          renderLocalGate();
+          return;
+        }
+        // 有数据但从未设过口令：问一次；新装无数据不打扰。
+        if (isLocal && localGate.prompt_set_password) {
+          renderLocalPasswordSetup();
+          return;
+        }
+        const hash = location.hash || "";
+        const match = /(?:^#|&)t=([0-9a-f]+)/.exec(hash);
+        if (match) {
+          try {
+            const session = await api("POST", "/api/session", { token: match[1] });
+            state.csrf = session.csrf || "";
+          } catch (error) {
+            // health 读取后口令被另一个页面设置：同样回到门禁页。
+            if (error.code === "LOCAL_PASSWORD_REQUIRED") {
+              clearBootstrapHash();
+              renderLocalGate();
+              return;
+            }
+            throw error;
+          }
+          clearBootstrapHash();
+          me = await api("GET", "/api/me");
+        } else {
+          renderLogin("请使用用户名与口令登录");
+          return;
+        }
+      }
       state.csrf = me.csrf || state.csrf;
       state.permissions = me.permissions || [];
       if (me.must_change_password) {
@@ -7666,12 +7812,6 @@
         return;
       }
 
-      const health = await api("GET", "/api/health");
-      state.edition = health.edition || "";
-      document.getElementById("mode-label").textContent =
-        health.mode === "local" ? "单机版" : "网络版";
-      document.getElementById("health").textContent =
-        "v" + health.version + " · schema v" + health.schema_version;
       // 数据目录位于同步盘时由服务端给出提示，登录后常驻在页面顶部。
       let warningNode = document.getElementById("data-warning");
       if (!warningNode) {
