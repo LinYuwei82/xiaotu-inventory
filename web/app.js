@@ -675,13 +675,7 @@
     // WKWebView 打印时以 @page margin 为准，NSPrintInfo 的 margin 会被它盖掉；
     // 原生模式若把这里归零，纸边距就只剩 0。三端统一用模板边距。
     const margin = Number(tmpl.margin_mm) || 0;
-    // 实测（2026-11-13）：WKWebView 不渲染 @page 的 margin box，counter(page) 无效；
-    // position: fixed 页脚在打印时也不会逐页重复。这里保留声明只对支持 margin box 的
-    // 打印引擎有效，桌面版页码实际不生效，边界见 docs/M4打印验收清单.md 第六节。
-    const pageNumber = tmpl.show_page_no
-      ? ' @bottom-right { content: "第 " counter(page) " 页"; font-size: 9pt; }'
-      : "";
-    return `@page { size: ${size}; margin: ${margin}mm;${pageNumber} }`;
+    return `@page { size: ${size}; margin: ${margin}mm; }`;
   }
 
   function mountPrintView(data) {
@@ -5386,6 +5380,9 @@
       } else {
         text += " 宽度足够，按 100% 输出。";
       }
+      if (showPageNoInput && showPageNoInput.checked) {
+        text += " 页码随打印引擎而定；网络版可在浏览器打印对话框勾选页眉和页脚。";
+      }
       layoutHint.textContent = text;
     }
 
@@ -5599,6 +5596,7 @@
     for (const input of [marginInput, fontInput, paperWidthInput, paperHeightInput]) {
       input.addEventListener("input", updateLayoutHint);
     }
+    if (showPageNoInput) showPageNoInput.addEventListener("change", updateLayoutHint);
     columnsTable.addEventListener("input", () => {
       syncColumnsFromDom();
       updateLayoutHint();
