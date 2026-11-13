@@ -152,6 +152,15 @@ if ($SkipBuild) {
             Pass "MSVC 构建" "windows-release 配置与构建成功"
         } finally { Pop-Location }
     }
+    Invoke-Check "编译参数不含 /we7560" {
+        $ninja = Join-Path $Repo "build\windows\build.ninja"
+        if (-not (Test-Path $ninja)) { throw "未找到 build/windows/build.ninja，先跑 MSVC 构建" }
+        $hits = @(Select-String -Path $ninja -Pattern "/we7560" -ErrorAction SilentlyContinue)
+        if ($hits.Count -gt 0) {
+            throw "build.ninja 中仍有 $($hits.Count) 处 /we7560：MSVC 14.4x 下 cl 会判其无效并每 TU 刷一条 D9014，应移除"
+        }
+        Pass "编译参数不含 /we7560" "build.ninja 中 /we7560 出现 0 次（C7560 在 MSVC 默认即 error，无需该开关）"
+    }
     Invoke-Check "ctest" {
         Push-Location $Repo
         try {
@@ -378,7 +387,6 @@ if ($SkipInstall) {
 }
 
 # ---------- 11. MANUAL ----------
-Manual "根 CMakeLists 的 /we7560" "本机 cl 报 D9014（值 7560 对 /we 无效），而 C7560 在 MSVC 14.44 默认即 error；建议 macmini 决定是否从根 CMakeLists 删除该开关"
 Manual "WebView2 缺失提示" "在虚拟机卸载 WebView2 后双击壳，应提示缺失而非白屏/闪退"
 Manual "窗口位置与大小记忆" "移动并缩放窗口后重启，应恢复上次位置与大小"
 Manual "打印对话框" "打开打印预览并调起系统对话框，检查纸型/边距/缩放"

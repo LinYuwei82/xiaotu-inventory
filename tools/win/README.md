@@ -60,6 +60,7 @@
 | ctest | `ctest --preset windows-release` 返回 0；失败时列出失败用例名 |
 | 静态运行库 /MT | `dumpbin /dependents` 不含 `vcruntime140.dll`、`msvcp140.dll`、`ucrtbased.dll`；找不到 dumpbin 记 SKIP |
 | C7560 生效 | 临时 worktree 的 `document.cpp` 追加错序指定初始化器后编译失败，且输出含 `C7560`；随后主仓库 `document.cpp` 无改动。判定依据是「C7560 被当作错误」，**不是**「`/we7560` 被识别」：本机 MSVC 14.44 对 `/we7560` 报 `D9014`（值无效），而 C7560 默认就是 error，所以该开关是否被接受不在本项验证范围内 |
+| 编译参数不含 /we7560 | `build/windows/build.ninja` 里搜不到 `/we7560`（根 `CMakeLists.txt` 已移除该开关） |
 | 安装包签名状态 | `SIGNING.txt` 明确写「未签名」且不写「已签名」 |
 | 安装包 SHA256 | 记录 `Get-FileHash` 结果 |
 | 静默安装 | 安装器退出码 0。Inno 语义：0 成功、1 用户取消、2 致命错误；静默安装出现 1 视为 FAIL |
@@ -72,6 +73,21 @@
 | 停止服务 | 杀进程后进程不再存在 |
 | 同版本覆盖安装 | 再跑一次安装器返回 0；`app.db` 仍存在；程序目录无 `.old` / `.tmp` 残留 |
 | 静默卸载 | 卸载器返回 0；`xiaotu-server.exe` 消失；数据目录仍存在；开始菜单快捷方式消失 |
+
+## C7560 与 `/we7560`（不要再加回该开关）
+
+C7560 指「指定初始化器（designated initializer）顺序与结构体成员声明顺序不一致」。根 `CMakeLists.txt` 曾经写过 `add_compile_options(/we7560)` 想把它升级为错误，实际不必要且有害。
+
+本机实测环境：`cl` 版本 **19.44.35230**，工具集 **14.44.35207**（VS 2022 BuildTools），`/std:c++20`。四组对照（源码分别是一份错序 initialized 的 `struct P { int a; int b; }; P p{ .b = 2, .a = 1 };` 与一份空 `main`）：
+
+| 源码 | 编译选项 | 输出 | 退出码 |
+| --- | --- | --- | --- |
+| 错序 | `/we7560` | `warning D9014 : 值"7560"对于"/we"无效` + `error C7560` | 2 |
+| 错序 | 无 `/we` | 仅 `error C7560` | 2 |
+| 正常 | `/we7560` | 仅 `warning D9014` | 0 |
+| 正常 | 无 `/we` | 无输出 | 0 |
+
+结论：**C7560 在该版本默认就是 error**，`/we7560` 不被 cl 识别（只多一条命令行告警 `D9014`，流水线式地给每个编译单元刷一遍）。因此根 `CMakeLists.txt` 的 MSVC 分支已删除该开关；Clang/GCC 的 `-Werror=reorder-init-list` 分支保持原样。请不要以「防止乱序初始化器漂进主干」为由把它加回来——C7560 已经会直接让构建失败。
 
 ## MANUAL 项
 
