@@ -43,34 +43,41 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
     return NO;
   }
 
-  const bool continuous = [paper[@"paper_kind"] isKindOfClass:[NSString class]] &&
-                          [paper[@"paper_kind"] isEqualToString:@"CONTINUOUS"];
-  const bool original = [paper[@"scale_mode"] isKindOfClass:[NSString class]] &&
-                        [paper[@"scale_mode"] isEqualToString:@"ORIGINAL"];
+  // 模板方向只从 layout.orientation 读，不从宽高推断；它随后由 plan_print_layout
+  // 折算进最终宽高，这里只负责把方向原样带进纸型计算。
+  const bool landscape = [paper[@"orientation"] isKindOfClass:[NSString class]] &&
+                         [paper[@"orientation"] isEqualToString:@"LANDSCAPE"];
 
   xiaotu::mac_print::PaperSpec spec;
   xiaotu::mac_print::PaperFailure error;
   if (!xiaotu::mac_print::make_paper_spec([width doubleValue], [height doubleValue],
-                                          [margin doubleValue], continuous, original, spec,
-                                          error)) {
+                                          [margin doubleValue], landscape, spec, error)) {
     if (failure != NULL) {
       *failure = [NSString stringWithUTF8String:error.message.c_str()];
     }
     return NO;
   }
 
-  [info setPaperSize:NSMakeSize(spec.width_pt, spec.height_pt)];
+  // plan_print_layout 已把模板方向算进最终宽高；NSPrintInfo 的 paperSize 按纵向记，
+  // 页面方向另由 orientation 决定。这里只按最终页面翻译页框，不再回头读模板方向，
+  // 否则 241×140 配 PORTRAIT 会被 AppKit 规范成 140×241（内容按 241 宽排版后被裁）。
+  const bool wide_page = spec.width_pt > spec.height_pt;
+  [info setPaperSize:wide_page ? NSMakeSize(spec.height_pt, spec.width_pt)
+                               : NSMakeSize(spec.width_pt, spec.height_pt)];
   [info setLeftMargin:spec.margin_pt];
   [info setRightMargin:spec.margin_pt];
   [info setTopMargin:spec.margin_pt];
   [info setBottomMargin:spec.margin_pt];
-  // 宽 > 高时显式声明横向，避免部分驱动按 portrait 再做一次旋转。
-  [info setOrientation:spec.landscape ? NSPaperOrientationLandscape
-                                      : NSPaperOrientationPortrait];
-  // 连续纸 / 原始尺寸固定 100%，防止驱动「适合页面」把套打位置缩偏。
-  if (spec.fixed_scale) {
-    [info setScalingFactor:1.0];
-  }
+  [info setOrientation:wide_page ? NSPaperOrientationLandscape
+                                 : NSPaperOrientationPortrait];
+  // WKWebView 的打印排版按 90 dpi 换算 CSS 像素（1 CSS px = 0.8pt），而 CSS 规范
+  // 是 96 dpi（1 px = 0.75pt），整页因此凭空大 96/90 ≈ 1.067 倍；这是排版 DPI
+  // 的偏差，不是内容缩放，改字号或乘反向系数都只是盖住现象。
+  // scalingFactor 是 AppKit 在这层排版结果上再乘一次（实测 0.5 → 字号减半），
+  // 所以用它把 90 dpi 的排版压回 96 dpi 的真实物理尺寸。
+  constexpr double kWebKitPrintLayoutPxPt = 0.8;  // 1 CSS px → 0.8pt（90 dpi）
+  constexpr double kCssPxPt = 0.75;               // 1 CSS px → 0.75pt（96 dpi）
+  [info setScalingFactor:kCssPxPt / kWebKitPrintLayoutPxPt];
   // 套打与自定义纸不接受系统居中，否则位置会随纸宽漂移。
   [info setHorizontallyCentered:NO];
   [info setVerticallyCentered:NO];
@@ -230,9 +237,30 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
                   }
                   [operation setShowsPrintPanel:NO];
                   [operation setShowsProgressPanel:NO];
-                  const BOOL saved = [operation runOperation];
-                  [strong_self finishPdfWithResult:saved ? @"ok" : @"error"];
+                  // WKWebView 的分页是异步的：页数与每页内容要等 WebKit 进程回报。
+                  // runOperation 起的是不依附窗口的模态会话，不会为打印视图泵这些
+                  // 回调，分页没完成就开始出纸，产出的是一叠空白页（本机实测无限页）。
+                  // 挂到窗口的模态会话后由窗口的 run loop 驱动 WebKit 回调，分页完成
+                  // 再落盘（实测 1 页有效 PDF），所以这里必须要求有窗口。
+                  [strong_self runPdfOperation:operation];
                 }];
+}
+
+- (void)runPdfOperation:(NSPrintOperation*)operation {
+  if (self.window == nil) {
+    [self finishPdfWithResult:@"error"];
+    return;
+  }
+  [operation runOperationModalForWindow:self.window
+                               delegate:self
+                         didRunSelector:@selector(pdfOperationDidRun:success:contextInfo:)
+                            contextInfo:NULL];
+}
+
+- (void)pdfOperationDidRun:(NSPrintOperation*)operation
+                   success:(BOOL)success
+               contextInfo:(void*)context {
+  [self finishPdfWithResult:success ? @"ok" : @"error"];
 }
 @end
 

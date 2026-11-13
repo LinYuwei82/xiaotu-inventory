@@ -398,12 +398,6 @@
     }
   }
 
-  function nativePrintBridge() {
-    const handlers = window.webkit && window.webkit.messageHandlers;
-    if (!handlers) return null;
-    return handlers.xiaotuPrintPdf || handlers.xiaotuPrint || null;
-  }
-
   // ---------- 自定义打印模板 ----------
 
   function printAlign(align) {
@@ -490,14 +484,14 @@
       ? `<div class="print-footer">${escapeHtml(data.footer_text)}</div>`
       : "";
     return `
-      <div class="print-sheet" style="font-size:${Number(tmpl.font_size_pt) || 10}pt">
+      <div class="print-sheet" style="width:${
+        tableWidth > 0 ? tableWidth + "mm" : "auto"
+      };zoom:${scale / 100};font-size:${Number(tmpl.font_size_pt) || 10}pt">
         ${headerText}
         <h1 class="print-title">${escapeHtml(data.title || "")}</h1>
         <div class="print-subtitle">${escapeHtml(data.subtitle || "")}</div>
         ${fields ? `<div class="print-fields">${fields}</div>` : ""}
-        <div class="print-table-wrap" style="zoom:${scale / 100};width:${
-          tableWidth > 0 ? tableWidth + "mm" : "auto"
-        }">
+        <div class="print-table-wrap">
           <table class="print-table">
             <colgroup>${colgroup}</colgroup>
             <thead><tr>${head}</tr></thead>
@@ -510,7 +504,7 @@
       </div>`;
   }
 
-  function printPageCss(tmpl, layout, native) {
+  function printPageCss(tmpl, layout) {
     const size =
       layout && layout.width_mm && layout.height_mm
         ? `${Number(layout.width_mm)}mm ${Number(layout.height_mm)}mm`
@@ -519,8 +513,9 @@
           : tmpl.orientation === "LANDSCAPE"
             ? "297mm 210mm"
             : "210mm 297mm";
-    // 原生打印由 NSPrintInfo 设置纸张与边距，这里把页边距归零避免叠加。
-    const margin = native ? 0 : Number(tmpl.margin_mm) || 0;
+    // WKWebView 打印时以 @page margin 为准，NSPrintInfo 的 margin 会被它盖掉；
+    // 原生模式若把这里归零，纸边距就只剩 0。三端统一用模板边距。
+    const margin = Number(tmpl.margin_mm) || 0;
     const pageNumber = tmpl.show_page_no
       ? ' @bottom-right { content: "第 " counter(page) " 页"; font-size: 9pt; }'
       : "";
@@ -536,7 +531,7 @@
     document.body.appendChild(view);
     const style = document.createElement("style");
     style.dataset.printView = "1";
-    style.textContent = printPageCss(data.template || {}, data.layout || {}, !!nativePrintBridge());
+    style.textContent = printPageCss(data.template || {}, data.layout || {});
     document.head.appendChild(style);
     document.body.classList.add("print-mode");
     return () => {
@@ -603,6 +598,15 @@
     } catch (error) {
       showNotice(error.message, "error");
     }
+  }
+
+  // 打印路径的 target_key=… 已带 ?，报表查询串也从 ? 开始；直接相加会得到
+  // target_key=purchase-detail?from=…，服务端把 "?from" 并进 target_key 后报
+  // 「未知的打印目标」。这里把首个 ? 换成 &，让查询参数真正成为独立参数。
+  function withQuery(url, query) {
+    if (!query) return url;
+    const text = String(query);
+    return url + (url.indexOf("?") >= 0 ? text.replace(/^\?/, "&") : text);
   }
 
   // xlsx 是二进制，单机版桥接用 base64 传回原生保存，浏览器走 Blob 下载。
@@ -4092,45 +4096,53 @@
 
     wirePrint(
       "print-balance",
-      () => "/api/print/render?target_type=REPORT&target_key=stock-balance" + balanceQuery()
+      () => withQuery("/api/print/render?target_type=REPORT&target_key=stock-balance", balanceQuery())
     );
     wirePrint(
       "print-ledger",
       () =>
-        "/api/print/render?target_type=REPORT&target_key=stock-ledger" +
-        ledgerQuery() +
-        "&limit=100000"
+        withQuery(
+          "/api/print/render?target_type=REPORT&target_key=stock-ledger",
+          ledgerQuery() + "&limit=100000"
+        )
     );
     wirePrint(
       "print-flows",
-      () => "/api/print/render?target_type=REPORT&target_key=goods-flow" + periodQuery()
+      () => withQuery("/api/print/render?target_type=REPORT&target_key=goods-flow", periodQuery())
     );
     wirePrint(
       "print-summary",
-      () => "/api/print/render?target_type=REPORT&target_key=inventory-summary" + periodQuery()
+      () =>
+        withQuery("/api/print/render?target_type=REPORT&target_key=inventory-summary", periodQuery())
     );
     wirePrint(
       "print-profit",
-      () => "/api/print/render?target_type=REPORT&target_key=sales-profit" + periodQuery()
+      () => withQuery("/api/print/render?target_type=REPORT&target_key=sales-profit", periodQuery())
     );
     wirePrint(
       "print-purchase-detail",
       () =>
-        "/api/print/render?target_type=REPORT&target_key=purchase-detail" +
-        purchaseQuery() +
-        "&limit=100000"
+        withQuery(
+          "/api/print/render?target_type=REPORT&target_key=purchase-detail",
+          purchaseQuery() + "&limit=100000"
+        )
     );
     wirePrint(
       "print-purchase-summary",
       () =>
-        "/api/print/render?target_type=REPORT&target_key=purchase-summary-" +
-        purchaseBySelect.value +
-        purchaseQuery()
+        withQuery(
+          "/api/print/render?target_type=REPORT&target_key=purchase-summary-" +
+            purchaseBySelect.value,
+          purchaseQuery()
+        )
     );
     wirePrint(
       "print-other-flow",
       () =>
-        "/api/print/render?target_type=REPORT&target_key=other-flow-summary" + otherFlowQuery()
+        withQuery(
+          "/api/print/render?target_type=REPORT&target_key=other-flow-summary",
+          otherFlowQuery()
+        )
     );
     wirePrint(
       "print-aging",
@@ -4141,10 +4153,10 @@
     wirePrint(
       "print-fund",
       () =>
-        "/api/print/render?target_type=REPORT&target_key=fund-ledger" +
-        periodQuery() +
-        "&account_id=" +
-        encodeURIComponent(fundAccountSelect.value || "0")
+        withQuery(
+          "/api/print/render?target_type=REPORT&target_key=fund-ledger",
+          periodQuery() + "&account_id=" + encodeURIComponent(fundAccountSelect.value || "0")
+        )
     );
 
     mount.querySelector('[data-role="refresh"]').addEventListener("click", reload);
@@ -4428,7 +4440,7 @@
 
     const targetKey = () => (dimension === "salesperson" ? "sales-salesperson" : "sales-customer");
     const renderPath = () =>
-      "/api/print/render?target_type=REPORT&target_key=" + targetKey() + query();
+      withQuery("/api/print/render?target_type=REPORT&target_key=" + targetKey(), query());
     mount.querySelector('[data-role="refresh"]').addEventListener("click", resetAndReload);
     mount.querySelector('[data-role="export"]').addEventListener("click", async () => {
       try {

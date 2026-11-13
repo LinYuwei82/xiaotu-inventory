@@ -670,6 +670,9 @@ main {
 
   body.print-mode .print-view {
     display: block;
+    /* 连续纸超宽时按原始尺寸出纸、由纸边裁切；不让溢出内容把整页拉进
+       WKWebView 的 shrink-to-fit（那会把 252mm 的表缩到纸宽）。 */
+    overflow: hidden;
   }
 
   .print-sheet {
