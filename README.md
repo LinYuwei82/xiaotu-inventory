@@ -17,7 +17,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 ## 0. 数据库结构版本
 
-当前 schema 为 **v38**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
+当前 schema 为 **v39**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -59,6 +59,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v36 | 历史销售单据 `doc_header.partner_id` 回填：只填 `partner_id = 0` 且 `customer_id > 0`、能按 `partner` 档案（含合并链）精确映射的行；有值不动，无档案与 `T:` 文本单位保持 0，不按名称硬匹配；不改结构，可单独回退 |
 | v37 | 单据列表统一筛选与合计的索引：重建 `idx_doc_header_type_date` 为 `(doc_type, doc_date DESC, id DESC)`，新增 `idx_doc_header_type_status`（`doc_type, status`）；只改索引，不动表结构与数据 |
 | v38 | 单据表头备注 `doc_header.remark`（`TEXT NOT NULL DEFAULT ''`，最多 200 个字符）；历史单据一律空串，不回填 |
+| v39 | 单机版「本机免输」长期凭据 `local_remember_token`：只存 token 哈希、`issued_at`、`expires_at` 与 `last_used_at`；与 `app_session` 独立，改口令不自动清除 |
 
 ## 1. 环境要求
 
@@ -781,7 +782,7 @@ Linux 上该脚本等价于 CI：使用 `linux-ci` preset（`XIAOTU_BUILD_SHELL=
 
 - 用户手册（面向使用者）：`docs/用户手册.md`
 - 技术方案：`docs/进销存技术方案.md`
-- 数据库结构：`core/src/migrations.cpp`（v38）
+- 数据库结构：`core/src/migrations.cpp`（v39）
 - API：`/api/health`、`/api/session`、`/api/items`、`/api/items/import`、`/api/items/export`、`/api/items/template`、`/api/warehouses`、`/api/suppliers`、`/api/suppliers/import`、`/api/suppliers/export`、`/api/suppliers/template`、`/api/customers`、`/api/customers/import`、`/api/customers/export`、`/api/customers/template`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/fund-ledger`、`/api/reports/fund-balances`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/cost-adjustments/drafts`、`/api/fund-accounts`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`、`/api/stock/cost-recalc`
 
 `GET /api/documents` 的两种返回形态：不带 `keyword`、`date_from`、`date_to`、`status`、`amount_min`、`amount_max`、`page`、`page_size` 中任一参数时，仍返回原来的 JSON 数组（兼容旧调用）；带任一参数时返回 `{rows, total_count, total_amount_cents, page, page_size}`。关键字覆盖单号 / 往来单位 / 业务员 / 备注四项，日期与金额均为闭区间，`status` 取 `draft` / `approved` / `reversed`，`page_size` 上限 100（默认 20），合计与列表使用同一套 WHERE、不受分页影响。

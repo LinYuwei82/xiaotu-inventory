@@ -26,6 +26,9 @@ on:
       - 'VERSION'
       - 'vcpkg.json'
       - '.github/workflows/**'
+  # 保留 repository_dispatch 入口，供后续同步或手动触发；GITHUB_TOKEN 的 push 不会触发其它 workflow。
+  repository_dispatch:
+    types: [gitee-mirror]
 
 permissions:
   contents: read
