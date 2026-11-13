@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,7 @@
 #include "xiaotu/gen/customer_service.h"
 #include "xiaotu/gen/employee_service.h"
 #include "xiaotu/gen/item_service.h"
+#include "xiaotu/ids.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/qty.h"
 #include "xiaotu/report_service.h"
@@ -232,6 +234,213 @@ int main() {
       }
       std::error_code remove_error;
       std::filesystem::remove(xlsx_path, remove_error);
+    }
+    // v36 回填验收：同一份数据在 partner_id 回填前后，六类报表逐行与合计必须完全一致；
+    // 只填可映射的 partner_id = 0 行，已有值不动，T:/无档案保持 0。比对可反复执行。
+    {
+      xiaotu::gen::CustomerService legacy_customers(db);
+      const auto unmapped = legacy_customers.create(
+          xiaotu::gen::CustomerRow{.code = "RC-UNMAPPED", .name = "无档案客户"});
+      db.write([&](sqlite3* conn) {
+        // 还原历史形态：销售单据的 partner_id 清回 0，并补一条没有 partner 档案的客户单据；
+        // 采购单据留一个已有值（哨兵），验证「有值不动」。
+        xiaotu::exec_sql(conn,
+                         "UPDATE doc_header SET partner_id = 0"
+                         " WHERE doc_type IN ('SAL_OUT', 'SAL_RET');");
+        xiaotu::exec_sql(conn,
+                         "UPDATE doc_header SET partner_id = 999999"
+                         " WHERE doc_type = 'PUR_IN';");
+        xiaotu::Stmt legacy(conn,
+                            "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id,"
+                            " target_warehouse_id, partner_id, customer_id, customer, biz_category,"
+                            " status, order_status, total_qty, total_amount_cents, created_at,"
+                            " created_by, approved_at, approved_by, request_id)"
+                            " VALUES (?, 'RC-LEGACY-UNMAPPED', 'SAL_OUT', ?, 1, 0, 0, ?, ?, '',"
+                            " 'APPROVED', '', 0, 0, ?, 'test', ?, 'test', '');");
+        legacy.bind(1, xiaotu::next_id())
+            .bind(2, today)
+            .bind(3, unmapped.id)
+            .bind(4, unmapped.name)
+            .bind(5, today + " 00:00:00")
+            .bind(6, today + " 00:00:00");
+        legacy.run();
+      });
+
+      const std::string as_of = "2099-12-31";
+      const auto snapshot = [&]() {
+        std::map<std::string, std::string> out;
+        const auto add = [&](const std::string& key, const std::string& text) {
+          out[key] += text + "\n";
+        };
+        const auto append = [](std::string& target, const std::vector<std::string>& fields) {
+          for (std::size_t i = 0; i < fields.size(); ++i) {
+            if (i > 0) target += "|";
+            target += fields[i];
+          }
+        };
+        const auto join = [&](const std::vector<std::string>& fields) {
+          std::string text;
+          append(text, fields);
+          return text;
+        };
+        for (int direction : {1, -1}) {
+          for (const std::string& day : {as_of, today}) {
+            for (const auto& row : reports.ar_ap_aging(direction, day)) {
+              add(direction == 1 ? "aging_ar" : "aging_ap",
+                  join({row.partner_key, row.partner_name, std::to_string(row.direction),
+                        std::to_string(row.total_cents), std::to_string(row.not_due_cents),
+                        std::to_string(row.d1_30_cents), std::to_string(row.d31_60_cents),
+                        std::to_string(row.d61_90_cents), std::to_string(row.d90_plus_cents),
+                        day}));
+            }
+          }
+        }
+        std::vector<std::string> keys;
+        db.read([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn,
+                            "SELECT partner_key FROM ar_ap_entry"
+                            " UNION SELECT partner_key FROM settlement ORDER BY 1;");
+          while (stmt.step()) keys.push_back(stmt.text(0));
+        });
+        for (const auto& key : keys) {
+          for (int direction : {1, -1}) {
+            const auto statement = reports.partner_statement(key, direction, "", as_of);
+            add("statement",
+                join({statement.partner_key, statement.partner_name,
+                      std::to_string(statement.direction), statement.from, statement.to,
+                      std::to_string(statement.opening_cents),
+                      std::to_string(statement.increase_cents),
+                      std::to_string(statement.decrease_cents),
+                      std::to_string(statement.closing_cents),
+                      std::to_string(statement.settle_net_cents),
+                      std::to_string(statement.reverse_cents),
+                      std::to_string(statement.reverse_count)}));
+            for (const auto& line : statement.lines) {
+              add("statement", join({line.date, line.kind, line.doc_no, line.doc_type, line.note,
+                                     line.is_reverse ? "1" : "0", line.reverses_no,
+                                     std::to_string(line.increase_cents),
+                                     std::to_string(line.decrease_cents),
+                                     std::to_string(line.balance_cents)}));
+            }
+          }
+        }
+        const auto board = reports.dashboard(today);
+        add("dashboard",
+            join({std::to_string(board.today_sales_cents), std::to_string(board.today_return_cents),
+                  std::to_string(board.today_cost_cents), std::to_string(board.today_profit_cents),
+                  std::to_string(board.month_sales_cents), std::to_string(board.month_return_cents),
+                  std::to_string(board.month_cost_cents), std::to_string(board.month_profit_cents),
+                  std::to_string(board.stock_value_cents)}));
+        for (const auto& debtor : board.top_debtors) {
+          add("dashboard", join({std::to_string(debtor.partner_id), debtor.name,
+                                 std::to_string(debtor.outstanding_cents)}));
+        }
+        for (const auto& row : reports.sales_detail(filter, "customer")) {
+          add("sales_detail", join({row.date, row.doc_no, row.customer, row.salesperson,
+                                    row.item_code, row.item_name, row.spec, row.unit,
+                                    std::to_string(row.qty), std::to_string(row.price_cents),
+                                    std::to_string(row.amount_cents),
+                                    std::to_string(row.cost_cents)}));
+        }
+        const auto sale_totals = reports.sales_detail_totals(filter);
+        add("sales_detail_totals",
+            join({std::to_string(sale_totals.rows), std::to_string(sale_totals.qty),
+                  std::to_string(sale_totals.amount_cents), std::to_string(sale_totals.cost_cents),
+                  std::to_string(sale_totals.profit_cents)}));
+        for (const char* dimension : {"customer", "salesperson"}) {
+          for (const auto& row : reports.sales_summary(filter, dimension)) {
+            add(std::string("sales_summary_") + dimension,
+                join({std::to_string(row.group_id), row.name, std::to_string(row.orders),
+                      std::to_string(row.customers), std::to_string(row.qty),
+                      std::to_string(row.sales_cents), std::to_string(row.return_cents),
+                      std::to_string(row.net_cents), std::to_string(row.cost_cents),
+                      std::to_string(row.profit_cents)}));
+          }
+        }
+        for (const auto& row : reports.purchase_detail(purchase_filter)) {
+          add("purchase_detail",
+              join({row.date, row.doc_no, row.kind, row.supplier, std::to_string(row.partner_id),
+                    row.item_code, row.item_name, row.spec, row.unit, row.warehouse_name,
+                    std::to_string(row.qty), std::to_string(row.price_cents),
+                    std::to_string(row.amount_cents)}));
+        }
+        const auto purchase_totals_now = reports.purchase_detail_totals(purchase_filter);
+        add("purchase_detail_totals",
+            join({std::to_string(purchase_totals_now.rows), std::to_string(purchase_totals_now.qty),
+                  std::to_string(purchase_totals_now.amount_cents)}));
+        for (const auto& row : reports.purchase_summary_by_supplier(purchase_filter)) {
+          add("purchase_summary_supplier",
+              join({std::to_string(row.partner_id), row.supplier, std::to_string(row.in_qty),
+                    std::to_string(row.in_amount_cents),
+                    std::to_string(row.return_amount_cents), std::to_string(row.qty),
+                    std::to_string(row.amount_cents), std::to_string(row.avg_price_cents),
+                    row.has_inbound ? "1" : "0"}));
+        }
+        for (const auto& row : reports.purchase_summary_by_item(purchase_filter)) {
+          add("purchase_summary_item",
+              join({std::to_string(row.item_id), row.item_code, row.item_name, row.spec, row.unit,
+                    std::to_string(row.in_qty), std::to_string(row.in_amount_cents),
+                    std::to_string(row.return_amount_cents), std::to_string(row.qty),
+                    std::to_string(row.amount_cents), std::to_string(row.avg_price_cents),
+                    row.has_inbound ? "1" : "0"}));
+        }
+        const auto supplier_totals = reports.purchase_summary_totals(purchase_filter);
+        add("purchase_summary_totals",
+            join({std::to_string(supplier_totals.in_qty),
+                  std::to_string(supplier_totals.in_amount_cents),
+                  std::to_string(supplier_totals.return_amount_cents),
+                  std::to_string(supplier_totals.qty),
+                  std::to_string(supplier_totals.amount_cents),
+                  std::to_string(supplier_totals.avg_price_cents),
+                  supplier_totals.has_inbound ? "1" : "0"}));
+        return out;
+      };
+
+      const auto count_rows = [&](const char* sql) {
+        std::int64_t value = -1;
+        db.read([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn, sql);
+          if (stmt.step()) value = stmt.i64(0);
+        });
+        return value;
+      };
+      const char* pending_sql =
+          "SELECT COUNT(*) FROM doc_header WHERE partner_id = 0 AND customer_id > 0;";
+      const char* filled_sql =
+          "SELECT COUNT(*) FROM doc_header WHERE partner_id > 0 AND customer_id > 0;";
+      check(count_rows(pending_sql) == 3, "回填前应有 3 张可回填的客户单据（含 1 张无档案）");
+      check(count_rows(filled_sql) == 0, "回填前客户单据的 partner_id 应全为 0");
+
+      const auto before = snapshot();
+      db.write([&](sqlite3* conn) {
+        xiaotu::exec_sql(conn, xiaotu::partner_id_backfill_sql());
+      });
+      const auto after = snapshot();
+      for (const auto& [section, text] : before) {
+        check(after.count(section) == 1 && after.at(section) == text,
+              "回填前后报表必须逐行一致：" + section);
+      }
+      check(after.size() == before.size(), "回填前后报表分组应完全相同");
+      check(count_rows(pending_sql) == 1, "只有无 partner 档案的客户单据应保持 0");
+      check(count_rows(filled_sql) == 2, "两张有档案的客户单据应回填 partner_id");
+      check(count_rows("SELECT COUNT(*) FROM doc_header"
+                       " WHERE customer_id = 0 AND partner_id NOT IN (0, 999999);") == 0,
+            "T:/无往来方单据与已有值都不应被改动");
+      check(count_rows("SELECT COUNT(*) FROM doc_header"
+                       " WHERE customer_id > 0 AND partner_id > 0"
+                       "   AND partner_id <> customer_id;") == 0,
+            "客户单据应回填到 partner.id（与客户档案 id 相同）");
+
+      // 幂等：重复执行回填不应再改任何行，报表也保持不变。
+      db.write([&](sqlite3* conn) {
+        xiaotu::exec_sql(conn, xiaotu::partner_id_backfill_sql());
+      });
+      const auto again = snapshot();
+      for (const auto& [section, text] : after) {
+        check(again.count(section) == 1 && again.at(section) == text,
+              "重复回填后报表应保持不变：" + section);
+      }
+      check(count_rows(filled_sql) == 2, "重复执行回填不应扩大回填范围");
     }
   }
   std::error_code error;

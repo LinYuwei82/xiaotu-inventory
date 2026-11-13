@@ -90,7 +90,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 35, "迁移后 schema 版本应为 35");
+      check(db.schema_version() == 36, "迁移后 schema 版本应为 36");
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
       db.read([&](sqlite3* conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
@@ -2934,7 +2934,7 @@ int main() {
         });
 
         xiaotu::migrate(mig);
-        check(mig.schema_version() == 35, "有数据的模拟库应迁到 v35");
+        check(mig.schema_version() == 36, "有数据的模拟库应迁到 v36");
 
         mig.read([&](sqlite3* conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string_view>
 #include <vector>
 
 #include "xiaotu/db.h"
@@ -19,5 +20,9 @@ int target_schema_version();
 
 // 按版本顺序执行未应用的迁移，并在执行前校验已应用脚本的 checksum。
 void migrate(Db& db);
+
+// v36 回填语句原文。迁移内只执行一次；单独暴露以便测试在已有库上重复执行，
+// 验证幂等与「回填前后报表逐行一致」。
+std::string_view partner_id_backfill_sql();
 
 }  // namespace xiaotu

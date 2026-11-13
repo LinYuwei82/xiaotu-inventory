@@ -989,6 +989,31 @@ ALTER TABLE stock_ledger ADD COLUMN batch_no TEXT NOT NULL DEFAULT '';
 ALTER TABLE stock_ledger ADD COLUMN expiry_date TEXT NOT NULL DEFAULT '';
 )SQL";
 
+// v36：历史销售单据 partner_id 回填。只填 partner_id = 0 且 customer_id > 0 的行，
+// 映射沿用客户档案到 partner 的既有口径（partner.id = customer.id 且 is_customer = 1，
+// 沿 merged_into 折到保留档案，与 find_partner_for_archive 一致）；有值不动，
+// 无 partner 档案与 T: 文本单位（customer_id = 0）一律保持 0，不按名称硬匹配。
+// 本迁移不改结构、不动其它表，可单独回退：回填前已有 0 行无法与回填行区分，
+// 因此以 server 启动时的迁移前自动备份（backups/pre-v{旧版本}）恢复为准；
+// 若只撤版本记录：DELETE FROM schema_migration WHERE version = 36; PRAGMA user_version = 35;
+constexpr const char* kV36 = R"SQL(
+WITH RECURSIVE merge_chain(src_id, root_id) AS (
+  SELECT id, id FROM partner WHERE merged_into = 0
+  UNION ALL
+  SELECT p.id, m.root_id FROM partner p JOIN merge_chain m ON p.merged_into = m.src_id
+),
+target(row_id, partner_id) AS (
+  SELECT h.id, mc.root_id
+  FROM doc_header h
+  JOIN partner p ON p.id = h.customer_id AND p.is_customer = 1
+  JOIN merge_chain mc ON mc.src_id = p.id
+  WHERE h.partner_id = 0 AND h.customer_id > 0
+)
+UPDATE doc_header
+SET partner_id = (SELECT t.partner_id FROM target t WHERE t.row_id = doc_header.id)
+WHERE id IN (SELECT row_id FROM target);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -1039,9 +1064,12 @@ const std::vector<Migration>& all_migrations() {
       {33, "v33_cost_basis", kV33},
       {34, "v34_audit_client_ip_request", kV34},
       {35, "v35_doc_line_stock_ledger_batch_seam", kV35},
+      {36, "v36_doc_header_partner_id_backfill", kV36},
   };
   return migrations;
 }
+
+std::string_view partner_id_backfill_sql() { return kV36; }
 
 void migrate(Db& db) {
   db.write_raw([&](sqlite3* conn) {
