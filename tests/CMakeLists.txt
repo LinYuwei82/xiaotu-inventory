@@ -74,6 +74,12 @@ target_link_libraries(xiaotu_update_service_smoke PRIVATE xiaotu_server Threads:
 
 add_test(NAME update_service_smoke COMMAND xiaotu_update_service_smoke)
 
+add_executable(xiaotu_update_download_smoke
+               "${CMAKE_CURRENT_SOURCE_DIR}/update_download_smoke.cpp")
+target_link_libraries(xiaotu_update_download_smoke PRIVATE xiaotu_server Threads::Threads)
+
+add_test(NAME update_download_smoke COMMAND xiaotu_update_download_smoke)
+
 if(UNIX)
   # 社区版不支持网络版部署（deployment.network），依赖 --server 的用例不适用。
   if(NOT XIAOTU_EDITION STREQUAL "community")
@@ -99,6 +105,11 @@ if(UNIX)
   add_test(NAME deploy_backup_test
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/deploy_backup_test.sh"
                    "${CMAKE_CURRENT_SOURCE_DIR}/../deploy/backup.sh")
+  # 恢复向导走单机模式，两个版本都适用。
+  add_test(NAME restore_wizard_test
+           COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/restore_wizard_test.sh"
+                   $<TARGET_FILE:xiaotu-server>)
+  set_tests_properties(restore_wizard_test PROPERTIES TIMEOUT 120)
   add_test(NAME backup_dir_test
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/backup_dir_test.sh"
                    $<TARGET_FILE:xiaotu-server>)

@@ -33,4 +33,17 @@ struct UpdateCheckResult {
 UpdateCheckResult check_for_update(const UpdateSettings& settings, const UpdateQuery& query,
                                    std::int64_t now_epoch);
 
+// 安装包校验结果。verify_package 让验签工具同时校验清单签名与安装包 sha256。
+struct PackageVerifyResult {
+  bool ok = false;
+  std::string error_code;
+  std::string error_message;
+};
+
+// manifest_file 为已验签的清单文件，package_file 为下载到本地的安装包。
+// 失败时 error_message 带验签工具的原始输出，便于定位是签名不符还是哈希不符。
+PackageVerifyResult verify_package(const UpdateSettings& settings,
+                                   const std::string& manifest_file,
+                                   const std::string& package_file);
+
 }  // namespace xiaotu

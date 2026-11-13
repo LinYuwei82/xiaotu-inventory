@@ -7,7 +7,7 @@
 - `xiaotu-inventory.iss`：Inno Setup 6 安装包脚本（安装、快捷方式、卸载、数据目录、WebView2 检查）。
 - `make-zip.ps1`：从现有 `windows-release` 产物（`build\windows\server\xiaotu-server.exe`）生成绿色 zip。
 
-两者都读取同一批产物：服务端 exe 为必需，桌面壳 `shell\win\build\xiaotu-shell.exe` 存在时一并打入。
+两者都读取同一批产物：服务端 exe 为必需，桌面壳按同一套顺序解析：显式指定 → `build\windows\shell\win\xiaotu-shell.exe` → `build\windows\shell\win\Release\xiaotu-shell.exe` → 旧的 `shell\win\build\xiaotu-shell.exe` → `shell\win\build\Release\xiaotu-shell.exe`。**都找不到时脚本报错退出/编译失败**，不会静默产出无壳包；确实需要无壳包时显式加 `-NoShell` / `/DXIAOTU_NO_SHELL=1`。
 
 ## 前置
 
@@ -36,6 +36,9 @@ $version = (Get-Content VERSION -Raw).Trim()
   "/DAppVersion=$version" `
   "packaging\win\xiaotu-inventory.iss"
 ```
+
+壳未按候选路径找到时编译会直接失败并列出查找过的路径；确实要出纯服务端安装包时显式加
+`/DXIAOTU_NO_SHELL=1`，也可用 `/DShellExe=<绝对路径>` 指定壳（指定后必须存在）。
 
 产物：`packaging\win\out\xiaotu-inventory-<版本>-win64-setup.exe`。
 
@@ -108,12 +111,12 @@ $version = (Get-Content VERSION -Raw).Trim()
 
 | 模式 | 触发条件 | 包内是否有桌面窗口 |
 | --- | --- | --- |
-| 桌面壳 + 服务端（默认） | `shell\win\build\xiaotu-shell.exe` 存在且未加 `-NoShell` | 有，双击 `xiaotu-shell.exe` 即用 |
-| 仅服务端 | 壳未构建，或显式 `-NoShell` | 无，只能浏览器访问 |
+| 桌面壳 + 服务端（默认） | 按候选顺序找到壳，且未加 `-NoShell` | 有，双击 `xiaotu-shell.exe` 即用 |
+| 仅服务端 | 显式 `-NoShell` / `/DXIAOTU_NO_SHELL=1` | 无，只能浏览器访问 |
 
 ```powershell
-.\packaging\win\make-zip.ps1              # 有壳就打壳，没有只打服务端并提示
-.\packaging\win\make-zip.ps1 -NoShell     # 强制只打服务端
+.\packaging\win\make-zip.ps1              # 自动查找壳；找不到则报错
+.\packaging\win\make-zip.ps1 -NoShell     # 显式只打服务端
 .\packaging\win\make-zip.ps1 -NoArchive   # 只生成目录，便于本地试跑
 ```
 
@@ -124,8 +127,8 @@ $version = (Get-Content VERSION -Raw).Trim()
 | `-BuildDir` | `<仓库>\build\windows` | 服务端构建目录 |
 | `-OutDir` | `<仓库>\build\package\win` | 输出目录 |
 | `-Name` | `xiaotu-inventory-<版本>-win64` | 分发包目录名（zip 同名） |
-| `-ShellExe` | `<仓库>\shell\win\build\xiaotu-shell.exe` | 桌面壳路径，便于从别的构建目录取 |
-| `-NoShell` | 关 | 跳过桌面壳 |
+| `-ShellExe` | 自动查找 | 显式指定桌面壳；指定后必须存在，不回退 |
+| `-NoShell` | 关 | 显式跳过桌面壳（与 `-ShellExe` 互斥） |
 | `-NoArchive` | 关 | 不压缩，只生成解压后的目录 |
 
 版本号从根 `CMakeLists.txt` 的 `project(xiaotu_inventory VERSION ...)` 读取，脚本不修改任何文件。

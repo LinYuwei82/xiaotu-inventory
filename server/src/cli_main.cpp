@@ -25,6 +25,7 @@
 #include "xiaotu/partner_preview.h"
 #include "xiaotu/permissions.h"
 #include "xiaotu/platform_paths.h"
+#include "xiaotu/restore_wizard.h"
 #include "xiaotu/services.h"
 
 #if defined(__APPLE__) && defined(XIAOTU_WEBVIEW_SHELL)
@@ -352,6 +353,21 @@ int main(int argc, char** argv) {
                        " schema=v" + std::to_string(restore.schema_version));
       xiaotu::shutdown_logging();
       return 0;
+    }
+
+    // 网页向导发起的恢复：必须在打开数据库之前完成文件替换，否则会与运行中的
+    // 连接、WAL 冲突。失败时 restore_database 已回滚到恢复前状态，结果写盘供界面展示。
+    if (const auto outcome = xiaotu::apply_pending_restore(data_dir, database_path, backup_dir)) {
+      if (outcome->ok) {
+        std::cout << "已按网页向导恢复: " << outcome->file << " schema=v"
+                  << outcome->schema_version;
+        if (!outcome->safety_backup.empty()) {
+          std::cout << "，恢复前备份: " << outcome->safety_backup;
+        }
+        std::cout << std::endl;
+      } else {
+        std::cout << "网页向导恢复失败: " << outcome->error_message << std::endl;
+      }
     }
 
     const bool database_existed = std::filesystem::exists(database_path);

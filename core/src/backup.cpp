@@ -30,6 +30,54 @@ std::string timestamp_tag() {
   return buffer;
 }
 
+// 备份文件的修改时间（本地时间）。file_clock 与 system_clock 纪元不同，
+// 用两个时钟的当前值求偏移再换算，避免依赖 C++20 的 clock_cast。
+std::string file_modified_text(const std::filesystem::path& path) {
+  std::error_code error;
+  const auto file_time = std::filesystem::last_write_time(path, error);
+  if (error) {
+    return {};
+  }
+  const auto offset = std::filesystem::file_time_type::clock::now().time_since_epoch() -
+                      std::chrono::system_clock::now().time_since_epoch();
+  const auto system_time = std::chrono::system_clock::time_point(
+      std::chrono::duration_cast<std::chrono::system_clock::duration>(
+          file_time.time_since_epoch() - offset));
+  const std::time_t seconds = std::chrono::system_clock::to_time_t(system_time);
+  const std::tm local = local_time(seconds);
+  char buffer[32] = {};
+  std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &local);
+  return buffer;
+}
+
+bool has_table(sqlite3* connection, const char* name) {
+  Stmt stmt(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?;");
+  stmt.bind(1, name);
+  return stmt.step() && stmt.i64(0) > 0;
+}
+
+// 恢复失败时把目标库还原成恢复前的安全备份：先清掉半截库与 -wal/-shm，再拷回。
+// 返回空串表示回滚成功，否则返回失败原因（调用方必须把它带进错误信息）。
+std::string rollback_to_safety(const std::filesystem::path& target,
+                               const std::filesystem::path& safety) {
+  std::error_code error;
+  for (const char* suffix : {"", "-wal", "-shm"}) {
+    const std::filesystem::path sidecar = target.string() + suffix;
+    if (std::filesystem::exists(sidecar, error)) {
+      std::filesystem::remove(sidecar, error);
+      if (error) {
+        return "无法清理目标文件：" + error.message();
+      }
+    }
+  }
+  std::filesystem::copy_file(safety, target, std::filesystem::copy_options::overwrite_existing,
+                             error);
+  if (error) {
+    return "无法写回安全备份：" + error.message();
+  }
+  return {};
+}
+
 // 解析每日备份文件名 app-YYYYMMDD-HHMMSS-daily[-N].db。
 // 成功时 stamp=YYYYMMDD-HHMMSS，ym=YYYYMM。
 bool parse_daily_name(const std::filesystem::path& path, std::string& stamp, std::string& ym) {
@@ -393,22 +441,39 @@ RestoreResult restore_database(const std::filesystem::path& source,
       result.safety_backup = safety;
     }
 
-    for (const char* suffix : {"", "-wal", "-shm"}) {
-      const std::filesystem::path sidecar = database_path.string() + suffix;
-      if (std::filesystem::exists(sidecar)) {
-        std::filesystem::remove(sidecar, error);
-        if (error) {
-          throw AppError("RESTORE_FAILED", "无法清理旧数据库文件：" + error.message());
+    try {
+      for (const char* suffix : {"", "-wal", "-shm"}) {
+        const std::filesystem::path sidecar = database_path.string() + suffix;
+        if (std::filesystem::exists(sidecar)) {
+          std::filesystem::remove(sidecar, error);
+          if (error) {
+            throw AppError("RESTORE_FAILED", "无法清理旧数据库文件：" + error.message());
+          }
         }
       }
+      std::filesystem::copy_file(source, database_path,
+                                 std::filesystem::copy_options::overwrite_existing, error);
+      if (error) {
+        throw AppError("RESTORE_FAILED", "复制备份失败：" + error.message());
+      }
+      verify_database(database_path);
+      result.bytes = std::filesystem::file_size(database_path);
+    } catch (const std::exception& failure) {
+      // 已经删除/覆盖了目标库：必须用恢复前安全备份回滚，不能留下半截库。
+      std::string message = std::string("恢复失败：") + failure.what();
+      if (!result.safety_backup.empty()) {
+        const std::string rollback_error = rollback_to_safety(database_path, result.safety_backup);
+        if (rollback_error.empty()) {
+          message += "；已回滚到恢复前状态（安全备份 " +
+                     result.safety_backup.filename().string() + "）";
+        } else {
+          message += "；回滚失败：" + rollback_error + "，请手工用安全备份恢复：" +
+                     result.safety_backup.string();
+          log_error(message);
+        }
+      }
+      throw AppError("RESTORE_FAILED", message);
     }
-    std::filesystem::copy_file(source, database_path,
-                               std::filesystem::copy_options::overwrite_existing, error);
-    if (error) {
-      throw AppError("RESTORE_FAILED", "复制备份失败：" + error.message());
-    }
-    verify_database(database_path);
-    result.bytes = std::filesystem::file_size(database_path);
   } catch (const std::exception& error) {
     audit_restore(database_path, actor, origin, source_name, 0, result.safety_backup,
                   target_existed, error.what());
@@ -487,6 +552,130 @@ void verify_backup_schema(const std::filesystem::path& backup, int expected_vers
                    "备份的数据库结构版本为 v" + std::to_string(actual) + "，高于当前程序支持的 v" +
                        std::to_string(supported) + "，已判定该备份不可用。");
   }
+}
+
+std::vector<BackupFileInfo> list_backups(const std::filesystem::path& directory) {
+  std::vector<BackupFileInfo> items;
+  std::error_code error;
+  if (!std::filesystem::is_directory(directory, error)) {
+    return items;
+  }
+  for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+    if (error) {
+      break;
+    }
+    if (!entry.is_regular_file(error) || error) {
+      error.clear();
+      continue;
+    }
+    if (entry.path().extension() != ".db") {
+      continue;
+    }
+    BackupFileInfo info;
+    info.path = entry.path();
+    info.file = entry.path().filename().string();
+    info.bytes = entry.file_size(error);
+    if (error) {
+      info.bytes = 0;
+      error.clear();
+    }
+    info.modified_at = file_modified_text(entry.path());
+    try {
+      info.schema_version = backup_schema_version(entry.path());
+      info.readable = info.schema_version > 0;
+      if (!info.readable) {
+        info.error = "无法识别数据库结构版本";
+      }
+    } catch (const std::exception& failure) {
+      info.readable = false;
+      info.error = failure.what();
+    }
+    items.push_back(std::move(info));
+  }
+  std::sort(items.begin(), items.end(), [](const BackupFileInfo& left, const BackupFileInfo& right) {
+    if (left.modified_at != right.modified_at) {
+      return left.modified_at > right.modified_at;
+    }
+    return left.file > right.file;
+  });
+  return items;
+}
+
+BackupInspection inspect_backup(const std::filesystem::path& backup) {
+  BackupInspection result;
+  result.current_schema_version = target_schema_version();
+  std::error_code error;
+  if (!std::filesystem::exists(backup, error) ||
+      !std::filesystem::is_regular_file(backup, error)) {
+    result.error_code = "BACKUP_NOT_FOUND";
+    result.error_message = "备份文件不存在：" + backup.filename().string();
+    return result;
+  }
+  result.bytes = std::filesystem::file_size(backup, error);
+  if (error) {
+    result.bytes = 0;
+    error.clear();
+  }
+  result.modified_at = file_modified_text(backup);
+
+  sqlite3* connection = nullptr;
+  const std::string path_text = path_to_utf8(backup);
+  if (sqlite3_open_v2(path_text.c_str(), &connection, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+    if (connection != nullptr) {
+      sqlite3_close(connection);
+    }
+    result.error_code = "BACKUP_INVALID";
+    result.error_message = "无法打开备份文件（可能已损坏或不是 SQLite 数据库）";
+    return result;
+  }
+  try {
+    Stmt integrity(connection, "PRAGMA integrity_check;");
+    result.integrity_ok = integrity.step() && integrity.text(0) == "ok";
+  } catch (const std::exception&) {
+    result.integrity_ok = false;
+  }
+  if (!result.integrity_ok) {
+    sqlite3_close(connection);
+    result.error_code = "BACKUP_INVALID";
+    result.error_message = "备份文件完整性检查未通过";
+    return result;
+  }
+  try {
+    result.is_app_database = has_table(connection, "schema_migration") &&
+                             has_table(connection, "doc_header");
+  } catch (const std::exception&) {
+    result.is_app_database = false;
+  }
+  sqlite3_close(connection);
+  if (!result.is_app_database) {
+    result.error_code = "NOT_APP_DATABASE";
+    result.error_message = "不是本程序的数据库（缺少 schema_migration 或 doc_header 表）";
+    return result;
+  }
+  try {
+    result.schema_version = backup_schema_version(backup);
+  } catch (const std::exception& failure) {
+    result.error_code = "SCHEMA_UNKNOWN";
+    result.error_message = failure.what();
+    return result;
+  }
+  if (result.schema_version <= 0) {
+    result.error_code = "SCHEMA_UNKNOWN";
+    result.error_message = "无法识别备份的数据库结构版本";
+    return result;
+  }
+  if (result.schema_version > result.current_schema_version) {
+    result.error_code = "SCHEMA_TOO_NEW";
+    result.error_message = "备份为 v" + std::to_string(result.schema_version) +
+                           "，高于当前程序支持的 v" +
+                           std::to_string(result.current_schema_version) +
+                           "，请先升级程序再恢复";
+    return result;
+  }
+  result.compatible = true;
+  result.will_migrate = result.schema_version < result.current_schema_version;
+  result.ok = true;
+  return result;
 }
 
 RetentionResult apply_daily_retention(const std::filesystem::path& directory, int daily_keep) {

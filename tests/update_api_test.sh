@@ -119,4 +119,73 @@ done
 unverified="$(curl -s "http://127.0.0.1:$((PORT + 1))/api/update/check?$query&schema_version=30")"
 echo "$unverified" | grep -q '"UPDATE_UNVERIFIED"' || { echo "FAIL: 缺公钥应拒绝信任: $unverified" >&2; exit 1; }
 
+# 新增接口沿用会话鉴权：未登录访问状态接口必须 401，不能像 /api/update/check 那样免登录。
+status_code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$((PORT + 1))/api/update/status")"
+[ "$status_code" = "401" ] || { echo "FAIL: 未登录访问 /api/update/status 应返回 401，实际 $status_code" >&2; exit 1; }
+
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true
+PID=""
+
+# 未配置 [update]：检查接口必须明确报未配置，而不是静默返回“无更新”。
+mkdir -p "$TMP/data3"
+cat > "$TMP/config3.toml" <<EOF
+[server]
+listen = "127.0.0.1"
+port = $((PORT + 2))
+[storage]
+data_dir = "$TMP/data3"
+EOF
+"$SERVER_BIN" --server --config "$TMP/config3.toml" > "$TMP/server3.log" 2>&1 &
+PID=$!
+for _ in $(seq 1 40); do
+  curl -s -o /dev/null "http://127.0.0.1:$((PORT + 2))/api/health" && break
+  sleep 0.25
+done
+not_configured="$(curl -s -w '\n%{http_code}' "http://127.0.0.1:$((PORT + 2))/api/update/check?$query&schema_version=30")"
+echo "$not_configured" | grep -q '"UPDATE_NOT_CONFIGURED"' || {
+  echo "FAIL: 未配置更新源应返回 UPDATE_NOT_CONFIGURED: $not_configured" >&2; exit 1;
+}
+echo "$not_configured" | grep -q '未配置更新清单' || {
+  echo "FAIL: 未配置更新源应给出明确文案: $not_configured" >&2; exit 1;
+}
+
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true
+PID=""
+
+# 登录后查看更新状态：单机版用一次性令牌换会话，验证状态接口的鉴权与展示字段。
+mkdir -p "$TMP/data4"
+"$SERVER_BIN" --data "$TMP/data4" > "$TMP/server4.log" 2>&1 &
+PID=$!
+LOCAL_PORT=""
+for _ in $(seq 1 60); do
+  LOCAL_PORT="$(sed -n 's|.*服务地址: http://127.0.0.1:\([0-9]*\).*|\1|p' "$TMP/server4.log" | head -1)"
+  [ -n "$LOCAL_PORT" ] && break
+  sleep 0.25
+done
+[ -n "$LOCAL_PORT" ] || { echo "FAIL: 单机版未能启动" >&2; cat "$TMP/server4.log" >&2; exit 1; }
+BOOTSTRAP="$(sed -n 's|.*#t=\([0-9a-f]*\).*|\1|p' "$TMP/server4.log" | head -1)"
+[ -n "$BOOTSTRAP" ] || { echo "FAIL: 未找到单机访问令牌" >&2; exit 1; }
+csrf="$(curl -s -c "$TMP/cookies" -X POST -H 'Content-Type: application/json' \
+  -d "{\"token\":\"$BOOTSTRAP\"}" "http://127.0.0.1:$LOCAL_PORT/api/session" |
+  sed -n 's|.*"csrf":"\([^"]*\)".*|\1|p')"
+[ -n "$csrf" ] || { echo "FAIL: 单机令牌换会话失败" >&2; exit 1; }
+status_json="$(curl -s -b "$TMP/cookies" "http://127.0.0.1:$LOCAL_PORT/api/update/status")"
+echo "$status_json" | grep -q '"configured":false' || {
+  echo "FAIL: 状态接口应报告未配置更新源: $status_json" >&2; exit 1;
+}
+echo "$status_json" | grep -q '未配置更新清单' || {
+  echo "FAIL: 状态接口应带未配置原因: $status_json" >&2; exit 1;
+}
+echo "$status_json" | grep -q '"current":' || {
+  echo "FAIL: 状态接口应返回当前版本: $status_json" >&2; exit 1;
+}
+echo "$status_json" | grep -q '"version":"' || {
+  echo "FAIL: 状态接口应返回当前版本号: $status_json" >&2; exit 1;
+}
+echo "$status_json" | grep -q '"build":' || {
+  echo "FAIL: 状态接口应返回构建号: $status_json" >&2; exit 1;
+}
+
 echo "update_api_test 全部通过"

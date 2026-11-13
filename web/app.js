@@ -165,6 +165,12 @@
     );
   }
 
+  // 各报表页共用的空行片段。放在模块作用域：经营看板、销售报表、
+  // 资金/库存报表都引用它，留在单个页面函数里会导致其余页面 ReferenceError。
+  function emptyRow(text, colspan) {
+    return `<tbody><tr><td class="empty" colspan="${colspan}">${text}</td></tr></tbody>`;
+  }
+
   function money(cents) {
     const value = Number(cents || 0);
     return (value / 100).toFixed(2);
@@ -4080,10 +4086,6 @@
     const otherFlowWarehouseSelect = mount.querySelector('[data-role="other-flow-warehouse"]');
     const otherFlowTable = mount.querySelector('[data-role="other-flow"]');
 
-    function emptyRow(text, colspan) {
-      return `<tbody><tr><td class="empty" colspan="${colspan}">${text}</td></tr></tbody>`;
-    }
-
     function periodQuery() {
       return (
         "?from=" + encodeURIComponent(fromInput.value) + "&to=" + encodeURIComponent(toInput.value)
@@ -6701,6 +6703,307 @@
     return (value / 1024 / 1024 / 1024).toFixed(2) + " GB";
   }
 
+  // 软件更新：状态、下载、安装都在服务端完成；前端只展示结果与发起动作。
+  // 不自动安装：下载后仍需管理员点「安装更新」并二次确认。
+  async function renderUpdateCard(mount) {
+    const card = mount.querySelector('[data-role="update"]');
+    if (!card) return;
+    const canManage = can("setting.write");
+    let polling = false;
+
+    function statusText(data) {
+      if (!data.configured) return "未配置更新源（[update] manifest_file 为空）";
+      if (data.error) return "检查失败：" + data.error.message;
+      if (data.update_available && data.latest) {
+        return `发现新版本 ${data.latest.version}（构建 ${data.latest.build}）`;
+      }
+      if (data.up_to_date) return "已是最新版本";
+      return "当前无需更新（" + data.code + "）";
+    }
+
+    function render(data) {
+      const latest = data.latest;
+      const download = data.download || {};
+      const rows = [
+        ["当前版本", `${data.current.version}（构建 ${data.current.build}，schema v${data.current.schema_version}）`],
+        ["最新版本", latest ? `${latest.version}（构建 ${latest.build}）` : "—"],
+        ["发布日期", latest && latest.published_at ? latest.published_at : "—"],
+        ["状态", statusText(data)],
+      ];
+      let downloadLine = "";
+      if (download.state === "running") {
+        downloadLine = "正在下载并校验安装包…";
+      } else if (download.state === "done") {
+        downloadLine = `已下载并校验：${download.file}（${formatBytes(download.bytes)}）`;
+      } else if (download.state === "failed") {
+        downloadLine = `下载或校验失败：${download.message || download.code || ""}`;
+      }
+      card.innerHTML = `
+        <div class="page-head" style="margin-bottom:8px">
+          <div>
+            <h2>软件更新</h2>
+            <p class="page-sub">清单与安装包均由配置的更新源提供；安装前需再次确认</p>
+          </div>
+        </div>
+        <table class="table"><tbody>${rows
+          .map(
+            ([label, value]) =>
+              `<tr><th style="width: 120px">${escapeHtml(label)}</th><td>${escapeHtml(
+                value
+              )}</td></tr>`
+          )
+          .join("")}</tbody></table>
+        ${downloadLine ? `<p class="page-sub" style="margin-top:8px">${escapeHtml(downloadLine)}</p>` : ""}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+          <button class="btn" type="button" data-role="check">检查更新</button>
+          ${
+            canManage
+              ? `<button class="btn" type="button" data-role="download" ${
+                  data.update_available && download.state !== "running" ? "" : "disabled"
+                }>下载并校验</button>
+                 <button class="btn primary" type="button" data-role="install" ${
+                   data.update_available && download.state === "done" ? "" : "disabled"
+                 }>安装更新</button>`
+              : ""
+          }
+        </div>`;
+
+      card.querySelector('[data-role="check"]').addEventListener("click", async () => {
+        await refresh();
+        showNotice("已重新检查更新", "ok");
+      });
+      const downloadButton = card.querySelector('[data-role="download"]');
+      if (downloadButton) {
+        downloadButton.addEventListener("click", async () => {
+          try {
+            await api("POST", "/api/update/download", {});
+            showNotice("已开始下载，完成后会自动校验", "ok");
+            poll();
+          } catch (error) {
+            showNotice(error.message, "error");
+          }
+        });
+      }
+      const installButton = card.querySelector('[data-role="install"]');
+      if (installButton) {
+        installButton.addEventListener("click", async () => {
+          if (!latest) return;
+          const confirmed = await askConfirm(
+            `将安装 ${latest.version}（构建 ${latest.build}）。安装程序会被打开，` +
+              "请在安装前退出本程序；是否继续？",
+            { okText: "安装", cancelText: "取消" }
+          );
+          if (!confirmed) return;
+          try {
+            const result = await api("POST", "/api/update/install", { confirm: true });
+            showNotice(result.message || "已打开安装包", "ok");
+          } catch (error) {
+            showNotice(error.message, "error");
+          }
+        });
+      }
+    }
+
+    async function refresh() {
+      const data = await api("GET", "/api/update/status");
+      render(data);
+      return data;
+    }
+
+    async function poll() {
+      if (polling) return;
+      polling = true;
+      try {
+        for (;;) {
+          if (!document.body.contains(card)) return;
+          const data = await refresh();
+          if (!data.download || data.download.state !== "running") return;
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      } catch (error) {
+        showNotice(error.message, "error");
+      } finally {
+        polling = false;
+      }
+    }
+
+    try {
+      await refresh();
+    } catch (error) {
+      card.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+    }
+  }
+
+  // 备份与恢复：列出备份 → 预检查 → 二次确认。
+  // 恢复在下次启动、打开数据库之前执行，提交后程序会退出并进入维护态。
+  async function restorePage(mount) {
+    const canRestore = can("*");
+    mount.innerHTML = `
+      <div class="page-head">
+        <div>
+          <h2>备份与恢复</h2>
+          <p class="page-sub">从备份目录选择一份恢复；恢复前会自动生成安全备份，失败会回滚</p>
+        </div>
+      </div>
+      <div class="card" data-role="result"></div>
+      <div class="card" style="margin-top:12px">
+        <div class="page-head" style="margin-bottom:8px">
+          <div><h3 style="margin:0">备份文件</h3></div>
+          <button class="btn" type="button" data-role="reload">刷新</button>
+        </div>
+        <div data-role="list">正在读取…</div>
+      </div>
+      <div class="card" data-role="precheck" style="margin-top:12px;display:none"></div>`;
+
+    const resultCard = mount.querySelector('[data-role="result"]');
+    const listBox = mount.querySelector('[data-role="list"]');
+    const precheckCard = mount.querySelector('[data-role="precheck"]');
+
+    async function loadResult() {
+      try {
+        const data = await api("GET", "/api/restore/result");
+        const result = data.result;
+        if (!result) {
+          resultCard.innerHTML = `<p class="page-sub" style="margin:0">暂无恢复记录。</p>`;
+          return;
+        }
+        const ok = result.ok;
+        const text = ok
+          ? `上次恢复成功：${result.file}（schema v${result.schema_version}）` +
+            (result.safety_backup ? `，恢复前安全备份 ${result.safety_backup}` : "")
+          : `上次恢复失败：${result.error_message || result.error_code || "未知原因"}`;
+        resultCard.innerHTML = `
+          <p style="margin:0;color:${ok ? "inherit" : "#b42318"}">${escapeHtml(text)}</p>
+          <p class="page-sub" style="margin:4px 0 0">${escapeHtml(result.at || "")}</p>
+          ${canRestore ? '<button class="btn" type="button" data-role="clear" style="margin-top:8px">清除记录</button>' : ""}`;
+        const clear = resultCard.querySelector('[data-role="clear"]');
+        if (clear) {
+          clear.addEventListener("click", async () => {
+            try {
+              await api("POST", "/api/restore/result/clear", {});
+              await loadResult();
+              showNotice("恢复记录已清除", "ok");
+            } catch (error) {
+              showNotice(error.message, "error");
+            }
+          });
+        }
+      } catch (error) {
+        resultCard.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+      }
+    }
+
+    function renderPrecheck(inspection) {
+      precheckCard.style.display = "";
+      const rows = [
+        ["备份文件", inspection.file],
+        ["修改时间", inspection.modified_at || "—"],
+        ["大小", formatBytes(inspection.bytes)],
+        ["schema", inspection.schema_version ? `v${inspection.schema_version}` : "—"],
+        ["当前程序 schema", `v${inspection.current_schema_version}`],
+        ["完整性检查", inspection.integrity_ok ? "通过" : "未通过"],
+        ["本程序数据库", inspection.is_app_database ? "是" : "否"],
+        ["可恢复", inspection.ok ? "是" : "否"],
+      ];
+      if (inspection.will_migrate) {
+        rows.push(["恢复后", "启动时会自动迁移到当前 schema"]);
+      }
+      precheckCard.innerHTML = `
+        <h3 style="margin-top:0">预检查结果</h3>
+        <table class="table"><tbody>${rows
+          .map(
+            ([label, value]) =>
+              `<tr><th style="width: 140px">${escapeHtml(label)}</th><td>${escapeHtml(
+                value
+              )}</td></tr>`
+          )
+          .join("")}</tbody></table>
+        ${
+          inspection.ok
+            ? ""
+            : `<p class="page-sub" style="color:#b42318">${escapeHtml(
+                (inspection.error && inspection.error.message) || "该备份不可用于恢复"
+              )}</p>`
+        }
+        ${
+          inspection.ok && canRestore
+            ? '<button class="btn primary" type="button" data-role="apply" style="margin-top:12px">恢复到该备份</button>'
+            : ""
+        }`;
+      const apply = precheckCard.querySelector('[data-role="apply"]');
+      if (apply) {
+        apply.addEventListener("click", async () => {
+          const confirmed = await askConfirm(
+            `将用 ${inspection.file} 覆盖当前数据库，程序随后退出并在下次启动时完成恢复。` +
+              (inspection.will_migrate ? "该备份 schema 较旧，恢复后会自动迁移。" : "") +
+              "是否继续？",
+            { okText: "确认恢复", cancelText: "取消" }
+          );
+          if (!confirmed) return;
+          apply.disabled = true;
+          try {
+            await api("POST", "/api/restore/apply", { file: inspection.file, confirm: true });
+            showNotice("已进入维护状态，程序即将退出；重新打开后将完成恢复", "ok");
+            precheckCard.innerHTML =
+              '<p style="margin:0">恢复已安排，程序正在退出。请重新启动程序，完成后会在本页显示结果。</p>';
+          } catch (error) {
+            apply.disabled = false;
+            if (error.network) {
+              showNotice("程序可能已退出，请重新启动后在顶部查看恢复结果", "ok");
+            } else {
+              showNotice(error.message, "error");
+            }
+          }
+        });
+      }
+    }
+
+    async function loadList() {
+      listBox.textContent = "正在读取…";
+      try {
+        const data = await api("GET", "/api/restore/backups");
+        if (!data.rows.length) {
+          listBox.innerHTML = `<p class="empty">备份目录内没有可恢复的 .db 文件</p>`;
+          return;
+        }
+        listBox.innerHTML = `
+          <table class="table">
+            <thead><tr><th>文件</th><th>修改时间</th><th>大小</th><th>schema</th><th class="actions">操作</th></tr></thead>
+            <tbody>${data.rows
+              .map(
+                (row) => `<tr>
+                  <td>${escapeHtml(row.file)}</td>
+                  <td>${escapeHtml(row.modified_at || "—")}</td>
+                  <td>${formatBytes(row.bytes)}</td>
+                  <td>${row.schema_version ? "v" + row.schema_version : "—"}</td>
+                  <td class="actions"><button class="btn" type="button" data-file="${escapeHtml(
+                    row.file
+                  )}">预检查</button></td>
+                </tr>`
+              )
+              .join("")}</tbody>
+          </table>`;
+        listBox.querySelectorAll("button[data-file]").forEach((button) => {
+          button.addEventListener("click", async () => {
+            try {
+              const inspection = await api("POST", "/api/restore/precheck", {
+                file: button.dataset.file,
+              });
+              renderPrecheck(inspection);
+            } catch (error) {
+              showNotice(error.message, "error");
+            }
+          });
+        });
+      } catch (error) {
+        listBox.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+      }
+    }
+
+    mount.querySelector('[data-role="reload"]').addEventListener("click", loadList);
+    await Promise.all([loadResult(), loadList()]);
+  }
+
   async function aboutPage(mount) {
     mount.innerHTML = `
       <div class="page-head">
@@ -6710,7 +7013,8 @@
         </div>
         <button class="btn" type="button" data-role="copy">复制诊断信息</button>
       </div>
-      <div class="card" data-role="body">正在读取…</div>`;
+      <div class="card" data-role="body">正在读取…</div>
+      <div class="card" data-role="update" style="margin-top:12px">正在读取更新状态…</div>`;
 
     const body = mount.querySelector('[data-role="body"]');
     let diagnosticText = "";
@@ -6761,6 +7065,8 @@
       }
       showNotice("诊断信息已复制", "ok");
     });
+
+    await renderUpdateCard(mount);
   }
 
   // ---------- 导航与启动 ----------
@@ -7069,6 +7375,13 @@
       group: "system",
       permission: "setting.read",
       render: settingPage,
+    },
+    {
+      key: "restore",
+      title: "备份与恢复",
+      group: "system",
+      permission: "setting.read",
+      render: restorePage,
     },
     { key: "about", title: "关于与诊断", group: "system", render: aboutPage },
   ];

@@ -47,7 +47,8 @@
   期望：**无输出**（不依赖 `vcruntime140.dll` / `msvcp140.dll`）。
 - [ ] 对 `xiaotu-shell.exe` 重复一次，期望同样无输出。
 - [ ] 服务端与壳的 exe 都存在：
-  `build\windows\server\xiaotu-server.exe`、`shell\win\build\xiaotu-shell.exe`。
+  `build\windows\server\xiaotu-server.exe`、`shell\win\build\xiaotu-shell.exe`
+  （若壳已接入顶层构建，则位于 `build\windows\shell\win\xiaotu-shell.exe`，打包脚本两条路径都会找）。
 
 结果：______。
 

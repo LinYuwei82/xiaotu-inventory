@@ -27,7 +27,11 @@ body {
 
 .layout {
   display: flex;
-  min-height: 100vh;
+  /* 固定为视口高度，只让内容区自己滚：菜单栏不参与文档滚动，
+     报表横向溢出也限制在 main 内，不带走左侧导航。 */
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -154,6 +158,9 @@ body {
 
 main {
   flex: 1;
+  /* flex 子项默认 min-width:auto，宽表格会把内容区撑破并把横轴交给页面；
+     显式置 0 后横向滚动留在内容区内部。 */
+  min-width: 0;
   padding: 20px 24px 40px;
   overflow: auto;
 }
@@ -628,6 +635,13 @@ main {
   .btn,
   .link {
     display: none !important;
+  }
+
+  /* 打印时不能被视口高度裁掉，恢复成普通文档流。 */
+  .layout {
+    display: block;
+    height: auto;
+    overflow: visible;
   }
 
   main {
