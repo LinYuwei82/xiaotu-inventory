@@ -375,6 +375,13 @@ void navigate_when_ready(const std::wstring& url) {
   g_app.webview->Navigate(url.c_str());
 }
 
+// HRESULT 统一按 8 位十六进制输出：0x80070002 不能按十进制拼成 0x2147942402。
+std::wstring hresult_hex(HRESULT hr) {
+  wchar_t buf[16];
+  swprintf_s(buf, L"%08X", static_cast<unsigned>(hr));
+  return buf;
+}
+
 class ControllerCompleted
     : public ICoreWebView2CreateCoreWebView2ControllerCompletedHandler {
  public:
@@ -403,7 +410,7 @@ class ControllerCompleted
   HRESULT STDMETHODCALLTYPE Invoke(HRESULT result,
                                    ICoreWebView2Controller* controller) override {
     if (FAILED(result) || controller == nullptr) {
-      show_error(L"创建 WebView2 视图失败（HRESULT 0x" + to_hex(result) +
+      show_error(L"创建 WebView2 视图失败（HRESULT 0x" + hresult_hex(result) +
                  L"）。\n\n请确认已安装 WebView2 Runtime。");
       return S_OK;
     }
@@ -420,12 +427,6 @@ class ControllerCompleted
   }
 
  private:
-  static std::wstring to_hex(HRESULT hr) {
-    wchar_t buf[16];
-    swprintf_s(buf, L"%08X", static_cast<unsigned>(hr));
-    return buf;
-  }
-
   LONG ref_ = 1;
   AppState* app_;
 };
@@ -457,7 +458,7 @@ class EnvironmentCompleted
 
   HRESULT STDMETHODCALLTYPE Invoke(HRESULT result, ICoreWebView2Environment* env) override {
     if (FAILED(result) || env == nullptr) {
-      show_error(L"初始化 WebView2 失败（HRESULT 0x" + to_hex(result) +
+      show_error(L"初始化 WebView2 失败（HRESULT 0x" + hresult_hex(result) +
                  L"）。\n\n本机需要 WebView2 Runtime：\n"
                  L"https://go.microsoft.com/fwlink/p/?LinkId=2124703\n"
                  L"安装后重新启动本程序。");
@@ -468,18 +469,12 @@ class EnvironmentCompleted
     HRESULT hr = env->CreateCoreWebView2Controller(
         app_->hwnd, new ControllerCompleted(app_));
     if (FAILED(hr)) {
-      show_error(L"创建 WebView2 控制器失败（HRESULT 0x" + to_hex(hr) + L"）。");
+      show_error(L"创建 WebView2 控制器失败（HRESULT 0x" + hresult_hex(hr) + L"）。");
     }
     return S_OK;
   }
 
  private:
-  static std::wstring to_hex(HRESULT hr) {
-    wchar_t buf[16];
-    swprintf_s(buf, L"%08X", static_cast<unsigned>(hr));
-    return buf;
-  }
-
   LONG ref_ = 1;
   AppState* app_;
 };
@@ -496,8 +491,7 @@ bool init_webview() {
   HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
       nullptr, user_data.c_str(), nullptr, new EnvironmentCompleted(&g_app));
   if (FAILED(hr)) {
-    show_error(L"无法创建 WebView2 环境（HRESULT 0x" +
-               std::to_wstring(static_cast<unsigned>(hr)) +
+    show_error(L"无法创建 WebView2 环境（HRESULT 0x" + hresult_hex(hr) +
                L"）。\n\n本机需要 WebView2 Runtime：\n"
                L"https://go.microsoft.com/fwlink/p/?LinkId=2124703");
     return false;
