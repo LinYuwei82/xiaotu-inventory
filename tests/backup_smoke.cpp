@@ -152,9 +152,11 @@ void test_backup_directory(const std::filesystem::path& root) {
   // 默认回落：未配置/空串 → <data_dir>/backups。
   check(xiaotu::resolve_backup_dir(data, "") == data / "backups",
         "空配置应回落到 <data_dir>/backups");
-  // 绝对路径原样使用。
-  check(xiaotu::resolve_backup_dir(data, "/tmp/xiaotu-abs-backups") ==
-            fs::path("/tmp/xiaotu-abs-backups"),
+  // 绝对路径原样使用。用平台自己的绝对路径：Windows 下 "/tmp/..." 没有盘符，
+  // 按 fs::path 的判定不算绝对路径，只有 root（临时目录）这种带盘符的才算。
+  const fs::path absolute_backups = root / "abs-backups";
+  check(absolute_backups.is_absolute(), "测试用的绝对路径在当前平台确实为绝对路径");
+  check(xiaotu::resolve_backup_dir(data, absolute_backups.string()) == absolute_backups,
         "绝对路径应原样使用");
   // 相对路径按 data_dir 解析，不受 cwd 影响。
   check(xiaotu::resolve_backup_dir(data, "nested/bk") == data / "nested/bk",
@@ -173,11 +175,25 @@ void test_backup_directory(const std::filesystem::path& root) {
   xiaotu::ensure_backup_directory(relative);
   check(fs::is_directory(data / "relative-backups"), "相对目录应创建在数据目录下");
 
-  // 不可写目录：明确报 BACKUP_DIR_UNWRITABLE，且不回落到默认目录。
+  // 备份目录不可用：必须报 BACKUP_DIR_UNWRITABLE，且不回落到默认目录。
+  // 两个平台制造「不可用」的手段不同，但验证的是同一个错误码：
+  // - POSIX：目录存在、去掉写权限。走的是 create_directories 成功、is_directory 为真、
+  //   探针文件写失败这条路径（覆盖实现里的写探针）。
+  // - Windows：chmod 语义拦不住创建文件，改用「同名普通文件占据该路径」。
+  //   走的是 create_directories 失败、is_directory 为假这条路径。
   const fs::path locked = root / "locked-backups";
+#if defined(_WIN32)
+  {
+    std::ofstream placeholder(locked, std::ios::binary | std::ios::trunc);
+    placeholder << "occupied";
+    placeholder.close();
+  }
+  check(fs::is_regular_file(locked), "Windows：占用路径的普通文件已就位");
+#else
   fs::create_directories(locked);
   fs::permissions(locked, fs::perms::owner_read | fs::perms::owner_exec,
                   fs::perm_options::replace);
+#endif
   check(error_code_of([&] { xiaotu::ensure_backup_directory(locked); }) ==
             "BACKUP_DIR_UNWRITABLE",
         "不可写目录应报 BACKUP_DIR_UNWRITABLE");
@@ -186,7 +202,11 @@ void test_backup_directory(const std::filesystem::path& root) {
             "BACKUP_DIR_UNWRITABLE",
         "不可写备份目录时手动备份应失败");
   check(!fs::exists(data / "backups"), "不可写时不得静默回落到默认目录");
+#if defined(_WIN32)
+  fs::remove(locked);
+#else
   fs::permissions(locked, fs::perms::owner_all, fs::perm_options::replace);
+#endif
 
   // 恢复前安全备份也写入解析后的目录。
   const xiaotu::BackupResult snapshot = xiaotu::backup_database(db, custom, "smoke");
