@@ -29,6 +29,17 @@ body {
   margin: 0;
 }
 
+/* 屏幕态彻底关掉文档级滚动：布局本身就是「侧栏 + 内容区独立滚动」，
+   文档一旦可滚（Safari 的 dvh 可能比可视区多出零点几像素），切页时整页
+   会滑动一下，连侧栏一起动。放在 @media screen 里，打印样式保持原样：
+   打印块会把 .layout 改回 height:auto / overflow:visible，文档必须能滚。 */
+@media screen {
+  html,
+  body {
+    overflow: hidden;
+  }
+}
+
 body {
   background: var(--bg);
   color: var(--text);
