@@ -640,6 +640,67 @@ void run_server_mode(const std::filesystem::path& dir) {
     check(bad_status && bad_status->status == 400, "未知状态筛选应明确拒绝");
   }
 
+  // 单据表头备注：创建 / 详情 / 旧数组响应 / 关键字命中 / 导出列 / 超长拒绝。
+  {
+    nlohmann::json remark_doc{
+        {"doc_type", "PUR_IN"},
+        {"warehouse_id", 1},
+        {"doc_date", "2026-03-05"},
+        {"partner", "备注供应商"},
+        {"remark", "加急 URGENT-7788"},
+        {"save_as_draft", true},
+        {"lines", nlohmann::json::array({{{"item_id", item_body.value("id", 0LL)},
+                                          {"qty", 1},
+                                          {"price_cents", 100}}})},
+    };
+    const auto remark_created = client.Post("/api/documents", remark_doc.dump(), "application/json");
+    check(remark_created && remark_created->status == 200, "带备注的草稿应创建成功");
+    const std::int64_t remark_id =
+        remark_created ? nlohmann::json::parse(remark_created->body).value("id", 0LL) : 0;
+    check(remark_id > 0, "带备注的草稿应返回 id");
+    const std::string remark_path = "/api/documents/" + std::to_string(remark_id);
+
+    const auto remark_detail = client.Get(remark_path);
+    check(remark_detail && remark_detail->status == 200 &&
+              nlohmann::json::parse(remark_detail->body).value("remark", "") == "加急 URGENT-7788",
+          "单据详情应带回表头备注");
+
+    const auto remark_legacy = client.Get("/api/documents?doc_type=PUR_IN");
+    if (remark_legacy) {
+      bool found = false;
+      for (const auto& row : nlohmann::json::parse(remark_legacy->body)) {
+        if (row.value("id", 0LL) == remark_id) {
+          found = row.value("remark", "") == "加急 URGENT-7788";
+        }
+      }
+      check(found, "旧数组响应的列表行也应带表头备注");
+    }
+
+    const auto remark_search = client.Get("/api/documents?doc_type=PUR_IN&keyword=URGENT-7788");
+    if (remark_search) {
+      const auto body = nlohmann::json::parse(remark_search->body);
+      check(body.value("total_count", 0LL) == 1 && body["rows"].size() == 1 &&
+                body["rows"][0].value("remark", "") == "加急 URGENT-7788",
+            "关键字应能命中表头备注");
+    }
+
+    const auto remark_csv = client.Get(remark_path + "/export");
+    check(remark_csv && remark_csv->status == 200 &&
+              remark_csv->body.find("备注,加急 URGENT-7788") != std::string::npos,
+          "CSV 导出应带备注列与内容");
+    const auto remark_xlsx = client.Get(remark_path + "/export?format=xlsx");
+    check(remark_xlsx && remark_xlsx->status == 200 &&
+              remark_xlsx->body.rfind("PK", 0) == 0,
+          "XLSX 导出应正常生成");
+
+    remark_doc["remark"] = std::string(201, 'x');
+    const auto remark_too_long =
+        client.Post("/api/documents", remark_doc.dump(), "application/json");
+    check(remark_too_long && remark_too_long->status == 400 &&
+              nlohmann::json::parse(remark_too_long->body).value("code", "") == "INVALID_INPUT",
+          "超过 200 个字符的备注应返回 INVALID_INPUT");
+  }
+
   // 审计来源：HTTP 请求带来源 IP，单据请求号可一起筛出；历史行与 CLI 路径两列为空。
   {
     nlohmann::json doc_body{
@@ -1036,8 +1097,8 @@ void run_server_mode(const std::filesystem::path& dir) {
   check(diagnostic && diagnostic->status == 200, "诊断信息应返回 200");
   if (diagnostic) {
     const auto data = nlohmann::json::parse(diagnostic->body);
-    check(data.value("schema_version", 0) == 37, "诊断信息里的 schema 应为 37");
-    check(data.value("migrations", 0) == 37, "诊断信息里的迁移条数应为 37");
+    check(data.value("schema_version", 0) == 38, "诊断信息里的 schema 应为 38");
+    check(data.value("migrations", 0) == 38, "诊断信息里的迁移条数应为 38");
     check(data.value("mode", "") == "server", "网络版诊断信息 mode 应为 server");
     check(!data.value("data_dir", "").empty(), "诊断信息应包含数据目录");
     check(data.value("backup_dir", "") == (dir / "backups").string(),

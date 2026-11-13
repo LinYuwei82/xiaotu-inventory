@@ -1029,6 +1029,15 @@ CREATE INDEX IF NOT EXISTS idx_doc_header_type_date
 CREATE INDEX IF NOT EXISTS idx_doc_header_type_status ON doc_header(doc_type, status);
 )SQL";
 
+// v38：单据表头备注。六类业务单据共用一列，历史行一律空串，不回填。
+// 长度上限与空值校验在 DocumentEngine 的 validate_document 里做（200 个字符），
+// SQLite 侧的 NOT NULL DEFAULT '' 只兜底结构，不替代业务校验。
+// 回退：ALTER TABLE doc_header DROP COLUMN remark;（SQLite 3.35+）
+//       DELETE FROM schema_migration WHERE version = 38; PRAGMA user_version = 37;
+constexpr const char* kV38 = R"SQL(
+ALTER TABLE doc_header ADD COLUMN remark TEXT NOT NULL DEFAULT '';
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -1081,6 +1090,7 @@ const std::vector<Migration>& all_migrations() {
       {35, "v35_doc_line_stock_ledger_batch_seam", kV35},
       {36, "v36_doc_header_partner_id_backfill", kV36},
       {37, "v37_doc_header_list_index", kV37},
+      {38, "v38_doc_header_remark", kV38},
   };
   return migrations;
 }

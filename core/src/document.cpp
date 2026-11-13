@@ -66,6 +66,9 @@ std::string like_escape(std::string_view value) {
   return escaped;
 }
 
+// 表头备注长度上限：200 个 UTF-8 码点。与前端 maxlength 同值，但以服务端为准。
+constexpr std::size_t kMaxRemarkChars = 200;
+
 // 列表筛选状态别名：前端用 draft / approved / reversed，库内是 DRAFT / APPROVED / VOIDED。
 // 返回空串表示不过滤；其余未知值直接拒绝，避免静默返回全量。
 std::string status_filter_code(std::string_view status) {
@@ -81,6 +84,16 @@ struct SqlBind {
   std::string text;
   std::int64_t number = 0;
 };
+
+// 按 UTF-8 码点计数：一个汉字算 1 个字符，不按字节数卡上限。
+// 只统计非续接字节（0b10xxxxxx），非法序列也不会把长度算得比实际更小。
+std::size_t utf8_char_count(std::string_view text) {
+  std::size_t count = 0;
+  for (const unsigned char ch : text) {
+    if ((ch & 0xC0) != 0x80) ++count;
+  }
+  return count;
+}
 
 }  // namespace
 
@@ -608,6 +621,11 @@ ValidatedDoc validate_document(sqlite3* conn, const DocInput& input,
       input.partner_id == 0 && input.partner.empty()) {
     throw AppError("INVALID_INPUT", "采购单据必须选择供应商");
   }
+  // 表头备注：超长直接拒绝，不静默截断，避免用户以为原样保存。
+  if (utf8_char_count(input.remark) > kMaxRemarkChars) {
+    throw AppError("INVALID_INPUT",
+                   "单据备注最多 " + std::to_string(kMaxRemarkChars) + " 个字符");
+  }
 
   const bool allow_zero_qty = definition.stock_mode == StockMode::Stocktake;
 
@@ -843,8 +861,8 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
                 " target_warehouse_id, partner_id, customer_id, customer, biz_category,"
                 " salesperson_id, salesperson_name,"
                 " status, order_status, total_qty, total_amount_cents, created_at, created_by,"
-                " approved_at, approved_by, request_id)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?);");
+                " approved_at, approved_by, request_id, remark)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', ?, ?, ?, ?, ?, ?, ?, ?, ?);");
     header.bind(1, id)
         .bind(2, doc_no)
         .bind(3, doc_type)
@@ -865,6 +883,7 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
         .bind(18, stamp.at)
         .bind(19, stamp.by)
         .bind(20, input.request_id)
+        .bind(21, input.remark)
         .run();
     return;
   }
@@ -874,8 +893,8 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
               " target_warehouse_id, partner_id, customer_id, customer, biz_category,"
               " salesperson_id, salesperson_name,"
               " status, order_status, total_qty, total_amount_cents, created_at, created_by,"
-              " approved_at, approved_by, request_id)"
-              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, NULL, NULL, ?);");
+              " approved_at, approved_by, request_id, remark)"
+              " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, NULL, NULL, ?, ?);");
   header.bind(1, id)
       .bind(2, doc_no)
       .bind(3, doc_type)
@@ -894,6 +913,7 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
       .bind(16, stamp.at)
       .bind(17, stamp.by)
       .bind(18, input.request_id)
+      .bind(19, input.remark)
       .run();
 }
 
@@ -1143,7 +1163,7 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
                 "UPDATE doc_header SET doc_date = ?, warehouse_id = ?, target_warehouse_id = ?,"
                 " partner_id = ?, customer_id = ?, customer = ?, biz_category = ?,"
                 " salesperson_id = ?, salesperson_name = ?, total_qty = ?,"
-                " total_amount_cents = ?, version = version + 1 WHERE id = ?" +
+                " total_amount_cents = ?, remark = ?, version = version + 1 WHERE id = ?" +
                     guard + ";");
     const std::int64_t supplier_id =
         definition->partner_kind == PartnerKind::Supplier ? input.partner_id : 0;
@@ -1160,9 +1180,10 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
         .bind(9, validated.salesperson_name)
         .bind(10, validated.total_qty)
         .bind(11, validated.total_amount)
-        .bind(12, doc_id);
+        .bind(12, input.remark)
+        .bind(13, doc_id);
     if (input.version >= 0) {
-      update.bind(13, input.version);
+      update.bind(14, input.version);
     }
     update.run();
     if (sqlite3_changes(conn) == 0) {
@@ -1327,7 +1348,8 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
       Stmt header(conn,
                   "SELECT id, doc_no, doc_type, doc_date, warehouse_id, target_warehouse_id,"
                   " partner_id, customer_id, customer, status, order_status, total_qty,"
-                  " total_amount_cents, biz_category, salesperson_id, salesperson_name, version"
+                  " total_amount_cents, biz_category, salesperson_id, salesperson_name, version,"
+                  " remark"
                   " FROM doc_header WHERE id = ?;");
       header.bind(1, doc_id);
       if (!header.step()) {
@@ -1350,6 +1372,7 @@ DocDetail DocumentEngine::detail(std::int64_t doc_id) {
       detail.salesperson_id = header.i64(14);
       detail.salesperson_name = header.text(15);
       detail.version = header.i64(16);
+      detail.remark = header.text(17);
       const DocumentDefinition* definition = find_document_definition(detail.doc_type);
       detail.partner_id = definition != nullptr && definition->partner_kind == PartnerKind::Customer
                               ? customer_id
@@ -1396,7 +1419,7 @@ std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limi
               "SELECT h.id, h.doc_no, h.doc_date, w.name, h.customer, h.total_qty,"
               " h.total_amount_cents, h.status, h.order_status, h.created_at,"
               " COALESCE((SELECT SUM(converted_qty) FROM doc_line WHERE doc_id = h.id), 0),"
-              " h.biz_category, h.salesperson_id, h.salesperson_name, h.version"
+              " h.biz_category, h.salesperson_id, h.salesperson_name, h.version, h.remark"
               " FROM doc_header h JOIN warehouse w ON w.id = h.warehouse_id"
               " WHERE h.doc_type = ? ORDER BY h.id DESC LIMIT ?;");
     stmt.bind(1, doc_type).bind(2, static_cast<std::int64_t>(limit));
@@ -1417,6 +1440,7 @@ std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limi
       summary.salesperson_id = stmt.i64(12);
       summary.salesperson_name = stmt.text(13);
       summary.version = stmt.i64(14);
+      summary.remark = stmt.text(15);
       documents.push_back(std::move(summary));
     }
   });
@@ -1439,8 +1463,8 @@ DocListPage DocumentEngine::list_page(const DocListQuery& query) {
     const std::string pattern = "%" + like_escape(query.keyword) + "%";
     where +=
         " AND (h.doc_no LIKE ? ESCAPE '\\' OR h.customer LIKE ? ESCAPE '\\'"
-        " OR h.salesperson_name LIKE ? ESCAPE '\\')";
-    for (int i = 0; i < 3; ++i) {
+        " OR h.salesperson_name LIKE ? ESCAPE '\\' OR h.remark LIKE ? ESCAPE '\\')";
+    for (int i = 0; i < 4; ++i) {
       binds.push_back(SqlBind{.is_text = true, .text = pattern});
     }
   }
@@ -1507,7 +1531,7 @@ DocListPage DocumentEngine::list_page(const DocListQuery& query) {
                 "SELECT h.id, h.doc_no, h.doc_date, w.name, h.customer, h.total_qty,"
                 " h.total_amount_cents, h.status, h.order_status, h.created_at,"
                 " COALESCE((SELECT SUM(converted_qty) FROM doc_line WHERE doc_id = h.id), 0),"
-                " h.biz_category, h.salesperson_id, h.salesperson_name, h.version"
+                " h.biz_category, h.salesperson_id, h.salesperson_name, h.version, h.remark"
                 " FROM doc_header h JOIN warehouse w ON w.id = h.warehouse_id" +
                     where + " ORDER BY h.id DESC LIMIT ? OFFSET ?;");
       const std::int64_t next = bind_where(stmt);
@@ -1529,6 +1553,7 @@ DocListPage DocumentEngine::list_page(const DocListQuery& query) {
         summary.salesperson_id = stmt.i64(12);
         summary.salesperson_name = stmt.text(13);
         summary.version = stmt.i64(14);
+        summary.remark = stmt.text(15);
         result.rows.push_back(std::move(summary));
       }
     }

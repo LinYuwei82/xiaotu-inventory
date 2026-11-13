@@ -57,6 +57,7 @@ struct DocSummary {
   std::string biz_category;  // 其他出入库的业务类型，其余单据为空
   std::int64_t salesperson_id = 0;    // 销售类单据的业务员，0 表示未指定
   std::string salesperson_name;       // 业务员名称快照
+  std::string remark;                 // 表头备注，历史单据为空串
   std::int64_t total_qty = 0;
   std::int64_t converted_qty = 0;  // 订单累计已下推数量，用于列表展示部分完成状态
   std::int64_t total_amount_cents = 0;

@@ -60,6 +60,7 @@ nlohmann::json summary_to_json(const DocSummary& summary) {
       {"biz_category", summary.biz_category},
       {"salesperson_id", summary.salesperson_id},
       {"salesperson_name", summary.salesperson_name},
+      {"remark", summary.remark},
       {"total_qty", qty_text(summary.total_qty)},
       {"converted_qty", qty_text(summary.converted_qty)},
       {"total_amount_cents", summary.total_amount_cents},
@@ -102,6 +103,7 @@ nlohmann::json detail_to_json(const DocDetail& detail) {
       {"biz_category", detail.biz_category},
       {"salesperson_id", detail.salesperson_id},
       {"salesperson_name", detail.salesperson_name},
+      {"remark", detail.remark},
       {"status", detail.status},
       {"order_status", detail.order_status},
       {"version", detail.version},
@@ -141,6 +143,7 @@ DocInput input_from_json(const nlohmann::json& body) {
   input.partner = body.value("partner", std::string{});
   input.biz_category = body.value("biz_category", std::string{});
   input.salesperson_id = body.value("salesperson_id", std::int64_t{0});
+  input.remark = body.value("remark", std::string{});
   // 幂等键与乐观锁版本：老客户端不传时保持空串 / -1，按无幂等、无版本校验放行。
   input.request_id = body.value("request_id", std::string{});
   if (body.contains("version") && !body["version"].is_null()) {
@@ -350,6 +353,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
                        sheet.add_text_row({"单号", detail.doc_no});
                        sheet.add_text_row({"日期", detail.doc_date});
                        sheet.add_text_row({"往来单位", detail.partner});
+                       sheet.add_text_row({"备注", detail.remark});
                        sheet.add_header_row(header);
                        int line_no = 0;
                        for (const auto& line : detail.lines) {
@@ -405,6 +409,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
                      append_csv_row(csv, {"单号", detail.doc_no});
                      append_csv_row(csv, {"日期", detail.doc_date});
                      append_csv_row(csv, {"往来单位", detail.partner});
+                     append_csv_row(csv, {"备注", detail.remark});
                      append_csv_row(csv, {});
                      append_csv_row(csv, header);
                      int line_no = 0;

@@ -557,6 +557,24 @@ main {
   margin-top: 12px;
 }
 
+/* 表头备注：多行输入沿用字段边框，高度随内容而不是固定 32px。 */
+.doc-remark {
+  margin-bottom: 12px;
+}
+
+.doc-remark textarea {
+  min-height: 56px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text);
+  background: #fff;
+  resize: vertical;
+}
+
 .doc-head {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));

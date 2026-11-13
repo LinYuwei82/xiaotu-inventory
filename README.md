@@ -58,6 +58,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v35 | 批次/保质期预留：`doc_line` 与 `stock_ledger` 各加 `batch_no`、`expiry_date`（默认空串），当前不写入、不显示、不参与计算 |
 | v36 | 历史销售单据 `doc_header.partner_id` 回填：只填 `partner_id = 0` 且 `customer_id > 0`、能按 `partner` 档案（含合并链）精确映射的行；有值不动，无档案与 `T:` 文本单位保持 0，不按名称硬匹配；不改结构，可单独回退 |
 | v37 | 单据列表统一筛选与合计的索引：重建 `idx_doc_header_type_date` 为 `(doc_type, doc_date DESC, id DESC)`，新增 `idx_doc_header_type_status`（`doc_type, status`）；只改索引，不动表结构与数据 |
+| v38 | 单据表头备注 `doc_header.remark`（`TEXT NOT NULL DEFAULT ''`，最多 200 个字符）；历史单据一律空串，不回填 |
 
 ## 1. 环境要求
 
