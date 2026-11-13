@@ -21,6 +21,7 @@ add_library(xiaotu_server STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/session_store.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/setting_routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/stock_routes.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/update_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/user_routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/xlsx.cpp"
   ${XIAOTU_GENERATED_SERVER_SOURCES})

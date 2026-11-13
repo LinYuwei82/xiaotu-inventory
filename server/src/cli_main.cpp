@@ -440,6 +440,11 @@ int main(int argc, char** argv) {
         .data_dir = data_dir.string(),
         .database_path = database_path.string(),
         .listen_host = options.server ? listen : std::string{},
+        .update_manifest_file = file_config.update_manifest_file.value_or(""),
+        .update_channel = file_config.update_channel.value_or("stable"),
+        .update_min_supported_version =
+            file_config.update_min_supported_version.value_or(""),
+        .update_rollout_percent = file_config.update_rollout_percent.value_or(100),
     };
     xiaotu::HttpServer http(services, info, token);
 

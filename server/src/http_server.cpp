@@ -3,6 +3,8 @@
 #include <httplib.h>
 
 #include <chrono>
+#include <cstdlib>
+#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <string>
@@ -22,6 +24,7 @@
 #include "xiaotu/permissions.h"
 #include "xiaotu/resources.h"
 #include "xiaotu/routes.h"
+#include "xiaotu/update_service.h"
 
 namespace xiaotu {
 namespace {
@@ -228,6 +231,10 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         if (path == "/api/health") {
           return httplib::Server::HandlerResponse::Unhandled;
         }
+        // 更新检查在登录前也可能发生（网络版轻量握手之前），且不返回敏感数据。
+        if (path == "/api/update/check") {
+          return httplib::Server::HandlerResponse::Unhandled;
+        }
         if (path == "/api/session" && req.method == "POST") {
           return httplib::Server::HandlerResponse::Unhandled;
         }
@@ -288,6 +295,87 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     backup_body["due"] = daily_backup_due(backup_dir);
     backup_body["database_writable"] = database_writable(services_.db);
     body["backup"] = backup_body;
+    json_ok(res, body);
+  });
+
+  // 更新检查：免登录，只读；不采集匿名统计。清单由部署侧同步到本地文件，
+  // 服务端不在此处发起 HTTPS 请求（见 docs/更新模块技术方案.md 第 5 节）。
+  server_->Get("/api/update/check", [this](const httplib::Request& req, httplib::Response& res) {
+    auto int_param = [&req](const char* name, std::int64_t fallback) -> std::int64_t {
+      const std::string raw = req.get_param_value(name);
+      if (raw.empty()) {
+        return fallback;
+      }
+      try {
+        return std::stoll(raw);
+      } catch (const std::exception&) {
+        return -1;
+      }
+    };
+    UpdateQuery query;
+    query.version = req.get_param_value("current_version");
+    query.build = int_param("build", -1);
+    query.channel = req.get_param_value("channel");
+    query.platform = req.get_param_value("platform");
+    query.schema_version = static_cast<int>(int_param("schema_version", -1));
+    query.api_version = static_cast<int>(int_param("api_version", 0));
+    query.os_version = req.get_param_value("os_version");
+    query.install_id = req.get_param_value("install_id");
+    if (query.version.empty() || query.build <= 0 || query.schema_version <= 0 ||
+        query.channel.empty() || query.platform.empty()) {
+      json_error(res, 400, "UPDATE_QUERY_INVALID",
+                 "需要 current_version、build、channel、platform、schema_version");
+      return;
+    }
+
+    UpdateSettings settings;
+    settings.manifest_file = info_.update_manifest_file;
+    settings.channel = info_.update_channel;
+    settings.min_supported_version = info_.update_min_supported_version;
+    settings.rollout_percent = info_.update_rollout_percent;
+    const UpdateCheckResult result =
+        check_for_update(settings, query, static_cast<std::int64_t>(std::time(nullptr)));
+    if (!result.manifest_ok) {
+      json_error(res, result.configured ? 503 : 200, result.error_code, result.error_message);
+      if (!result.configured) {
+        // 未配置更新源不是错误：返回“无更新”，客户端按正常节奏重试。
+        res.body = nlohmann::json{{"ok", true},
+                                  {"update_available", false},
+                                  {"code", "UPDATE_NOT_CONFIGURED"},
+                                  {"latest", nullptr}}
+                       .dump();
+        res.status = 200;
+      }
+      return;
+    }
+
+    nlohmann::json body;
+    body["update_available"] = result.decision.update_available;
+    body["mandatory"] = result.decision.mandatory;
+    body["code"] = result.decision.code;
+    body["mandatory_reason"] =
+        result.decision.reason.empty() ? nlohmann::json(nullptr) : nlohmann::json(result.decision.reason);
+    body["min_supported_version"] = info_.update_min_supported_version.empty()
+                                        ? nlohmann::json(nullptr)
+                                        : nlohmann::json(info_.update_min_supported_version);
+    body["check_after_seconds"] = 86400;
+    body["server_version"] = info_.version;
+    body["api_version"] = current_api_version();
+    if (result.decision.update_available) {
+      body["latest"] = {{"version", result.manifest.version},
+                        {"build", result.manifest.build},
+                        {"url", result.manifest.url},
+                        {"sha256", result.manifest.sha256},
+                        {"size", result.manifest.size},
+                        {"published_at", result.manifest.published_at},
+                        {"release_notes_url", result.manifest.release_notes_url},
+                        {"mandatory", result.manifest.mandatory},
+                        {"mandatory_deadline", result.manifest.mandatory_deadline.empty()
+                                                   ? nlohmann::json(nullptr)
+                                                   : nlohmann::json(result.manifest.mandatory_deadline)}};
+    } else {
+      body["latest"] = nullptr;
+    }
     json_ok(res, body);
   });
 

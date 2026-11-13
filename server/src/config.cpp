@@ -7,6 +7,7 @@
 #include <string_view>
 
 #include "xiaotu/error.h"
+#include "xiaotu/update.h"
 
 namespace xiaotu {
 namespace {
@@ -164,6 +165,42 @@ void assign(ConfigValues& values, const std::string& section, const std::string&
     values.credit_limit_mode = value;
     return;
   }
+  if (section == "update" && key == "manifest_file") {
+    const std::string value = parse_string(raw, path, line_no);
+    if (value.empty()) {
+      fail(path, line_no, "update.manifest_file 不能为空");
+    }
+    values.update_manifest_file = value;
+    return;
+  }
+  if (section == "update" && key == "channel") {
+    std::string value = parse_string(raw, path, line_no);
+    for (char& ch : value) {
+      ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (value != "stable" && value != "beta") {
+      fail(path, line_no, "update.channel 只能是 stable / beta");
+    }
+    values.update_channel = value;
+    return;
+  }
+  if (section == "update" && key == "min_supported_version") {
+    const std::string value = parse_string(raw, path, line_no);
+    ProductVersion ignored;
+    if (!parse_product_version(value, ignored)) {
+      fail(path, line_no, "update.min_supported_version 必须形如 1.2.3");
+    }
+    values.update_min_supported_version = value;
+    return;
+  }
+  if (section == "update" && key == "rollout_percent") {
+    const std::int64_t value = parse_int(raw, path, line_no);
+    if (value < 1 || value > 100) {
+      fail(path, line_no, "update.rollout_percent 应在 1–100 之间");
+    }
+    values.update_rollout_percent = static_cast<int>(value);
+    return;
+  }
   fail(path, line_no, "未知配置项：" + qualified);
 }
 
@@ -192,7 +229,7 @@ ConfigValues load_config_file(const std::filesystem::path& path) {
       }
       section = trim(std::string_view(content).substr(1, content.size() - 2));
       if (section != "server" && section != "storage" && section != "log" &&
-          section != "sales") {
+          section != "sales" && section != "update") {
         fail(path, line_no, "未知配置段：[" + section + "]");
       }
       continue;
@@ -202,7 +239,7 @@ ConfigValues load_config_file(const std::filesystem::path& path) {
       fail(path, line_no, "配置行缺少 =");
     }
     if (section.empty()) {
-      fail(path, line_no, "配置项必须写在 [server]、[storage]、[log]、[sales] 段内");
+      fail(path, line_no, "配置项必须写在 [server]、[storage]、[log]、[sales]、[update] 段内");
     }
     assign(values, section, trim(content.substr(0, equal)), trim(content.substr(equal + 1)), path,
            line_no, seen);

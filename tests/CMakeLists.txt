@@ -62,6 +62,12 @@ target_link_libraries(xiaotu_update_smoke PRIVATE xiaotu_core)
 
 add_test(NAME update_smoke COMMAND xiaotu_update_smoke)
 
+add_executable(xiaotu_update_service_smoke
+               "${CMAKE_CURRENT_SOURCE_DIR}/update_service_smoke.cpp")
+target_link_libraries(xiaotu_update_service_smoke PRIVATE xiaotu_server Threads::Threads)
+
+add_test(NAME update_service_smoke COMMAND xiaotu_update_service_smoke)
+
 if(UNIX)
   add_test(NAME restore_lock_exit
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/restore_lock_exit.sh"
@@ -69,4 +75,7 @@ if(UNIX)
   add_test(NAME deploy_backup_test
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/deploy_backup_test.sh"
                    "${CMAKE_CURRENT_SOURCE_DIR}/../deploy/backup.sh")
+  add_test(NAME update_api_test
+           COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/update_api_test.sh"
+                   $<TARGET_FILE:xiaotu-server>)
 endif()
