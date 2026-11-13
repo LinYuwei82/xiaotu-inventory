@@ -129,7 +129,7 @@ ProcessResult run_process_capture(const std::string& program,
     command_line = quote_windows_arg(application) + L" /c \"" + command_line + L"\"";
   } else if (application.find_first_of(L"\\/") == std::wstring::npos) {
     // CreateProcessW 的 lpApplicationName 传纯文件名时不做 PATH 搜索，直接
-    // ERROR_FILE_NOT_FOUND（exit=2，例如下载用的 "curl"）。纯文件名先解析成
+    // ERROR_FILE_NOT_FOUND（系统错误 2，例如下载用的 "curl"）。纯文件名先解析成
     // 绝对路径；解析不到才原样交给系统。
     wchar_t resolved[MAX_PATH * 4] = {};
     const DWORD resolved_length =
@@ -168,13 +168,17 @@ ProcessResult run_process_capture(const std::string& program,
   const BOOL created = ::CreateProcessW(application.c_str(), &command_line[0], nullptr, nullptr,
                                         TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup,
                                         &process);
+  // 必须紧跟着取错误码：下面几个 CloseHandle 成功时是否清零 last-error
+  // 没有文档保证，失败时还会改成 ERROR_INVALID_HANDLE，再晚取就不是
+  // CreateProcess 的原因了。
+  const DWORD create_error = created == FALSE ? ::GetLastError() : ERROR_SUCCESS;
   ::CloseHandle(write_pipe);
   if (null_device != INVALID_HANDLE_VALUE) {
     ::CloseHandle(null_device);
   }
   if (created == FALSE) {
     ::CloseHandle(pipe_read);
-    result.error = "无法启动程序（exit=" + std::to_string(::GetLastError()) + "）";
+    result.error = "无法启动程序（系统错误 " + std::to_string(create_error) + "）";
     return result;
   }
 
@@ -193,15 +197,19 @@ ProcessResult run_process_capture(const std::string& program,
 #else
   int pipe_fd[2] = {-1, -1};
   if (::pipe(pipe_fd) != 0) {
-    result.error = std::string("无法创建输出管道：") + std::strerror(errno);
+    // 先存 errno：后面的字符串构造与拼接不保证不改写它。
+    const int saved_errno = errno;
+    result.error = std::string("无法创建输出管道：") + std::strerror(saved_errno);
     return result;
   }
 
   const pid_t pid = ::fork();
   if (pid < 0) {
+    // 同上：close() 失败会改写 errno，必须在关闭管道之前保存。
+    const int saved_errno = errno;
     ::close(pipe_fd[0]);
     ::close(pipe_fd[1]);
-    result.error = std::string("无法创建子进程：") + std::strerror(errno);
+    result.error = std::string("无法创建子进程：") + std::strerror(saved_errno);
     return result;
   }
   if (pid == 0) {
