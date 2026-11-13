@@ -78,7 +78,11 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#AppName} {#AppVersion}
-UninstallDisplayIcon={app}\{#AppExeName}
+; 安装包自身在资源管理器里的图标：与 macOS/两个 exe 同为候选 A。
+; 安装向导图（WizardImageFile / WizardSmallImageFile）未自定义，仍是 Inno 默认占位图。
+SetupIconFile=xiaotu-a-rabbit-barcode.ico
+; 卸载项指向始终存在的服务端 exe（无论是否带壳），避免指向可能不存在的壳。
+UninstallDisplayIcon={app}\{#ServerExeName}
 #ifdef Sign
 SignTool=signtool
 SignedUninstaller=yes
@@ -97,6 +101,8 @@ Source: "..\..\deploy\config.toml.example"; DestDir: "{app}"; Flags: ignoreversi
 Source: "package-readme.md"; DestDir: "{app}"; Flags: ignoreversion; DestName: "README.md"
 
 [Icons]
+; 未设置 IconFilename：快捷方式继承 exe 资源图标；shell 与 server 两个 exe 都已嵌入候选 A，
+; 因此带壳与无壳（浏览器访问）两种快捷方式都会显示新图标。
 ; 当前用户安装：开始菜单与桌面快捷方式都写当前用户配置，不涉及公共目录。
 Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Check: HasShell
 Name: "{userprograms}\{#AppName}（浏览器访问）"; Filename: "{app}\{#ServerExeName}"; Parameters: "--server"; WorkingDir: "{app}"; Check: NoShell

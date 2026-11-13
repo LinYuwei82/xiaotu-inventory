@@ -376,7 +376,7 @@ xiaotu-inventory/
 │   └── src/                       # 手写路由（含 print_routes.cpp）+ cli_main.cpp + src/gen/（生成物）
 ├── shell/                         # 平台代码（可关闭）
 │   ├── common/                    # 壳公共代码预留目录（当前无跟踪文件）
-│   ├── mac/icon/                  # 图标源 SVG（候选）与 xiaotu.icns
+│   ├── mac/icon/                  # 图标源 SVG（A/B/C 候选）、A 的 .icns（现用）与旧 xiaotu.icns（B，保留）
 │   ├── mac/webview.mm             # WKWebView 宿主
 │   └── win/                       # Win32 + WebView2 壳工程（可用 XIAOTU_BUILD_WIN_SHELL 接入顶层，默认关闭）
 ├── web/                           # 前端（无构建步骤）

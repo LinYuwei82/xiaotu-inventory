@@ -41,6 +41,12 @@ target_compile_definitions(xiaotu-server PRIVATE XIAOTU_VERSION="${PROJECT_VERSI
 # Windows 下给控制台 exe 写版本资源，让「属性 → 详细信息」能看到 FileVersion。
 # 版本号取项目级 PROJECT_VERSION（来自仓库根 VERSION），与壳和 XIAOTU_VERSION 宏同源。
 if(WIN32)
+  # 服务端 exe 与壳、安装包使用同一份候选 A 图标。
+  set(XIAOTU_WIN_ICON "${CMAKE_SOURCE_DIR}/packaging/win/xiaotu-a-rabbit-barcode.ico")
+  if (NOT EXISTS "${XIAOTU_WIN_ICON}")
+    message(FATAL_ERROR "未找到 Windows 图标：${XIAOTU_WIN_ICON}")
+  endif()
+  file(TO_NATIVE_PATH "${XIAOTU_WIN_ICON}" XIAOTU_WIN_ICON_RC)
   configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/version.rc.in"
     "${CMAKE_CURRENT_BINARY_DIR}/version.rc"

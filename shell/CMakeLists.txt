@@ -43,13 +43,14 @@ endif()
 set_target_properties(xiaotu-inventory PROPERTIES
   LINK_FLAGS "-Wl,-sectcreate,__TEXT,__info_plist,${XIAOTU_INFO_PLIST}")
 
-# 图标：.icns 放进 .app/Contents/Resources，由 Info.plist 的 CFBundleIconFile 指向
-set(XIAOTU_ICON "${CMAKE_CURRENT_SOURCE_DIR}/mac/icon/xiaotu.icns")
+# 图标：候选 A（兔耳 + 条形码）生成的 .icns 放进 .app/Contents/Resources，
+# 由 Info.plist 的 CFBundleIconFile 指向；旧的 xiaotu.icns（候选 B）保留作追溯。
+set(XIAOTU_ICON "${CMAKE_CURRENT_SOURCE_DIR}/mac/icon/xiaotu-a-rabbit-barcode.icns")
 set_source_files_properties("${XIAOTU_ICON}" PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
 target_sources(xiaotu-inventory PRIVATE "${XIAOTU_ICON}")
 set_target_properties(xiaotu-inventory PROPERTIES
   MACOSX_BUNDLE_INFO_PLIST "${XIAOTU_INFO_PLIST}"
-  MACOSX_BUNDLE_ICON_FILE "xiaotu.icns"
+  MACOSX_BUNDLE_ICON_FILE "xiaotu-a-rabbit-barcode.icns"
   MACOSX_BUNDLE_BUNDLE_NAME "小兔进销存"
   MACOSX_BUNDLE_GUI_IDENTIFIER "com.simem.xiaotu"
   MACOSX_BUNDLE_BUNDLE_VERSION "${XIAOTU_BUILD}"
