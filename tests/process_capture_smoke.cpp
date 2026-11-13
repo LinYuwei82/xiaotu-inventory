@@ -26,6 +26,10 @@ int main() {
     std::cerr << "错误码应为 ERROR_FILE_NOT_FOUND(2)，实际：" << result.error << std::endl;
     ++failures;
   }
+  if (result.error.find("%1") != std::string::npos) {
+    std::cerr << "系统描述不应残留 %1 占位符，实际：" << result.error << std::endl;
+    ++failures;
+  }
 #else
   if (!result.started || !result.collected || result.exit_code != 127) {
     std::cerr << "exec 失败应以 127 退出，实际 started=" << result.started
@@ -34,6 +38,25 @@ int main() {
     ++failures;
   }
 #endif
+
+  // 清理函数单测：直接喂带 %N 的消息，不依赖 Windows 真实系统描述。
+  // 断言的是“占位符清掉、空白与空括号不残留”，不是某句具体文案。
+  const auto check_clean = [&failures](const std::string& input, const std::string& expected,
+                                       const char* label) {
+    const std::string actual = xiaotu::clean_windows_error_message(input);
+    if (actual != expected) {
+      std::cerr << label << " 清理结果不符，期望 [" << expected << "]，实际 [" << actual << "]"
+                << std::endl;
+      ++failures;
+    }
+  };
+  check_clean("无法启动程序（系统错误 193：%1 不是有效的 Win32 应用程序。）",
+              "无法启动程序（系统错误 193：不是有效的 Win32 应用程序。）", "带 %1 的中文消息");
+  check_clean("%1", "", "只有编号占位符");
+  check_clean("%n", "", "只有换行转义");
+  check_clean("100%% %n %2 可用", "100% 可用", "%% 与转义");
+  check_clean("参数（%1）无效", "参数无效", "空括号");
+  check_clean("10% 可用", "10% 可用", "非占位符百分号");
 
   // 下面两组断言守的是「未启动」与「已启动但收集失败」必须可区分这一语义，
   // 不锁定整句措辞：未启动只要求原样透出底层错误；收集失败只要求带「已启动」

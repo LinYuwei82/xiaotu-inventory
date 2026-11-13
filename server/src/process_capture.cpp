@@ -65,12 +65,13 @@ std::string windows_error_text(DWORD code) {
   }
   std::wstring wide(buffer, length);
   ::LocalFree(buffer);
-  // 系统描述末尾带 \r\n 与空格，去掉后再拼进括号。
+  // 系统描述末尾带 \r\n 与空格，去掉后再拼接；同时清理 IGNORE_INSERTS
+  // 留下的 %1、%n、%% 等占位符，避免用户看到 “%1 不是有效的 Win32 应用程序”。
   while (!wide.empty() && (wide.back() == L'\r' || wide.back() == L'\n' ||
                            wide.back() == L' ' || wide.back() == L'\t')) {
     wide.pop_back();
   }
-  return wide_to_utf8(wide);
+  return clean_windows_error_message(wide_to_utf8(wide));
 }
 
 // 按 CommandLineToArgvW 的规则给单个参数加引号：反斜杠数量按官方算法翻倍，
@@ -140,6 +141,202 @@ std::string read_fd(int fd) {
 #endif
 
 }  // namespace
+
+std::string clean_windows_error_message(const std::string& text) {
+  // 1) 去掉 FormatMessageW(IGNORE_INSERTS) 原样留下的占位符与转义。
+  //    %1–%9 / %10… 用空格替代，避免前后词粘连；%% 还原为字面 %。
+  std::string without;
+  without.reserve(text.size());
+  for (std::size_t i = 0; i < text.size();) {
+    if (text[i] != '%') {
+      without.push_back(text[i++]);
+      continue;
+    }
+    if (i + 1 >= text.size()) {
+      without.push_back('%');
+      ++i;
+      continue;
+    }
+    const char next = text[i + 1];
+    if (next == '%') {
+      without.push_back('%');
+      i += 2;
+      continue;
+    }
+    if (next >= '0' && next <= '9') {
+      std::size_t end = i + 1;
+      while (end < text.size() && text[end] >= '0' && text[end] <= '9') {
+        ++end;
+      }
+      without.push_back(' ');
+      i = end;
+      continue;
+    }
+    if (next == 'n' || next == 'N' || next == 'r' || next == 'R' || next == 't' ||
+        next == 'T') {
+      without.push_back(' ');
+      i += 2;
+      continue;
+    }
+    // 不是占位符（例如 “50%”），原样保留。
+    without.push_back('%');
+    ++i;
+  }
+
+  // 2) 压缩空白：连续空格、制表、换行都压成一个空格，并去掉行首空格。
+  std::string collapsed;
+  bool pending_space = false;
+  for (const char ch : without) {
+    if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
+      pending_space = true;
+      continue;
+    }
+    if (pending_space && !collapsed.empty()) {
+      collapsed.push_back(' ');
+    }
+    pending_space = false;
+    collapsed.push_back(ch);
+  }
+
+  auto starts_with_at = [](const std::string& value, std::size_t pos, const char* needle) {
+    const std::string target(needle);
+    return pos + target.size() <= value.size() &&
+           value.compare(pos, target.size(), target) == 0;
+  };
+  auto ends_with = [](const std::string& value, const char* needle) {
+    const std::string target(needle);
+    return value.size() >= target.size() &&
+           value.compare(value.size() - target.size(), target.size(), target) == 0;
+  };
+
+  // 3) 去掉标点前的空格、开括号后的空格，避免出现 “： 。” 或 “（ 内容”。
+  const char* no_space_before[] = {",", ".", ";", ":", "!", "?", ")", "]", "}", "，",
+                                   "。", "；", "：", "！", "？", "、", "）", "】",
+                                   "》", "」", "』"};
+  const char* no_space_after[] = {"(", "[", "{", "（", "【", "《", "「", "『", ":", "："};
+  std::string tight;
+  for (std::size_t i = 0; i < collapsed.size(); ++i) {
+    const char ch = collapsed[i];
+    if (ch == ' ' && !tight.empty()) {
+      bool drop = false;
+      for (const char* punctuation : no_space_before) {
+        if (starts_with_at(collapsed, i + 1, punctuation)) {
+          drop = true;
+          break;
+        }
+      }
+      if (!drop) {
+        for (const char* opening : no_space_after) {
+          if (ends_with(tight, opening)) {
+            drop = true;
+            break;
+          }
+        }
+      }
+      if (drop) {
+        continue;
+      }
+    }
+    tight.push_back(ch);
+  }
+
+  // 4) 占位符被删后可能留下空括号，反复清理直到稳定。
+  const char* empty_pairs[] = {"()", "[]", "{}", "（）", "【】", "《》",
+                               "「」", "『』", "\"\"", "''"};
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const char* pair : empty_pairs) {
+      const std::string target(pair);
+      std::size_t pos = 0;
+      while ((pos = tight.find(target, pos)) != std::string::npos) {
+        tight.erase(pos, target.size());
+        changed = true;
+      }
+    }
+  }
+
+  // 5) 去掉句首/句尾孤立标点。只删“句首的闭括号”和“句尾的开括号”，
+  //    避免把正常配对的 “（…）” 右括号当成孤立标点删掉。
+  const char* front_orphans[] = {" ",  "\t", ",", "，", ";", "；", ":", "：", "、",
+                                 ")",  "）", "]", "】", "}", "》", "」", "』"};
+  const char* back_orphans[] = {" ",  "\t", ",", "，", ";", "；", ":", "：", "、",
+                                "(",  "（", "[", "【", "{", "《", "「", "『"};
+  bool trimmed = true;
+  while (trimmed) {
+    trimmed = false;
+    for (const char* orphan : front_orphans) {
+      const std::string target(orphan);
+      if (tight.compare(0, target.size(), target) == 0) {
+        tight.erase(0, target.size());
+        trimmed = true;
+      }
+    }
+    for (const char* orphan : back_orphans) {
+      if (ends_with(tight, orphan)) {
+        tight.erase(tight.size() - std::string(orphan).size());
+        trimmed = true;
+      }
+    }
+  }
+
+  // 5.1) 占位符夹在标点之间时可能留下 “：。”、“，。” 这类孤立标点。
+  //      只删除紧挨句末标点的冒号/逗号/分号，不改变句末标点本身。
+  const char* leading_punctuation[] = {":", "：", ",", "，", ";", "；", "、"};
+  const char* sentence_end[] = {".", "。", "!", "！", "?", "？"};
+  bool punctuation_changed = true;
+  while (punctuation_changed) {
+    punctuation_changed = false;
+    for (const char* leading : leading_punctuation) {
+      for (const char* ending : sentence_end) {
+        const std::string pattern = std::string(leading) + ending;
+        std::size_t pos = 0;
+        while ((pos = tight.find(pattern, pos)) != std::string::npos) {
+          tight.erase(pos, std::string(leading).size());
+          punctuation_changed = true;
+        }
+      }
+    }
+  }
+
+  // 6) 删除空括号后可能再次出现连续空格，最后再压一次并去首尾空格。
+  std::string cleaned;
+  pending_space = false;
+  for (const char ch : tight) {
+    if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
+      pending_space = true;
+      continue;
+    }
+    if (pending_space && !cleaned.empty()) {
+      cleaned.push_back(' ');
+    }
+    pending_space = false;
+    cleaned.push_back(ch);
+  }
+  while (!cleaned.empty() && cleaned.front() == ' ') {
+    cleaned.erase(cleaned.begin());
+  }
+  while (!cleaned.empty() && cleaned.back() == ' ') {
+    cleaned.pop_back();
+  }
+
+  // 7) 整句只剩句末标点（例如 “。”）时，视为没有可用描述。
+  std::string without_sentence_end = cleaned;
+  bool removed_sentence_end = true;
+  while (removed_sentence_end && !without_sentence_end.empty()) {
+    removed_sentence_end = false;
+    for (const char* ending : sentence_end) {
+      if (ends_with(without_sentence_end, ending)) {
+        without_sentence_end.erase(without_sentence_end.size() - std::string(ending).size());
+        removed_sentence_end = true;
+      }
+    }
+  }
+  if (without_sentence_end.empty()) {
+    cleaned.clear();
+  }
+  return cleaned;
+}
 
 ProcessResult run_process_capture(const std::string& program,
                                   const std::vector<std::string>& args) {

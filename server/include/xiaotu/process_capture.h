@@ -28,6 +28,12 @@ ProcessResult run_process_capture(const std::string& program,
 // 进程确实起来了，只是拿不到退出状态，避免被写成「无法启动」。
 std::string process_failure_text(const ProcessResult& result);
 
+// 清理 Windows FormatMessageW 在 IGNORE_INSERTS 下留下的占位符与转义：
+// %1–%9（含多位编号）、%n/%r/%t、%%；随后压缩空白、去掉空括号与句首/句尾
+// 孤立标点。返回空串表示清理后没有可用描述，调用方应只显示系统错误码。
+// 该函数不依赖 Windows 头文件，便于在任意平台做单测。
+std::string clean_windows_error_message(const std::string& text);
+
 // 取输出里最后一个非空行，用于错误信息；没有输出时返回空串。
 std::string last_output_line(const std::string& output);
 
