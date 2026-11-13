@@ -18,6 +18,7 @@
 #include "xiaotu/instance_lock.h"
 #include "xiaotu/log.h"
 #include "xiaotu/migrations.h"
+#include "xiaotu/partner_preview.h"
 #include "xiaotu/permissions.h"
 #include "xiaotu/platform_paths.h"
 #include "xiaotu/services.h"
@@ -59,6 +60,8 @@ struct Options {
   bool backup = false;
   std::filesystem::path restore_from;
   std::string set_password_user;
+  bool partner_preview = false;
+  std::string partner_preview_format = "text";
   bool show_help = false;
 };
 
@@ -74,6 +77,8 @@ void print_usage(const char* program) {
             << "  --backup        立即生成一次数据库备份并退出\n"
             << "  --restore <文件> 用指定备份覆盖当前数据库并退出（先自动留安全备份）\n"
             << "  --set-password <用户名> 用环境变量 XIAOTU_PASSWORD 设置该用户口令并退出\n"
+            << "  --partner-preview 只读预览客户/供应商重复候选并退出\n"
+            << "  --partner-preview-format <text|json|csv> 预览输出格式，默认 text\n"
             << "  --version       输出版本号\n"
             << "  --help          输出本帮助\n"
             << "\n配置优先级：命令行 > 环境变量 > config.toml > 内置默认。\n";
@@ -99,6 +104,10 @@ Options parse_args(int argc, char** argv) {
       options.restore_from = argv[++i];
     } else if (arg == "--set-password" && i + 1 < argc) {
       options.set_password_user = argv[++i];
+    } else if (arg == "--partner-preview") {
+      options.partner_preview = true;
+    } else if (arg == "--partner-preview-format" && i + 1 < argc) {
+      options.partner_preview_format = argv[++i];
     } else if (arg == "--version") {
       std::cout << XIAOTU_VERSION << std::endl;
       std::exit(0);
@@ -110,6 +119,10 @@ Options parse_args(int argc, char** argv) {
   }
   if (options.port.has_value() && (*options.port < 1 || *options.port > 65535)) {
     throw xiaotu::AppError("BAD_ARGUMENT", "--port 应在 1–65535 之间");
+  }
+  if (options.partner_preview_format != "text" && options.partner_preview_format != "json" &&
+      options.partner_preview_format != "csv") {
+    throw xiaotu::AppError("BAD_ARGUMENT", "--partner-preview-format 只支持 text/json/csv");
   }
   return options;
 }
@@ -204,7 +217,8 @@ int main(int argc, char** argv) {
     // 单实例锁：同一数据目录只允许一个实例写库。--backup 允许运行中执行，
     // --set-password 是停机维护命令，两者不参与锁；--restore 必须在停服时执行，
     // 因此照常抢锁，抢不到就提示已有实例在运行。
-    const bool maintenance_only = options.backup || !options.set_password_user.empty();
+    const bool maintenance_only =
+        options.backup || !options.set_password_user.empty() || options.partner_preview;
     xiaotu::InstanceLock instance_lock;
     if (!maintenance_only && !instance_lock.acquire(data_dir)) {
       std::cout << "已有小兔进销存实例在使用该数据目录"
@@ -261,6 +275,9 @@ int main(int argc, char** argv) {
     if (options.backup && !database_existed) {
       throw xiaotu::AppError("NOT_FOUND", "数据库不存在，无法备份：" + database_path.string());
     }
+    if (options.partner_preview && !database_existed) {
+      throw xiaotu::AppError("NOT_FOUND", "数据库不存在，无法预览：" + database_path.string());
+    }
     xiaotu::Db db(database_path, 4);
     if (options.backup) {
       const auto snapshot = xiaotu::backup_database(db, data_dir / "backups", "manual");
@@ -273,6 +290,25 @@ int main(int argc, char** argv) {
                             snapshot.path.filename().string(),
                             std::to_string(snapshot.bytes) + " 字节");
       });
+      xiaotu::shutdown_logging();
+      return 0;
+    }
+
+    // 只读预览：必须在迁移之前执行，避免老库被顺带升级。
+    // 只读 customer/supplier/ar_ap_entry，不写业务表、不做合并。
+    if (options.partner_preview) {
+      if (db.schema_version() < 19) {
+        throw xiaotu::AppError("MIGRATION_REQUIRED",
+                               "数据库版本低于 v19，缺少税号字段；请先正常启动一次完成迁移");
+      }
+      const xiaotu::PartnerPreviewReport report = xiaotu::partner_merge_preview(db);
+      if (options.partner_preview_format == "json") {
+        std::cout << xiaotu::partner_preview_json(report);
+      } else if (options.partner_preview_format == "csv") {
+        std::cout << xiaotu::partner_preview_csv(report);
+      } else {
+        std::cout << xiaotu::partner_preview_text(report);
+      }
       xiaotu::shutdown_logging();
       return 0;
     }

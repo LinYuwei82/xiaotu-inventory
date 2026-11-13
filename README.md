@@ -238,7 +238,7 @@ WebView 会打开 `http://127.0.0.1:5173/?api=http://127.0.0.1:<port>#t=<token>`
 
 程序启动时会检测数据目录并给出提示：命中 iCloud Drive（`~/Library/Mobile Documents/`）或 OneDrive 时，控制台、日志与界面顶部都会显示告警和迁移指引；只告警不拦截。
 
-同一数据目录同一时间只允许一个实例运行（`<数据目录>/app.lock`，Windows 用命名互斥体、macOS 用 `flock`）。重复启动会提示已有实例的 PID 后直接退出；`--backup` 与 `--set-password` 属于维护命令，不参与该锁，`--restore` 仍要求停服。
+同一数据目录同一时间只允许一个实例运行（`<数据目录>/app.lock`，Windows 用命名互斥体、macOS 用 `flock`）。重复启动会提示已有实例的 PID 后直接退出；`--backup`、`--set-password` 与 `--partner-preview` 属于维护命令，不参与该锁，`--restore` 仍要求停服。
 
 ### 备份与恢复
 
@@ -246,6 +246,7 @@ WebView 会打开 `http://127.0.0.1:5173/?api=http://127.0.0.1:<port>#t=<token>`
 - 手动备份：`<程序> --data <数据目录> --backup`，输出快照路径与字节数。
 - 恢复：`<程序> --data <数据目录> --restore <备份文件>`；先做 `PRAGMA integrity_check`，目标已存在时留一份 `pre-restore-*.db`，再覆盖并清理 `-wal` / `-shm`。恢复必须在服务停止时执行。
 - 快照是一致性单文件，可直接复制到另一台机器后恢复。
+- 往来单位归并预览（只读）：`<程序> --data <数据目录> --partner-preview`，可选 `--partner-preview-format text|json|csv`。命令在**迁移之前**执行，只 `SELECT customer / supplier / ar_ap_entry`，不升级结构、不写业务表；按税号、名称+电话、仅名称三档列出候选合并组，并单独列出同一名称存在多个 `partner_key` 的单位。规则来源见 `docs/客户供应商合表方案.md`。
 
 ## 4. 走通一次完整链路
 

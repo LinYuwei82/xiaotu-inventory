@@ -13,6 +13,7 @@
 #include <latch>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include "xiaotu/audit.h"
@@ -24,10 +25,12 @@
 #include "xiaotu/gen/customer_service.h"
 #include "xiaotu/gen/item_service.h"
 #include "xiaotu/log.h"
+#include "xiaotu/partner_preview.h"
 #include "xiaotu/password.h"
 #include "xiaotu/setting_service.h"
 #include "xiaotu/gen/supplier_service.h"
 #include "xiaotu/gen/unit_service.h"
+#include "xiaotu/ids.h"
 #include "xiaotu/gen/customer_service.h"
 #include "xiaotu/gen/employee_service.h"
 #include "xiaotu/gen/warehouse_service.h"
@@ -1284,6 +1287,65 @@ int main() {
         check(after_at_today == 1000,
               "截止到今天时，月初单据已核销、只剩今天单据 1000 分");
         customers.remove(point_customer.id);
+      }
+
+      {
+        // 归并预览（测试数据，不是真实业务数据）：同税号应命中高置信组，
+        // 同名的 C:/S:/T: 三个 key 应单独列出。
+        const auto preview_customer = customers.create(xiaotu::gen::CustomerRow{
+            .code = "PREV-C1",
+            .name = "预览测试甲",
+            .phone = "138-0000-1111",
+            .tax_no = "91330000TEST001"});
+        const auto preview_supplier = suppliers.create(xiaotu::gen::SupplierRow{
+            .code = "PREV-S1",
+            .name = "预览测试甲",
+            .phone = "13800001111",
+            .tax_no = "9133-0000-TEST001"});
+        const auto name_customer = customers.create(xiaotu::gen::CustomerRow{
+            .code = "PREV-C2", .name = "预览同名乙", .phone = "13900000001"});
+        const auto name_supplier = suppliers.create(xiaotu::gen::SupplierRow{
+            .code = "PREV-S2", .name = "预览同名乙", .phone = "13900000002"});
+        const std::string customer_key = "C:" + std::to_string(preview_customer.id);
+        const std::string supplier_key = "S:" + std::to_string(preview_supplier.id);
+        db.write([&](sqlite3* conn) {
+          for (const auto& [key, direction, amount] :
+               std::vector<std::tuple<std::string, int, std::int64_t>>{
+                   {customer_key, 1, 1200}, {supplier_key, -1, 800}, {"T:预览测试甲", 1, 300}}) {
+            xiaotu::Stmt stmt(conn,
+                              "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
+                              " partner_id, partner_name, partner_key, biz_date, due_date,"
+                              " amount_cents, settled_cents, status, created_at, created_by)"
+                              " VALUES (?, 0, '预览', 'OPENING_AR', ?, 0, '预览测试甲', ?, ?, '',"
+                              " ?, 0, 'OPEN', ?, 'test');");
+            stmt.bind(1, xiaotu::next_id())
+                .bind(2, static_cast<std::int64_t>(direction))
+                .bind(3, key)
+                .bind(4, kToday)
+                .bind(5, amount)
+                .bind(6, kToday + " 00:00:00")
+                .run();
+          }
+        });
+        const auto preview = xiaotu::partner_merge_preview(db);
+        check(preview.high_count == 1, "同税号客户/供应商应命中 1 组高置信");
+        check(preview.name_only_count == 1, "仅同名一对应命中 1 组需人工确认");
+        check(!preview.groups.empty() && preview.groups.front().keys_conflict,
+              "跨客户/供应商的候选组应标记多个 partner_key");
+        bool found_three_keys = false;
+        for (const auto& unit : preview.multi_key_units) {
+          if (unit.name == "预览测试甲" && unit.keys.size() == 3) found_three_keys = true;
+        }
+        check(found_three_keys, "同名 C:/S:/T: 三个 key 应列入多 key 清单");
+        db.write([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn,
+                            "DELETE FROM ar_ap_entry WHERE partner_key IN (?, ?, 'T:预览测试甲');");
+          stmt.bind(1, customer_key).bind(2, supplier_key).run();
+        });
+        customers.remove(preview_customer.id);
+        suppliers.remove(preview_supplier.id);
+        customers.remove(name_customer.id);
+        suppliers.remove(name_supplier.id);
       }
 
       items.remove(draft_item.id);
