@@ -11,7 +11,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 当前版本 0.1.0（唯一来源：仓库根 `VERSION` 文件）。按 [docs/进销存技术方案.md](docs/进销存技术方案.md) 的里程碑口径：M1–M3 与 M5 已完成；M4 除针式套打真机验证外已完成（纸型、边距、缩放与打印列勾选已落地）；M6 的 macOS `.dmg` 打包脚本与用户手册已完成，Windows 壳接入顶层构建与安装包、Developer ID 签名与公证仍未完成。
 
-已打通：**商品（分类 / 条码 / 税率）/ 单位 / 仓库 / 职员 / 客户 / 供应商档案（支持 Excel 批量导入导出，客户供应商已合表到 partner 并支持合并与撤销）→ 库存、应收、应付、资金账户四类期初导入 → 采购入库、销售出库、采购退货、销售退货、其他入库、其他出库、调拨、盘点、成本调整（草稿与反审核）→ 销售订单确认与转出库（可记录业务员）→ 库存余额与流水 → 应收应付台账与核销（按 partner 维度归集）→ 收付款单与资金账户 → 往来对账单 → 八类报表导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志（含来源 IP 与请求号）、单据幂等与乐观锁、登录失败锁定与强制改密、成本口径参数（含税价 / 不含税净额，可切换并标注切换日）、前端离线提示与表单草稿、打印纸型 / 边距 / 缩放与 Cmd+P、报表导出流式化（不再有 10 万行上限）与 macOS `.dmg` 打包。桌面壳提供撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选编辑菜单；单据录入时商品下拉显示编码、名称与规格，数量框旁显示单位；桌面版支持直接「导出 PDF」。成本重算保持只读核对，差异通过成本调整单落账。
+已打通：**商品（分类 / 条码 / 税率）/ 单位 / 仓库 / 职员 / 客户 / 供应商档案（支持 Excel 批量导入导出，客户供应商已合表到 partner 并支持合并与撤销）→ 库存、应收、应付、资金账户四类期初导入 → 采购入库、销售出库、采购退货、销售退货、其他入库、其他出库、调拨、盘点、成本调整（草稿与反审核）→ 销售订单确认与转出库（可记录业务员）→ 库存余额与流水 → 应收应付台账与核销（按 partner 维度归集）→ 收付款单与资金账户 → 往来对账单 → 15 个报表接口（14 类输出）的导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志（含来源 IP 与请求号）、单据幂等与乐观锁、登录失败锁定与强制改密、成本口径参数（含税价 / 不含税净额，可切换并标注切换日）、前端离线提示与表单草稿、打印纸型 / 边距 / 缩放与 Cmd+P、报表导出流式化（不再有 10 万行上限）与 macOS `.dmg` 打包。桌面壳提供撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选编辑菜单；单据录入时商品下拉显示编码、名称与规格，数量框旁显示单位；桌面版支持直接「导出 PDF」。成本重算保持只读核对，差异通过成本调整单落账。
 
 ## 0. 数据库结构版本
 
@@ -163,7 +163,7 @@ $env:XIAOTU_PASSWORD = '你的口令'
 
 #### Windows 桌面壳（可选）
 
-`shell/win` 是独立的 Win32 + WebView2 工程，不接入顶层 CMake；CI 只验证能编译，不打包、不签名。
+`shell/win` 是独立的 Win32 + WebView2 工程，不接入顶层 CMake；CI 会编译服务端与壳，并用 Inno Setup 编出**未签名安装包**上传 artifact。签名是参数化空位：配置了证书 secret 才调用 signtool，没有就跳过并在产物说明里标注「未签名」。
 
 前置条件：
 
@@ -230,9 +230,33 @@ data_dir = "/var/lib/xiaotu"
 [log]
 level = "info"
 dir = "/var/log/xiaotu"
+
+[sales]
+credit_limit_mode = "warn"
+
+[update]
+channel = "stable"
+rollout_percent = 100
+# manifest_file = "/var/lib/xiaotu/update-manifest.json"
 ```
 
-默认读取 `<数据目录>/config.toml`，也可用 `--config` 或 `XIAOTU_CONFIG` 指定。优先级：**命令行 > 环境变量 > config.toml > 内置默认**。配置文件只支持 `[server]`、`[storage]`、`[log]` 三个段的上述键，写错段名/键名会带行号报错。完整说明、systemd 单元与运维步骤见 [docs/部署与配置.md](docs/部署与配置.md)，示例见 `deploy/config.toml.example`、`deploy/systemd/xiaotu.service`。
+默认读取 `<数据目录>/config.toml`，也可用 `--config` 或 `XIAOTU_CONFIG` 指定。优先级：**命令行 > 环境变量 > config.toml > 内置默认**。配置文件支持 `[server]`、`[storage]`、`[log]`、`[sales]`、`[update]` 五个段，写错段名/键名会带行号报错。
+
+`[sales]` 段只有一个键：`credit_limit_mode`，`warn`（默认，超信用提示后仍可审核）/ `reject`（超信用直接拒绝）。
+
+`[update]` 服务于网络版更新链路，可用键与默认值：
+
+| 键 | 默认值 | 说明 |
+| --- | --- | --- |
+| `manifest_file` | 空（不启用） | 更新清单文件路径 |
+| `channel` | `stable` | 只接受 `stable` / `beta` |
+| `min_supported_version` | 空 | 形如 `1.2.3`；低于它的客户端按清单策略处理 |
+| `rollout_percent` | `100` | 灰度比例，1–100 |
+| `public_key_file` | 空 | 清单验签公钥文件 |
+| `verifier_python` | `python3` | 清单验签脚本的解释器 |
+| `verifier_script` | 空 | 清单验签脚本路径 |
+
+完整说明、systemd 单元与运维步骤见 [docs/部署与配置.md](docs/部署与配置.md)，示例见 `deploy/config.toml.example`、`deploy/systemd/xiaotu.service`。
 
 浏览器访问 `http://<本机 IP>:8080/`，用 `admin` 和新口令登录。局域网其他机器访问时把 IP 换成本机地址；若前面有 TLS 反向代理，带上 `X-Forwarded-Proto: https`，会话 Cookie 会自动加 `Secure`。
 
@@ -272,6 +296,7 @@ WebView 会打开 `http://127.0.0.1:5173/?api=http://127.0.0.1:<port>#t=<token>`
 
 - 迁移前自动备份：启动时若数据库版本低于代码内置版本，先用 `VACUUM INTO` 写 `<数据目录>/backups/app-<时间>-pre-v<旧版本>.db`；备份失败则中止迁移，不带着未备份的数据升级。**粒度是「每次启动迁移前一张整库快照」，不是每版一张**；一次跨多版的升级只有升级前这一个还原点。需要回到中间版本时，用该快照恢复后，再按目标版本手工重放迁移，不能直接跳到中间版本。
 - 手动备份：`<程序> --data <数据目录> --backup`，输出快照路径与字节数。
+- 每日备份：`<程序> --data <数据目录> --backup-daily`，当天尚未成功备份时才执行，生成 `app-<时间>-daily.db` 并清理旧备份；保留最近 30 份日备份，每个自然月额外保留最新 1 份；manual 与 `pre-*` 备份不参与清理。
 - 恢复：`<程序> --data <数据目录> --restore <备份文件>`；先做 `PRAGMA integrity_check`，目标已存在时留一份 `pre-restore-*.db`，再覆盖并清理 `-wal` / `-shm`。恢复必须在服务停止时执行。
 - 恢复审计：成功与失败都写 `audit_log`（`action=restore`、`entity=database`），`entity_no` 为备份文件名，`detail` 记录来源（命令行）、恢复到的 schema 版本、`pre-restore-*` 安全备份文件名（成功）或失败原因（失败）。命令行没有登录用户，`actor` 固定为 `cli`，不伪造用户身份。**界面上的恢复向导尚未实现，当前只有 CLI 这一条恢复入口**。
 - 快照是一致性单文件，可直接复制到另一台机器后恢复。
@@ -502,7 +527,7 @@ struct DocumentDefinition {
 | operator（2） | 主数据读写（`item/unit/warehouse/supplier/customer` 的 `.read` + `.write`）、`document.read/write`、`stock.read`、`finance.read/write`、`print.template.read/write` |
 | viewer（3） | 上述所有 `.read`（含 `document.read`、`stock.read`、`finance.read`、`print.template.read`），无任何写权限 |
 
-权限点按十三组登记：`item`、`unit`、`warehouse`、`supplier`、`customer`、`document`、`stock`、`finance`、`print.template`、`setting`、`user`、`audit`、`cost`，共 23 个权限码，其中 19 个有 `app_role_permission` 种子行。`user.read`、`user.write`、`audit.read` 与 `cost.adjust` 四个码没有种子行，实际只有 admin 的 `*` 通配覆盖：operator 与 viewer 无法访问用户管理与审计日志，也不能审核成本调整单。未在 `app_role_permission` 声明的权限码默认拒绝；模板管理权限与出数数据权限相互独立。资金账户（`/api/fund-accounts`）与资金流水报表复用 `finance.read/write`，不新增 `fund.*` 权限组。系统参数由 operator 维护、viewer 只读（`setting.read/write`）。成本调整单的起草、改草稿与删除草稿用 `document.write`（操作员可提交申请），审核与反审核用 `cost.adjust`（仅管理员，见上）；查看调整差异仍只需 `stock.read`。
+权限点按十五组登记：`item`、`unit`、`warehouse`、`supplier`、`customer`、`employee`、`opening`、`document`、`stock`、`finance`、`print.template`、`setting`、`user`、`audit`、`cost`，共 26 个权限码，其中 22 个有 `app_role_permission` 种子行。`user.read`、`user.write`、`audit.read` 与 `cost.adjust` 四个码没有种子行，实际只有 admin 的 `*` 通配覆盖：operator 与 viewer 无法访问用户管理与审计日志，也不能审核成本调整单。未在 `app_role_permission` 声明的权限码默认拒绝；模板管理权限与出数数据权限相互独立。资金账户（`/api/fund-accounts`）与资金流水报表复用 `finance.read/write`，不新增 `fund.*` 权限组。系统参数由 operator 维护、viewer 只读（`setting.read/write`）。成本调整单的起草、改草稿与删除草稿用 `document.write`（操作员可提交申请），审核与反审核用 `cost.adjust`（仅管理员，见上）；查看调整差异仍只需 `stock.read`。
 
 ### 运行日志
 
@@ -523,7 +548,7 @@ struct DocumentDefinition {
 
 ### 报表与对账单
 
-共十四类输出：
+共 15 个接口、14 类输出：
 
 | 输出 | 接口 | 用途 |
 | --- | --- | --- |
@@ -539,6 +564,7 @@ struct DocumentDefinition {
 | 采购汇总 | `/api/reports/purchase-summary?by=supplier\|item` | 按供应商或商品汇总；入库与退货分列，入库均价只取入库行 |
 | 其他出入库汇总 | `/api/reports/other-flow-summary` | 按业务类型（赠品 / 期初 / 领用 / 报损 / 其他）分列入库与出库 |
 | 资金流水 | `/api/reports/fund-ledger` | 按账户列出期初、逐笔收款/付款与余额，可导出与打印 |
+| 资金余额 | `/api/reports/fund-balances` | 各资金账户的当前余额；`account_id=all` 为全部账户合计 |
 | 应收应付余额与账龄 | `/api/reports/ar-ap-aging` | 按往来单位与账龄区间汇总，受 v7 统计口径限制 |
 | 对账单 | `/api/reports/statement` | 往来单位期初 + 期间单据 − 期间核销 = 期末 |
 
