@@ -799,8 +799,15 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
                    std::int64_t warehouse_id, const ValidatedDoc& validated, bool approved,
                    std::string_view order_status) {
   const AuditStamp stamp = audit_stamp();
-  // 供应商写 partner_id，客户写 customer_id；两者互斥，partner 文本都保留快照。
-  const std::int64_t supplier_id = partner_kind == PartnerKind::Supplier ? input.partner_id : 0;
+  // partner_id 统一指向 partner 表：供应商本来就是 partner id；客户先按
+  // partner_legacy_map 解析，必要时补建（与信用额度、应收同源）。
+  // customer_id 继续保留客户档案 id，兼容历史查询与旧数据。
+  std::int64_t archive_partner_id = input.partner_id;
+  if (partner_kind == PartnerKind::Customer) {
+    const std::int64_t mapped =
+        find_partner_for_archive(conn, PartnerSide::Customer, input.partner_id);
+    if (mapped > 0) archive_partner_id = mapped;
+  }
   const std::int64_t customer_id = partner_kind == PartnerKind::Customer ? input.partner_id : 0;
   if (approved) {
     Stmt header(conn,
@@ -816,7 +823,7 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
         .bind(4, validated.doc_date)
         .bind(5, warehouse_id)
         .bind(6, input.target_warehouse_id)
-        .bind(7, supplier_id)
+        .bind(7, archive_partner_id)
         .bind(8, customer_id)
         .bind(9, validated.partner)
         .bind(10, validated.biz_category)
@@ -847,7 +854,7 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
       .bind(4, validated.doc_date)
       .bind(5, warehouse_id)
       .bind(6, input.target_warehouse_id)
-      .bind(7, supplier_id)
+      .bind(7, archive_partner_id)
       .bind(8, customer_id)
       .bind(9, validated.partner)
       .bind(10, validated.biz_category)

@@ -916,6 +916,12 @@ int main() {
         key.bind(1, customer_sale_doc.id);
         check(key.step() && key.text(0) == "P:" + std::to_string(customer.id),
               "销售应收键应写作 P:{partner_id}");
+        xiaotu::Stmt sale_header(conn,
+                                 "SELECT partner_id, customer_id FROM doc_header WHERE id = ?;");
+        sale_header.bind(1, customer_sale_doc.id);
+        check(sale_header.step() && sale_header.i64(0) == customer.id &&
+                  sale_header.i64(1) == customer.id,
+              "销售单据应同时写 partner_id 与 customer_id");
         xiaotu::Stmt origin(conn, "SELECT origin FROM partner WHERE id = ?;");
         origin.bind(1, customer.id);
         check(origin.step() && origin.text(0) == "AUTO_ARCHIVE",
