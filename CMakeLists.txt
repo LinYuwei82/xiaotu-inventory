@@ -14,6 +14,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # 会把中文字面量读坏并触发 C4819 / 语法错误。GCC 与 Clang 默认即 UTF-8，不需要该选项。
 if(MSVC)
   add_compile_options(/utf-8)
+  # 指定初始化器顺序与声明不一致在 MSVC 下是 C7560；它只在部分配置暴露过，
+  # 这里直接升级为错误，避免漂到 main。
+  add_compile_options(/we7560)
+else()
+  # Clang/GCC 默认警告、且不同版本 flag 名不一致；探测到支持才加，release 与 dev 共用。
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag("-Werror=reorder-init-list" XIAOTU_HAS_REORDER_INIT_LIST)
+  if(XIAOTU_HAS_REORDER_INIT_LIST)
+    add_compile_options(-Werror=reorder-init-list)
+  endif()
 endif()
 
 if(APPLE)

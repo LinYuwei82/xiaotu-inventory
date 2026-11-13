@@ -170,9 +170,9 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .finance_red = false,
           .price_source = PriceSource::Manual,
           .cost_hook = nullptr,
+          .order_converts_to = "SAL_OUT",
           .on_approve = nullptr,
           .on_reverse = nullptr,
-          .order_converts_to = "SAL_OUT",
       },
       // 采购订单：只做需求确认与转入库来源，不占库存、不写流水、不产生往来。
       DocumentDefinition{
@@ -186,9 +186,9 @@ const std::vector<DocumentDefinition>& document_definitions() {
           .finance_red = false,
           .price_source = PriceSource::Manual,
           .cost_hook = nullptr,
+          .order_converts_to = "PUR_IN",
           .on_approve = nullptr,
           .on_reverse = nullptr,
-          .order_converts_to = "PUR_IN",
       },
       // 其他入库：按录入单价增加库存金额，不绑定往来单位、不产生应收应付。
       DocumentDefinition{
