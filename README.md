@@ -11,11 +11,11 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 当前版本 0.1.0。按 [docs/进销存技术方案.md](docs/进销存技术方案.md) 的里程碑口径：M1–M3 与 M5 已完成；M4 除针式套打真机验证外已完成（纸型、边距、缩放与打印列勾选已落地）；M6 的 macOS `.dmg` 打包脚本与用户手册已完成，Windows 壳接入顶层构建与安装包、Developer ID 签名与公证仍未完成。
 
-已打通：**商品（分类 / 条码 / 税率）/ 单位 / 仓库 / 职员 / 客户 / 供应商档案（支持 Excel 批量导入导出）→ 库存、应收、应付、资金账户四类期初导入 → 采购入库、销售出库、采购退货、销售退货、其他入库、其他出库、调拨、盘点、成本调整（草稿与反审核）→ 销售订单确认与转出库（可记录业务员）→ 库存余额与流水 → 应收应付台账与核销 → 收付款单与资金账户 → 往来对账单 → 八类报表导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志与 macOS `.dmg` 打包。桌面壳提供撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选编辑菜单；单据录入时商品下拉显示编码、名称与规格，数量框旁显示单位；桌面版支持直接「导出 PDF」。成本重算保持只读核对，差异通过成本调整单落账。
+已打通：**商品（分类 / 条码 / 税率）/ 单位 / 仓库 / 职员 / 客户 / 供应商档案（支持 Excel 批量导入导出，客户供应商已合表到 partner 并支持合并与撤销）→ 库存、应收、应付、资金账户四类期初导入 → 采购入库、销售出库、采购退货、销售退货、其他入库、其他出库、调拨、盘点、成本调整（草稿与反审核）→ 销售订单确认与转出库（可记录业务员）→ 库存余额与流水 → 应收应付台账与核销（按 partner 维度归集）→ 收付款单与资金账户 → 往来对账单 → 八类报表导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志（含来源 IP 与请求号）、单据幂等与乐观锁、登录失败锁定与强制改密、成本口径参数（含税价 / 不含税净额，可切换并标注切换日）、前端离线提示与表单草稿、打印纸型 / 边距 / 缩放与 Cmd+P、报表导出流式化（不再有 10 万行上限）与 macOS `.dmg` 打包。桌面壳提供撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选编辑菜单；单据录入时商品下拉显示编码、名称与规格，数量框旁显示单位；桌面版支持直接「导出 PDF」。成本重算保持只读核对，差异通过成本调整单落账。
 
 ## 0. 数据库结构版本
 
-当前 schema 为 **v22**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
+当前 schema 为 **v34**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -52,6 +52,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v31 | 单据幂等与乐观锁：`doc_header.request_id`（非空唯一，部分索引）与 `version`（历史行 0）；重复提交返回首次单据，更新类操作按版本校验（冲突返回 `VERSION_CONFLICT`） |
 | v32 | 登录安全：`app_user.must_change_password`（管理员重置口令后强制改密）、`failed_count` 与 `locked_until`（连续 5 次错口令锁定 15 分钟） |
 | v33 | 库存成本口径：`cost_basis`（`INCLUSIVE` 含税价 / `NET` 不含税净额，默认含税）与 `cost_basis_changed_at`（最近切换时间），只影响新审核单据 |
+| v34 | 审计来源：`audit_log.client_ip` 与 `request_id`，记录 HTTP 来源地址与客户端请求号；历史行为空串 |
 
 ## 1. 环境要求
 
@@ -524,7 +525,7 @@ struct DocumentDefinition {
 
 采购汇总的「入库均价」= 入库行金额合计 ÷ 入库行数量合计，只计采购入库，退货不参与；某分组只有退货时均价显示「—」，净数量为负时标注「净退货」。合计行同样按全量入库行计算，不对分组均价再平均。
 
-库存流水、采购明细与销售明细改为服务端真分页：响应带 `total` / `limit` / `offset`，页面每页 200 行、显示「共 N 行，当前第 x–y 行」并可翻页；合计与导出（上限 100000 行）一律按全量计算，导出强制 `offset=0`，超过导出上限时导出文件头会写明实际范围。
+库存流水、采购明细与销售明细改为服务端真分页：响应带 `total` / `limit` / `offset`，页面每页 200 行、显示「共 N 行，当前第 x–y 行」并可翻页；合计与导出按全量计算，导出强制 `offset=0`。导出改为流式写出（CSV 边查边分块推送，XLSX 工作表分批落临时文件后分块组装），**不再有 10 万行上限**，内存占用与导出行数无关。
 
 销售报表（按客户 / 按业务员）只统计已审核的销售出库（SAL_OUT）与销售退货（SAL_RET），期间按单据日期闭区间；退货数量与金额取负、单价保留正数；成本取审核时写入 `stock_ledger` 的移动加权成本，毛利 = 净销售额 − 成本，净销售额为 0 时毛利率显示「—」。客户或业务员为空的单据单列「未指定」。页面、CSV、XLSX、打印与 PDF 五处输出同源，导出一律全量。
 
@@ -597,7 +598,7 @@ struct DocumentDefinition {
 
 ## 9. 已知限制与口径
 
-- 用户与角色：`admin` / `operator` / `viewer` 三角色与最小用户 CRUD（`/api/users`）；口令为 Argon2id 散列，网络版走口令登录并校验 CSRF、限制登录失败次数。会话落库（空闲 30 分钟滑动 + 绝对 12 小时，令牌只存散列，均可在系统参数页调整）。幂等键仍未实现；仓库数据权限口径见下一条。
+- 用户与角色：`admin` / `operator` / `viewer` 三角色与最小用户 CRUD（`/api/users`）；口令为 Argon2id 散列，网络版走口令登录并校验 CSRF、连续 5 次错口令锁定 15 分钟，管理员重置口令后强制改密。会话落库（空闲 30 分钟滑动 + 绝对 12 小时，令牌只存散列，均可在系统参数页调整）。多角色（自定义角色与权限勾选）尚未实现，仍是三角色固定权限；仓库数据权限口径见下一条。
 - 数据权限（当前版本的取舍）：**所有登录用户可见全部仓库数据，不做仓库隔离**，可见范围由角色权限（`item.read`、`stock.read`、`document.read` 等）控制。这不是遗漏，而是当前版本有意的取舍。后续版本的第一步只做「用户-仓库白名单」，且**只作用于列表与报表的默认视图过滤**，写操作仍按角色判定；不承诺「某仓数据对该用户绝对不可见」——那需要连导出、打印、审计一起封，属于另一个量级的改造。
 - 版本能力：`-DXIAOTU_EDITION=community` 构建社区版（当前运行时只校验 `max_users=1` 与 `system.user`），默认构建为全功能版；其余额度项与 `hidden` 能力尚未在代码中执行。
 - 单据支持草稿态：存草稿只写单据与明细、不写库存流水，审核时才进单事务；反审核为整单反向。
@@ -606,10 +607,11 @@ struct DocumentDefinition {
 - 成本按移动加权平均，暂不支持其他计价方式；成本重算保持**只读核对**（`/api/stock/cost-recalc` 与库存页「成本重算核对」），不静默写回。金额差异可一键生成成本调整单草稿（`POST /api/cost-adjustments/drafts`）后人工审核，数量差异引导去做盘点；调整单反审核若会使结存金额为负则拒绝，需先处理后续出库或调整。
 - 桌面版已支持直接「导出 PDF」（原生保存面板，不弹系统打印面板）。打印与 PDF 均按模板纸型（A4 / A5 / 自定义针式 241×140、241×93）与页边距设置 `NSPrintInfo`，PDF 的 MediaBox 与实际纸张一致；针式套打位置仍待真机验证。
 - Windows：顶层 CMake 不构建 GUI 壳（`XIAOTU_BUILD_SHELL=OFF`），界面通过浏览器访问；`shell/win` 另有独立的 Win32 + WebView2 壳工程，尚未接入顶层构建与安装包。
+- 更新链路：首版仍是手动下载安装包覆盖，未接入 Sparkle / WinSparkle 自动更新；清单验签与灰度脚本已在仓库内，但两端自动安装与回滚尚未打通。
 - 导航使用 `#/<key>` 路由：**刷新保页**在单机版与网络版都有效；**前进 / 后退**只在 `--server` 的浏览器里有效，单机版 WKWebView 没有后退入口。单机版有意不开 `allowsBackForwardNavigationGestures`、也不加后退 / 前进菜单项：侧栏已经是完整导航路径，录入页的脏标记会拦住误跳，横扫手势还会和明细表的横向滚动冲突。未保存离开确认与提示 / 输入框都是页内自绘（`askDialog`），不依赖 `window.confirm` / `alert` / `prompt`（WKWebView 未实现对应面板）；单机版直接关闭窗口不会拦（WKWebView 不执行 `beforeunload`），网络版浏览器会提示，单机版请先保存再关窗。
 - 商品条码支持**一商品多码**（v25 起正式启用）：`item_barcode` 保存全部码，其中一个为主码；`item.barcode` 只作主码镜像并由应用层同步，避免两处真相。条码全局唯一，空码不占位；商品表单可增删码并切换主码，扫码按任意码精确命中商品。导入导出用 `|` 分隔多个码、第一个为主码。升级时 v25 会把已有 `item.barcode` 回填为主码行，不丢码。箱码换算、一码多商品、校验位计算未实现。
-- 含税价**第一步已落地**（v26）：单据行保存 `tax_rate_bp`（整数万分比，默认取商品税率、可逐行覆盖）、`price_includes_tax` 与算好的 `net_cents` / `tax_cents`。**逐行算税再汇总**，每行恒有「净额 + 税额 = 价税合计」，整数分四舍五入、不引入浮点；选逐行是因为每行展示的净额 / 税额能与合计逐分对上，汇总后再算税会出现「行税额之和 ≠ 合计税额」。退货红字沿用同一公式，数量与金额按红字取负后税额同步为负，冲回对称。单据页面、打印、CSV、XLSX 均输出「税额」与「价税合计」。含税行与不含税行的「金额」列含义不同（前者是价税合计、后者是不含税金额），因此该列头统一写作「金额（录入价）」，并且「价税合计」列常显，数值不做任何改动。本期**不改库存成本与毛利口径**，`doc_line.amount_cents` 仍是「数量 × 单价」，历史单据按 0 税处理（`net = amount`、`tax = 0`）。
-- 审计日志覆盖登录成功 / 失败（失败记录尝试的用户名与来源 IP）、导出（`format=csv|xlsx` 与 `/export`，记录路径与筛选条件）、手动备份与恢复、用户角色变更（`role_change`，含原角色与新角色）、系统参数修改（`entity=setting`，逐键记录原值与新值）、主数据导入、单据审核 / 反审核、收付款、成本超限确认等。导出审计只记 200 成功的请求并在响应写出前落库；`config.toml` 仍由运维改文件后重启生效，不写审计。
+- 含税价**第一步已落地**（v26）：单据行保存 `tax_rate_bp`（整数万分比，默认取商品税率、可逐行覆盖）、`price_includes_tax` 与算好的 `net_cents` / `tax_cents`。**逐行算税再汇总**，每行恒有「净额 + 税额 = 价税合计」，整数分四舍五入、不引入浮点；选逐行是因为每行展示的净额 / 税额能与合计逐分对上，汇总后再算税会出现「行税额之和 ≠ 合计税额」。退货红字沿用同一公式，数量与金额按红字取负后税额同步为负，冲回对称。单据页面、打印、CSV、XLSX 均输出「税额」与「价税合计」。含税行与不含税行的「金额」列含义不同（前者是价税合计、后者是不含税金额），因此该列头统一写作「金额（录入价）」，并且「价税合计」列常显，数值不做任何改动。库存成本口径由 v33 参数控制：默认按含税价（`amount_cents`），可切到不含税净额（`net_cents`），只影响切换后新审核的单据，报表标注切换日；历史单据的结存、流水与毛利不重算、不回填。
+- 审计日志覆盖登录成功 / 失败（失败记录尝试的用户名与来源 IP）、导出（`format=csv|xlsx` 与 `/export`，记录路径与筛选条件）、手动备份与恢复、用户角色变更（`role_change`，含原角色与新角色）、系统参数修改（`entity=setting`，逐键记录原值与新值）、主数据导入、单据审核 / 反审核、收付款、成本超限确认等。每条审计记录来源 IP（`client_ip`）与客户端请求号（`request_id`），审计页可按这两列筛选，CSV / XLSX 导出同步带出；单据接口沿用前端携带的幂等键作为请求号，未带请求号的接口与 CLI 路径留空，不伪造。导出审计只记 200 成功的请求并在响应写出前落库；`config.toml` 仍由运维改文件后重启生效，不写审计。
 - 无 Developer ID 证书，`.dmg` 为 ad-hoc 签名且未公证，Gatekeeper 会拦截首次打开，处理方式见第 10 节。
 - 应收应付与账龄只统计 v7 迁移之后审核的单据，升级前已审核单据不计入，详见「应收应付统计口径」。
 - 未接入 vcpkg 时依赖 `third_party/` 内嵌头文件；接入 vcpkg 后 `vcpkg.json` 会自动生效。
@@ -721,5 +723,5 @@ Linux 上该脚本等价于 CI：使用 `linux-ci` preset（`XIAOTU_BUILD_SHELL=
 
 - 用户手册（面向使用者）：`docs/用户手册.md`
 - 技术方案：`docs/进销存技术方案.md`
-- 数据库结构：`core/src/migrations.cpp`（v14）
+- 数据库结构：`core/src/migrations.cpp`（v34）
 - API：`/api/health`、`/api/session`、`/api/items`、`/api/items/import`、`/api/items/export`、`/api/items/template`、`/api/warehouses`、`/api/suppliers`、`/api/suppliers/import`、`/api/suppliers/export`、`/api/suppliers/template`、`/api/customers`、`/api/customers/import`、`/api/customers/export`、`/api/customers/template`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/fund-ledger`、`/api/reports/fund-balances`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/cost-adjustments/drafts`、`/api/fund-accounts`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`、`/api/stock/cost-recalc`
