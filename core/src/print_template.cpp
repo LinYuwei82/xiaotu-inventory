@@ -40,7 +40,7 @@ std::vector<PrintTargetDef> make_targets() {
       column_def("unit", "单位", "TEXT", "CENTER", 10),
       column_def("qty", "数量", "INTEGER", "RIGHT", 14),
       column_def("price_cents", "单价（元）", "MONEY", "RIGHT", 18),
-      column_def("amount_cents", "金额（元）", "MONEY", "RIGHT", 20),
+      column_def("amount_cents", "金额（录入价）", "MONEY", "RIGHT", 20),
       column_def("tax_rate_text", "税率", "TEXT", "CENTER", 12),
       column_def("tax_cents", "税额（元）", "MONEY", "RIGHT", 18),
       column_def("with_tax_cents", "价税合计（元）", "MONEY", "RIGHT", 20),

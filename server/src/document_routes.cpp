@@ -217,7 +217,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
                          req.has_param("format") && req.get_param_value("format") == "xlsx";
                      const std::vector<std::string> header = {
                          "行号", "商品编码", "商品名称", "规格", "单位", "数量",
-                         "单价（元）", "金额（元）", "税率", "含税", "净额（元）",
+                         "单价（元）", "金额（录入价）", "税率", "含税", "净额（元）",
                          "税额（元）", "价税合计（元）"};
                      if (want_xlsx) {
                        XlsxSheet sheet(detail.doc_no);

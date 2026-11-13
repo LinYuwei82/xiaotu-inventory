@@ -1611,6 +1611,7 @@
         <td><input type="number" min="0" max="100" step="0.01" value="0" data-role="tax-rate" /></td>
         <td><label class="checkbox"><input type="checkbox" data-role="tax-included" /></label></td>
         <td><input type="text" class="readonly" value="—" data-role="tax" disabled /></td>
+        <td><input type="text" class="readonly" value="—" data-role="with-tax" disabled /></td>
         <td class="actions"><button class="link danger" type="button" data-role="remove">移除</button></td>`;
       linesTable.querySelector("tbody").appendChild(row);
       row.querySelector('[data-role="remove"]').addEventListener("click", () => {
@@ -1624,8 +1625,10 @@
         const rateBp = Math.round(Number(row.querySelector('[data-role="tax-rate"]').value || 0) * 100);
         const includesTax = row.querySelector('[data-role="tax-included"]').checked;
         row.querySelector('[data-role="amount"]').value = qtyAmountText(qty, price);
-        row.querySelector('[data-role="tax"]').value = money(
-          taxForAmount(amount, rateBp, includesTax).tax
+        const lineTax = taxForAmount(amount, rateBp, includesTax).tax;
+        row.querySelector('[data-role="tax"]').value = money(lineTax);
+        row.querySelector('[data-role="with-tax"]').value = money(
+          includesTax ? amount : amount + lineTax
         );
         recalcTotals();
       };
@@ -1689,7 +1692,7 @@
     function resetLines() {
       linesTable.innerHTML = costAdjust
         ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
-        : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th>税率（%）</th><th>含税</th><th>税额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+        : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（录入价）</th><th>税率（%）</th><th>含税</th><th>税额（元）</th><th>价税合计（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
       addLine();
       recalcTotals();
     }
