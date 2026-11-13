@@ -36,6 +36,43 @@ std::wstring utf8_to_wide(const std::string& value) {
   return wide;
 }
 
+std::string wide_to_utf8(const std::wstring& value) {
+  if (value.empty()) {
+    return std::string();
+  }
+  const int length = ::WideCharToMultiByte(CP_UTF8, 0, value.data(),
+                                           static_cast<int>(value.size()), nullptr, 0, nullptr,
+                                           nullptr);
+  if (length <= 0) {
+    return std::string();
+  }
+  std::string text(static_cast<std::size_t>(length), '\0');
+  ::WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()), text.data(),
+                        length, nullptr, nullptr);
+  return text;
+}
+
+// 取系统错误码的可读描述，拼进启动失败的提示。
+// 调用方必须先保存 GetLastError：FormatMessageW 自身会改写 last-error。
+std::string windows_error_text(DWORD code) {
+  wchar_t* buffer = nullptr;
+  const DWORD length = ::FormatMessageW(
+      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+          FORMAT_MESSAGE_IGNORE_INSERTS,
+      nullptr, code, 0, reinterpret_cast<wchar_t*>(&buffer), 0, nullptr);
+  if (length == 0 || buffer == nullptr) {
+    return std::string();
+  }
+  std::wstring wide(buffer, length);
+  ::LocalFree(buffer);
+  // 系统描述末尾带 \r\n 与空格，去掉后再拼进括号。
+  while (!wide.empty() && (wide.back() == L'\r' || wide.back() == L'\n' ||
+                           wide.back() == L' ' || wide.back() == L'\t')) {
+    wide.pop_back();
+  }
+  return wide_to_utf8(wide);
+}
+
 // 按 CommandLineToArgvW 的规则给单个参数加引号：反斜杠数量按官方算法翻倍，
 // 保证含空格或引号的路径原样传到子进程。
 std::wstring quote_windows_arg(const std::wstring& value) {
@@ -168,17 +205,19 @@ ProcessResult run_process_capture(const std::string& program,
   const BOOL created = ::CreateProcessW(application.c_str(), &command_line[0], nullptr, nullptr,
                                         TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup,
                                         &process);
-  // 必须紧跟着取错误码：下面几个 CloseHandle 成功时是否清零 last-error
-  // 没有文档保证，失败时还会改成 ERROR_INVALID_HANDLE，再晚取就不是
-  // CreateProcess 的原因了。
-  const DWORD create_error = created == FALSE ? ::GetLastError() : ERROR_SUCCESS;
+  // 返回后第一行就保存错误码：下面的 CloseHandle 成功时是否清零 last-error
+  // 没有文档保证，失败时还会改成 ERROR_INVALID_HANDLE；取描述用的
+  // FormatMessageW 同样会改写它。再晚取就不再是 CreateProcess 的原因。
+  const DWORD create_error = ::GetLastError();
   ::CloseHandle(write_pipe);
   if (null_device != INVALID_HANDLE_VALUE) {
     ::CloseHandle(null_device);
   }
   if (created == FALSE) {
     ::CloseHandle(pipe_read);
-    result.error = "无法启动程序（系统错误 " + std::to_string(create_error) + "）";
+    const std::string detail = windows_error_text(create_error);
+    result.error = "无法启动程序（系统错误 " + std::to_string(create_error) +
+                   (detail.empty() ? std::string() : "：" + detail) + "）";
     return result;
   }
 

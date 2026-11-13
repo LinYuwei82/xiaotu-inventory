@@ -80,6 +80,12 @@ target_link_libraries(xiaotu_update_download_smoke PRIVATE xiaotu_server Threads
 
 add_test(NAME update_download_smoke COMMAND xiaotu_update_download_smoke)
 
+add_executable(xiaotu_process_capture_smoke
+               "${CMAKE_CURRENT_SOURCE_DIR}/process_capture_smoke.cpp")
+target_link_libraries(xiaotu_process_capture_smoke PRIVATE xiaotu_server Threads::Threads)
+
+add_test(NAME process_capture_smoke COMMAND xiaotu_process_capture_smoke)
+
 if(UNIX)
   # 社区版不支持网络版部署（deployment.network），依赖 --server 的用例不适用。
   if(NOT XIAOTU_EDITION STREQUAL "community")
