@@ -95,6 +95,42 @@ void test_retention(const std::filesystem::path& root) {
   check(again.kept == 33 && again.removed == 0, "重复清理幂等");
 }
 
+void test_retention_monthly_beyond_window(const std::filesystem::path& root) {
+  const std::filesystem::path directory = root / "retention-monthly";
+  std::filesystem::create_directories(directory);
+
+  // 8 月 10 份、9 月 20 份、10 月 10 份，共 40 份；最近 30 份窗口只覆盖 9、10 月。
+  for (int day = 1; day <= 10; ++day) touch(directory, daily_name(2026, 8, day));
+  for (int day = 1; day <= 20; ++day) touch(directory, daily_name(2026, 9, day));
+  for (int day = 1; day <= 10; ++day) touch(directory, daily_name(2026, 10, day));
+  touch(directory, manual_name(2026, 8, 5));
+  touch(directory, manual_name(2026, 9, 15));
+  touch(directory, "app-20260801-090000-pre-v35.db");
+  touch(directory, "app-20260901-090000-pre-v35.db");
+  touch(directory, "pre-restore-20261001-090000.db");
+
+  const xiaotu::RetentionResult result = xiaotu::apply_daily_retention(directory, 30);
+  check(result.kept == 31, "40 份日备份收口为最近 30 份 + 窗口外 8 月代表 1 份");
+  check(result.removed == 9, "8 月除代表外的 9 份被清理");
+  check(std::filesystem::exists(directory / daily_name(2026, 8, 10)),
+        "窗口外的月份代表保留");
+  check(!std::filesystem::exists(directory / daily_name(2026, 8, 9)),
+        "同月更旧的备份被清理");
+  check(std::filesystem::exists(directory / daily_name(2026, 9, 20)) &&
+            std::filesystem::exists(directory / daily_name(2026, 10, 10)),
+        "窗口内各月最新一份保留");
+  check(std::filesystem::exists(directory / manual_name(2026, 8, 5)) &&
+            std::filesystem::exists(directory / manual_name(2026, 9, 15)),
+        "手动备份不参与清理");
+  check(std::filesystem::exists(directory / "app-20260801-090000-pre-v35.db") &&
+            std::filesystem::exists(directory / "app-20260901-090000-pre-v35.db") &&
+            std::filesystem::exists(directory / "pre-restore-20261001-090000.db"),
+        "迁移前与恢复前备份不参与清理");
+
+  const xiaotu::RetentionResult again = xiaotu::apply_daily_retention(directory, 30);
+  check(again.kept == 31 && again.removed == 0, "重复清理不再删除");
+}
+
 void test_schema_compatibility(const std::filesystem::path& root) {
   const int target = xiaotu::target_schema_version();
 
@@ -255,6 +291,7 @@ int main() {
   std::filesystem::create_directories(root);
 
   test_retention(root);
+  test_retention_monthly_beyond_window(root);
   test_schema_compatibility(root);
   test_daily_backup(root);
   test_backup_validation(root);
