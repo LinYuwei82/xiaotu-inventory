@@ -15,6 +15,7 @@ struct UserRow {
   std::string display_name;
   std::string role;  // 角色码：admin / operator / viewer
   bool active = true;
+  bool must_change_password = false;
   std::string created_at;
   std::string updated_at;
 };
@@ -41,9 +42,16 @@ class UserService {
   void remove(std::int64_t id);
 
   // 用户名或口令错误时统一抛 INVALID_CREDENTIALS，不区分账号是否存在。
-  UserRow authenticate(std::string_view username, std::string_view password) const;
+  // 连续失败达到阈值后账号锁定 15 分钟，抛 ACCOUNT_LOCKED；锁定期间的尝试
+  // 即使口令正确也拒绝。失败、锁定与成功都在同一写事务里更新计数并写审计。
+  UserRow authenticate(std::string_view username, std::string_view password,
+                       std::string_view source = {});
   bool has_password(std::int64_t id) const;
+  // 管理员重置口令：清空失败计数与锁定，并置 must_change_password=1。
   void set_password(std::int64_t id, std::string_view password);
+  // 用户自助改密：校验原口令，成功后清空失败计数、锁定与强制改密标记。
+  void change_password(std::int64_t id, std::string_view old_password,
+                       std::string_view new_password);
 
   std::int64_t count_active() const;
 

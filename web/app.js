@@ -6096,6 +6096,8 @@
     convert_order: "订单转出库",
     close_order: "关闭订单",
     set_password: "重置口令",
+    change_password: "修改口令",
+    account_locked: "账号锁定",
     login: "登录",
     login_failed: "登录失败",
     export: "导出",
@@ -6942,6 +6944,56 @@
           password: form.password.value,
         });
         state.csrf = result.csrf || "";
+        if (result.must_change_password) {
+          renderChangePassword("管理员已重置口令，请设置新口令");
+          return;
+        }
+        await bootstrap();
+      } catch (error) {
+        showNotice(error.message, "error");
+      }
+    });
+  }
+
+  // 强制改密：登录后才进入；除改密与退出外的接口都会被服务端拒绝。
+  function renderChangePassword(message) {
+    state.current = null;
+    nav.innerHTML = "";
+    document.getElementById("mode-label").textContent = "请修改口令";
+    document.getElementById("health").textContent = "";
+    notice.hidden = true;
+    main.querySelectorAll(":scope > *").forEach((node) => {
+      if (node !== notice && node.id !== "data-warning" && node.id !== "network-warning") {
+        node.remove();
+      }
+    });
+    const card = document.createElement("div");
+    card.className = "login-card";
+    card.innerHTML = `
+        <h2>修改口令</h2>
+        <p class="hint">${escapeHtml(message || "首次登录或口令被重置，请先修改口令")}</p>
+        <form data-role="change-password-form">
+          <label>原口令<input name="old_password" type="password" autocomplete="current-password" required /></label>
+          <label>新口令<input name="new_password" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <label>确认新口令<input name="confirm_password" type="password" autocomplete="new-password" minlength="8" required /></label>
+          <p class="hint">口令长度 8–128 个字符</p>
+          <button class="btn" type="submit">保存并继续</button>
+        </form>`;
+    main.appendChild(card);
+    updateNetworkBanner();
+    const form = card.querySelector("form");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (form.new_password.value !== form.confirm_password.value) {
+        showNotice("两次输入的新口令不一致", "error");
+        return;
+      }
+      try {
+        const result = await api("POST", "/api/password/change", {
+          old_password: form.old_password.value,
+          new_password: form.new_password.value,
+        });
+        state.csrf = result.csrf || state.csrf;
         await bootstrap();
       } catch (error) {
         showNotice(error.message, "error");
@@ -6961,6 +7013,10 @@
       const me = await api("GET", "/api/me");
       state.csrf = me.csrf || state.csrf;
       state.permissions = me.permissions || [];
+      if (me.must_change_password) {
+        renderChangePassword("管理员已重置口令，请设置新口令");
+        return;
+      }
 
       const health = await api("GET", "/api/health");
       document.getElementById("mode-label").textContent =

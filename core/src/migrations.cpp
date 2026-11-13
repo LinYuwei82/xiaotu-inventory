@@ -959,6 +959,13 @@ ALTER TABLE doc_header ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
 CREATE UNIQUE INDEX uk_doc_header_request ON doc_header(request_id) WHERE request_id <> '';
 )SQL";
 
+// v32：登录失败锁定与强制改密。锁定时刻沿用本地时间文本，与其它时间字段可比。
+constexpr const char* kV32 = R"SQL(
+ALTER TABLE app_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE app_user ADD COLUMN failed_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE app_user ADD COLUMN locked_until TEXT NOT NULL DEFAULT '';
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -1005,6 +1012,7 @@ const std::vector<Migration>& all_migrations() {
       {29, "v29_partner_origin", kV29},
       {30, "v30_partner_merge_log", kV30},
       {31, "v31_doc_request_version", kV31},
+      {32, "v32_user_login_lock", kV32},
   };
   return migrations;
 }

@@ -38,6 +38,9 @@ void json_from_exception(httplib::Response& res, const AppError& error) {
     status = 404;
   } else if (code == "FORBIDDEN") {
     status = 403;
+  } else if (code == "ACCOUNT_LOCKED") {
+    // 与登录限流保持同一语义：稍后重试，而不是请求格式错误。
+    status = 429;
   } else if (code.rfind("DUPLICATE", 0) == 0 || code == "VERSION_CONFLICT") {
     status = 409;
   } else if (code == "BIND_FAILED" || code == "INTERNAL") {

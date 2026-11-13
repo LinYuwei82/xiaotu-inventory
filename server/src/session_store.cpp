@@ -22,7 +22,7 @@ constexpr const char* kSelect =
     " s.expires_at <= datetime('now', 'localtime') AS expired,"
     " s.created_at <= datetime('now', 'localtime', ?) AS too_old,"
     " s.last_seen_at <= datetime('now', 'localtime', ?) AS needs_renew,"
-    " u.is_deleted, u.status"
+    " u.is_deleted, u.status, u.must_change_password"
     " FROM app_session s"
     " JOIN app_user u ON u.id = s.user_id"
     " JOIN app_role r ON r.id = u.role_id"
@@ -74,7 +74,8 @@ std::optional<Session> SessionStore::get(const std::string& id, int idle_minutes
       session = Session{.user_id = stmt.i64(0),
                         .user = stmt.text(1),
                         .role = stmt.text(2),
-                        .csrf = stmt.text(3)};
+                        .csrf = stmt.text(3),
+                        .must_change_password = stmt.i64(9) != 0};
       expired = stmt.i64(4) != 0;
       too_old = stmt.i64(5) != 0;
       needs_renew = stmt.i64(6) != 0;

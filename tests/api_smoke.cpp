@@ -40,8 +40,7 @@ std::string body_field(const httplib::Result& result, const char* key) {
 
 std::int64_t audit_count(xiaotu::Db& db, const std::string& action,
                          const std::string& entity = {},
-                         const std::string& detail_prefix = {}) {
-  std::int64_t count = 0;
+                         const std::string& detail_prefix = {}) {  std::int64_t count = 0;
   db.read([&](sqlite3* conn) {
     std::string sql = "SELECT COUNT(*) FROM audit_log WHERE action = ?";
     if (!entity.empty()) {
@@ -71,6 +70,25 @@ void open_database(const std::filesystem::path& dir) {
   std::filesystem::create_directories(dir);
 }
 
+std::string scalar_text(xiaotu::Db& db, const std::string& sql) {
+  std::string value;
+  db.read([&](sqlite3* conn) {
+    xiaotu::Stmt stmt(conn, sql);
+    if (stmt.step()) {
+      value = stmt.text(0);
+    }
+  });
+  return value;
+}
+
+// 测试夹具：直接建库时不希望触发「必须改密」，只重置登录标记。
+void clear_must_change(xiaotu::Db& db, std::int64_t id) {
+  db.write([&](sqlite3* conn) {
+    xiaotu::exec_sql(conn, "UPDATE app_user SET must_change_password = 0 WHERE id = " +
+                               std::to_string(id) + ";");
+  });
+}
+
 // 网络版：口令登录成功/失败、权限拦截、主数据写入、CSV/XLSX 导出与审计。
 void run_server_mode(const std::filesystem::path& dir) {
   open_database(dir);
@@ -79,6 +97,7 @@ void run_server_mode(const std::filesystem::path& dir) {
   xiaotu::load_role_permissions(db);
   xiaotu::Services services(db);
   services.users.set_password(1, "Passw0rd!");
+  clear_must_change(db, 1);
   services.users.create(xiaotu::UserInput{.username = "backup_viewer",
                                           .display_name = "备份只读",
                                           .role = "viewer",
@@ -209,6 +228,108 @@ void run_server_mode(const std::filesystem::path& dir) {
     const auto viewer_backup = viewer.Post("/api/backup", "", "application/json");
     check(viewer_backup && viewer_backup->status == 403, "无权限角色手动备份应返回 403");
   }
+
+  // 登录失败锁定：连续 5 次错口令后，第 6 次即使口令正确也被拒绝。
+  const auto lock_user = services.users.create(xiaotu::UserInput{.username = "lock_user",
+                                                                 .display_name = "锁定测试",
+                                                                 .role = "viewer",
+                                                                 .active = true,
+                                                                 .password = "LockPassw0rd!"});
+  const std::string lock_login_ok =
+      R"({"username":"lock_user","password":"LockPassw0rd!"})";
+  const std::string lock_login_bad =
+      R"({"username":"lock_user","password":"bad-password"})";
+  httplib::Client locker("127.0.0.1", port);
+  for (int attempt = 1; attempt <= 5; ++attempt) {
+    const auto result = locker.Post("/api/login", lock_login_bad, "application/json");
+    check(result && result->status == (attempt < 5 ? 401 : 429),
+          "连续错口令第 " + std::to_string(attempt) + " 次的响应状态应正确");
+  }
+  // 之前 admin 的一次错口令也算在内，共 6 条「口令错误」。
+  check(audit_count(db, "login_failed", "auth", "口令错误") == 6,
+        "每次口令错误都应写一条登录失败审计");
+  check(audit_count(db, "account_locked") == 1, "达到阈值应写一条账号锁定审计");
+  check(scalar_text(db, "SELECT locked_until FROM app_user WHERE username = 'lock_user';") != "",
+        "达到阈值后应写入锁定截止时间");
+
+  const auto still_locked = locker.Post("/api/login", lock_login_ok, "application/json");
+  check(still_locked && still_locked->status == 429 &&
+            still_locked->body.find("账号已锁定") != std::string::npos,
+        "锁定期间即使口令正确也应拒绝并给出可读提示");
+  check(audit_count(db, "login_failed", "auth", "账号锁定") == 1,
+        "锁定期间的登录尝试应写一条账号锁定原因的失败审计");
+
+  // 锁定到期后可登录，且成功登录清零计数与锁定时间。
+  db.write([&](sqlite3* conn) {
+    xiaotu::exec_sql(conn,
+                     "UPDATE app_user SET locked_until = datetime('now', 'localtime',"
+                     " '-1 minute') WHERE username = 'lock_user';");
+  });
+  const auto recovered = locker.Post("/api/login", lock_login_ok, "application/json");
+  check(recovered && recovered->status == 200, "锁定到期后正确口令应能登录");
+  check(scalar_text(db, "SELECT CAST(failed_count AS TEXT) FROM app_user"
+                        " WHERE username = 'lock_user';") == "0",
+        "登录成功应清零失败计数");
+  check(scalar_text(db, "SELECT locked_until FROM app_user WHERE username = 'lock_user';").empty(),
+        "登录成功应清除锁定截止时间");
+
+  // 管理员重置口令：清零计数并强制改密，改密前访问业务接口被拒。
+  const auto reset = client.Put(
+      "/api/users/" + std::to_string(lock_user.id),
+      R"({"username":"lock_user","display_name":"锁定测试","role":"viewer","active":true,)"
+      R"("password":"ResetPassw0rd!"})",
+      "application/json");
+  check(reset && reset->status == 200, "管理员重置口令应返回 200");
+  check(scalar_text(db, "SELECT CAST(must_change_password AS TEXT) FROM app_user"
+                        " WHERE username = 'lock_user';") == "1",
+        "管理员重置口令后应置强制改密标记");
+
+  httplib::Client forced("127.0.0.1", port);
+  const auto forced_login = forced.Post(
+      "/api/login", R"({"username":"lock_user","password":"ResetPassw0rd!"})",
+      "application/json");
+  check(forced_login && forced_login->status == 200, "重置后的临时口令应能登录");
+  check(forced_login &&
+            nlohmann::json::parse(forced_login->body).value("must_change_password", false),
+        "登录响应应告知前端必须改密");
+  forced.set_default_headers({{"Cookie", forced_login ? session_cookie(forced_login) : ""},
+                              {"X-CSRF-Token", body_field(forced_login, "csrf")}});
+  const auto forced_items = forced.Get("/api/items");
+  check(forced_items && forced_items->status == 403 &&
+            nlohmann::json::parse(forced_items->body).value("code", "") == "MUST_CHANGE_PASSWORD",
+        "改密前访问业务接口应返回 MUST_CHANGE_PASSWORD");
+  const auto forced_me = forced.Get("/api/me");
+  check(forced_me && forced_me->status == 200 &&
+            nlohmann::json::parse(forced_me->body).value("must_change_password", false),
+        "改密前仍应能读取自身信息");
+
+  const auto wrong_old = forced.Post(
+      "/api/password/change",
+      R"({"old_password":"not-the-old-one","new_password":"ChangedPassw0rd!"})",
+      "application/json");
+  check(wrong_old && wrong_old->status != 200, "原口令不正确时应拒绝改密");
+
+  const auto changed = forced.Post(
+      "/api/password/change",
+      R"({"old_password":"ResetPassw0rd!","new_password":"ChangedPassw0rd!"})",
+      "application/json");
+  check(changed && changed->status == 200, "正确原口令应能改密");
+  check(changed && !body_field(changed, "csrf").empty(), "改密成功应换发新的 CSRF 令牌");
+  check(audit_count(db, "change_password", "user", "口令已修改") == 1,
+        "改密成功应写一条审计");
+  forced.set_default_headers({{"Cookie", changed ? session_cookie(changed) : ""},
+                              {"X-CSRF-Token", body_field(changed, "csrf")}});
+  const auto items_after = forced.Get("/api/items");
+  check(items_after && items_after->status == 200, "改密后业务接口应恢复正常");
+
+  httplib::Client relogin("127.0.0.1", port);
+  const auto new_login = relogin.Post(
+      "/api/login", R"({"username":"lock_user","password":"ChangedPassw0rd!"})",
+      "application/json");
+  check(new_login && new_login->status == 200, "改密后新口令应能登录");
+  check(new_login &&
+            !nlohmann::json::parse(new_login->body).value("must_change_password", true),
+        "改密后登录不应再要求改密");
 
   const auto created = client.Post(
       "/api/items", R"({"code":"SMOKE1","name":"冒烟商品","unit_id":1})", "application/json");
@@ -351,8 +472,8 @@ void run_server_mode(const std::filesystem::path& dir) {
   check(diagnostic && diagnostic->status == 200, "诊断信息应返回 200");
   if (diagnostic) {
     const auto data = nlohmann::json::parse(diagnostic->body);
-    check(data.value("schema_version", 0) == 31, "诊断信息里的 schema 应为 31");
-    check(data.value("migrations", 0) == 31, "诊断信息里的迁移条数应为 31");
+    check(data.value("schema_version", 0) == 32, "诊断信息里的 schema 应为 32");
+    check(data.value("migrations", 0) == 32, "诊断信息里的迁移条数应为 32");
     check(data.value("mode", "") == "server", "网络版诊断信息 mode 应为 server");
     check(!data.value("data_dir", "").empty(), "诊断信息应包含数据目录");
     check(data.value("database_bytes", 0LL) > 0, "诊断信息应包含大于 0 的数据库大小");

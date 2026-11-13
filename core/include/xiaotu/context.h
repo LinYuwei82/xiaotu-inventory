@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace xiaotu {
@@ -11,6 +12,9 @@ struct RequestContext {
   std::string role = "admin";
   std::string request_id;
   std::string csrf;
+  std::int64_t user_id = 0;
+  // 管理员重置口令后为 true：除改密与退出外的接口一律拒绝。
+  bool must_change_password = false;
 };
 
 RequestContext& current_context();

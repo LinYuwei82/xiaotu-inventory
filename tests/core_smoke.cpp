@@ -86,7 +86,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 31, "迁移后 schema 版本应为 31");
+      check(db.schema_version() == 32, "迁移后 schema 版本应为 32");
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
       db.read([&](sqlite3* conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
@@ -2697,6 +2697,9 @@ int main() {
                            "DROP INDEX IF EXISTS uk_doc_header_request;"
                            "ALTER TABLE doc_header DROP COLUMN request_id;"
                            "ALTER TABLE doc_header DROP COLUMN version;"
+                           "ALTER TABLE app_user DROP COLUMN must_change_password;"
+                           "ALTER TABLE app_user DROP COLUMN failed_count;"
+                           "ALTER TABLE app_user DROP COLUMN locked_until;"
                            "DELETE FROM schema_migration WHERE version >= 28;"
                            "PRAGMA user_version = 27;",
                            nullptr, nullptr, nullptr);
@@ -2735,7 +2738,7 @@ int main() {
         });
 
         xiaotu::migrate(mig);
-        check(mig.schema_version() == 31, "有数据的模拟库应迁到 v31");
+        check(mig.schema_version() == 32, "有数据的模拟库应迁到 v32");
 
         mig.read([&](sqlite3* conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");

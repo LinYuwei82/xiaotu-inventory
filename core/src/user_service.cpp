@@ -18,8 +18,13 @@ namespace {
 // 内置管理员由迁移写入，是单机版唯一的兜底入口，不允许删除、停用或改角色。
 constexpr std::int64_t kBuiltinAdminId = 1;
 
+// 连续失败达到阈值即锁定；锁定期内不再校验口令。
+constexpr std::int64_t kMaxFailures = 5;
+constexpr int kLockMinutes = 15;
+
 constexpr const char* kSelect =
-    "SELECT u.id, u.username, u.display_name, r.code, u.status, u.created_at, u.updated_at"
+    "SELECT u.id, u.username, u.display_name, r.code, u.status, u.must_change_password,"
+    " u.created_at, u.updated_at"
     " FROM app_user u JOIN app_role r ON r.id = u.role_id";
 
 UserRow read_row(const Stmt& stmt) {
@@ -28,8 +33,9 @@ UserRow read_row(const Stmt& stmt) {
                  .display_name = stmt.text(2),
                  .role = stmt.text(3),
                  .active = stmt.i64(4) != 0,
-                 .created_at = stmt.text(5),
-                 .updated_at = stmt.text(6)};
+                 .must_change_password = stmt.i64(5) != 0,
+                 .created_at = stmt.text(6),
+                 .updated_at = stmt.text(7)};
 }
 
 void validate(const UserInput& input) {
@@ -198,7 +204,8 @@ UserRow UserService::update(std::int64_t id, const UserInput& input) {
     } else {
       Stmt stmt(conn,
                 "UPDATE app_user SET username = ?, display_name = ?, role_id = ?, status = ?,"
-                " password_hash = ?, updated_at = ?, updated_by = ?"
+                " password_hash = ?, must_change_password = 1, failed_count = 0, locked_until = '',"
+                " updated_at = ?, updated_by = ?"
                 " WHERE id = ? AND is_deleted = 0;");
       stmt.bind(1, input.username)
           .bind(2, input.display_name)
@@ -225,25 +232,89 @@ UserRow UserService::update(std::int64_t id, const UserInput& input) {
   return get(id);
 }
 
-UserRow UserService::authenticate(std::string_view username,
-                                  std::string_view password) const {
-  std::optional<UserRow> row;
-  std::string hash;
-  db_.read([&](sqlite3* conn) {
+UserRow UserService::authenticate(std::string_view username, std::string_view password,
+                                  std::string_view source) {
+  const std::string actor =
+      username.empty() ? std::string("（空用户名）") : std::string(username.substr(0, 64));
+  const std::string source_note =
+      source.empty() ? std::string{} : "（来源 " + std::string(source) + "）";
+  UserRow row;
+  // 事务内不能靠抛异常中断：失败计数与审计必须在返回错误前提交，否则回滚会抹掉留痕。
+  enum class Outcome { ok, invalid, locked };
+  Outcome outcome = Outcome::ok;
+  std::int64_t locked_minutes = 0;
+
+  db_.write([&](sqlite3* conn) {
+    std::string hash;
+    std::int64_t failed = 0;
+    bool found = false;
     Stmt stmt(conn,
-              "SELECT u.id, u.username, u.display_name, r.code, u.status, u.created_at,"
-              " u.updated_at, u.password_hash FROM app_user u JOIN app_role r ON r.id = u.role_id"
+              "SELECT u.id, u.username, u.display_name, r.code, u.status, u.must_change_password,"
+              " u.created_at, u.updated_at, u.password_hash, u.failed_count"
+              " FROM app_user u JOIN app_role r ON r.id = u.role_id"
               " WHERE u.username = ? AND u.is_deleted = 0 LIMIT 1;");
     stmt.bind(1, username);
     if (stmt.step()) {
       row = read_row(stmt);
-      hash = stmt.text(7);
+      hash = stmt.text(8);
+      failed = stmt.i64(9);
+      found = true;
     }
+    if (!found || !row.active) {
+      audit_write_as(conn, actor, "login_failed", "auth", 0, actor, "口令错误" + source_note);
+      outcome = Outcome::invalid;
+      return;
+    }
+    // 锁定优先于口令校验：锁定期内即使口令正确也不放行。
+    Stmt lock(conn,
+              "SELECT CAST((julianday(locked_until) - julianday('now', 'localtime')) * 1440 + 0.999"
+              " AS INTEGER) FROM app_user WHERE id = ?;");
+    lock.bind(1, row.id);
+    if (lock.step()) {
+      locked_minutes = lock.i64(0);
+    }
+    if (locked_minutes > 0) {
+      audit_write_as(conn, actor, "login_failed", "auth", row.id, row.username,
+                     "账号锁定，剩余 " + std::to_string(locked_minutes) + " 分钟");
+      outcome = Outcome::locked;
+      return;
+    }
+    if (verify_password(hash, password)) {
+      Stmt reset(conn, "UPDATE app_user SET failed_count = 0, locked_until = '' WHERE id = ?;");
+      reset.bind(1, row.id).run();
+      audit_write_as(conn, row.username, "login", "auth", row.id, row.username, source);
+      outcome = Outcome::ok;
+      return;
+    }
+    const std::int64_t next = failed + 1;
+    audit_write_as(conn, actor, "login_failed", "auth", row.id, row.username,
+                   "口令错误" + source_note);
+    if (next >= kMaxFailures) {
+      Stmt bump(conn,
+                "UPDATE app_user SET failed_count = ?, locked_until ="
+                " datetime('now', 'localtime', '+" +
+                    std::to_string(kLockMinutes) + " minutes') WHERE id = ?;");
+      bump.bind(1, next).bind(2, row.id).run();
+      audit_write_as(conn, actor, "account_locked", "auth", row.id, row.username,
+                     "口令错误连续 " + std::to_string(kMaxFailures) + " 次，锁定 " +
+                         std::to_string(kLockMinutes) + " 分钟");
+      locked_minutes = kLockMinutes;
+      outcome = Outcome::locked;
+      return;
+    }
+    Stmt bump(conn, "UPDATE app_user SET failed_count = ? WHERE id = ?;");
+    bump.bind(1, next).bind(2, row.id).run();
+    outcome = Outcome::invalid;
   });
-  if (!row.has_value() || !row->active || !verify_password(hash, password)) {
+
+  if (outcome == Outcome::locked) {
+    throw AppError("ACCOUNT_LOCKED",
+                   "账号已锁定，请 " + std::to_string(locked_minutes) + " 分钟后再试");
+  }
+  if (outcome == Outcome::invalid) {
     throw AppError("INVALID_CREDENTIALS", "用户名或口令错误");
   }
-  return *row;
+  return row;
 }
 
 bool UserService::has_password(std::int64_t id) const {
@@ -265,12 +336,45 @@ void UserService::set_password(std::int64_t id, std::string_view password) {
   db_.write([&](sqlite3* conn) {
     ensure_user_exists(conn, id);
     Stmt stmt(conn,
-              "UPDATE app_user SET password_hash = ?, updated_at = ?, updated_by = ?"
+              "UPDATE app_user SET password_hash = ?, must_change_password = 1, failed_count = 0,"
+              " locked_until = '', updated_at = ?, updated_by = ?"
               " WHERE id = ? AND is_deleted = 0;");
     const AuditStamp stamp = audit_stamp();
     stmt.bind(1, hash).bind(2, stamp.at).bind(3, stamp.by).bind(4, id).run();
     revoke_sessions(conn, id);
-    audit_write(conn, "set_password", "user", id, std::to_string(id));
+    audit_write(conn, "set_password", "user", id, std::to_string(id), "管理员重置口令");
+  });
+}
+
+void UserService::change_password(std::int64_t id, std::string_view old_password,
+                                  std::string_view new_password) {
+  validate_password(new_password);
+  const std::string hash = hash_password(new_password);
+  db_.write([&](sqlite3* conn) {
+    ensure_user_exists(conn, id);
+    std::string username;
+    std::string stored;
+    {
+      Stmt stmt(conn,
+                "SELECT username, password_hash FROM app_user WHERE id = ? AND is_deleted = 0"
+                " LIMIT 1;");
+      stmt.bind(1, id);
+      if (stmt.step()) {
+        username = stmt.text(0);
+        stored = stmt.text(1);
+      }
+    }
+    if (!verify_password(stored, old_password)) {
+      throw AppError("INVALID_CREDENTIALS", "原口令不正确");
+    }
+    Stmt stmt(conn,
+              "UPDATE app_user SET password_hash = ?, must_change_password = 0, failed_count = 0,"
+              " locked_until = '', updated_at = ?, updated_by = ?"
+              " WHERE id = ? AND is_deleted = 0;");
+    const AuditStamp stamp = audit_stamp();
+    stmt.bind(1, hash).bind(2, stamp.at).bind(3, stamp.by).bind(4, id).run();
+    revoke_sessions(conn, id);
+    audit_write(conn, "change_password", "user", id, username, "口令已修改");
   });
 }
 

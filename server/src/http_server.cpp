@@ -174,7 +174,9 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         current_context() = RequestContext{session ? session->user : std::string{},
                                            session ? session->role : std::string{},
                                            random_hex(8),
-                                           session ? session->csrf : std::string{}};
+                                           session ? session->csrf : std::string{},
+                                           session ? session->user_id : 0,
+                                           session ? session->must_change_password : false};
 
         // 单机版只接受来自 127.0.0.1 的请求，防御 DNS rebinding。
         if (info_.mode == "local") {
@@ -240,6 +242,12 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         if (state_changing(req.method) &&
             !constant_time_equals(req.get_header_value("X-CSRF-Token"), session->csrf)) {
           json_error(res, 403, "CSRF_INVALID", "请求缺少有效的 CSRF 令牌");
+          return httplib::Server::HandlerResponse::Handled;
+        }
+        // 强制改密：除改密、退出与查看自身信息外的接口一律拒绝，前端据此跳改密页。
+        if (session->must_change_password && path != "/api/password/change" &&
+            path != "/api/session/logout" && path != "/api/me") {
+          json_error(res, 403, "MUST_CHANGE_PASSWORD", "请先修改口令后再使用其他功能");
           return httplib::Server::HandlerResponse::Handled;
         }
         return httplib::Server::HandlerResponse::Unhandled;
@@ -333,6 +341,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     body["csrf"] = context.csrf;
     // 前端据此隐藏无权限的入口；真正的拦截仍在路由的 guard 里。
     body["permissions"] = role_permissions(context.role);
+    body["must_change_password"] = context.must_change_password;
     json_ok(res, body);
   });
 
@@ -366,43 +375,44 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     result["user"] = admin.username;
     result["role"] = admin.role;
     result["csrf"] = session.csrf;
+    result["must_change_password"] = admin.must_change_password;
     json_ok(res, result);
   });
 
-  // 口令登录：失败计数按来源 IP + 用户名限流，成功即清零。
+  // 口令登录：失败计数落库（按账号），达到 5 次锁定 15 分钟；成功即清零。
+  // 不存在的用户名仍走内存限流，避免枚举时被无限试探。
   server_->Post("/api/login", [this](const httplib::Request& req, httplib::Response& res) {
     const auto body = json_body(req);
     const std::string username = body.value("username", std::string{});
     const std::string password = body.value("password", std::string{});
     const std::string key = req.remote_addr + "|" + username;
-    // 登录时还没有会话，审计里的操作人就是本次尝试的用户名；长度截断防止脏数据。
-    const std::string audit_actor =
-        username.empty() ? std::string("（空用户名）") : username.substr(0, 64);
-    if (login_limiter_.blocked(key)) {
+    bool known = true;
+    try {
+      services_.users.find_by_username(username);
+    } catch (const AppError&) {
+      known = false;
+    }
+    if (!known && login_limiter_.blocked(key)) {
       res.set_header("Retry-After", "300");
       json_error(res, 429, "TOO_MANY_ATTEMPTS", "登录失败次数过多，请 5 分钟后再试");
       return;
     }
     UserRow user;
     try {
-      user = services_.users.authenticate(username, password);
+      user = services_.users.authenticate(username, password, req.remote_addr);
     } catch (const AppError& error) {
-      if (error.code() != "INVALID_CREDENTIALS") {
-        throw;
+      if (error.code() == "INVALID_CREDENTIALS") {
+        if (!known) {
+          login_limiter_.record_failure(key);
+        }
+        json_error(res, 401, "INVALID_CREDENTIALS", "用户名或口令错误");
+        return;
       }
-      login_limiter_.record_failure(key);
-      services_.db.write([&](sqlite3* conn) {
-        audit_write_as(conn, audit_actor, "login_failed", "auth", 0, audit_actor,
-                       req.remote_addr);
-      });
-      json_error(res, 401, "INVALID_CREDENTIALS", "用户名或口令错误");
-      return;
+      throw;
     }
-    login_limiter_.reset(key);
-    services_.db.write([&](sqlite3* conn) {
-      audit_write_as(conn, user.username, "login", "auth", user.id, user.username,
-                     req.remote_addr);
-    });
+    if (known) {
+      login_limiter_.reset(key);
+    }
     // 登录成功后顺手清掉过期会话，不需要额外的定时任务。
     sessions_.purge_expired();
     const SessionPolicy policy = services_.settings.session_policy();
@@ -414,6 +424,25 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     result["user"] = user.username;
     result["role"] = user.role;
     result["csrf"] = session.csrf;
+    result["must_change_password"] = user.must_change_password;
+    json_ok(res, result);
+  });
+
+  // 自助改密：校验原口令；成功后清失败计数、锁定与强制改密标记，并换发新会话。
+  server_->Post("/api/password/change", [this](const httplib::Request& req,
+                                               httplib::Response& res) {
+    const auto body = json_body(req);
+    const std::string old_password = body.value("old_password", std::string{});
+    const std::string new_password = body.value("new_password", std::string{});
+    services_.users.change_password(current_context().user_id, old_password, new_password);
+    const SessionPolicy policy = services_.settings.session_policy();
+    const CreatedSession session = sessions_.create(current_context().user_id, policy.idle_minutes);
+    res.set_header("Set-Cookie",
+                   "sid=" + session.id + cookie_attributes(req, policy.idle_minutes * 60));
+    nlohmann::json result;
+    result["ok"] = true;
+    result["csrf"] = session.csrf;
+    result["must_change_password"] = false;
     json_ok(res, result);
   });
 

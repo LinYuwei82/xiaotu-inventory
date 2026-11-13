@@ -13,6 +13,7 @@ struct Session {
   std::string user;
   std::string role;
   std::string csrf;
+  bool must_change_password = false;
 };
 
 struct CreatedSession {

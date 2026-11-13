@@ -50,6 +50,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v29 | `partner.origin` 来源标记（`AUTO_ARCHIVE` = 档案首次引用时业务补建，`MANUAL` = 历史迁移、手工或合并），默认 `MANUAL` 补齐老数据 |
 | v30 | 客户/供应商合并：`partner_merge_log` 记录保留档案、前后快照、映射快照、源档案历史键与台账/核销水位；合并只写 `partner.merged_into` 与角色位，历史键不动 |
 | v31 | 单据幂等与乐观锁：`doc_header.request_id`（非空唯一，部分索引）与 `version`（历史行 0）；重复提交返回首次单据，更新类操作按版本校验（冲突返回 `VERSION_CONFLICT`） |
+| v32 | 登录安全：`app_user.must_change_password`（管理员重置口令后强制改密）、`failed_count` 与 `locked_until`（连续 5 次错口令锁定 15 分钟） |
 
 ## 1. 环境要求
 
