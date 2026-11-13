@@ -71,6 +71,11 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
   [info setBottomMargin:spec.margin_pt];
   [info setOrientation:wide_page ? NSPaperOrientationLandscape
                                  : NSPaperOrientationPortrait];
+  // 系统打印默认在纸张页眉打印日期与网页标题（document.title = 「小兔进销存」），
+  // 与模板里的「打印时间」重复，且会挤占第一页顶部空间。显式关闭页眉页脚，
+  // 让输出只包含模板内容；系统打印与「导出 PDF」共用这份 NSPrintInfo。
+  // 模板自己的 company_name / header_text 属于业务抬头，不受此开关影响。
+  [[info dictionary] setObject:@NO forKey:NSPrintHeaderAndFooter];
   // WKWebView 的打印排版按 90 dpi 换算 CSS 像素（1 CSS px = 0.8pt），而 CSS 规范
   // 是 96 dpi（1 px = 0.75pt），整页因此凭空大 96/90 ≈ 1.067 倍；这是排版 DPI
   // 的偏差，不是内容缩放，改字号或乘反向系数都只是盖住现象。
