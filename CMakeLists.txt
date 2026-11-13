@@ -47,6 +47,11 @@ message(STATUS "版本：${XIAOTU_EDITION}")
 
 # 构建号：单调递增，发布时由流水线显式传入；本地默认值只用于开发。
 set(XIAOTU_BUILD "2026111301" CACHE STRING "构建号（单调递增）")
+# 单机版更新配置：由 tools/package/make_dmg.sh 在打包时注入 Info.plist。
+# 三者都为空表示更新功能关闭；只提供一部分视为配置错误。
+set(XIAOTU_UPDATE_MANIFEST_URL "" CACHE STRING "单机版清单地址（https）")
+set(XIAOTU_UPDATE_FEED_URL "" CACHE STRING "Sparkle appcast 地址（https）")
+set(XIAOTU_UPDATE_PUBKEY "" CACHE STRING "Sparkle SUPublicEDKey（Ed25519 公钥，base64）")
 # API 版本：破坏性协议变更时 +1，并保留 N-1 一个 MINOR 周期。
 set(XIAOTU_API_VERSION "1" CACHE STRING "API 协议版本")
 

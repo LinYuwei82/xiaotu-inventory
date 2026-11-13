@@ -139,6 +139,8 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
 @property(nonatomic, copy, nullable) NSString* healthBase;
 @property(nonatomic, copy) NSString* channel;
 @property(nonatomic, assign) BOOL running;
+// 递增令牌用于作废旧定时器；只在 self.queue 上读写。
+@property(nonatomic, assign) NSUInteger timerToken;
 #if XIAOTU_HAS_SPARKLE
 // 必须持有，否则控制器释放后 Sparkle 的后续下载/安装会中断。只在主线程访问。
 @property(nonatomic, strong, nullable) SPUStandardUpdaterController* sparkleController;
@@ -184,6 +186,7 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
   dispatch_async(self.queue, ^{
     [self scheduleNextCheckIfNeeded];
     [self checkIfDue];
+    [self armTimerOnQueue];
   });
   // Info.plist 中 SUEnableAutomaticChecks=false：定时检查只由本类负责，
   // 避免 Sparkle 与本类形成双份检查/提示（见 docs/更新模块技术方案.md 第 9 节）。
@@ -202,6 +205,8 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), self.queue, ^{
     [[NSUserDefaults standardUserDefaults] setInteger:0 forKey:kLaunchAttemptsKey];
     [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kPausedKey];
+    // 稳定运行后若此前因暂停没有武装定时器，这里补上。
+    [self armTimerOnQueue];
   });
 }
 
@@ -456,6 +461,32 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
   };
 }
 
+// 按 next_check_at 武装一次性定时器；必须在 self.queue 上调用。
+// 暂停或未配置时直接返回，不在后台空转；恢复时由 resume / 稳定运行逻辑重新武装。
+- (void)armTimerOnQueue {
+  self.timerToken += 1;
+  const NSUInteger token = self.timerToken;
+  if (!self.running || self.manifestURL.length == 0) {
+    return;
+  }
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  if ([defaults boolForKey:kPausedKey]) {
+    return;
+  }
+  if ([defaults doubleForKey:kNextCheckKey] <= 0) {
+    [self scheduleNextCheck];
+  }
+  const double delay = [defaults doubleForKey:kNextCheckKey] - now_epoch();
+  const int64_t nanoseconds = static_cast<int64_t>(MAX(1.0, delay) * NSEC_PER_SEC);
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, nanoseconds), self.queue, ^{
+    if (token != self.timerToken) {
+      return;  // 已被更新的排期取代
+    }
+    [self checkIfDue];
+    [self armTimerOnQueue];
+  });
+}
+
 - (void)scheduleNextCheckIfNeeded {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   if ([defaults doubleForKey:kNextCheckKey] <= 0) {
@@ -496,6 +527,10 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
     NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
     [defaults setDouble:now_epoch() forKey:kLastCheckKey];
     [defaults setObject:code forKey:kLastResultKey];
+    // 仅自动检查后重新武装；手动检查不改变既有排期。
+    if (completion == nil) {
+      [self armTimerOnQueue];
+    }
     if (completion != nil) {
       dispatch_async(dispatch_get_main_queue(), ^{
         completion(code);

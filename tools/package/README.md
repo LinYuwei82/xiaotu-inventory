@@ -20,6 +20,26 @@ dmg 内包含：
 脚本会先跑 `cmake --preset macos-release` 与 `cmake --build --preset release`，再校验 `Info.plist` 版本、
 复制 bundle、签名、`hdiutil create -format UDZO`，最后输出 dmg 的字节数与 SHA256。
 
+## 构建号与更新配置
+
+打包时通过环境变量把构建号与更新配置注入 `Info.plist`：
+
+```bash
+XIAOTU_BUILD=2026111501 \
+XIAOTU_UPDATE_MANIFEST_URL=https://updates.example.com/macos/stable/latest.json \
+XIAOTU_UPDATE_FEED_URL=https://updates.example.com/macos/stable/appcast.xml \
+XIAOTU_UPDATE_PUBKEY="$(cat ~/keys/update_signing.pub.b64)" \
+tools/package/make_dmg.sh
+```
+
+- `XIAOTU_BUILD` 必须是纯数字且单调递增；不设置时沿用 CMake 缓存值，脚本结束时打印实际构建号。构建号不变时 Sparkle 会判为“没有更新”。
+- 更新三项（`XIAOTU_UPDATE_MANIFEST_URL` / `XIAOTU_UPDATE_FEED_URL` / `XIAOTU_UPDATE_PUBKEY`）必须同时提供或同时留空：
+  - 全部留空：脚本打印“更新功能关闭”警告，应用内 `status.enabled=false`，仍会正常出包；
+  - 只给一部分：直接报错退出，不猜测意图。
+- 两个地址必须是 `https://`；公钥是 Sparkle 的 `SUPublicEDKey`（base64，解码后 32 字节的 Ed25519 公钥）。任一项不合法直接退出，不会静默降级成无更新配置。
+- 构建完成后脚本用 `PlistBuddy` 回读三键，与传入值不一致即失败，避免 CMake 缓存残留或转义问题。
+- “有更新”的最小闭环还需要 `SUFeedURL` 指向的 appcast 与安装包（见下节）。
+
 ## 签名与公证
 
 截至本仓库当前状态：

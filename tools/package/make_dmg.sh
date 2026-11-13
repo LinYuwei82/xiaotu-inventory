@@ -19,6 +19,11 @@
 #   XIAOTU_SIGN_IDENTITY  签名证书名称（默认空，使用 ad-hoc）
 #   XIAOTU_NOTARY_PROFILE notarytool keychain profile（默认空，跳过公证）
 #   XIAOTU_DIST_DIR       产物目录（默认 <repo>/build/package）
+#   XIAOTU_BUILD          构建号（纯数字，单调递增）；不设则沿用 CMake 缓存
+#   XIAOTU_UPDATE_MANIFEST_URL  单机版清单地址（https）
+#   XIAOTU_UPDATE_FEED_URL      Sparkle appcast 地址（https）
+#   XIAOTU_UPDATE_PUBKEY        Sparkle 公钥（Ed25519，base64，32 字节）
+#   更新三项必须同时提供或同时留空；留空表示更新功能关闭。
 
 set -euo pipefail
 
@@ -42,6 +47,11 @@ usage() {
   XIAOTU_SIGN_IDENTITY  签名证书名称；为空则 ad-hoc 签名
   XIAOTU_NOTARY_PROFILE notarytool keychain profile；为空则跳过公证并打印日志
   XIAOTU_DIST_DIR       产物目录（默认 <repo>/build/package）
+  XIAOTU_BUILD          构建号（纯数字）；为空则沿用 CMake 缓存并在结束时打印
+  XIAOTU_UPDATE_MANIFEST_URL  单机版清单地址（https）
+  XIAOTU_UPDATE_FEED_URL      Sparkle appcast 地址（https）
+  XIAOTU_UPDATE_PUBKEY        Sparkle 公钥（base64，解码后 32 字节）
+                             更新三项必须同时提供或同时留空
 
 依赖：macOS、CMake 3.25+、Ninja、ccache、Xcode Command Line Tools、hdiutil。
 EOF
@@ -64,9 +74,66 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
+UPDATE_MANIFEST_URL="${XIAOTU_UPDATE_MANIFEST_URL:-}"
+UPDATE_FEED_URL="${XIAOTU_UPDATE_FEED_URL:-}"
+UPDATE_PUBKEY="${XIAOTU_UPDATE_PUBKEY:-}"
+UPDATE_CONFIG_COUNT=0
+[ -n "$UPDATE_MANIFEST_URL" ] && UPDATE_CONFIG_COUNT=$((UPDATE_CONFIG_COUNT + 1))
+[ -n "$UPDATE_FEED_URL" ] && UPDATE_CONFIG_COUNT=$((UPDATE_CONFIG_COUNT + 1))
+[ -n "$UPDATE_PUBKEY" ] && UPDATE_CONFIG_COUNT=$((UPDATE_CONFIG_COUNT + 1))
+
+if [ "$UPDATE_CONFIG_COUNT" -ne 0 ] && [ "$UPDATE_CONFIG_COUNT" -ne 3 ]; then
+  echo "更新配置不完整：XIAOTU_UPDATE_MANIFEST_URL / XIAOTU_UPDATE_FEED_URL / XIAOTU_UPDATE_PUBKEY 必须同时提供或同时留空。" >&2
+  exit 1
+fi
+if [ "$UPDATE_CONFIG_COUNT" -eq 3 ]; then
+  case "$UPDATE_MANIFEST_URL" in
+    https://*) ;;
+    *)
+      echo "XIAOTU_UPDATE_MANIFEST_URL 必须是 https 地址：$UPDATE_MANIFEST_URL" >&2
+      exit 1
+      ;;
+  esac
+  case "$UPDATE_FEED_URL" in
+    https://*) ;;
+    *)
+      echo "XIAOTU_UPDATE_FEED_URL 必须是 https 地址：$UPDATE_FEED_URL" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$(printf '%s' "$UPDATE_PUBKEY" | base64 -D 2>/dev/null | wc -c | tr -d ' ')" != "32" ]; then
+    echo "XIAOTU_UPDATE_PUBKEY 不是合法的 Ed25519 公钥（base64，解码后应为 32 字节）。" >&2
+    exit 1
+  fi
+fi
+
+BUILD_NUMBER="${XIAOTU_BUILD:-}"
+if [ -n "$BUILD_NUMBER" ]; then
+  case "$BUILD_NUMBER" in
+    *[!0-9]*)
+      echo "XIAOTU_BUILD 必须是纯数字：$BUILD_NUMBER" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+# 显式传入（含空值），避免 CMake 缓存把上一次的更新配置带到本次包。
+CMAKE_ARGS=(
+  --preset macos-release
+  -DXIAOTU_BUILD_SHELL=ON
+  "-DXIAOTU_UPDATE_MANIFEST_URL=$UPDATE_MANIFEST_URL"
+  "-DXIAOTU_UPDATE_FEED_URL=$UPDATE_FEED_URL"
+  "-DXIAOTU_UPDATE_PUBKEY=$UPDATE_PUBKEY"
+)
+if [ -n "$BUILD_NUMBER" ]; then
+  CMAKE_ARGS+=("-DXIAOTU_BUILD=$BUILD_NUMBER")
+  BUILD_HINT="${BUILD_NUMBER}（来自 XIAOTU_BUILD）"
+else
+  BUILD_HINT="未设置 XIAOTU_BUILD，沿用 CMake 缓存（结束时打印实际值）"
+fi
 echo "===== 构建（macos-release，版本 ${VERSION}）"
-# 显式打开单机版壳，避免复用之前 -DXIAOTU_BUILD_SHELL=OFF 的构建目录。
-cmake --preset macos-release -DXIAOTU_BUILD_SHELL=ON
+echo "构建号：${BUILD_HINT}"
+cmake "${CMAKE_ARGS[@]}"
 cmake --build --preset release
 
 if [ ! -d "$BUILT_APP" ]; then
@@ -80,6 +147,29 @@ PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' 
 if [ "$PLIST_VERSION" != "$VERSION" ]; then
   echo "Info.plist 版本（${PLIST_VERSION}）与项目版本（${VERSION}）不一致。" >&2
   exit 1
+fi
+
+PLIST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
+if [ -n "$BUILD_NUMBER" ] && [ "$PLIST_BUILD" != "$BUILD_NUMBER" ]; then
+  echo "Info.plist 构建号（${PLIST_BUILD}）与 XIAOTU_BUILD（${BUILD_NUMBER}）不一致。" >&2
+  exit 1
+fi
+
+if [ "$UPDATE_CONFIG_COUNT" -eq 3 ]; then
+  for entry in "XiaotuUpdateManifestURL=$UPDATE_MANIFEST_URL" \
+               "SUFeedURL=$UPDATE_FEED_URL" \
+               "SUPublicEDKey=$UPDATE_PUBKEY"; do
+    key="${entry%%=*}"
+    expected="${entry#*=}"
+    actual="$(/usr/libexec/PlistBuddy -c "Print :${key}" "$PLIST")"
+    if [ "$actual" != "$expected" ]; then
+      echo "Info.plist ${key} 注入失败：期望 ${expected}，实际 ${actual}" >&2
+      exit 1
+    fi
+  done
+  echo "更新配置：已注入清单地址、appcast 地址与公钥"
+else
+  echo "警告：未提供更新配置，打出的包更新功能为关闭状态（应用内 enabled=false）。" >&2
 fi
 
 STAGE="$OUT_DIR/dmg-root"
@@ -133,3 +223,6 @@ echo "字节数：$SIZE_BYTES"
 echo "SHA256：$SHA256"
 echo "签名：$([ -n "${XIAOTU_SIGN_IDENTITY:-}" ] && echo "$XIAOTU_SIGN_IDENTITY" || echo "ad-hoc（不可直接分发）")"
 echo "公证：$([ "$NOTARIZED" -eq 1 ] && echo "已公证" || echo "未公证")"
+echo "产品版本：$VERSION"
+echo "构建号：$PLIST_BUILD"
+echo "更新配置：$([ "$UPDATE_CONFIG_COUNT" -eq 3 ] && echo "已注入" || echo "未配置（更新功能关闭）")"

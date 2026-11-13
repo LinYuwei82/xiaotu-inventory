@@ -29,18 +29,19 @@
     <key>NSAllowsLocalNetworking</key>
     <true/>
   </dict>
-  <!-- 更新：地址与公钥需在发布前替换；定时检查由 XiaotuUpdater 负责（24h±2h）。
+  <!-- 更新：以下三项由 tools/package/make_dmg.sh 通过 CMake 变量注入，仓库内保持为空；
+       为空表示更新功能关闭。定时检查由 XiaotuUpdater 负责（24h±2h）。
        SUEnableAutomaticChecks=false 关闭 Sparkle 自己的定时检查，避免双份检查/提示；
        SUAutomaticallyUpdate=true 仅表示“检查到更新后静默下载、退出时安装”，
        不产生额外调度；SUScheduledCheckInterval 已移除（自动检查关闭后无意义）。 -->
   <key>XiaotuUpdateManifestURL</key>
-  <string></string>
+  <string>@XIAOTU_UPDATE_MANIFEST_URL_XML@</string>
   <key>XiaotuUpdateChannel</key>
   <string>stable</string>
   <key>SUFeedURL</key>
-  <string></string>
+  <string>@XIAOTU_UPDATE_FEED_URL_XML@</string>
   <key>SUPublicEDKey</key>
-  <string></string>
+  <string>@XIAOTU_UPDATE_PUBKEY_XML@</string>
   <key>SUEnableAutomaticChecks</key>
   <false/>
   <key>SUAutomaticallyUpdate</key>

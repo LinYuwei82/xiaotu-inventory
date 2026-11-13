@@ -3,6 +3,14 @@ set(SHELL_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/mac/updater.mm"
   "${CMAKE_CURRENT_SOURCE_DIR}/mac/webview.mm")
 
+# Info.plist 里的更新地址与公钥由打包脚本通过 CMake 变量注入；空值表示更新关闭。
+# 只做最小 XML 转义，避免 URL 中的 & 破坏 plist。
+foreach(_update_var XIAOTU_UPDATE_MANIFEST_URL XIAOTU_UPDATE_FEED_URL XIAOTU_UPDATE_PUBKEY)
+  set(${_update_var}_XML "${${_update_var}}")
+  string(REPLACE "&" "&amp;" ${_update_var}_XML "${${_update_var}_XML}")
+  string(REPLACE "<" "&lt;" ${_update_var}_XML "${${_update_var}_XML}")
+endforeach()
+
 # Info.plist 里的版本与构建号由根 VERSION 文件和 XIAOTU_BUILD 注入，
 # 不再在 plist 里手写，避免与二进制 / 诊断接口不一致。
 set(XIAOTU_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
