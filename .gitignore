@@ -3,6 +3,7 @@ vcpkg_installed/
 .vcpkg-cache/
 .ccache/
 tools/codegen/.venv/
+tools/package/.venv/
 .local/
 .DS_Store
 

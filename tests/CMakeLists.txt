@@ -78,4 +78,6 @@ if(UNIX)
   add_test(NAME update_api_test
            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/update_api_test.sh"
                    $<TARGET_FILE:xiaotu-server>)
+  add_test(NAME update_manifest_test
+           COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/update_manifest_test.sh")
 endif()

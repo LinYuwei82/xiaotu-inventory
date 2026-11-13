@@ -56,3 +56,22 @@ cron.d 文件需要 `用户` 字段（已包含），不要改成用户 crontab 
 - 备份版本较低：允许恢复，下次启动自动迁移（日志中会有 warn）。
 
 恢复必须在服务停止时执行；确认程序版本与备份匹配后再恢复。
+
+## 更新源（网络版 / 私有化）
+
+更新检查由服务端读取本地清单完成，不主动访问外网；清单由 `deploy/update-sync.sh` 从厂商更新源同步：
+
+1. 复制 `deploy/nginx/updates.conf.example` 到 Nginx 配置目录，替换域名与路径后 reload。
+2. 在 `/etc/xiaotu/update_signing.pub.pem` 放置 Ed25519 公钥。
+3. 安装 `deploy/cron/xiaotu-update-sync` 到 `/etc/cron.d/`，或改用 systemd timer（二选一，不要重复）。
+4. 在 `config.toml` 增加：
+
+```toml
+[update]
+manifest_file = "/srv/xiaotu-updates/macos/stable/latest.json"
+channel = "stable"
+min_supported_version = "1.3.0"
+rollout_percent = 100
+```
+
+灰度放行：把清单里的 `rollout_percent` 依次改为 1、10、50、100，每次替换后 purge CDN 的 `latest.json` 与 `appcast.xml`，观察 24 小时；服务端启动时会读取新文件，无需重启。回滚时把清单指回上一版本并保留安装包。

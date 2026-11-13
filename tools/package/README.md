@@ -66,3 +66,26 @@ XIAOTU_SIGN_IDENTITY="Developer ID Application: 你的名字 (TEAMID)" tools/pac
 ```bash
 "/Volumes/小兔进销存/小兔进销存.app/Contents/MacOS/xiaotu-inventory" --data /tmp/xiaotu-dmg-test
 ```
+
+## 更新清单与 appcast
+
+```bash
+python3 -m venv tools/package/.venv
+tools/package/.venv/bin/pip install -r tools/package/requirements.txt
+
+# 生成并签名清单，同时生成 Sparkle appcast
+tools/package/.venv/bin/python tools/package/update_manifest.py generate \
+  --file build/package/xiaotu-inventory-1.4.2.dmg \
+  --version 1.4.2 --build 2026111301 \
+  --url https://cdn.example.com/releases/macos/1.4.2/xiaotu-inventory-1.4.2.dmg \
+  --schema-min 28 --schema-max 32 --api-min 1 --api-max 1 \
+  --key ~/keys/update_signing.pem --key-id 2026-01 \
+  --out build/package/latest.json --appcast build/package/appcast.xml
+
+# 校验清单签名与安装包哈希
+tools/package/.venv/bin/python tools/package/update_manifest.py verify \
+  --manifest build/package/latest.json --pub ~/keys/update_signing.pub.pem \
+  --file build/package/xiaotu-inventory-1.4.2.dmg
+```
+
+私钥不进入仓库与构建产物；`--appcast` 生成的是对 dmg 文件字节的 Ed25519 签名，供 Sparkle 校验。
