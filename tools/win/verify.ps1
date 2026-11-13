@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   小兔进销存 Windows 实机验收脚本（PowerShell 5.1 / 7）
   只读检查 + 安装/卸载验证。任何 FAIL 都会使退出码非 0。
@@ -40,6 +40,24 @@ function Invoke-Check([string]$Name, [scriptblock]$Body) {
         Fail $Name ("异常: " + $msg)
         Write-Host ("  详细: " + ($_ | Out-String))
     }
+}
+
+# 原生命令统一出口。git/cmake/ctest 会往 stderr 写正常提示（例如
+# "Preparing worktree (detached HEAD ...)"），在 $ErrorActionPreference="Stop" 下
+# PowerShell 5.1 会把这类 stderr 记录当成终止性错误。这里只以退出码判定成败，
+# 输出原样落日志并回显，避免「正常提示」被误报成命令失败。
+function Invoke-Native([string]$LogFile, [scriptblock]$Call) {
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $Call 2>&1
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($output) { $output | ForEach-Object { Write-Host $_ } }
+    if ($LogFile) { $output | Out-File -FilePath $LogFile -Encoding utf8 }
+    return [pscustomobject]@{ ExitCode = $code; Output = ($output | Out-String) }
 }
 
 function Get-HttpResult([string]$Method, [string]$Url, $Body, $WebSession) {
@@ -127,10 +145,10 @@ if ($SkipBuild) {
     Invoke-Check "MSVC 构建" {
         Push-Location $Repo
         try {
-            & cmake --preset windows-release 2>&1 | Tee-Object -FilePath (Join-Path $LogDir "configure.log")
-            if ($LASTEXITCODE -ne 0) { throw "cmake configure 失败，退出码 $LASTEXITCODE" }
-            & cmake --build --preset windows-release 2>&1 | Tee-Object -FilePath (Join-Path $LogDir "build.log")
-            if ($LASTEXITCODE -ne 0) { throw "构建失败，退出码 $LASTEXITCODE" }
+            $configure = Invoke-Native (Join-Path $LogDir "configure.log") { cmake --preset windows-release }
+            if ($configure.ExitCode -ne 0) { throw "cmake configure 失败，退出码 $($configure.ExitCode)" }
+            $build = Invoke-Native (Join-Path $LogDir "build.log") { cmake --build --preset windows-release }
+            if ($build.ExitCode -ne 0) { throw "构建失败，退出码 $($build.ExitCode)" }
             Pass "MSVC 构建" "windows-release 配置与构建成功"
         } finally { Pop-Location }
     }
@@ -138,12 +156,11 @@ if ($SkipBuild) {
         Push-Location $Repo
         try {
             $ctestLog = Join-Path $LogDir "ctest.log"
-            & ctest --preset windows-release --output-on-failure 2>&1 | Tee-Object -FilePath $ctestLog
-            $code = $LASTEXITCODE
-            $failed = Select-String -Path $ctestLog -Pattern "^\s*\d+/\d+ Test\s+#\d+:\s+.+\*\*\*Failed" -ErrorAction SilentlyContinue
-            if ($code -ne 0) {
-                $names = ($failed | ForEach-Object { $_.Line }) -join "; "
-                throw "ctest 失败（退出码 $code）: $names"
+            $run = Invoke-Native $ctestLog { ctest --preset windows-release --output-on-failure }
+            if ($run.ExitCode -ne 0) {
+                $failed = Select-String -Path $ctestLog -Pattern "^\s*\d+/\d+ Test\s+#\d+:\s+.+\*\*\*Failed" -ErrorAction SilentlyContinue
+                $names = ($failed | ForEach-Object { $_.Line.Trim() }) -join "; "
+                throw "ctest 失败（退出码 $($run.ExitCode)）: $names"
             }
             $summary = Select-String -Path $ctestLog -Pattern "tests passed" | Select-Object -Last 1
             Pass "ctest" ($summary.Line.Trim())
@@ -177,33 +194,37 @@ Invoke-Check "静态运行库 /MT" {
     Pass "静态运行库 /MT" ("检查 " + $targets.Count + " 个 exe，未发现 vcruntime/msvcp/ucrtbased")
 }
 
-# ---------- 3. /we7560 生效（临时 worktree） ----------
-Invoke-Check "/we7560 生效" {
+# ---------- 3. C7560 是否被当作错误（临时 worktree） ----------
+# 只验证行为，不依赖 /we7560 这个开关：MSVC 14.44 把 C7560 默认就当错误处理，
+# 而 /we7560 会被 cl 判为无效参数（warning D9014，见构建日志），开关本身不起作用。
+Invoke-Check "C7560 生效" {
     $wt = Join-Path $env:TEMP ("xiaotu-we7560-" + [guid]::NewGuid().ToString("N"))
     [void]$script:TempDirs.Add($wt)
-    & git -C $Repo worktree add --detach $wt HEAD 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "git worktree 创建失败" }
+    $add = Invoke-Native (Join-Path $LogDir "worktree.log") { git -C $Repo worktree add --detach $wt HEAD }
+    if ($add.ExitCode -ne 0) { throw "git worktree 创建失败（退出码 $($add.ExitCode)），见 worktree.log" }
     try {
         $file = Join-Path $wt "core\src\document.cpp"
         $probe = "`nnamespace xiaotu_we7560_probe {`nstruct Probe { int a; int b; };`nint probe() { Probe p{ .b = 2, .a = 1 }; return p.a; }`n}`n"
         Add-Content -Path $file -Value $probe -Encoding UTF8
         Push-Location $wt
-        $log = Join-Path $LogDir "we7560.log"
-        & cmake --preset windows-release 2>&1 | Out-Null
-        & cmake --build --preset windows-release --target xiaotu_core 2>&1 | Tee-Object -FilePath $log | Out-Null
-        $code = $LASTEXITCODE
-        Pop-Location
-        if ($code -eq 0) { throw "错序指定初始化器仍然编译成功，/we7560 未生效" }
-        $text = Get-Content -Raw $log
-        if ($text -notmatch "C7560") { throw "编译失败但输出中没有 C7560，需人工看 $log" }
-        Pass "/we7560 生效" "错序初始化器编译失败且输出含 C7560"
+        try {
+            $configure = Invoke-Native (Join-Path $LogDir "we7560-configure.log") { cmake --preset windows-release }
+            if ($configure.ExitCode -ne 0) { throw "worktree 内 cmake configure 失败，退出码 $($configure.ExitCode)" }
+            $build = Invoke-Native (Join-Path $LogDir "we7560.log") { cmake --build --preset windows-release --target xiaotu_core }
+        } finally { Pop-Location }
+        if ($build.ExitCode -eq 0) { throw "错序指定初始化器仍然编译成功，C7560 未按错误处理" }
+        if ($build.Output -notmatch "C7560") { throw "编译失败但输出中没有 C7560，需人工看 we7560.log" }
+        Pass "C7560 生效" "错序初始化器编译失败且输出含 C7560（MSVC 14.44 默认即 error；/we7560 无效，cl 报 D9014）"
     } finally {
-        & git -C $Repo worktree remove --force $wt 2>&1 | Out-Null
-        if (Test-Path $wt) { Remove-Item -Recurse -Force $wt -ErrorAction SilentlyContinue }
+        $remove = Invoke-Native (Join-Path $LogDir "worktree-remove.log") { git -C $Repo worktree remove --force $wt }
+        if ($remove.ExitCode -ne 0 -and (Test-Path $wt)) {
+            & git -C $Repo worktree prune 2>&1 | Out-Null
+            Remove-Item -Recurse -Force $wt -ErrorAction SilentlyContinue
+        }
     }
     $dirty = & git -C $Repo status --porcelain -- core/src/document.cpp
     if ($dirty) { throw "仓库 document.cpp 被改动: $dirty" }
-    Pass "/we7560 未污染仓库" "document.cpp 无改动"
+    Pass "C7560 未污染仓库" "document.cpp 无改动"
 }
 
 # ---------- 4. 安装包 ----------
@@ -357,16 +378,17 @@ if ($SkipInstall) {
 }
 
 # ---------- 11. MANUAL ----------
+Manual "根 CMakeLists 的 /we7560" "本机 cl 报 D9014（值 7560 对 /we 无效），而 C7560 在 MSVC 14.44 默认即 error；建议 macmini 决定是否从根 CMakeLists 删除该开关"
 Manual "WebView2 缺失提示" "在虚拟机卸载 WebView2 后双击壳，应提示缺失而非白屏/闪退"
 Manual "窗口位置与大小记忆" "移动并缩放窗口后重启，应恢复上次位置与大小"
 Manual "打印对话框" "打开打印预览并调起系统对话框，检查纸型/边距/缩放"
 Manual "SmartScreen 表现" "未签名包首次运行应出现「未知发布者 → 更多信息 → 仍要运行」"
 
 # ---------- 汇总 ----------
-$pass = ($script:Results | Where-Object Status -eq "PASS").Count
-$fail = ($script:Results | Where-Object Status -eq "FAIL").Count
-$skip = ($script:Results | Where-Object Status -eq "SKIP").Count
-$manual = ($script:Results | Where-Object Status -eq "MANUAL").Count
+$pass = @($script:Results | Where-Object { $_.Status -eq "PASS" }).Count
+$fail = @($script:Results | Where-Object { $_.Status -eq "FAIL" }).Count
+$skip = @($script:Results | Where-Object { $_.Status -eq "SKIP" }).Count
+$manual = @($script:Results | Where-Object { $_.Status -eq "MANUAL" }).Count
 Write-Host ""
 Write-Host ("汇总: PASS={0} FAIL={1} SKIP={2} MANUAL={3}" -f $pass, $fail, $skip, $manual)
 Write-Host ("日志: " + (Join-Path $LogDir "verify.log"))
