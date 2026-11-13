@@ -85,8 +85,27 @@ int main() {
   result = xiaotu::check_for_update(settings, query(), 0);
   check(result.error_code == "UPDATE_MANIFEST_INVALID_JSON", "非法 JSON 被拒绝");
 
+  // 验签可用的替身：/usr/bin/true 模拟验签通过；真实签名在 API 测试中覆盖。
+  const auto pub_path = dir / "update.pub.pem";
+  const auto script_path = dir / "update_manifest.py";
+  std::ofstream(pub_path) << "test-public-key";
+  std::ofstream(script_path) << "# test verifier";
+  settings.public_key_file = pub_path.string();
+  settings.verifier_script = script_path.string();
+  settings.verifier_python = "/usr/bin/true";
+
   settings.manifest_file =
       write_manifest("stable.json", manifest_json("1.4.2", 2026111301, 28, 32, 100)).string();
+  xiaotu::UpdateCheckResult unverified = xiaotu::check_for_update(
+      xiaotu::UpdateSettings{.manifest_file = settings.manifest_file}, query(), 0);
+  check(unverified.error_code == "UPDATE_UNVERIFIED", "未配置公钥时拒绝信任清单");
+
+  xiaotu::UpdateSettings unavailable = settings;
+  unavailable.verifier_script = (dir / "missing-verifier.py").string();
+  check(xiaotu::check_for_update(unavailable, query(), 0).error_code ==
+            "UPDATE_VERIFY_UNAVAILABLE",
+        "验签工具缺失时拒绝");
+
   settings.channel = "stable";
   result = xiaotu::check_for_update(settings, query(), 0);
   check(result.manifest_ok && result.decision.update_available &&

@@ -1,11 +1,56 @@
 #include "xiaotu/update_service.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 
 #include <nlohmann/json.hpp>
 
 namespace xiaotu {
+namespace {
+
+std::string shell_quote(const std::string& value) {
+  std::string quoted = "'";
+  for (const char ch : value) {
+    if (ch == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += ch;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
+// 用发布侧同一套 Python 工具验签，确保规范化规则与生成侧一致。
+bool verify_manifest_signature(const UpdateSettings& settings, const std::string& manifest_file,
+                               UpdateCheckResult& result) {
+  if (settings.public_key_file.empty()) {
+    result.error_code = "UPDATE_UNVERIFIED";
+    result.error_message = "未配置更新公钥，拒绝使用未验签的清单";
+    return false;
+  }
+  if (settings.verifier_script.empty() ||
+      !std::filesystem::exists(settings.verifier_script) ||
+      !std::filesystem::exists(settings.public_key_file)) {
+    result.error_code = "UPDATE_VERIFY_UNAVAILABLE";
+    result.error_message = "验签工具或公钥不可用";
+    return false;
+  }
+  const std::string command = shell_quote(settings.verifier_python) + " " +
+                              shell_quote(settings.verifier_script) + " verify --manifest " +
+                              shell_quote(manifest_file) + " --pub " +
+                              shell_quote(settings.public_key_file) + " >/dev/null 2>&1";
+  if (std::system(command.c_str()) != 0) {
+    result.error_code = "UPDATE_SIGNATURE_INVALID";
+    result.error_message = "更新清单签名校验失败";
+    return false;
+  }
+  return true;
+}
+
+}  // namespace
 
 UpdateCheckResult check_for_update(const UpdateSettings& settings, const UpdateQuery& query,
                                    std::int64_t now_epoch) {
@@ -36,6 +81,9 @@ UpdateCheckResult check_for_update(const UpdateSettings& settings, const UpdateQ
     result.error_message = error.message;
     return result;
   }
+  if (!verify_manifest_signature(settings, settings.manifest_file, result)) {
+    return result;
+  }
   if (!settings.channel.empty() && result.manifest.channel != settings.channel) {
     result.error_code = "UPDATE_CHANNEL_UNAVAILABLE";
     result.error_message = "当前通道没有可用清单";
@@ -48,7 +96,8 @@ UpdateCheckResult check_for_update(const UpdateSettings& settings, const UpdateQ
   result.decision = evaluate_manifest(result.manifest, query, now_epoch);
 
   // 服务端最低支持版本优先于清单判定：即使没有更高构建，也要求升级。
-  if (!settings.min_supported_version.empty()) {
+  // 但旧 schema 必须逐级迁移时，保持 INTERMEDIATE_REQUIRED，避免直接跳最新版。
+  if (!result.decision.intermediate_required && !settings.min_supported_version.empty()) {
     ProductVersion current;
     ProductVersion minimum;
     if (parse_product_version(query.version, current) &&

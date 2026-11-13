@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -25,6 +26,13 @@ std::string format_product_version(const ProductVersion& version);
 const char* current_product_version();
 std::int64_t current_build_number();
 int current_api_version();
+
+// 清单声明的升级路径：旧 schema 需要先升级到某个中间版本。
+struct UpgradeStep {
+  int schema = 0;
+  std::string version;
+  std::int64_t build = 0;
+};
 
 // 更新清单。字段语义见 docs/更新模块技术方案.md 第 3 节。
 struct UpdateManifest {
@@ -49,6 +57,8 @@ struct UpdateManifest {
   int api_max = 0;
   int rollout_percent = 100;
   std::string signature;
+  // 可选的升级路径，按 schema 升序；本地 schema 低于 schema_min 时用于指引中间版本。
+  std::vector<UpgradeStep> upgrade_path;
 };
 
 struct ManifestError {
@@ -77,6 +87,9 @@ struct UpdateDecision {
   bool mandatory = false;
   std::string code;    // NO_UPDATE / UPDATE_AVAILABLE / SKIPPED / INCOMPATIBLE_SCHEMA 等
   std::string reason;  // 强制原因；非强制为空
+  // code == INTERMEDIATE_REQUIRED 时给出应先升级到的版本；其余情况为空。
+  bool intermediate_required = false;
+  UpgradeStep intermediate;
 };
 
 // now_epoch 为 UTC 秒。纯函数，便于测试注入时钟。

@@ -201,6 +201,18 @@ void assign(ConfigValues& values, const std::string& section, const std::string&
     values.update_rollout_percent = static_cast<int>(value);
     return;
   }
+  if (section == "update" && key == "public_key_file") {
+    values.update_public_key_file = parse_string(raw, path, line_no);
+    return;
+  }
+  if (section == "update" && key == "verifier_python") {
+    values.update_verifier_python = parse_string(raw, path, line_no);
+    return;
+  }
+  if (section == "update" && key == "verifier_script") {
+    values.update_verifier_script = parse_string(raw, path, line_no);
+    return;
+  }
   fail(path, line_no, "未知配置项：" + qualified);
 }
 

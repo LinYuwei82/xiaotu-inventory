@@ -34,6 +34,9 @@ struct ServerInfo {
   std::string update_channel = "stable";
   std::string update_min_supported_version;
   int update_rollout_percent = 100;
+  std::string update_public_key_file;
+  std::string update_verifier_python = "python3";
+  std::string update_verifier_script;
 };
 
 // HTTP 外壳：只负责认证、路由注册与生命周期，业务全部在 Services 内。

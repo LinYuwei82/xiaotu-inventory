@@ -185,6 +185,16 @@ def command_generate(args: argparse.Namespace) -> None:
         "api_max": int(args.api_max),
         "rollout_percent": int(args.rollout),
     }
+    if args.upgrade_step:
+        steps = []
+        for raw in args.upgrade_step:
+            parts = raw.split(":")
+            if len(parts) != 3:
+                raise SystemExit("--upgrade-step 格式应为 schema:version:build")
+            steps.append(
+                {"schema": int(parts[0]), "version": parts[1], "build": int(parts[2])}
+            )
+        body["upgrade_path"] = steps
     private_key = load_private_key(Path(args.key))
     signed = sign_manifest(body, private_key)
     Path(args.out).write_text(
@@ -236,6 +246,12 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--api-min", default=1, type=int)
     gen.add_argument("--api-max", default=1, type=int)
     gen.add_argument("--rollout", default=100, type=int, choices=range(1, 101))
+    gen.add_argument(
+        "--upgrade-step",
+        action="append",
+        default=[],
+        help="旧 schema 的中间升级步骤，格式 schema:version:build，可重复",
+    )
     gen.add_argument("--key-id", default="2026-01")
     gen.add_argument("--key", required=True, help="Ed25519 私钥 PEM")
     gen.add_argument("--out", required=True)

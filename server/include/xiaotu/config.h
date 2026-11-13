@@ -21,6 +21,9 @@ struct ConfigValues {
   std::optional<std::string> update_channel;
   std::optional<std::string> update_min_supported_version;
   std::optional<int> update_rollout_percent;
+  std::optional<std::string> update_public_key_file;
+  std::optional<std::string> update_verifier_python;
+  std::optional<std::string> update_verifier_script;
 };
 
 // 读取 config.toml。只支持本程序需要的 TOML 子集：

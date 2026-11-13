@@ -325,6 +325,38 @@ bool parse_manifest(const nlohmann::json& body, UpdateManifest& out, ManifestErr
   parsed.api_max = static_cast<int>(api_max);
   parsed.rollout_percent = static_cast<int>(rollout);
 
+  if (const auto it = body.find("upgrade_path"); it != body.end() && !it->is_null()) {
+    if (!it->is_array()) {
+      set_error(error, "MANIFEST_UPGRADE_PATH_INVALID", "upgrade_path 必须是数组");
+      return false;
+    }
+    for (const auto& item : *it) {
+      if (!item.is_object()) {
+        set_error(error, "MANIFEST_UPGRADE_PATH_INVALID", "upgrade_path 元素必须是对象");
+        return false;
+      }
+      UpgradeStep step;
+      std::int64_t step_schema = 0;
+      std::int64_t step_build = 0;
+      if (!read_int(item, "schema", step_schema, true, error) ||
+          !read_string(item, "version", step.version, true, error) ||
+          !read_int(item, "build", step_build, true, error)) {
+        return false;
+      }
+      ProductVersion step_version;
+      if (step_schema <= 0 || step_build <= 0 ||
+          !parse_product_version(step.version, step_version)) {
+        set_error(error, "MANIFEST_UPGRADE_PATH_INVALID", "upgrade_path 字段值非法");
+        return false;
+      }
+      step.schema = static_cast<int>(step_schema);
+      step.build = step_build;
+      parsed.upgrade_path.push_back(std::move(step));
+    }
+    std::sort(parsed.upgrade_path.begin(), parsed.upgrade_path.end(),
+              [](const UpgradeStep& a, const UpgradeStep& b) { return a.schema < b.schema; });
+  }
+
   if (parsed.key_id.empty()) {
     set_error(error, "MANIFEST_KEY_ID_EMPTY", "key_id 不能为空");
     return false;
@@ -433,7 +465,25 @@ UpdateDecision evaluate_manifest(const UpdateManifest& manifest, const UpdateQue
       return decision;
     }
   }
-  if (query.schema_version < manifest.schema_min || query.schema_version > manifest.schema_max) {
+  if (query.schema_version < manifest.schema_min) {
+    // 旧库无法直接迁移到最新版：按 upgrade_path 给出应先升级到的中间版本。
+    const UpgradeStep* chosen = nullptr;
+    for (const auto& step : manifest.upgrade_path) {
+      if (step.schema > query.schema_version &&
+          (chosen == nullptr || step.schema < chosen->schema)) {
+        chosen = &step;
+      }
+    }
+    if (chosen != nullptr) {
+      decision.code = "INTERMEDIATE_REQUIRED";
+      decision.intermediate_required = true;
+      decision.intermediate = *chosen;
+      return decision;
+    }
+    decision.code = "INCOMPATIBLE_SCHEMA";
+    return decision;
+  }
+  if (query.schema_version > manifest.schema_max) {
     decision.code = "INCOMPATIBLE_SCHEMA";
     return decision;
   }

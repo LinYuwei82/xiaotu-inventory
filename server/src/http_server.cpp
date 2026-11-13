@@ -333,6 +333,9 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     settings.channel = info_.update_channel;
     settings.min_supported_version = info_.update_min_supported_version;
     settings.rollout_percent = info_.update_rollout_percent;
+    settings.public_key_file = info_.update_public_key_file;
+    settings.verifier_python = info_.update_verifier_python;
+    settings.verifier_script = info_.update_verifier_script;
     const UpdateCheckResult result =
         check_for_update(settings, query, static_cast<std::int64_t>(std::time(nullptr)));
     if (!result.manifest_ok) {
@@ -361,6 +364,13 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     body["check_after_seconds"] = 86400;
     body["server_version"] = info_.version;
     body["api_version"] = current_api_version();
+    if (result.decision.intermediate_required) {
+      body["intermediate"] = {{"version", result.decision.intermediate.version},
+                              {"build", result.decision.intermediate.build},
+                              {"schema", result.decision.intermediate.schema}};
+    } else {
+      body["intermediate"] = nullptr;
+    }
     if (result.decision.update_available) {
       body["latest"] = {{"version", result.manifest.version},
                         {"build", result.manifest.build},

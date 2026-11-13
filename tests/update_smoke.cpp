@@ -132,6 +132,29 @@ int main() {
   check(xiaotu::evaluate_manifest(manifest, wrong_platform, 0).code == "PLATFORM_MISMATCH",
         "平台不匹配");
 
+  auto old_schema = query();
+  old_schema.schema_version = 20;
+  auto path_body = base_manifest();
+  path_body["upgrade_path"] = nlohmann::json::array(
+      {{{"schema", 28}, {"version", "1.3.8"}, {"build", 2026100101}},
+       {{"schema", 25}, {"version", "1.3.5"}, {"build", 2026040101}}});
+  xiaotu::UpdateManifest with_path;
+  check(xiaotu::parse_manifest(path_body, with_path, error), "含升级路径的清单应通过");
+  check(with_path.upgrade_path.size() == 2 && with_path.upgrade_path[0].schema == 25,
+        "升级路径按 schema 排序");
+  auto intermediate = xiaotu::evaluate_manifest(with_path, old_schema, 0);
+  check(intermediate.code == "INTERMEDIATE_REQUIRED" && intermediate.intermediate_required,
+        "旧 schema 应要求先装中间版本");
+  check(intermediate.intermediate.version == "1.3.5" && intermediate.intermediate.schema == 25,
+        "中间版本取最接近的更大 schema");
+
+  auto bad_path = base_manifest();
+  bad_path["upgrade_path"] = nlohmann::json::array({{{"schema", 0}, {"version", "1.3.5"},
+                                                     {"build", 1}}});
+  check(!xiaotu::parse_manifest(bad_path, with_path, error) &&
+            error.code == "MANIFEST_UPGRADE_PATH_INVALID",
+        "非法升级路径应拒绝");
+
   auto wrong_schema = query();
   wrong_schema.schema_version = 27;
   check(xiaotu::evaluate_manifest(manifest, wrong_schema, 0).code == "INCOMPATIBLE_SCHEMA",

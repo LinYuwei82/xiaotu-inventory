@@ -30,6 +30,8 @@
     <true/>
   </dict>
   <!-- 更新：以下三项需在发布前替换为真实地址与公钥；接入 Sparkle 后生效。 -->
+  <!-- 注意：SUEnableAutomaticChecks=true 会与自研 24h 检查并存，形成双份检查/提示；
+       当前保留该取值，建议发布前二选一（见 docs/更新模块技术方案.md 第 9 节）。 -->
   <key>XiaotuUpdateManifestURL</key>
   <string></string>
   <key>XiaotuUpdateChannel</key>

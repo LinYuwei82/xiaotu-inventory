@@ -112,6 +112,9 @@ bool json_bool(NSDictionary* body, NSString* key) {
     [self scheduleNextCheckIfNeeded];
     [self checkIfDue];
   });
+  // 注意：Info.plist 中 SUEnableAutomaticChecks=true 时 Sparkle 也会按
+  // SUScheduledCheckInterval 自行检查，与本类形成双份检查/提示；当前未改行为，
+  // 建议发布前只保留一侧（见 docs/更新模块技术方案.md 第 9 节）。
 }
 
 - (void)noteLaunch {
