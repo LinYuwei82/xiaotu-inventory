@@ -33,3 +33,14 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/windows --output-on-failure
+
+      # 壳是独立工程；这里只验证能编译，不打包、不签名。
+      - name: Fetch WebView2 SDK
+        shell: pwsh
+        run: ./shell/win/fetch-webview2.ps1
+
+      - name: Configure Windows shell
+        run: cmake -S shell/win -B shell/win/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Windows shell
+        run: cmake --build shell/win/build

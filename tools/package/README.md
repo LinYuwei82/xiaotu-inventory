@@ -25,8 +25,10 @@ dmg 内包含：
 截至本仓库当前状态：
 
 - **本机没有可用的 Developer ID 证书**（`security find-identity -v -p codesigning` 返回 0 个有效身份），
-  因此脚本默认使用 **ad-hoc 签名**（`codesign --force --deep --sign -`）。
-- 仓库没有公证（notarization）流程，也没有内置公证凭据。
+  因此脚本默认使用 **ad-hoc 签名**（`codesign --force --deep --sign -`），并在结束时打印
+  「未签名（ad-hoc），distributable 需 Developer ID 签名并公证」。
+- 公证需要有效的 Developer ID 证书、Apple Developer 账号与 notarytool 凭据。脚本支持
+  `XIAOTU_NOTARY_PROFILE`，未提供时会打印「跳过公证」，不会把未公证的包当作可分发产物。
 
 后果：dmg 通过网络下载或拷贝后会被打上 `com.apple.quarantine` 隔离属性，Gatekeeper 会拦截首次打开，
 提示「无法打开，因为 Apple 无法检查其是否包含恶意软件」。
@@ -44,14 +46,16 @@ dmg 内包含：
 
    或先挂载 dmg，直接对 dmg 内的应用执行同样的命令。
 
-如果以后拿到 Developer ID Application 证书，可这样构建带签名的包：
+拿到 Developer ID Application 证书后，可这样构建带签名与公证的包：
 
 ```bash
-XIAOTU_SIGN_IDENTITY="Developer ID Application: 你的名字 (TEAMID)" tools/package/make_dmg.sh
+XIAOTU_SIGN_IDENTITY="Developer ID Application: 你的名字 (TEAMID)" \
+XIAOTU_NOTARY_PROFILE="xiaotu-notary" \
+tools/package/make_dmg.sh
 ```
 
-签名仍需配合 `notarytool` 提交公证并在用户侧 staple，才能做到下载后直接双击打开；
-公证需要 Apple Developer 账号，超出当前仓库范围。
+`XIAOTU_NOTARY_PROFILE` 是 `xcrun notarytool store-credentials` 创建的 keychain profile。
+未提供时脚本会明确打印「跳过公证」；只有提交成功并 `stapler staple` 后，dmg 才算可分发产物。
 
 ## 数据目录
 

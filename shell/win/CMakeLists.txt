@@ -9,7 +9,11 @@
 #
 # 产物：shell\win\build\xiaotu-shell.exe（需与 xiaotu-server.exe 同目录运行）
 cmake_minimum_required(VERSION 3.25)
-project(xiaotu_shell_win LANGUAGES CXX)
+
+# 产品版本沿用仓库根 VERSION 文件，避免 Windows 壳另写一份。
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../VERSION" XIAOTU_VERSION_STRING)
+string(STRIP "${XIAOTU_VERSION_STRING}" XIAOTU_VERSION_STRING)
+project(xiaotu_shell_win VERSION ${XIAOTU_VERSION_STRING} LANGUAGES CXX)
 
 if (NOT WIN32)
   message(FATAL_ERROR "shell/win 只能在 Windows 上构建")
@@ -32,6 +36,13 @@ if (NOT EXISTS "${_wv2_header}" OR NOT EXISTS "${_wv2_lib}")
 endif()
 
 add_executable(xiaotu-shell WIN32 main.cpp)
+
+# 版本资源：产品版本来自根 VERSION，随 exe 的「属性 → 详细信息」展示。
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/version.rc.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/version.rc"
+  @ONLY)
+target_sources(xiaotu-shell PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/version.rc")
 
 target_include_directories(xiaotu-shell PRIVATE "${XIAOTU_WEBVIEW2_DIR}/include")
 target_link_directories(xiaotu-shell PRIVATE "${XIAOTU_WEBVIEW2_DIR}/build/native/x64")

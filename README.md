@@ -9,7 +9,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 - 不带参数启动 = **单机版**：内嵌服务只监听 `127.0.0.1` 的随机端口，生成一次性 token，用系统 WKWebView 打开本地页面。
 - `--server` 启动 = **网络版**：监听 `0.0.0.0`，用浏览器访问；使用用户名与口令登录（首次需先给内置管理员设置口令）。
 
-当前版本 0.1.0。按 [docs/进销存技术方案.md](docs/进销存技术方案.md) 的里程碑口径：M1–M3 与 M5 已完成；M4 除针式套打真机验证外已完成（纸型、边距、缩放与打印列勾选已落地）；M6 的 macOS `.dmg` 打包脚本与用户手册已完成，Windows 壳接入顶层构建与安装包、Developer ID 签名与公证仍未完成。
+当前版本 0.1.0（唯一来源：仓库根 `VERSION` 文件）。按 [docs/进销存技术方案.md](docs/进销存技术方案.md) 的里程碑口径：M1–M3 与 M5 已完成；M4 除针式套打真机验证外已完成（纸型、边距、缩放与打印列勾选已落地）；M6 的 macOS `.dmg` 打包脚本与用户手册已完成，Windows 壳接入顶层构建与安装包、Developer ID 签名与公证仍未完成。
 
 已打通：**商品（分类 / 条码 / 税率）/ 单位 / 仓库 / 职员 / 客户 / 供应商档案（支持 Excel 批量导入导出，客户供应商已合表到 partner 并支持合并与撤销）→ 库存、应收、应付、资金账户四类期初导入 → 采购入库、销售出库、采购退货、销售退货、其他入库、其他出库、调拨、盘点、成本调整（草稿与反审核）→ 销售订单确认与转出库（可记录业务员）→ 库存余额与流水 → 应收应付台账与核销（按 partner 维度归集）→ 收付款单与资金账户 → 往来对账单 → 八类报表导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志（含来源 IP 与请求号）、单据幂等与乐观锁、登录失败锁定与强制改密、成本口径参数（含税价 / 不含税净额，可切换并标注切换日）、前端离线提示与表单草稿、打印纸型 / 边距 / 缩放与 Cmd+P、报表导出流式化（不再有 10 万行上限）与 macOS `.dmg` 打包。桌面壳提供撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选编辑菜单；单据录入时商品下拉显示编码、名称与规格，数量框旁显示单位；桌面版支持直接「导出 PDF」。成本重算保持只读核对，差异通过成本调整单落账。
 
@@ -73,7 +73,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 brew install cmake ninja ccache
 ```
 
-Windows 只构建服务端与测试时另需 CMake 3.25+、Ninja、Visual Studio 2022 Build Tools（MSVC，C++20）；
+Windows 只构建服务端与测试时另需 CMake 3.25+、Ninja、Visual Studio 2022 Build Tools（MSVC，C++20）；若要构建 `shell/win` 桌面壳，还需要 WebView2 SDK 与目标机器上的 WebView2 Runtime（见下方「Windows 桌面壳」）。
 不需要 Xcode、ccache 或 vcpkg，`cpp-httplib`、`nlohmann/json`、SQLite、Argon2 均已内嵌在 `third_party/`。
 
 ## 2. 构建
@@ -159,6 +159,24 @@ ctest --preset windows-release
 $env:XIAOTU_PASSWORD = '你的口令'
 .\build\windows\server\xiaotu-server.exe --data D:\xt-data --set-password admin
 ```
+
+#### Windows 桌面壳（可选）
+
+`shell/win` 是独立的 Win32 + WebView2 工程，不接入顶层 CMake；CI 只验证能编译，不打包、不签名。
+
+前置条件：
+
+- Windows 10/11 x64，Visual Studio 2022 Build Tools（含 C++ 工具集），CMake 3.25+、Ninja。
+- **WebView2 SDK**：`shell\win\fetch-webview2.ps1` 会从 NuGet 下载 `Microsoft.Web.WebView2`（默认 1.0.4314.35），解压到 `shell\win\.cache\webview2`；也可手动把 nupkg 放到该目录后重跑脚本。
+- **WebView2 Runtime**：开发机与目标机器都需要。Win11 自带；Win10 可从 <https://go.microsoft.com/fwlink/p/?LinkId=2124703> 安装，或随安装包引导安装。
+
+```powershell
+.\shell\win\fetch-webview2.ps1
+cmake -S shell\win -B shell\win\build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build shell\win\build
+```
+
+产物为 `shell\win\build\xiaotu-shell.exe`，需与 `xiaotu-server.exe` 同目录运行。细节见 `shell/win/README.md`。
 
 前端开发态用 `windows-dev`：
 
@@ -632,7 +650,7 @@ struct DocumentDefinition {
 tools/package/make_dmg.sh
 ```
 
-产物：`build/package/xiaotu-inventory-0.1.0.dmg`（版本取自 `CMakeLists.txt`），内含 `小兔进销存.app`
+产物：`build/package/xiaotu-inventory-0.1.0.dmg`（版本取自仓库根 `VERSION` 文件），内含 `小兔进销存.app`
 与指向 `/Applications` 的「应用程序」软链。脚本、签名参数与校验方式见
 [tools/package/README.md](tools/package/README.md)。
 

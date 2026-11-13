@@ -10,12 +10,14 @@
 #
 # 签名：
 #   - 默认 ad-hoc 签名（codesign -s -），不满足 Gatekeeper 与公证要求；
-#   - 设置 XIAOTU_SIGN_IDENTITY 后改用 Developer ID Application 证书签名。
-#   本仓库不包含公证流程；未签名/未公证的包首次打开会被 Gatekeeper 拦截，
-#   处理方式见 tools/package/README.md。
+#   - 设置 XIAOTU_SIGN_IDENTITY 后改用 Developer ID Application 证书签名；
+#   - 设置 XIAOTU_NOTARY_PROFILE 后调用 notarytool 提交 dmg 并 staple；
+#     未提供时明确打印「跳过公证」，不会静默当作已公证。
+#   未签名/未公证的包首次打开会被 Gatekeeper 拦截，处理方式见 tools/package/README.md。
 #
 # 环境变量：
 #   XIAOTU_SIGN_IDENTITY  签名证书名称（默认空，使用 ad-hoc）
+#   XIAOTU_NOTARY_PROFILE notarytool keychain profile（默认空，跳过公证）
 #   XIAOTU_DIST_DIR       产物目录（默认 <repo>/build/package）
 
 set -euo pipefail
@@ -38,6 +40,7 @@ usage() {
 
 环境变量：
   XIAOTU_SIGN_IDENTITY  签名证书名称；为空则 ad-hoc 签名
+  XIAOTU_NOTARY_PROFILE notarytool keychain profile；为空则跳过公证并打印日志
   XIAOTU_DIST_DIR       产物目录（默认 <repo>/build/package）
 
 依赖：macOS、CMake 3.25+、Ninja、ccache、Xcode Command Line Tools、hdiutil。
@@ -55,10 +58,9 @@ if ! command -v hdiutil >/dev/null 2>&1; then
   exit 1
 fi
 
-VERSION="$(sed -nE 's/^project\(xiaotu_inventory VERSION ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' \
-  "$REPO_ROOT/CMakeLists.txt" | head -1)"
+VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION" 2>/dev/null)"
 if [ -z "$VERSION" ]; then
-  echo "无法从 CMakeLists.txt 解析版本号。" >&2
+  echo "无法从仓库根 VERSION 文件读取版本号。" >&2
   exit 1
 fi
 
@@ -106,6 +108,21 @@ rm -f "$DMG"
 hdiutil create -volname "$VOLUME_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 hdiutil verify "$DMG"
 
+echo "===== 公证"
+NOTARIZED=0
+if [ -n "${XIAOTU_NOTARY_PROFILE:-}" ]; then
+  echo "使用 notarytool 凭据：$XIAOTU_NOTARY_PROFILE"
+  xcrun notarytool submit "$DMG" --keychain-profile "$XIAOTU_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$DMG"
+  NOTARIZED=1
+else
+  echo "跳过：未提供 XIAOTU_NOTARY_PROFILE（notarytool 凭据），dmg 未公证"
+fi
+
+if [ -z "${XIAOTU_SIGN_IDENTITY:-}" ]; then
+  echo "警告：当前产物为未签名（ad-hoc），distributable 需 Developer ID 签名并公证。" >&2
+fi
+
 SIZE_BYTES="$(stat -f %z "$DMG")"
 SHA256="$(shasum -a 256 "$DMG" | awk '{print $1}')"
 
@@ -114,3 +131,5 @@ echo "===== 完成"
 echo "产物：$DMG"
 echo "字节数：$SIZE_BYTES"
 echo "SHA256：$SHA256"
+echo "签名：$([ -n "${XIAOTU_SIGN_IDENTITY:-}" ] && echo "$XIAOTU_SIGN_IDENTITY" || echo "ad-hoc（不可直接分发）")"
+echo "公证：$([ "$NOTARIZED" -eq 1 ] && echo "已公证" || echo "未公证")"
