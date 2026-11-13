@@ -186,6 +186,9 @@ else
   if ! "$JSC_BIN" -e "try { new Function(readFile('$ROOT/web/app.js')); print('    web/app.js 语法通过'); } catch (e) { print('web/app.js 语法错误: ' + e); quit(1); }"; then
     exit 1
   fi
+  if ! "$JSC_BIN" "$ROOT/tools/ci/qty_text_check.js"; then
+    exit 1
+  fi
 fi
 
 echo "==> 检查平台专有代码是否泄漏到 core/server"
