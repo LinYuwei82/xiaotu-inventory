@@ -17,7 +17,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 ## 0. 数据库结构版本
 
-当前 schema 为 **v37**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
+当前 schema 为 **v38**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -778,5 +778,7 @@ Linux 上该脚本等价于 CI：使用 `linux-ci` preset（`XIAOTU_BUILD_SHELL=
 
 - 用户手册（面向使用者）：`docs/用户手册.md`
 - 技术方案：`docs/进销存技术方案.md`
-- 数据库结构：`core/src/migrations.cpp`（v37）
+- 数据库结构：`core/src/migrations.cpp`（v38）
 - API：`/api/health`、`/api/session`、`/api/items`、`/api/items/import`、`/api/items/export`、`/api/items/template`、`/api/warehouses`、`/api/suppliers`、`/api/suppliers/import`、`/api/suppliers/export`、`/api/suppliers/template`、`/api/customers`、`/api/customers/import`、`/api/customers/export`、`/api/customers/template`、`/api/units`、`/api/users`、`/api/audit-logs`、`/api/ar-ap`、`/api/settlements`、`/api/settlements/{id}/reverse`、`/api/reports/stock-balance`、`/api/reports/stock-ledger`、`/api/reports/goods-flow`、`/api/reports/inventory-summary`、`/api/reports/sales-profit`、`/api/reports/ar-ap-aging`、`/api/reports/fund-ledger`、`/api/reports/fund-balances`、`/api/reports/statement`（报表接口加 `?format=csv` 或 `?format=xlsx` 导出）、`/api/documents`、`/api/documents/{id}`、`/api/documents/{id}/approve`、`/api/documents/{id}/reverse`、`/api/documents/{id}/convert`、`/api/documents/{id}/close`、`/api/cost-adjustments/drafts`、`/api/fund-accounts`、`/api/print-templates`、`/api/print-templates/{id}/default`、`/api/print/targets`、`/api/print/render`、`/api/stock/balances`、`/api/stock/ledger`、`/api/stock/cost-recalc`
+
+`GET /api/documents` 的两种返回形态：不带 `keyword`、`date_from`、`date_to`、`status`、`amount_min`、`amount_max`、`page`、`page_size` 中任一参数时，仍返回原来的 JSON 数组（兼容旧调用）；带任一参数时返回 `{rows, total_count, total_amount_cents, page, page_size}`。关键字覆盖单号 / 往来单位 / 业务员 / 备注四项，日期与金额均为闭区间，`status` 取 `draft` / `approved` / `reversed`，`page_size` 上限 100（默认 20），合计与列表使用同一套 WHERE、不受分页影响。
