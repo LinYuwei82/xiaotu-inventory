@@ -74,6 +74,12 @@ target_link_libraries(xiaotu_update_service_smoke PRIVATE xiaotu_server Threads:
 
 add_test(NAME update_service_smoke COMMAND xiaotu_update_service_smoke)
 
+add_executable(xiaotu_update_download_smoke
+               "${CMAKE_CURRENT_SOURCE_DIR}/update_download_smoke.cpp")
+target_link_libraries(xiaotu_update_download_smoke PRIVATE xiaotu_server Threads::Threads)
+
+add_test(NAME update_download_smoke COMMAND xiaotu_update_download_smoke)
+
 if(UNIX)
   # 社区版不支持网络版部署（deployment.network），依赖 --server 的用例不适用。
   if(NOT XIAOTU_EDITION STREQUAL "community")

@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -11,6 +13,8 @@
 #include "xiaotu/services.h"
 #include "xiaotu/session_store.h"
 #include "xiaotu/system_shutdown.h"
+#include "xiaotu/update.h"
+#include "xiaotu/update_service.h"
 
 namespace httplib {
 class Server;
@@ -66,6 +70,10 @@ class HttpServer {
  private:
   void register_routes();
   bool consume_bootstrap_token(const std::string& token);
+  // 用服务端自身的版本与 schema 组装更新查询，前端不参与版本判定。
+  UpdateQuery self_update_query() const;
+  UpdateSettings update_settings() const;
+  std::filesystem::path update_download_dir() const;
 
   Services& services_;
   ServerInfo info_;
@@ -81,6 +89,15 @@ class HttpServer {
   ShutdownToken shutdown_token_;
   std::atomic<bool> shutdown_started_{false};
   std::thread shutdown_thread_;
+  // 更新下载任务：大安装包会超过 15 秒写超时，改为后台执行 + 轮询状态。
+  std::mutex update_job_mutex_;
+  std::thread update_job_thread_;
+  std::string update_job_state_ = "idle";  // idle / running / done / failed
+  std::string update_job_code_;
+  std::string update_job_message_;
+  std::string update_job_file_;
+  std::uintmax_t update_job_bytes_ = 0;
+  std::string update_job_at_;
   std::unique_ptr<httplib::Server> server_;
   std::thread thread_;
   std::atomic<bool> serving_{false};

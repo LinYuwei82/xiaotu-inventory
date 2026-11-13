@@ -86,6 +86,9 @@ struct UpdateQuery {
   int schema_version = 0;
   int api_version = 0;
   std::string os_version;  // 可空；用于 min_os 判断
+  // 服务端自查更新时忽略 min_os：该字段描述桌面客户端的最低系统版本，
+  // 与服务端所在机器无关，不能因为拿不到系统版本就判成 OS_UNSUPPORTED。
+  bool ignore_min_os = false;
   std::string install_id;  // 随机 UUID，仅用于灰度分桶
   std::string skipped_version;
   std::int64_t skip_until_epoch = 0;  // 跳过期截止（UTC 秒）

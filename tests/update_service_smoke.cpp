@@ -149,15 +149,30 @@ int main() {
 
   // 验签工具本身失败（非零退出）必须判为验签失败，而不是当成通过：
   // 这一条覆盖的是「子进程启动/退出码回传」链路，与上面的签名内容无关。
+  // 同时要求把工具的 stderr 带进错误信息，避免只剩一个退出码。
 #if defined(_WIN32)
   const auto fail_stub_path = dir / "fail-verifier.bat";
-  std::ofstream(fail_stub_path) << "@echo off\r\nexit /b 1\r\n";
+  std::ofstream(fail_stub_path) << "@echo off\r\necho 清单签名无效：测试桩 >&2\r\nexit /b 1\r\n";
   settings.verifier_python = fail_stub_path.string();
 #else
-  settings.verifier_python = "/usr/bin/false";
+  const auto fail_stub_path = dir / "fail-verifier.sh";
+  {
+    std::ofstream out(fail_stub_path);
+    out << "#!/bin/sh\n"
+        << "echo '清单签名无效：测试桩' >&2\n"
+        << "exit 1\n";
+  }
+  std::filesystem::permissions(fail_stub_path,
+                               std::filesystem::perms::owner_exec |
+                                   std::filesystem::perms::group_exec |
+                                   std::filesystem::perms::others_exec,
+                               std::filesystem::perm_options::add);
+  settings.verifier_python = fail_stub_path.string();
 #endif
   result = xiaotu::check_for_update(settings, query(), 0);
   check(result.error_code == "UPDATE_SIGNATURE_INVALID", "验签工具返回非零时判为验签失败");
+  check(result.error_message.find("清单签名无效") != std::string::npos,
+        "验签失败信息应包含工具的 stderr 输出");
 
   std::filesystem::remove_all(dir);
   if (failures == 0) {

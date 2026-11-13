@@ -17,6 +17,7 @@
 #include "xiaotu/edition.h"
 #include "xiaotu/gen/edition_caps.h"
 #include "xiaotu/error.h"
+#include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
 #include "xiaotu/ids.h"
 #include "xiaotu/log.h"
@@ -25,6 +26,8 @@
 #include "xiaotu/permissions.h"
 #include "xiaotu/resources.h"
 #include "xiaotu/routes.h"
+#include "xiaotu/update.h"
+#include "xiaotu/update_install.h"
 #include "xiaotu/update_service.h"
 
 namespace xiaotu {
@@ -409,6 +412,8 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         res.body = nlohmann::json{{"ok", true},
                                   {"update_available", false},
                                   {"code", "UPDATE_NOT_CONFIGURED"},
+                                  {"configured", false},
+                                  {"message", result.error_message},
                                   {"latest", nullptr}}
                        .dump();
         res.status = 200;
@@ -452,6 +457,174 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     }
     json_ok(res, body);
   });
+
+  // 更新状态：设置页用。版本、schema 与平台全部由服务端自身给出，
+  // 前端只展示「当前版本 / 最新版本 / 发布日期 / 是否已是最新 / 失败原因」。
+  server_->Get("/api/update/status",
+               guard("setting.read", [this](const httplib::Request&, httplib::Response& res) {
+                 const UpdateQuery query = self_update_query();
+                 const UpdateCheckResult result = check_for_update(
+                     update_settings(), query, static_cast<std::int64_t>(std::time(nullptr)));
+                 nlohmann::json body;
+                 body["ok"] = true;
+                 body["configured"] = result.configured;
+                 body["current"] = {{"version", info_.version},
+                                    {"build", current_build_number()},
+                                    {"schema_version", services_.db.schema_version()},
+                                    {"platform", query.platform}};
+                 body["update_available"] = result.manifest_ok && result.decision.update_available;
+                 if (result.manifest_ok) {
+                   body["up_to_date"] = result.decision.code == "NO_UPDATE";
+                   body["code"] = result.decision.code;
+                   body["error"] = nullptr;
+                 } else {
+                   body["up_to_date"] = nullptr;
+                   body["code"] = result.error_code;
+                   body["error"] = {{"code", result.error_code},
+                                     {"message", result.error_message}};
+                 }
+                 if (result.manifest_ok && result.decision.update_available) {
+                   body["latest"] = {{"version", result.manifest.version},
+                                     {"build", result.manifest.build},
+                                     {"published_at", result.manifest.published_at},
+                                     {"release_notes_url", result.manifest.release_notes_url},
+                                     {"size", result.manifest.size},
+                                     {"sha256", result.manifest.sha256},
+                                     {"mandatory", result.manifest.mandatory}};
+                 } else {
+                   body["latest"] = nullptr;
+                 }
+                 {
+                   std::lock_guard<std::mutex> lock(update_job_mutex_);
+                   body["download"] = {
+                       {"state", update_job_state_},
+                       {"file", update_job_file_.empty() ? nlohmann::json(nullptr)
+                                                         : nlohmann::json(update_job_file_)},
+                       {"bytes", update_job_bytes_},
+                       {"code", update_job_code_.empty() ? nlohmann::json(nullptr)
+                                                         : nlohmann::json(update_job_code_)},
+                       {"message", update_job_message_.empty()
+                                       ? nlohmann::json(nullptr)
+                                       : nlohmann::json(update_job_message_)},
+                       {"at", update_job_at_.empty() ? nlohmann::json(nullptr)
+                                                     : nlohmann::json(update_job_at_)}};
+                 }
+                 json_ok(res, body);
+               }));
+
+  // 下载安装包：后台执行（大包会超过 15 秒写超时），下载完成后校验 sha256 与签名。
+  // 校验失败不保留文件，原因写入日志与任务状态，前端轮询 /api/update/status 展示。
+  server_->Post("/api/update/download",
+                guard("setting.write", [this](const httplib::Request&, httplib::Response& res) {
+                  if (current_context().role != "admin") {
+                    json_error(res, 403, "FORBIDDEN", "仅管理员可下载更新");
+                    return;
+                  }
+                  const UpdateSettings settings = update_settings();
+                  const UpdateCheckResult result = check_for_update(
+                      settings, self_update_query(), static_cast<std::int64_t>(std::time(nullptr)));
+                  if (!result.configured) {
+                    json_error(res, 400, "UPDATE_NOT_CONFIGURED", result.error_message);
+                    return;
+                  }
+                  if (!result.manifest_ok) {
+                    json_error(res, 503, result.error_code, result.error_message);
+                    return;
+                  }
+                  if (!result.decision.update_available) {
+                    json_error(res, 409, "NO_UPDATE_AVAILABLE", "当前已是最新版本，无需下载");
+                    return;
+                  }
+                  std::thread previous;
+                  {
+                    std::lock_guard<std::mutex> lock(update_job_mutex_);
+                    if (update_job_state_ == "running") {
+                      json_error(res, 409, "UPDATE_BUSY", "已有更新包正在下载");
+                      return;
+                    }
+                    previous = std::move(update_job_thread_);
+                    update_job_state_ = "running";
+                    update_job_code_.clear();
+                    update_job_message_.clear();
+                    update_job_file_.clear();
+                    update_job_bytes_ = 0;
+                    update_job_at_ = now_text();
+                  }
+                  // 先解锁再 join，避免上一轮线程收尾时还在等锁。
+                  if (previous.joinable()) {
+                    previous.join();
+                  }
+                  const std::string manifest_file = settings.manifest_file;
+                  const UpdateManifest manifest = result.manifest;
+                  const std::filesystem::path directory = update_download_dir();
+                  update_job_thread_ = std::thread([this, settings, manifest_file, manifest,
+                                                    directory]() {
+                    const UpdatePackageResult downloaded =
+                        download_update_package(settings, manifest_file, manifest, directory);
+                    std::lock_guard<std::mutex> lock(update_job_mutex_);
+                    update_job_state_ = downloaded.ok ? "done" : "failed";
+                    update_job_code_ = downloaded.error_code;
+                    update_job_message_ =
+                        downloaded.ok ? "下载并校验通过" : downloaded.error_message;
+                    update_job_file_ =
+                        downloaded.ok ? downloaded.path.filename().string() : std::string();
+                    update_job_bytes_ = downloaded.bytes;
+                    update_job_at_ = now_text();
+                  });
+                  json_ok(res, nlohmann::json{{"ok", true},
+                                              {"state", "running"},
+                                              {"version", manifest.version},
+                                              {"build", manifest.build}});
+                }));
+
+  // 安装更新：必须显式 confirm，服务端再次校验安装包哈希与签名后才打开安装包。
+  // 不自动退出进程：替换正在运行的二进制与占用中的数据库不安全，由用户确认后自行退出。
+  server_->Post("/api/update/install",
+                guard("setting.write", [this](const httplib::Request& req,
+                                              httplib::Response& res) {
+                  if (current_context().role != "admin") {
+                    json_error(res, 403, "FORBIDDEN", "仅管理员可安装更新");
+                    return;
+                  }
+                  const nlohmann::json body = json_body(req);
+                  if (!body.value("confirm", false)) {
+                    json_error(res, 400, "UPDATE_CONFIRM_REQUIRED", "安装更新需要二次确认");
+                    return;
+                  }
+                  const UpdateSettings settings = update_settings();
+                  const UpdateCheckResult result = check_for_update(
+                      settings, self_update_query(), static_cast<std::int64_t>(std::time(nullptr)));
+                  if (!result.manifest_ok) {
+                    json_error(res, result.configured ? 503 : 400, result.error_code,
+                               result.error_message);
+                    return;
+                  }
+                  if (!result.decision.update_available) {
+                    json_error(res, 409, "NO_UPDATE_AVAILABLE", "当前已是最新版本");
+                    return;
+                  }
+                  const std::filesystem::path package =
+                      update_package_path(update_download_dir(), result.manifest);
+                  const UpdatePackageResult launched =
+                      launch_update_package(settings, settings.manifest_file, package);
+                  if (!launched.ok) {
+                    json_error(res, launched.error_code == "UPDATE_PACKAGE_MISSING" ? 409 : 500,
+                               launched.error_code, launched.error_message);
+                    return;
+                  }
+                  try {
+                    services_.db.write([&](sqlite3* conn) {
+                      audit_write(conn, "update_install", "system", 0, result.manifest.version,
+                                  "安装包: " + package.filename().string());
+                    });
+                  } catch (const std::exception& error) {
+                    log_warn(std::string("更新安装审计写入失败: ") + error.what());
+                  }
+                  json_ok(res, nlohmann::json{{"ok", true},
+                                              {"mode", launched.mode},
+                                              {"file", package.filename().string()},
+                                              {"message", launched.error_message}});
+                }));
 
   // 关于与诊断：只读，任何已登录角色都能看；不返回口令、密钥、会话令牌。
   server_->Get("/api/diagnostics", [this](const httplib::Request&, httplib::Response& res) {
@@ -738,6 +911,10 @@ void HttpServer::stop() {
   if (shutdown_thread_.joinable()) {
     shutdown_thread_.join();
   }
+  // 下载线程可能仍在跑 curl；停止监听后等它收尾，避免析构时访问已释放的成员。
+  if (update_job_thread_.joinable()) {
+    update_job_thread_.join();
+  }
   // 关闭线程已经 stop 过监听套接字，这里不再重复调用，避免并发断言。
   if (!shutdown_started_.load() && server_) {
     server_->stop();
@@ -745,6 +922,43 @@ void HttpServer::stop() {
   if (thread_.joinable()) {
     thread_.join();
   }
+}
+
+UpdateQuery HttpServer::self_update_query() const {
+  UpdateQuery query;
+  query.version = info_.version;
+  query.build = current_build_number();
+  query.channel = info_.update_channel.empty() ? "stable" : info_.update_channel;
+#if defined(_WIN32)
+  query.platform = "windows";
+#elif defined(__APPLE__)
+  query.platform = "macos";
+#else
+  query.platform = "linux";
+#endif
+  query.schema_version = services_.db.schema_version();
+  query.api_version = current_api_version();
+  // min_os 描述桌面客户端的最低系统版本，与服务端所在机器无关。
+  query.ignore_min_os = true;
+  // 服务端灰度分桶需要稳定的 install_id：同数据目录视为同一安装。
+  query.install_id = "server:" + info_.data_dir;
+  return query;
+}
+
+UpdateSettings HttpServer::update_settings() const {
+  UpdateSettings settings;
+  settings.manifest_file = info_.update_manifest_file;
+  settings.channel = info_.update_channel;
+  settings.min_supported_version = info_.update_min_supported_version;
+  settings.rollout_percent = info_.update_rollout_percent;
+  settings.public_key_file = info_.update_public_key_file;
+  settings.verifier_python = info_.update_verifier_python;
+  settings.verifier_script = info_.update_verifier_script;
+  return settings;
+}
+
+std::filesystem::path HttpServer::update_download_dir() const {
+  return std::filesystem::path(info_.data_dir) / "updates";
 }
 
 void HttpServer::register_routes() { register_all_routes(*server_, services_); }

@@ -260,6 +260,8 @@ rollout_percent = 100
 | `verifier_python` | `python3` | 清单验签脚本的解释器 |
 | `verifier_script` | 空 | 清单验签脚本路径 |
 
+服务端更新链路（网络版）：`GET /api/update/check` 免登录做轻量握手；`GET /api/update/status`、`POST /api/update/download`、`POST /api/update/install` 需要登录，下载与安装仅管理员可用。下载目录固定为 `<数据目录>/updates/`，安装包先按清单 `size` 与 sha256 校验、再用同一验证工具验签，失败会删除文件并写日志；安装动作只打开安装包，需要在二次确认后由用户退出程序完成安装。
+
 完整说明、systemd 单元与运维步骤见 [docs/部署与配置.md](docs/部署与配置.md)，示例见 `deploy/config.toml.example`、`deploy/systemd/xiaotu.service`。
 
 浏览器访问 `http://<本机 IP>:8080/`，用 `admin` 和新口令登录。局域网其他机器访问时把 IP 换成本机地址；若前面有 TLS 反向代理，带上 `X-Forwarded-Proto: https`，会话 Cookie 会自动加 `Secure`。
@@ -665,7 +667,7 @@ struct DocumentDefinition {
 - 成本按移动加权平均，暂不支持其他计价方式；成本重算保持**只读核对**（`/api/stock/cost-recalc` 与库存页「成本重算核对」），不静默写回。金额差异可一键生成成本调整单草稿（`POST /api/cost-adjustments/drafts`）后人工审核，数量差异引导去做盘点；调整单反审核若会使结存金额为负则拒绝，需先处理后续出库或调整。
 - 桌面版已支持直接「导出 PDF」（原生保存面板，不弹系统打印面板）。打印与 PDF 均按模板纸型（A4 / A5 / 自定义针式 241×140、241×93）与页边距设置 `NSPrintInfo`，PDF 的 MediaBox 与实际纸张一致；针式套打位置仍待真机验证。页码依赖打印引擎：WKWebView 实测不渲染 `@page` margin box、不支持 `counter(page)`，`position: fixed` 页脚只在末页出现且解析为 0；`show_page_no` 仅作提示性字段，不做前端分页与 PDF 后处理，网络版可在浏览器打印对话框勾选页眉和页脚。
 - Windows：顶层 CMake 不构建 GUI 壳（`XIAOTU_BUILD_SHELL=OFF`），界面通过浏览器访问；`shell/win` 另有独立的 Win32 + WebView2 壳工程，尚未接入顶层构建与安装包。
-- 更新策略定为启动一次 + 每日一次、只开 stable、不做 beta 与灰度、不做强制升级与静默安装，Windows 首发手动下载安装包、不接 WinSparkle。当前已实现更新清单验签与服务端判定，两端自动安装与回滚尚未打通，升级只做启动提示。
+- 更新策略定为启动一次 + 每日一次、只开 stable、不做 beta 与灰度、不做强制升级与静默安装，Windows 首发手动下载安装包、不接 WinSparkle。服务端已实现清单验签、检查接口、下载后哈希与签名校验、以及二次确认后的「打开安装包」；macOS 桌面端的 Sparkle 自动安装与旧版本回滚仍未接入。
 - 导航使用 `#/<key>` 路由：**刷新保页**在单机版与网络版都有效；**前进 / 后退**只在 `--server` 的浏览器里有效，单机版 WKWebView 没有后退入口。单机版有意不开 `allowsBackForwardNavigationGestures`、也不加后退 / 前进菜单项：侧栏已经是完整导航路径，录入页的脏标记会拦住误跳，横扫手势还会和明细表的横向滚动冲突。未保存离开确认与提示 / 输入框都是页内自绘（`askDialog`），不依赖 `window.confirm` / `alert` / `prompt`（WKWebView 未实现对应面板）；单机版直接关闭窗口不会拦（WKWebView 不执行 `beforeunload`），网络版浏览器会提示，单机版请先保存再关窗。
 - 商品条码支持**一商品多码**（v25 起正式启用）：`item_barcode` 保存全部码，其中一个为主码；`item.barcode` 只作主码镜像并由应用层同步，避免两处真相。条码全局唯一，空码不占位；商品表单可增删码并切换主码，扫码按任意码精确命中商品。导入导出用 `|` 分隔多个码、第一个为主码。升级时 v25 会把已有 `item.barcode` 回填为主码行，不丢码。箱码换算、一码多商品、校验位计算未实现。
 - 含税价**第一步已落地**（v26）：单据行保存 `tax_rate_bp`（整数万分比，默认取商品税率、可逐行覆盖）、`price_includes_tax` 与算好的 `net_cents` / `tax_cents`。**逐行算税再汇总**，每行恒有「净额 + 税额 = 价税合计」，整数分四舍五入、不引入浮点；选逐行是因为每行展示的净额 / 税额能与合计逐分对上，汇总后再算税会出现「行税额之和 ≠ 合计税额」。退货红字沿用同一公式，数量与金额按红字取负后税额同步为负，冲回对称。单据页面、打印、CSV、XLSX 均输出「税额」与「价税合计」。含税行与不含税行的「金额」列含义不同（前者是价税合计、后者是不含税金额），因此该列头统一写作「金额（录入价）」，并且「价税合计」列常显，数值不做任何改动。库存成本口径由 v33 参数控制：默认按含税价（`amount_cents`），可切到不含税净额（`net_cents`），只影响切换后新审核的单据，报表标注切换日；历史单据的结存、流水与毛利不重算、不回填。

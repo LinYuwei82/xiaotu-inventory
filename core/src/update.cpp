@@ -509,7 +509,7 @@ UpdateDecision evaluate_manifest(const UpdateManifest& manifest, const UpdateQue
     decision.code = "CHANNEL_MISMATCH";
     return decision;
   }
-  if (!manifest.min_os.empty()) {
+  if (!manifest.min_os.empty() && !query.ignore_min_os) {
     if (compare_dotted_version(query.os_version, manifest.min_os) < 0) {
       decision.code = "OS_UNSUPPORTED";
       return decision;

@@ -6701,6 +6701,137 @@
     return (value / 1024 / 1024 / 1024).toFixed(2) + " GB";
   }
 
+  // 软件更新：状态、下载、安装都在服务端完成；前端只展示结果与发起动作。
+  // 不自动安装：下载后仍需管理员点「安装更新」并二次确认。
+  async function renderUpdateCard(mount) {
+    const card = mount.querySelector('[data-role="update"]');
+    if (!card) return;
+    const canManage = can("setting.write");
+    let polling = false;
+
+    function statusText(data) {
+      if (!data.configured) return "未配置更新源（[update] manifest_file 为空）";
+      if (data.error) return "检查失败：" + data.error.message;
+      if (data.update_available && data.latest) {
+        return `发现新版本 ${data.latest.version}（构建 ${data.latest.build}）`;
+      }
+      if (data.up_to_date) return "已是最新版本";
+      return "当前无需更新（" + data.code + "）";
+    }
+
+    function render(data) {
+      const latest = data.latest;
+      const download = data.download || {};
+      const rows = [
+        ["当前版本", `${data.current.version}（构建 ${data.current.build}，schema v${data.current.schema_version}）`],
+        ["最新版本", latest ? `${latest.version}（构建 ${latest.build}）` : "—"],
+        ["发布日期", latest && latest.published_at ? latest.published_at : "—"],
+        ["状态", statusText(data)],
+      ];
+      let downloadLine = "";
+      if (download.state === "running") {
+        downloadLine = "正在下载并校验安装包…";
+      } else if (download.state === "done") {
+        downloadLine = `已下载并校验：${download.file}（${formatBytes(download.bytes)}）`;
+      } else if (download.state === "failed") {
+        downloadLine = `下载或校验失败：${download.message || download.code || ""}`;
+      }
+      card.innerHTML = `
+        <div class="page-head" style="margin-bottom:8px">
+          <div>
+            <h2>软件更新</h2>
+            <p class="page-sub">清单与安装包均由配置的更新源提供；安装前需再次确认</p>
+          </div>
+        </div>
+        <table class="table"><tbody>${rows
+          .map(
+            ([label, value]) =>
+              `<tr><th style="width: 120px">${escapeHtml(label)}</th><td>${escapeHtml(
+                value
+              )}</td></tr>`
+          )
+          .join("")}</tbody></table>
+        ${downloadLine ? `<p class="page-sub" style="margin-top:8px">${escapeHtml(downloadLine)}</p>` : ""}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+          <button class="btn" type="button" data-role="check">检查更新</button>
+          ${
+            canManage
+              ? `<button class="btn" type="button" data-role="download" ${
+                  data.update_available && download.state !== "running" ? "" : "disabled"
+                }>下载并校验</button>
+                 <button class="btn primary" type="button" data-role="install" ${
+                   data.update_available && download.state === "done" ? "" : "disabled"
+                 }>安装更新</button>`
+              : ""
+          }
+        </div>`;
+
+      card.querySelector('[data-role="check"]').addEventListener("click", async () => {
+        await refresh();
+        showNotice("已重新检查更新", "ok");
+      });
+      const downloadButton = card.querySelector('[data-role="download"]');
+      if (downloadButton) {
+        downloadButton.addEventListener("click", async () => {
+          try {
+            await api("POST", "/api/update/download", {});
+            showNotice("已开始下载，完成后会自动校验", "ok");
+            poll();
+          } catch (error) {
+            showNotice(error.message, "error");
+          }
+        });
+      }
+      const installButton = card.querySelector('[data-role="install"]');
+      if (installButton) {
+        installButton.addEventListener("click", async () => {
+          if (!latest) return;
+          const confirmed = await askConfirm(
+            `将安装 ${latest.version}（构建 ${latest.build}）。安装程序会被打开，` +
+              "请在安装前退出本程序；是否继续？",
+            { okText: "安装", cancelText: "取消" }
+          );
+          if (!confirmed) return;
+          try {
+            const result = await api("POST", "/api/update/install", { confirm: true });
+            showNotice(result.message || "已打开安装包", "ok");
+          } catch (error) {
+            showNotice(error.message, "error");
+          }
+        });
+      }
+    }
+
+    async function refresh() {
+      const data = await api("GET", "/api/update/status");
+      render(data);
+      return data;
+    }
+
+    async function poll() {
+      if (polling) return;
+      polling = true;
+      try {
+        for (;;) {
+          if (!document.body.contains(card)) return;
+          const data = await refresh();
+          if (!data.download || data.download.state !== "running") return;
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      } catch (error) {
+        showNotice(error.message, "error");
+      } finally {
+        polling = false;
+      }
+    }
+
+    try {
+      await refresh();
+    } catch (error) {
+      card.innerHTML = `<p class="empty">${escapeHtml(error.message)}</p>`;
+    }
+  }
+
   async function aboutPage(mount) {
     mount.innerHTML = `
       <div class="page-head">
@@ -6710,7 +6841,8 @@
         </div>
         <button class="btn" type="button" data-role="copy">复制诊断信息</button>
       </div>
-      <div class="card" data-role="body">正在读取…</div>`;
+      <div class="card" data-role="body">正在读取…</div>
+      <div class="card" data-role="update" style="margin-top:12px">正在读取更新状态…</div>`;
 
     const body = mount.querySelector('[data-role="body"]');
     let diagnosticText = "";
@@ -6761,6 +6893,8 @@
       }
       showNotice("诊断信息已复制", "ok");
     });
+
+    await renderUpdateCard(mount);
   }
 
   // ---------- 导航与启动 ----------
