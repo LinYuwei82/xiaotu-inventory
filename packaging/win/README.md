@@ -9,6 +9,8 @@
 
 两者都读取同一批产物：服务端 exe 为必需，桌面壳按同一套顺序解析：显式指定 → `build\windows\shell\win\xiaotu-shell.exe` → `build\windows\shell\win\Release\xiaotu-shell.exe` → 旧的 `shell\win\build\xiaotu-shell.exe` → `shell\win\build\Release\xiaotu-shell.exe`。**都找不到时脚本报错退出/编译失败**，不会静默产出无壳包；确实需要无壳包时显式加 `-NoShell` / `/DXIAOTU_NO_SHELL=1`。
 
+`tools\win\verify.ps1` 的「安装包含桌面壳」与 `/MT` 检查使用**同一套候选顺序**（也可用 `-ShellExe` 显式指定，语义同 `/DShellExe`），因此旧目录布局与顶层构建布局都能验到壳，不需要改包或放宽断言。
+
 ## 前置
 
 ```powershell

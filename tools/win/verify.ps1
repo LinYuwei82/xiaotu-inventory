@@ -14,6 +14,7 @@ param(
     [switch]$SkipBuild,
     [switch]$SkipInstall,
     [switch]$AllowExistingData,
+    [string]$ShellExe = "",
     [switch]$Yes
 )
 
@@ -41,6 +42,30 @@ function Invoke-Check([string]$Name, [scriptblock]$Body) {
         Fail $Name ("异常: " + $msg)
         Write-Host ("  详细: " + ($_ | Out-String))
     }
+}
+
+# 解析打包实际会用的桌面壳，顺序与 packaging/win/xiaotu-inventory.iss 完全一致：
+#   1. 显式 -ShellExe 优先（等价 iss 的 /DShellExe），给了就必须存在，不回退；
+#   2. build\windows\shell\win\（顶层构建）→ ...\Release\ → 旧 shell\win\build\ → ...\Release\；
+#   3. 都没有则报错。不能为了让某种布局通过而放宽：两种布局都必须解析到真实文件。
+function Resolve-SourceShell {
+    if ($ShellExe) {
+        if (-not (Test-Path $ShellExe)) {
+            throw "指定的 -ShellExe 不存在: $ShellExe（显式指定时不回退到其它路径）"
+        }
+        return (Resolve-Path $ShellExe).Path
+    }
+    $candidates = @(
+        (Join-Path $Repo "build\windows\shell\win\xiaotu-shell.exe"),
+        (Join-Path $Repo "build\windows\shell\win\Release\xiaotu-shell.exe"),
+        (Join-Path $Repo "shell\win\build\xiaotu-shell.exe"),
+        (Join-Path $Repo "shell\win\build\Release\xiaotu-shell.exe")
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) { return $c }
+    }
+    throw ("未找到桌面壳 xiaotu-shell.exe，已按 iss 的顺序查找：" + ($candidates -join "；") +
+        "。构建：cmake --preset windows-release -DXIAOTU_BUILD_WIN_SHELL=ON; cmake --build --preset windows-release")
 }
 
 # 原生命令统一出口。git/cmake/ctest 会往 stderr 写正常提示（例如
@@ -143,7 +168,7 @@ if ((Test-Path (Join-Path $DataDir "app.db")) -and $AllowExistingData) {
 
 $installDir = Join-Path $env:LOCALAPPDATA "Programs\小兔进销存"
 $serverExe = Join-Path $installDir "xiaotu-server.exe"
-$shellExe = Join-Path $installDir "xiaotu-shell.exe"
+$installedShellExe = Join-Path $installDir "xiaotu-shell.exe"
 
 # ---------- 1. 编译 ----------
 if ($SkipBuild) {
@@ -195,9 +220,11 @@ Invoke-Check "静态运行库 /MT" {
     $builtServer = Join-Path $Repo "build\windows\server\xiaotu-server.exe"
     if (Test-Path $builtServer) { $targets += $builtServer }
     if (Test-Path $serverExe) { $targets += $serverExe }
-    $builtShell = Join-Path $Repo "shell\win\build\xiaotu-shell.exe"
-    if (Test-Path $builtShell) { $targets += $builtShell }
-    if (Test-Path $shellExe) { $targets += $shellExe }
+    # 壳按 iss 同一套候选顺序解析（细见 Resolve-SourceShell），不写死旧目录。
+    $builtShell = $null
+    try { $builtShell = Resolve-SourceShell } catch { $builtShell = $null }
+    if ($builtShell) { $targets += $builtShell }
+    if (Test-Path $installedShellExe) { $targets += $installedShellExe }
     if ($targets.Count -eq 0) { Skip "静态运行库 /MT" "找不到已构建的 exe"; return }
     $bad = @()
     foreach ($exe in $targets) {
@@ -265,10 +292,9 @@ if ($SkipInstall) {
     }
 
     Invoke-Check "安装包含桌面壳" {
-        $srcShell = Join-Path $Repo "shell\win\build\xiaotu-shell.exe"
-        if (-not (Test-Path $srcShell)) {
-            throw "iss 引用的 $srcShell 不存在：本次打的包不含桌面壳（静默漏壳），安装链路结论不作数"
-        }
+        # 断言对象是「iss 实际会引用的那个文件」，因此按 iss 的候选顺序解析，
+        # 而不是写死 shell\win\build（顶层构建时壳在 build\windows\shell\win）。
+        $srcShell = Resolve-SourceShell
         $stamp = (Get-Item $srcShell).LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
         Pass "安装包含桌面壳" ("源壳 " + $srcShell + "（" + $stamp + "）")
     }
@@ -307,10 +333,10 @@ if ($SkipInstall) {
         Pass "安装路径" $serverExe
     }
     Invoke-Check "安装目录含桌面壳" {
-        if (-not (Test-Path $shellExe)) {
-            throw "安装目录缺少 xiaotu-shell.exe（$shellExe）：包不完整，后续安装检查结论不作数"
+        if (-not (Test-Path $installedShellExe)) {
+            throw "安装目录缺少 xiaotu-shell.exe（$installedShellExe）：包不完整，后续安装检查结论不作数"
         }
-        Pass "安装目录含桌面壳" ("{0}（{1:N0} 字节）" -f $shellExe, (Get-Item $shellExe).Length)
+        Pass "安装目录含桌面壳" ("{0}（{1:N0} 字节）" -f $installedShellExe, (Get-Item $installedShellExe).Length)
     }
     Invoke-Check "开始菜单快捷方式" {
         $start = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
@@ -319,7 +345,7 @@ if ($SkipInstall) {
         Pass "开始菜单快捷方式" $found[0].FullName
     }
     Invoke-Check "桌面快捷方式" {
-        $hasShell = Test-Path $shellExe
+        $hasShell = Test-Path $installedShellExe
         $desktop = Join-Path $env:USERPROFILE "Desktop"
         $found = Get-ChildItem -Path $desktop -Filter "*小兔进销存*.lnk" -ErrorAction SilentlyContinue
         if ($hasShell -and -not $found) { throw "有壳但桌面没有快捷方式" }

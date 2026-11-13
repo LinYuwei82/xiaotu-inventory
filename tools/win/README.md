@@ -28,6 +28,7 @@
 | `-SkipBuild` | 关 | 跳过 cmake/ctest |
 | `-SkipInstall` | 关 | 跳过安装、卸载与依赖安装的检查 |
 | `-AllowExistingData` | 关 | 数据目录已有 `app.db` 时允许继续，会先备份到 `-LogDir\data-backup` |
+| `-ShellExe` | 空（自动解析） | 显式指定桌面壳路径，语义同 iss 的 `/DShellExe`：给了就必须存在，不回退；不传则按 iss 的候选顺序解析 |
 | `-Yes` | 关 | 安装前不再等待回车确认 |
 
 ## 安全约定
@@ -63,7 +64,7 @@
 | C7560 生效 | 临时 worktree 的 `document.cpp` 追加错序指定初始化器后编译失败，且输出含 `C7560`；随后主仓库 `document.cpp` 无改动。判定依据是「C7560 被当作错误」，**不是**「`/we7560` 被识别」：本机 MSVC 14.44 对 `/we7560` 报 `D9014`（值无效），而 C7560 默认就是 error，所以该开关是否被接受不在本项验证范围内 |
 | 安装包签名状态 | `SIGNING.txt` 明确写「未签名」且不写「已签名」 |
 | 安装包 SHA256 | 记录 `Get-FileHash` 结果 |
-| 安装包含桌面壳 | iss 引用的 `shell\win\build\xiaotu-shell.exe` 存在（记录路径与时间戳）。不存在即 FAIL，因为本次包会静默漏壳，后续安装结论不作数 |
+| 安装包含桌面壳 | 按 `packaging/win/xiaotu-inventory.iss` 的同一套候选顺序解析源壳（`-ShellExe` → `build\windows\shell\win\` → `...\Release\` → 旧 `shell\win\build\` → `...\Release\`），记录命中路径与时间戳；显式 `-ShellExe` 给了但不存在、或四处都没有即 FAIL（后者说明本次包会静默漏壳，后续安装结论不作数） |
 | 安装前无残留数据 | 安装目录无 `app.db`；`-DataDir` 起跑前为空（加 `-AllowExistingData` 时只检查安装目录，并注明前提） |
 | 静默安装 | 安装器退出码 0。Inno 语义：0 成功、1 用户取消、2 致命错误；静默安装出现 1 视为 FAIL |
 | 安装路径 | `%LOCALAPPDATA%\Programs\小兔进销存\xiaotu-server.exe` 存在，`%ProgramFiles%` 下无同名目录 |
