@@ -7436,6 +7436,8 @@
   }
 
   let routeToken = 0;
+  // 页面挂载序号：切页只做一次原子替换，旧页在新页首屏就绪前保持不动。
+  let mountSeq = 0;
 
   async function handleHashChange() {
     const pages = state.allPages;
@@ -7482,20 +7484,39 @@
       writeNavState("xiaotu.nav.page", page.key);
       writeNavState("xiaotu.nav.group", page.group || "");
     }
-    main.querySelectorAll(":scope > *").forEach((node) => {
-      if (node !== notice && node.id !== "data-warning" && node.id !== "network-warning") {
-        node.remove();
-      }
-    });
-    showNotice("");
+    // 切页过程中不动已经显示的内容：新页先渲染到脱离文档的容器里，等它的
+    // render（各页都会 await 首次数据）落地后，再一次性换掉旧页。这样
+    // main 的 scrollHeight 与滚动条不会经历「清空 → 空白 → 填回」的中间态，
+    // main 也不会在切页中途被清空一次。期间旧页保持可交互，用户再点别的菜单
+    // 会叠加新的序号，旧的那次替换自动作废。
+    const seq = ++mountSeq;
     const container = document.createElement("section");
     container.className = "page";
-    main.appendChild(container);
-    Promise.resolve(page.render(container, { crudPage, itemPage, money, escapeHtml, can })).catch(
-      (error) => {
+    let swapped = false;
+    let fallbackTimer = 0;
+    const swap = () => {
+      if (swapped) return;
+      swapped = true;
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      // 期间已经切到别的页，这次结果直接丢弃。
+      if (seq !== mountSeq) return;
+      main.querySelectorAll(":scope > *").forEach((node) => {
+        if (node !== notice && node.id !== "data-warning" && node.id !== "network-warning") {
+          node.remove();
+        }
+      });
+      showNotice("");
+      main.appendChild(container);
+      main.scrollTop = 0;
+    };
+    // 兜底：某页渲染卡住时不能让旧页一直留在屏幕上。
+    fallbackTimer = setTimeout(swap, 1500);
+    Promise.resolve(page.render(container, { crudPage, itemPage, money, escapeHtml, can }))
+      .then(swap)
+      .catch((error) => {
         showNotice(error.message, "error");
-      }
-    );
+        swap();
+      });
   }
 
   function renderLogin(message) {
