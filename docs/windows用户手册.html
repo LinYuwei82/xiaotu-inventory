@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Windows用户手册 - 小兔进销存</title>
+<style>
+  :root{
+    --ink:#1f2937; --ink-2:#4b5563; --muted:#6b7280; --line:#e5e7eb;
+    --bg:#f6f7f9; --card:#ffffff; --brand:#2563eb; --brand-dark:#1e3a8a;
+    --brand-soft:#eff6ff; --amber:#b45309; --amber-soft:#fffbeb;
+    --green:#047857; --green-soft:#ecfdf5; --red:#b91c1c; --red-soft:#fef2f2;
+    --radius:14px; --shadow:0 10px 30px rgba(15,23,42,.08);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; color:var(--ink); background:var(--bg);
+    font-family:"Microsoft YaHei","PingFang SC","Hiragino Sans GB","Noto Sans SC",system-ui,-apple-system,sans-serif;
+    font-size:16px; line-height:1.75; -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--brand); text-decoration:none}
+  a:hover{text-decoration:underline}
+  .hero{
+    background:
+      radial-gradient(900px 360px at 88% -10%, rgba(96,165,250,.35), transparent 60%),
+      radial-gradient(700px 300px at 0% 110%, rgba(251,191,36,.20), transparent 60%),
+      linear-gradient(135deg,#0f172a 0%,#172554 55%,#1e3a8a 100%);
+    color:#fff; padding:52px 24px 46px;
+  }
+  .hero-inner{max-width:1180px; margin:0 auto}
+  .brandline{display:flex; align-items:center; gap:12px; font-weight:700; letter-spacing:.06em; font-size:15px; opacity:.92}
+  .brand-mark{
+    width:34px; height:34px; border-radius:10px; display:inline-flex; align-items:center; justify-content:center;
+    background:linear-gradient(145deg,#fbbf24,#f59e0b); color:#3b2300; font-weight:900; font-size:18px;
+    box-shadow:0 6px 18px rgba(245,158,11,.35);
+  }
+  .hero h1{font-size:46px; line-height:1.18; margin:22px 0 10px; letter-spacing:.02em}
+  .hero-sub{font-size:19px; color:#dbeafe; margin:0 0 22px}
+  .chips{display:flex; flex-wrap:wrap; gap:10px; margin:20px 0 18px}
+  .chip{
+    display:inline-flex; align-items:center; gap:8px; padding:7px 14px; border-radius:999px;
+    background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.18); font-size:14px; color:#eff6ff;
+  }
+  .hero-note{font-size:14px; color:#c7d2fe; margin:0; max-width:820px}
+  .wrap{max-width:1180px; margin:0 auto; padding:34px 24px 70px; display:grid; grid-template-columns:244px minmax(0,1fr); gap:34px}
+  .toc{position:sticky; top:22px; align-self:start; background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:18px 16px; box-shadow:var(--shadow)}
+  .toc h2{font-size:13px; letter-spacing:.12em; color:var(--muted); margin:0 0 10px; font-weight:700}
+  .toc ol{list-style:none; margin:0; padding:0; counter-reset:toc}
+  .toc li{margin:2px 0}
+  .toc a{display:block; padding:5px 8px; border-radius:8px; color:var(--ink-2); font-size:14px; line-height:1.45}
+  .toc a:hover{background:var(--brand-soft); color:var(--brand); text-decoration:none}
+  .toc .sub a{padding-left:18px; font-size:13px; color:var(--muted)}
+  main{min-width:0}
+  .lead{
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:22px 24px;
+    box-shadow:var(--shadow); margin-bottom:28px;
+  }
+  .lead p{margin:0 0 10px}
+  .lead p:last-child{margin-bottom:0}
+  .three{display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:16px}
+  .mini{border:1px solid var(--line); border-radius:12px; padding:14px 15px; background:#fbfcfe}
+  .mini b{display:block; margin-bottom:4px; color:var(--ink)}
+  .mini span{font-size:14px; color:var(--ink-2)}
+  section{
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+    padding:30px 32px; margin-bottom:26px; box-shadow:var(--shadow); scroll-margin-top:20px;
+  }
+  section:target{outline:3px solid #bfdbfe; outline-offset:2px}
+  .sec-head{display:flex; align-items:flex-start; gap:14px; margin-bottom:8px}
+  .sec-num{
+    flex:0 0 auto; width:42px; height:42px; border-radius:12px; display:flex; align-items:center; justify-content:center;
+    background:var(--brand-soft); color:var(--brand); font-weight:900; font-size:19px; border:1px solid #dbeafe;
+  }
+  h2{font-size:27px; line-height:1.3; margin:0}
+  h3{font-size:19px; line-height:1.45; margin:28px 0 10px; padding-left:11px; border-left:4px solid #93c5fd}
+  h4{font-size:16px; margin:18px 0 6px}
+  p{margin:8px 0}
+  .sub{color:var(--muted); font-size:14.5px}
+  ol.steps{list-style:none; counter-reset:step; padding:0; margin:12px 0}
+  ol.steps>li{counter-increment:step; position:relative; padding:0 0 14px 42px; margin:0}
+  ol.steps>li::before{
+    content:counter(step); position:absolute; left:0; top:1px; width:26px; height:26px; border-radius:50%;
+    background:var(--brand); color:#fff; font-size:13px; font-weight:800; display:flex; align-items:center; justify-content:center;
+    box-shadow:0 4px 10px rgba(37,99,235,.28);
+  }
+  ol.steps>li:last-child{padding-bottom:2px}
+  ul{padding-left:22px; margin:8px 0}
+  li{margin:4px 0}
+  code{
+    font-family:Consolas,"Courier New",monospace; background:#f1f5f9; border:1px solid #e2e8f0;
+    padding:1px 6px; border-radius:6px; font-size:14px; color:#0f172a;
+  }
+  pre{
+    background:#0f172a; color:#e2e8f0; border-radius:12px; padding:16px 18px; overflow:auto;
+    font-family:Consolas,"Courier New",monospace; font-size:13.5px; line-height:1.65; margin:12px 0;
+  }
+  pre code{background:none; border:0; padding:0; color:inherit; font-size:inherit}
+  .callout{border-radius:12px; padding:14px 16px 14px 18px; margin:14px 0; border:1px solid; font-size:14.8px}
+  .callout b{display:block; margin-bottom:3px}
+  .note{background:var(--brand-soft); border-color:#bfdbfe; color:#1e3a8a}
+  .warn{background:var(--amber-soft); border-color:#fde68a; color:#78350f}
+  .good{background:var(--green-soft); border-color:#a7f3d0; color:#065f46}
+  .danger{background:var(--red-soft); border-color:#fecaca; color:#7f1d1d}
+  figure{margin:18px 0 22px}
+  figure img{display:block; width:100%; height:auto; border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 24px rgba(15,23,42,.09)}
+  figcaption{font-size:13.5px; color:var(--muted); margin-top:8px; line-height:1.6}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start}
+  .grid2 figure{margin:0}
+  .shot-small{max-width:760px}
+  table{width:100%; border-collapse:collapse; margin:12px 0; font-size:14.5px}
+  th,td{border:1px solid var(--line); padding:9px 11px; text-align:left; vertical-align:top}
+  th{background:#f8fafc; color:#334155; font-weight:700}
+  tbody tr:nth-child(even) td{background:#fcfdff}
+  .q{border-left:4px solid #f59e0b; background:#fffdf7; border-radius:0 10px 10px 0; padding:12px 16px; margin:14px 0}
+  .q h4{margin:0 0 5px; font-size:15.5px; color:#92400e}
+  .q p{margin:0; font-size:14.8px; color:#4b5563}
+  .footer{max-width:1180px; margin:0 auto; padding:0 24px 48px; color:var(--muted); font-size:13.5px}
+  .to-top{display:inline-block; margin-top:16px; font-size:14px}
+  @media (max-width:980px){
+    .wrap{grid-template-columns:1fr; padding-top:22px}
+    .toc{position:static}
+    .hero h1{font-size:34px}
+    .three{grid-template-columns:1fr}
+    .grid2{grid-template-columns:1fr}
+    section{padding:24px 20px}
+    .hero{padding:38px 20px 34px}
+  }
+  @media print{
+    body{background:#fff; font-size:11.5pt}
+    .hero{background:#fff; color:#111; padding:0 0 16pt; border-bottom:2px solid #111}
+    .hero h1{font-size:28pt; margin:10pt 0 4pt}
+    .hero-sub{color:#333}
+    .chip{background:#f2f2f2; border-color:#ddd; color:#333}
+    .hero-note{color:#555}
+    .wrap{display:block; padding:0; max-width:none}
+    .toc{display:none}
+    section{box-shadow:none; border:0; padding:0; margin:0 0 16pt; page-break-inside:auto}
+    section:target{outline:none}
+    figure{page-break-inside:avoid}
+    figure img{box-shadow:none}
+    h2{font-size:18pt; page-break-after:avoid}
+    h3{font-size:13pt; page-break-after:avoid}
+    pre{background:#f5f5f5; color:#111; border:1px solid #ccc}
+    .footer{display:none}
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <div class="brandline"><span class="brand-mark">兔</span> 小兔进销存 · Windows 版</div>
+    <h1>Windows用户手册</h1>
+    <p class="hero-sub">从安装、登录到开单、报表、备份，一本讲清楚。</p>
+    <div class="chips">
+      <span class="chip">适用版本 0.9.0（构建 2026111301）</span>
+      <span class="chip">Windows 10 / 11（64 位）</span>
+      <span class="chip">单机版 · 网络版</span>
+      <span class="chip">更新日期 2026-11-14</span>
+    </div>
+    <p class="hero-note">本手册按当前 Windows 安装包的实际界面编写。文中截图都是在真实程序中操作后截取的；商品、客户、金额均为演示数据，门店名称也是示例。</p>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="toc" aria-label="目录">
+    <h2>目录</h2>
+    <ol>
+      <li><a href="#start">开始之前</a></li>
+      <li><a href="#install">1. 安装与卸载</a></li>
+      <li class="sub"><a href="#install-run">1.1 运行安装包</a></li>
+      <li class="sub"><a href="#install-place">1.2 安装位置</a></li>
+      <li class="sub"><a href="#install-uninstall">1.3 卸载</a></li>
+      <li class="sub"><a href="#install-silent">1.4 静默安装（备注）</a></li>
+      <li><a href="#login">2. 首次启动与登录</a></li>
+      <li class="sub"><a href="#login-local">2.1 单机版</a></li>
+      <li class="sub"><a href="#login-network">2.2 网络版</a></li>
+      <li class="sub"><a href="#login-forgot">2.3 忘记口令</a></li>
+      <li><a href="#ui">3. 界面总览</a></li>
+      <li><a href="#master">4. 基础资料</a></li>
+      <li><a href="#business">5. 业务操作</a></li>
+      <li><a href="#reports">6. 报表与打印</a></li>
+      <li><a href="#backup">7. 备份、恢复与数据目录</a></li>
+      <li><a href="#update">8. 软件更新</a></li>
+      <li><a href="#faq">9. 常见问题</a></li>
+      <li><a href="#appendix">附：一分钟上手清单</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <div class="lead" id="start">
+      <p><strong>这本手册给谁看：</strong>门店里实际录商品、开单、查库存、打印报表的同事。不需要懂电脑原理，按步骤照做即可。</p>
+      <p><strong>先确认你们是哪种用法：</strong></p>
+      <div class="three">
+        <div class="mini"><b>一台电脑用</b><span>安装后双击桌面「小兔进销存」，数据保存在这台电脑上。第 1、2.1 章看起。</span></div>
+        <div class="mini"><b>几台电脑一起用</b><span>选一台电脑做“服务器”，其他电脑用浏览器访问同一套数据。第 2.2 章。</span></div>
+        <div class="mini"><b>只想先试试</b><span>按第 1 章装好，直接打开就能用；不设口令时双击即进入。</span></div>
+      </div>
+      <div class="callout note" style="margin-top:16px"><b>重要提醒</b>数据默认保存在本机用户目录。不要放在共享盘、网盘或 OneDrive 同步目录里，也不要一边开软件一边手工复制数据库文件。每天第一次启动会自动备份，详见第 7 章。</div>
+    </div>
+
+    <section id="install">
+      <div class="sec-head"><div class="sec-num">1</div><div><h2>安装与卸载</h2><p class="sub">安装包是按当前用户安装的，不需要管理员权限；装完桌面和开始菜单会有入口。</p></div></div>
+
+      <h3 id="install-run">1.1 运行安装包</h3>
+      <ol class="steps">
+        <li><strong>双击安装包。</strong>文件名类似 <code>小兔进销存-0.9.0-win64-setup.exe</code>。</li>
+        <li><strong>如果出现蓝色提示“Windows 已保护你的电脑”。</strong>点“更多信息”，再点“仍要运行”。这是 Windows 对未签名安装包的常规提醒。</li>
+        <li><strong>按向导点下一步。</strong>安装向导目前是英文按钮，对照如下：Next＝下一步，Back＝上一步，Cancel＝取消，Browse＝浏览，Install＝安装，Finish＝完成。</li>
+        <li><strong>选择数据目录。</strong>直接点 Next 使用默认目录即可；要换到其他盘，点 Browse 选择，例如 <code>D:\小兔进销存数据</code>。</li>
+        <li><strong>选择附加任务。</strong>建议保留“创建桌面快捷方式”，然后点 Next。</li>
+        <li><strong>点 Install 开始安装，最后点 Finish 完成。</strong>完成页可以直接勾选启动软件；也可以稍后双击桌面图标。</li>
+      </ol>
+
+      <figure>
+        <img src="images/windows-manual/01-install-datadir.png" alt="安装向导的数据目录页面，默认路径为当前用户目录下的 com.simem.xiaotu" />
+        <figcaption>图 1-1　安装向导的“数据目录”页。默认路径是 <code>C:\Users\你的用户名\AppData\Local\com.simem.xiaotu</code>，数据库、日志和备份都放在这里；卸载时会保留，不会自动删除。</figcaption>
+      </figure>
+
+      <div class="grid2">
+        <figure>
+          <img src="images/windows-manual/02-install-tasks.png" alt="安装向导的附加任务页，可勾选创建桌面快捷方式" />
+          <figcaption>图 1-2　附加任务页：勾选“创建桌面快捷方式”，日常打开更方便。</figcaption>
+        </figure>
+        <figure>
+          <img src="images/windows-manual/03-install-finish.png" alt="安装完成页，可勾选启动小兔进销存" />
+          <figcaption>图 1-3　完成页。勾选启动后点 Finish，第一次打开可能需要几秒钟。</figcaption>
+        </figure>
+      </div>
+
+      <h3 id="install-place">1.2 安装位置与快捷方式</h3>
+      <ul>
+        <li>程序默认装在 <code>C:\Users\你的用户名\AppData\Local\Programs\小兔进销存</code>，只影响当前 Windows 用户，不需要管理员权限。</li>
+        <li>开始菜单会出现「小兔进销存」；安装时勾选附加任务后，桌面也会有一个同名图标。双击即可打开。</li>
+        <li>如果换了数据目录，请记住这个位置：以后备份、换电脑、找数据都靠它。默认目录就是图 1-1 中显示的路径。</li>
+        <li>不要把程序目录里的单个文件单独拖走；要移动就整个文件夹一起移动，并重新创建快捷方式。</li>
+      </ul>
+
+      <h3 id="install-uninstall">1.3 卸载</h3>
+      <ol class="steps">
+        <li>打开 Windows 的“设置”→“应用”→“安装的应用”（Windows 10 为“应用和功能”）。</li>
+        <li>找到“小兔进销存”，点右侧的“卸载”。</li>
+        <li>确认卸载时选“是（Y）”。</li>
+        <li>卸载完成后会提示“数据目录已保留”。如果以后还要用，请保留这个目录；确认不再需要时再手动删除。</li>
+      </ol>
+      <figure class="shot-small">
+        <img src="images/windows-manual/04-uninstall-confirm.png" alt="卸载确认对话框，默认选中否，需要选择是" />
+        <figcaption>图 1-4　卸载确认框。默认高亮的是“否(N)”，要真正卸载请点“是(Y)”。卸载只删程序，不删数据库、日志和备份。</figcaption>
+      </figure>
+      <div class="callout warn"><b>卸载前先备份</b>如果只是换电脑或重装系统，先按第 7 章把整个数据目录复制到移动硬盘；卸载提示里的路径就是需要保留的位置。</div>
+
+      <h3 id="install-silent">1.4 静默安装（备注，普通用户可跳过）</h3>
+      <p class="sub">这一段给负责批量装机的电脑管理员看。普通门店用户按上面的向导安装即可。</p>
+      <pre><code>小兔进销存-0.9.0-win64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="D:\Apps\小兔进销存"</code></pre>
+      <ul>
+        <li><code>/DIR</code> 指定程序安装目录，不写则使用默认目录。</li>
+        <li>静默安装不会弹出“数据目录”选择页，数据会放在默认目录 <code>%LOCALAPPDATA%\com.simem.xiaotu</code>。确实要自定义数据目录时，不要用静默安装，改用图形向导。</li>
+        <li>需要留安装记录可加 <code>/LOG="D:\install-xiaotu.log"</code>。</li>
+      </ul>
+    </section>
+
+    <section id="login">
+      <div class="sec-head"><div class="sec-num">2</div><div><h2>首次启动与登录</h2><p class="sub">单机版和网络版的进入方式不同；先确认自己属于哪一种。</p></div></div>
+
+      <h3 id="login-local">2.1 单机版：一台电脑使用</h3>
+      <p><strong>全新安装、还没有数据时：</strong>双击桌面图标，稍等几秒，会直接进入软件，不会先问口令。第一次默认停在“商品”页，列表显示“暂无数据”，这是正常的。</p>
+      <figure>
+        <img src="images/windows-manual/05-first-open.png" alt="全新安装第一次打开软件，直接进入商品页，列表为空" />
+        <figcaption>图 2-1　新装第一次打开：直接进入“商品”页。先按第 4 章录入商品，再开始开单。</figcaption>
+      </figure>
+
+      <p><strong>电脑里已经有数据、但还没有设过本机口令时：</strong>软件会先出现“设置本机口令”页，让你选择设一个口令，或者跳过。</p>
+      <figure>
+        <img src="images/windows-manual/06-set-password.png" alt="设置本机口令页面，可设置8到128位口令或跳过" />
+        <figcaption>图 2-2　已有数据但没有口令时的提示。设置口令后，下次启动需要先输入；点“跳过”则保持双击直接进入。</figcaption>
+      </figure>
+
+      <div class="callout warn">
+        <b>Windows 版没有“30 天免输”</b>
+        macOS 版可以把本机口令交给系统钥匙串记住；Windows 版没有这个能力，所以：
+        <br>· 不设本机口令＝每次双击直接进入；
+        <br>· 设了本机口令＝每次启动都要输入，没有“30 天内免输”选项，系统参数里也不会出现“本机免输”卡片。
+        <br>同一台电脑多人使用时，建议设置口令；只有自己用的电脑，可以跳过不设。
+      </div>
+
+      <p><strong>已经设过口令时：</strong>每次启动会出现下面这个页面，输入本机口令后点“进入”。</p>
+      <figure>
+        <img src="images/windows-manual/07-gate.png" alt="单机版本机口令门禁页，输入口令后进入" />
+        <figcaption>图 2-3　本机口令页。口令长度 8–128 个字符；连续输错会暂时锁定，稍等再试或按 2.3 节重置。</figcaption>
+      </figure>
+      <p class="sub">忘记口令时不要反复试。请按 2.3 节由电脑管理员重置；重置不会删除业务数据。</p>
+
+      <h3 id="login-network">2.2 网络版：几台电脑一起用</h3>
+      <p>网络版需要一台电脑当“服务器”，数据只放在这台电脑上；其他电脑不装软件，用浏览器访问。服务器电脑建议放在收银台或办公室，不要随手关机。</p>
+
+      <div class="callout note">
+        <b>以下命令请让电脑管理员在服务器电脑上执行一次</b>
+        普通门店用户不需要理解命令内容；把这段交给维护电脑的同事即可。
+      </div>
+      <p><strong>第一步：给管理员设置口令（只做一次）。</strong>打开开始菜单，搜索 PowerShell，直接打开（不需要管理员权限），然后依次执行：</p>
+      <pre><code>cd "$env:LOCALAPPDATA\Programs\小兔进销存"
+$env:XIAOTU_PASSWORD = "你自己定的口令"
+.\xiaotu-server.exe --set-password admin</code></pre>
+      <p class="sub">口令至少 8 位。如果安装时改过数据目录，设置口令和启动服务的两条 <code>xiaotu-server.exe</code> 命令末尾都要加上 <code>--data "你的数据目录"</code>，而且必须使用同一个目录。</p>
+
+      <p><strong>第二步：启动网络服务。</strong>继续执行：</p>
+      <pre><code>.\xiaotu-server.exe --server --port 8080</code></pre>
+      <p>看到“监听 0.0.0.0:8080”就表示服务已启动。<strong>这个窗口不要关</strong>；关掉窗口，所有客户端都会断开。第一次启动时 Windows 可能弹出防火墙提示，请勾选“专用网络”和“公用网络”，并点“允许访问”。</p>
+
+      <p><strong>第三步：客户端连接。</strong>在另一台同一局域网（同一个路由器/交换机）的电脑上，打开 Edge 或 Chrome，地址栏输入：</p>
+      <pre><code>http://服务器电脑的IP:8080/</code></pre>
+      <p>例如服务器 IP 是 <code>192.168.1.20</code>，就输入 <code>http://192.168.1.20:8080/</code>。服务器 IP 可在服务器电脑上打开“设置→网络和 Internet”查看，或在 PowerShell 里执行 <code>ipconfig</code>，看“IPv4 地址”。</p>
+
+      <figure>
+        <img src="images/windows-manual/08-network-login.png" alt="网络版浏览器登录页，输入用户名与口令" />
+        <figcaption>图 2-4　客户端打开后的登录页。用户名先填 <code>admin</code>，口令填第一步设置的口令。</figcaption>
+      </figure>
+
+      <p><strong>管理员在“系统→用户”里重置某个账号的口令后</strong>，这个账号下次登录会先要求改一次口令。新口令同样是 8–128 位，改完才能进入主界面。</p>
+      <figure>
+        <img src="images/windows-manual/09-network-change-password.png" alt="网络版强制修改口令页面，需要输入原口令和新口令" />
+        <figcaption>图 2-5　强制改密页。管理员在“系统→用户”里重置某个账号的口令后，该账号下次登录也会先看到这个页面。</figcaption>
+      </figure>
+
+      <div class="callout good">
+        <b>网络版的小知识</b>
+        默认 30 分钟不操作会自动退出，最长登录 12 小时；可以在“系统→系统参数”里调整。多个客户端看到的是同一套数据，不需要各自备份；只备份服务器电脑的数据目录。
+      </div>
+
+      <h3 id="login-forgot">2.3 忘记口令怎么办</h3>
+      <p>不要删除数据目录，也不要重新安装。请电脑管理员在服务器（或单机电脑）上重置管理员口令：</p>
+      <ol class="steps">
+        <li>先退出软件；网络版请先在服务器窗口按 Ctrl+C 停止服务。</li>
+        <li>打开 PowerShell，进入安装目录：<code>cd "$env:LOCALAPPDATA\Programs\小兔进销存"</code>。</li>
+        <li>执行下面两行，把引号里的内容换成新口令：</li>
+      </ol>
+      <pre><code>$env:XIAOTU_PASSWORD = "新的口令"
+.\xiaotu-server.exe --set-password admin</code></pre>
+      <p class="sub">如果安装时改过数据目录，最后一行末尾加 <code>--data "你的数据目录"</code>。</p>
+      <p>看到“口令已更新”即可。重新打开软件或重启网络服务，用新口令登录。重置只改口令，不动商品、单据和库存。</p>
+      <div class="callout danger"><b>不要用“删数据目录”来解决忘记口令</b>删除数据目录会连同商品、单据、库存和备份一起删掉，无法从软件里恢复。</div>
+    </section>
+
+    <section id="ui">
+      <div class="sec-head"><div class="sec-num">3</div><div><h2>界面总览</h2><p class="sub">左侧是功能菜单，中间是当前页面，右上角是本页能做的事。</p></div></div>
+      <figure>
+        <img src="images/windows-manual/10-overview.png" alt="小兔进销存主界面，左侧为分组菜单，中间为经营看板" />
+        <figcaption>图 3-1　主界面（经营看板）。左侧菜单按业务分组；左下角显示“单机版/网络版”和版本号。</figcaption>
+      </figure>
+
+      <h3>左侧菜单分组</h3>
+      <table>
+        <thead><tr><th style="width:110px">分组</th><th>里面有什么</th><th style="width:230px">什么时候用</th></tr></thead>
+        <tbody>
+          <tr><td>采购</td><td>采购入库、采购退货、采购订单</td><td>进货、退货、先订后到</td></tr>
+          <tr><td>销售</td><td>销售出库、销售退货、销售订单</td><td>卖货、退货、先订后送</td></tr>
+          <tr><td>库存</td><td>库存、其他入库、其他出库、调拨、盘点</td><td>查库存、调货、盘库</td></tr>
+          <tr><td>财务</td><td>收付款、对账单、成本调整</td><td>登记收款付款、对账</td></tr>
+          <tr><td>基础资料</td><td>商品、计量单位、仓库、客户、供应商、职员、商品分类、期初导入</td><td>开单前先把资料建好</td></tr>
+          <tr><td>系统</td><td>用户、审计日志、系统参数、打印模板、备份与恢复、关于与诊断</td><td>账号、备份、打印设置</td></tr>
+        </tbody>
+      </table>
+      <p>“经营看板”“销售报表”“报表”单独放在分组上方，随时可以点开查看。</p>
+
+      <h3>常见操作在哪里</h3>
+      <ul>
+        <li><strong>右上角按钮：</strong>随页面变化，常见的有“新增”“导入”“导出 Excel”“导出 CSV”“下载模板”“刷新”“打印”。</li>
+        <li><strong>筛选区：</strong>列表上方的分类下拉框、搜索框和“重置”。输入编码、名称或条码后按回车即可筛选。</li>
+        <li><strong>每一行右侧：</strong>“编辑”“审核”“反审核”“打印”“删除”等操作，只对当前这一行生效。</li>
+        <li><strong>列表底部：</strong>数据多时会出现“上一页 / 下一页”和页码；部分列表还可以调整每页条数。</li>
+        <li><strong>关闭窗口：</strong>如果有还没保存的内容，软件会先提醒，避免误关。</li>
+      </ul>
+      <div class="callout note"><b>找不到某个功能？</b>先看左侧分组是否展开。分组一次只展开一个，点一下标题就会切换。常用页面也可以直接在浏览器的地址栏收藏（网络版）。</div>
+    </section>
+
+    <section id="master">
+      <div class="sec-head"><div class="sec-num">4</div><div><h2>基础资料</h2><p class="sub">商品、客户、供应商是开单的基础。先把资料建好，开单时只需搜索选择。</p></div></div>
+
+      <h3>4.1 商品</h3>
+      <figure>
+        <img src="images/windows-manual/11-items.png" alt="商品列表页面，显示商品编码、名称、规格、单位、分类和操作按钮" />
+        <figcaption>图 4-1　商品列表。上方可以按分类筛选、按编码/名称/条码搜索；右上角有导入、导出和“新增”。</figcaption>
+      </figure>
+      <ol class="steps">
+        <li>点左侧“基础资料→商品”，再点右上角“新增”。</li>
+        <li>填写商品编码、名称、规格、单位、分类、税率和条码。编码和名称必填，编码不能重复。</li>
+        <li>有条码枪的，把光标放在条码框里扫一下即可；一个商品可以保存多个条码。</li>
+        <li>点“保存”。保存后回到列表，可以继续新增下一个。</li>
+      </ol>
+      <figure>
+        <img src="images/windows-manual/12-item-form.png" alt="新增商品表单，填写了编码、名称、规格、单位、分类、税率和条码" />
+        <figcaption>图 4-2　新增商品表单。税率按实际填写，不确定就问会计；小规模纳税人通常保持默认的含税口径即可。</figcaption>
+      </figure>
+      <ul>
+        <li><strong>修改：</strong>在列表行点“编辑”。已经开过单的商品，建议修改名称/规格前先确认不影响历史单据。</li>
+        <li><strong>停用：</strong>不再卖的商品优先“停用”，不要删除。停用后新单据选不到，历史单据仍能查。</li>
+        <li><strong>批量导入：</strong>点“下载模板”，按模板填好后再点“导入”。导入前软件会自动备份数据库；导入失败会中止，不会写一半。</li>
+      </ul>
+
+      <h3>4.2 客户</h3>
+      <figure>
+        <img src="images/windows-manual/13-customers.png" alt="客户列表页面，显示客户编码、名称、联系人、电话、信用额度和操作按钮" />
+        <figcaption>图 4-3　客户列表。信用额度填 0 表示不限制；填了金额后，超额度开单会提示或拦截（取决于系统参数）。</figcaption>
+      </figure>
+      <ol class="steps">
+        <li>点“基础资料→客户”，再点“新增”。</li>
+        <li>填写客户编码、名称、联系人、电话、税号和地址；需要控额度的填“信用额度”。</li>
+        <li>点“保存”。开销售出库单时，输入客户名称或编码即可选中。</li>
+      </ol>
+
+      <h3>4.3 供应商</h3>
+      <figure>
+        <img src="images/windows-manual/14-suppliers.png" alt="供应商列表页面，显示供应商编码、名称、联系人、电话和操作按钮" />
+        <figcaption>图 4-4　供应商列表。字段与客户类似，通常还需要填税号，方便采购对账和开票。</figcaption>
+      </figure>
+      <p>新增方式和客户一样：基础资料→供应商→新增，填编码、名称、联系人、电话、税号、地址，保存。</p>
+
+      <h3>4.4 其他基础资料</h3>
+      <table>
+        <thead><tr><th style="width:130px">项目</th><th>用途</th><th style="width:260px">建议</th></tr></thead>
+        <tbody>
+          <tr><td>计量单位</td><td>瓶、包、件、箱、千克等</td><td>开单前先建好常用单位</td></tr>
+          <tr><td>仓库</td><td>主仓库、门店仓库等</td><td>至少保留一个默认仓库</td></tr>
+          <tr><td>职员</td><td>业务员、店长等</td><td>销售单可记录业务员，方便提成统计</td></tr>
+          <tr><td>商品分类</td><td>饮料、零食、日用品等</td><td>分类便于筛选和报表</td></tr>
+          <tr><td>期初导入</td><td>把开店前的库存和往来余额录进来</td><td>只在启用软件时做一次，做之前先备份</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="business">
+      <div class="sec-head"><div class="sec-num">5</div><div><h2>业务操作</h2><p class="sub">采购进货、销售出货、审核、查库存。记住一句话：草稿不碰库存，审核才生效。</p></div></div>
+
+      <h3>5.1 采购入库</h3>
+      <figure>
+        <img src="images/windows-manual/15-purchase.png" alt="采购入库页面，上方是编辑中的入库单，下方是历史单据列表" />
+        <figcaption>图 5-1　采购入库。上方是正在编辑的单据，绿色提示表示这是一张草稿；下方列表可以看到草稿、已审核等状态。</figcaption>
+      </figure>
+      <ol class="steps">
+        <li>点左侧“采购→采购入库”。</li>
+        <li>选择供应商、入库仓库和日期。供应商可以留空，但建议选择，方便以后对账。</li>
+        <li>在明细里选择商品，填数量和进价；一行一个商品，可以连续添加多行。</li>
+        <li>核对右下角的合计数量、金额和税额。</li>
+        <li>点“保存并审核”直接入库；如果货还没到齐，点“保存草稿”，等确认后再审核。</li>
+        <li>在下方列表找到这张单，状态会显示“草稿”或“已审核”。草稿行可以“编辑”“审核”“删除”。</li>
+      </ol>
+      <div class="callout note"><b>价格是含税价</b>录入的单价默认按含税价计算，税额和价税合计会自动算；如果你们是按不含税价核算，请先在“系统→系统参数”里确认口径，再开始正式开单。</div>
+
+      <h3>5.2 销售出库</h3>
+      <figure>
+        <img src="images/windows-manual/16-sales.png" alt="销售出库页面，上方是编辑中的销售单，包含客户、业务员、商品明细" />
+        <figcaption>图 5-2　销售出库。选客户和业务员，填商品、数量、售价；保存并审核后才会扣库存、记应收。</figcaption>
+      </figure>
+      <ol class="steps">
+        <li>点左侧“销售→销售出库”。</li>
+        <li>选择客户、出库仓库、日期和业务员（业务员可不填）。</li>
+        <li>选择商品，填数量和售价。售价可以改，改完合计会自动更新。</li>
+        <li>点“保存并审核”。库存不足时软件会拦截；客户超信用额度时会按系统设置提示或拦截。</li>
+        <li>需要给客户单据时，在下方列表点这一行的“打印”。</li>
+      </ol>
+      <div class="callout warn"><b>库存不足怎么办</b>先查“库存”页确认实际数量，再决定是改数量、换仓库，还是先做其他入库/盘点。不要为了开单把负库存打开，容易把账弄乱。</div>
+
+      <h3>5.3 审核、反审核与草稿</h3>
+      <table>
+        <thead><tr><th style="width:120px">状态</th><th>能做什么</th><th>对库存/往来影响</th></tr></thead>
+        <tbody>
+          <tr><td>草稿</td><td>编辑、删除、审核</td><td>不影响库存，不产生应收应付</td></tr>
+          <tr><td>已审核</td><td>反审核、打印</td><td>已增加/扣减库存，已记应收应付</td></tr>
+        </tbody>
+      </table>
+      <ul>
+        <li>草稿只是临时保存，不影响库存和往来；建议当天确认后及时审核，避免时间久了忘记。</li>
+        <li>反审核会把库存和往来一起冲回。如果后面已经用了这批货，软件可能不允许反审核；先处理后面的单据，再回来反审核。</li>
+        <li>“保存并审核”适合现场一手交钱一手交货；“保存草稿”适合货没到齐、价格没定或需要老板确认的情况。</li>
+      </ul>
+
+      <h3>5.4 查看库存</h3>
+      <figure>
+        <img src="images/windows-manual/17-stock.png" alt="库存页面，上方是库存余额，显示商品、仓库、数量和结存金额" />
+        <figcaption>图 5-3　库存页。“库存余额”看每个商品现在的数量和金额；“库存流水”看每一次入库、出库、调拨、盘点的明细。</figcaption>
+      </figure>
+      <ol class="steps">
+        <li>点左侧“库存→库存”。</li>
+        <li>在“库存余额”里按商品、仓库筛选，查看数量和结存金额。</li>
+        <li>点“库存流水”可以追查某个商品为什么多/少，按日期和单据号核对。</li>
+        <li>需要给老板看时，点“导出 Excel”或“导出 CSV”。</li>
+      </ol>
+
+      <h3>5.5 其他常用单据</h3>
+      <table>
+        <thead><tr><th style="width:150px">单据</th><th>什么时候用</th></tr></thead>
+        <tbody>
+          <tr><td>采购退货</td><td>把货退给供应商，冲减库存和应付</td></tr>
+          <tr><td>销售退货</td><td>客户把货退回来，增加库存、冲减应收</td></tr>
+          <tr><td>采购订单 / 销售订单</td><td>先订货、后到货/送货；订单本身不占库存，转成入库/出库单后才生效</td></tr>
+          <tr><td>调拨</td><td>把货从一个仓库转到另一个仓库，数量不变</td></tr>
+          <tr><td>盘点</td><td>按实盘数调整账面，差异自动生成调整流水</td></tr>
+          <tr><td>其他入库 / 其他出库</td><td>赠品、报损、内部领用等不涉及往来单位的出入库</td></tr>
+          <tr><td>收付款</td><td>登记客户回款、供应商付款，核销应收应付</td></tr>
+          <tr><td>对账单</td><td>按客户/供应商打印一段时间内的往来明细</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="reports">
+      <div class="sec-head"><div class="sec-num">6</div><div><h2>报表与打印</h2><p class="sub">先选日期，再查询；看完可以导出，也可以直接打印。</p></div></div>
+
+      <h3>6.1 常用报表</h3>
+      <figure>
+        <img src="images/windows-manual/18-report.png" alt="报表页面，选择日期区间后显示库存余额表和各报表区块" />
+        <figcaption>图 6-1　报表页。上方选择开始/结束日期，点“查询”刷新；每个报表区块都有自己的“导出 CSV / 导出 Excel / 打印”。</figcaption>
+      </figure>
+      <p>“报表”页包含：</p>
+      <ul>
+        <li><strong>库存余额表：</strong>每个商品、每个仓库的数量和结存金额，月末盘点、核对库存最常用。</li>
+        <li><strong>资金流水：</strong>收付款和账户变动明细。</li>
+        <li><strong>销售毛利：</strong>按单据日期统计销售额、成本、毛利和毛利率。</li>
+        <li><strong>采购汇总：</strong>按供应商/商品/仓库汇总采购数量和金额。</li>
+        <li><strong>应收应付余额与账龄：</strong>看谁欠我们、我们欠谁，以及欠了多久。</li>
+      </ul>
+      <p>“销售报表”页还可以按客户、按业务员或按单据明细查看销售情况，适合算提成和做周报。</p>
+      <div class="callout note"><b>报表数字对不上？</b>先确认日期范围是否包含当天，再确认单据是否已审核。草稿、未审核单据不计入库存和毛利。</div>
+
+      <h3>6.2 打印流程</h3>
+      <figure>
+        <img src="images/windows-manual/19-print.png" alt="采购入库单打印预览，包含公司抬头、单号、供应商、商品明细和合计" />
+        <figcaption>图 6-2　打印版式（打印时实际输出的内容）。抬头来自“系统→系统参数”里的公司名称、电话和地址；单据内容自动带入。</figcaption>
+      </figure>
+      <ol class="steps">
+        <li>在单据列表点这一行的“打印”，或在报表区块点“打印”。</li>
+        <li>先看预览：单号、日期、往来单位、商品、数量、金额是否完整。</li>
+        <li>如果提示“打印内容超出纸张，可能被裁切”，点“继续”直接打印，或点“返回调整”检查纸张和边距。</li>
+        <li>在打印对话框里选择打印机，纸张选 A4，方向按预览选择纵向；建议关闭“页眉和页脚”，避免多出网址和日期。</li>
+        <li>没有打印机时，打印机选“Microsoft Print to PDF”，可以先生成 PDF 发给客户。</li>
+      </ol>
+      <figure>
+        <img src="images/windows-manual/22-settings.png" alt="系统参数页面，可填写公司名称、电话、地址和会话超时时间" />
+        <figcaption>图 6-3　“系统→系统参数”里填写公司名称、电话和地址，打印抬头会自动使用这些内容。</figcaption>
+      </figure>
+      <div class="callout note"><b>想改抬头或落款？</b>先到“系统→系统参数”填公司名称、电话、地址；需要调整模板时再到“系统→打印模板”。改完先打印一张试，确认没问题再批量打。</div>
+    </section>
+
+    <section id="backup">
+      <div class="sec-head"><div class="sec-num">7</div><div><h2>备份、恢复与数据目录</h2><p class="sub">数据是门店的命根子；每天自动备份，换电脑前再手工复制一份。</p></div></div>
+
+      <h3>7.1 数据放在哪里</h3>
+      <p>默认数据目录：<code>C:\Users\你的用户名\AppData\Local\com.simem.xiaotu</code>（安装时如果改过，以你选的目录为准）。里面主要有：</p>
+      <table>
+        <thead><tr><th style="width:180px">文件/文件夹</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td><code>app.db</code></td><td>数据库文件，商品、单据、库存、往来都在里面</td></tr>
+          <tr><td><code>backups\</code></td><td>自动备份和手动备份</td></tr>
+          <tr><td><code>logs\</code></td><td>运行日志，排查问题时给维护人员看</td></tr>
+          <tr><td><code>config.toml</code></td><td>只有改过数据目录或端口时才有</td></tr>
+        </tbody>
+      </table>
+      <div class="callout danger"><b>不要把数据目录放在共享盘、网盘或 OneDrive 同步目录</b>多人同时写、同步冲突或断网都可能损坏数据库。需要多台电脑共用时，用第 2.2 节的网络版，数据只放服务器本机磁盘。</div>
+
+      <h3>7.2 自动备份</h3>
+      <p>软件每天第一次启动时会自动做一次备份，放在数据目录的 <code>backups\</code> 里；默认保留最近 30 份日备份，并每月额外保留 1 份。备份文件是完整的数据库副本，可以直接用来恢复。</p>
+
+      <h3>7.3 从备份恢复</h3>
+      <figure>
+        <img src="images/windows-manual/20-backup.png" alt="备份与恢复页面，列出备份文件，可预检查并恢复" />
+        <figcaption>图 7-1　“系统→备份与恢复”。先选中一份备份，点“预检查”，确认可用后再点“恢复到该备份”。</figcaption>
+      </figure>
+      <ol class="steps">
+        <li>点左侧“系统→备份与恢复”。</li>
+        <li>在备份文件列表里选择日期合适的一份。</li>
+        <li>点“预检查”，看备份日期、数据量和是否可恢复。</li>
+        <li>确认无误后点“恢复到该备份”，再按提示确认。</li>
+        <li>恢复前软件会自动再做一份安全备份；恢复完成后重新登录，核对商品和库存。</li>
+      </ol>
+      <div class="callout warn"><b>恢复会覆盖当前数据</b>恢复前先把当前数据目录整体复制一份到移动硬盘；如果只是误删了一张单，先问维护人员能否从备份里单独找回，不要直接整库恢复。</div>
+
+      <h3>7.4 手工备份与换电脑</h3>
+      <ol class="steps">
+        <li>先完全退出软件（网络版先停止服务器窗口）。</li>
+        <li>把整个数据目录复制到移动硬盘；不要只复制 <code>app.db</code> 一个文件，备份和配置也一起带上。</li>
+        <li>在新电脑上按第 1 章安装同版本软件，安装时把“数据目录”选到和原来一样的路径，或先装好再由维护人员修改配置。</li>
+        <li>把复制的数据目录放回对应位置，打开软件核对数据。</li>
+      </ol>
+      <p class="sub">如果只是偶尔手工备份，建议在每天关店后做一次，文件名带上日期，例如“小兔数据-2026-11-14”。</p>
+    </section>
+
+    <section id="update">
+      <div class="sec-head"><div class="sec-num">8</div><div><h2>软件更新</h2><p class="sub">这一版不自动下载更新；收到新安装包后覆盖安装即可，数据会保留。</p></div></div>
+      <figure class="shot-small">
+        <img src="images/windows-manual/21-update.png" alt="关于与诊断页中的软件更新区域，显示当前版本0.9.0" />
+        <figcaption>图 8-1　“系统→关于与诊断”里的软件更新区域，可以看到当前版本号。</figcaption>
+      </figure>
+      <h3>怎么升级</h3>
+      <ol class="steps">
+        <li>先按第 7 章做一次备份，尤其是网络版。</li>
+        <li>退出软件；网络版在服务器窗口按 Ctrl+C 停止服务。</li>
+        <li>双击新版本的安装包，按向导覆盖安装。不要先卸载旧版。</li>
+        <li>重新打开软件，在“关于与诊断”里确认版本号已经变化。</li>
+        <li>网络版重启服务器窗口，客户端刷新浏览器页面即可。</li>
+      </ol>
+      <div class="callout note"><b>为什么没有“检查更新”按钮？</b>这一版安装包没有配置自动更新源，关于页只显示当前版本。升级请以供货方提供的新安装包为准；不要从不明来源下载安装包。</div>
+      <div class="callout warn"><b>升级前看版本要求</b>如果新版本提示需要更新的 Windows 或 WebView2，请先按提示安装；升级过程中不要断电，也不要同时打开旧版软件。</div>
+    </section>
+
+    <section id="faq">
+      <div class="sec-head"><div class="sec-num">9</div><div><h2>常见问题</h2><p class="sub">先按这里的顺序排查；涉及命令的，请让电脑管理员操作。</p></div></div>
+
+      <div class="q">
+        <h4>双击图标没反应，或窗口一片空白</h4>
+        <p>多数是电脑缺少 WebView2 运行组件。Windows 11 一般自带，部分 Windows 10 没有。请到微软官方地址下载安装：<br><code>https://go.microsoft.com/fwlink/p/?LinkId=2124703</code><br>装完重新双击图标。装不上或不想装，也可以让维护人员用浏览器方式打开：在安装目录运行 <code>xiaotu-server.exe --server --port 8080</code>，再用浏览器访问 <code>http://localhost:8080/</code>。</p>
+      </div>
+
+      <div class="q">
+        <h4>提示端口被占用，网络版起不来</h4>
+        <p>说明 8080 已经被别的程序或另一个小兔服务占用。先确认没有重复打开服务窗口；仍然不行就换一个端口，例如：<br><code>.\xiaotu-server.exe --server --port 8081</code><br>客户端地址也要改成 <code>http://服务器IP:8081/</code>。如果安装时改过数据目录，命令末尾还要加 <code>--data "你的数据目录"</code>。</p>
+      </div>
+
+      <div class="q">
+        <h4>局域网里其他电脑打不开</h4>
+        <p>按顺序检查：① 两台电脑是否连同一个路由器/交换机；② 服务器窗口是否还开着；③ 地址是否用了服务器的 IP，而不是 <code>127.0.0.1</code>；④ Windows 防火墙是否放行 8080 端口。管理员可在服务器上以管理员身份运行：<br><code>netsh advfirewall firewall add rule name="小兔进销存 8080" dir=in action=allow protocol=TCP localport=8080</code></p>
+      </div>
+
+      <div class="q">
+        <h4>数据能放在共享盘或网盘吗</h4>
+        <p>不建议。数据库文件不适合多台电脑同时读写，网盘同步时还可能产生冲突文件，导致数据损坏。单机版请放本机磁盘；多台电脑共用请用网络版，数据只放服务器本机。</p>
+      </div>
+
+      <div class="q">
+        <h4>忘记本机口令 / 管理员口令</h4>
+        <p>不要删数据。按第 2.3 节由管理员重置：退出软件后执行 <code>xiaotu-server.exe --set-password admin</code>，再重新打开。重置只改口令，不影响业务数据。</p>
+      </div>
+
+      <div class="q">
+        <h4>打印没反应，或内容被裁掉</h4>
+        <p>先在预览里看是否提示“超出纸张”。点“返回调整”，把纸张设为 A4，边距调小；仍不行就点“继续”，但打印后要检查边缘有没有缺字。没有打印机时选“Microsoft Print to PDF”先生成 PDF 检查。</p>
+      </div>
+
+      <div class="q">
+        <h4>安装时 Windows 提示“已保护你的电脑”</h4>
+        <p>安装包目前没有数字签名，Windows 会按惯例拦截。确认安装包来自可信渠道后，点“更多信息”→“仍要运行”。如果公司有安全软件，请让管理员放行。</p>
+      </div>
+
+      <div class="q">
+        <h4>软件能同时开两个吗</h4>
+        <p>同一台电脑、同一个数据目录只允许一个实例，重复双击会回到已经打开的窗口。需要多人同时使用，请按第 2.2 节使用网络版，不要复制多份程序分别录数据。</p>
+      </div>
+    </section>
+
+    <section id="appendix">
+      <div class="sec-head"><div class="sec-num">附</div><div><h2>一分钟上手清单</h2><p class="sub">第一次使用按这个顺序做，不容易漏。</p></div></div>
+      <ol class="steps">
+        <li><strong>装好软件：</strong>安装包→Next→选数据目录→Install→Finish。</li>
+        <li><strong>建资料：</strong>商品→客户→供应商；有期初库存的再做“期初导入”。</li>
+        <li><strong>进货：</strong>采购→采购入库→选供应商/仓库→填商品和进价→保存并审核。</li>
+        <li><strong>卖货：</strong>销售→销售出库→选客户→填商品和售价→保存并审核。</li>
+        <li><strong>查账：</strong>库存看数量，报表看库存余额和毛利。</li>
+        <li><strong>备份：</strong>每天自动备份；换电脑前把整个数据目录复制到移动硬盘。</li>
+        <li><strong>出问题：</strong>先看第 9 章；涉及口令、端口、防火墙的，交给电脑管理员。</li>
+      </ol>
+      <div class="callout good"><b>最后提醒</b>不要把数据目录放共享盘/网盘；不要删数据目录来解决口令问题；升级前先备份。做到这三条，日常使用基本不会出大问题。</div>
+      <p class="sub" style="margin-top:18px">本手册对应小兔进销存 Windows 版 0.9.0（构建 2026111301）。如果界面与手册略有差异，以软件实际显示为准。</p>
+      <a class="to-top" href="#start">返回顶部 ↑</a>
+    </section>
+  </main>
+</div>
+
+<footer class="footer">
+  <p>小兔进销存 Windows 用户手册 · 适用于 0.9.0 · 2026-11-14</p>
+</footer>
+
+</body>
+</html>
