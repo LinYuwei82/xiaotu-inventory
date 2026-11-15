@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <Security/Security.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <WebKit/WebKit.h>
 
 #include <string>
@@ -49,6 +50,58 @@ static BOOL XiaotuConfirmExitIfDirty(void) {
   }
   return quit;
 }
+
+@interface XiaotuOpenPanelDelegate : NSObject <WKUIDelegate>
+@end
+
+// WKWebView 不会自己处理 <input type="file"> 的 click；必须由 UIDelegate
+// 弹 NSOpenPanel，否则前端调用 fileInput.click() 完全没有反应。
+// 主数据导入只接受服务端能解析的 .xlsx，这里也不放开其他类型。
+@implementation XiaotuOpenPanelDelegate
+- (void)webView:(WKWebView*)webView
+    runOpenPanelWithParameters:(WKOpenPanelParameters*)parameters
+             initiatedByFrame:(WKFrameInfo*)frame
+            completionHandler:(void (^)(NSArray<NSURL*>* _Nullable URLs))completionHandler {
+  (void)frame;
+  NSOpenPanel* panel = [NSOpenPanel openPanel];
+  panel.canChooseFiles = YES;
+  panel.canChooseDirectories = NO;
+  panel.allowsMultipleSelection = parameters.allowsMultipleSelection;
+  UTType* xlsx = [UTType typeWithIdentifier:@"org.openxmlformats.spreadsheetml.sheet"];
+  if (xlsx != nil) {
+    panel.allowedContentTypes = @[ xlsx ];
+  }
+  panel.allowsOtherFileTypes = NO;
+  NSURL* downloads = [[NSFileManager defaultManager] URLForDirectory:NSDownloadsDirectory
+                                                            inDomain:NSUserDomainMask
+                                                   appropriateForURL:nil
+                                                              create:NO
+                                                               error:NULL];
+  if (downloads == nil) {
+    downloads = [[NSFileManager defaultManager] URLForDirectory:NSDocumentDirectory
+                                                       inDomain:NSUserDomainMask
+                                              appropriateForURL:nil
+                                                         create:NO
+                                                          error:NULL];
+  }
+  if (downloads != nil) {
+    panel.directoryURL = downloads;
+  }
+  void (^done)(NSModalResponse) = ^(NSModalResponse result) {
+    if (result == NSModalResponseOK && panel.URLs.count > 0) {
+      completionHandler(panel.URLs);
+    } else {
+      // 取消：把空结果交回 WebKit，前端不会触发 change，也就不会发导入请求。
+      completionHandler(nil);
+    }
+  };
+  if (webView.window != nil) {
+    [panel beginSheetModalForWindow:webView.window completionHandler:done];
+  } else {
+    [panel beginWithCompletionHandler:done];
+  }
+}
+@end
 
 @interface XiaotuWindowDelegate : NSObject <NSWindowDelegate>
 @end
@@ -563,6 +616,12 @@ int run_webview(const std::string& url, const std::string& title) {
                                             name:@"xiaotuKeychain"];
     configuration.userContentController = controller;
     WKWebView* webview = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
+    // UIDelegate 是 weak，静态变量负责持有；没有它，导入按钮的 fileInput.click() 不会弹面板。
+    static XiaotuOpenPanelDelegate* g_openPanelDelegate = nil;
+    if (g_openPanelDelegate == nil) {
+      g_openPanelDelegate = [[XiaotuOpenPanelDelegate alloc] init];
+    }
+    [webview setUIDelegate:g_openPanelDelegate];
     [webview setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
     [window setContentView:webview];
     script_handler.webview = webview;
