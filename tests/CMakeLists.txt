@@ -80,6 +80,12 @@ target_link_libraries(xiaotu_update_download_smoke PRIVATE xiaotu_server Threads
 
 add_test(NAME update_download_smoke COMMAND xiaotu_update_download_smoke)
 
+add_executable(xiaotu_update_signature_test
+               "${CMAKE_CURRENT_SOURCE_DIR}/update_signature_test.cpp")
+target_link_libraries(xiaotu_update_signature_test PRIVATE xiaotu_core Threads::Threads)
+
+add_test(NAME update_signature COMMAND xiaotu_update_signature_test)
+
 add_executable(xiaotu_process_capture_smoke
                "${CMAKE_CURRENT_SOURCE_DIR}/process_capture_smoke.cpp")
 target_link_libraries(xiaotu_process_capture_smoke PRIVATE xiaotu_server Threads::Threads)

@@ -102,6 +102,7 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/stock_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/token_hash.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/update.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/update_signature.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/user_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/xlsx_reader.cpp"
   ${XIAOTU_GENERATED_CORE_SOURCES}
@@ -149,4 +150,16 @@ if(nlohmann_json_FOUND)
 else()
   target_include_directories(xiaotu_core PUBLIC "${THIRD_PARTY}")
   message(STATUS "nlohmann/json: third_party 内嵌头文件")
+endif()
+
+# Ed25519 验签：优先系统/brew OpenSSL（含 EVP Ed25519）；缺失时静默降级，
+# 客户端跳过 C++ 侧验签但 Sparkle（接入后）会自行校验 appcast.xml EdDSA。
+# Windows/macOS 开发机一般通过 brew / vcpkg / 系统自带提供 OpenSSL。
+find_package(OpenSSL QUIET)
+if(OpenSSL_FOUND AND OpenSSL_VERSION VERSION_GREATER_EQUAL "3.0")
+  target_link_libraries(xiaotu_core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+  target_compile_definitions(xiaotu_core PRIVATE XIAOTU_HAS_OPENSSL=1)
+  message(STATUS "OpenSSL (Ed25519): ${OpenSSL_VERSION} (${OpenSSL_INCLUDE_DIR})")
+else()
+  message(STATUS "OpenSSL >=3.0 未找到，Ed25519 验签降级为 stub")
 endif()
