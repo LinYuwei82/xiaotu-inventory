@@ -91,6 +91,7 @@ verifier_script = "/opt/xiaotu/tools/package/update_manifest.py"
 
 - `manifest_file` 每次请求重新读取，替换文件后无需重启。
 - 其余配置在进程启动时读取，修改后需重启服务。
+- `auto_check` / `prefetch` 在服务启动时读取，运行中不提供切换；修改后必须重启 `xiaotu-server` 才生效，`GET /api/update/status` 只读回显当前值。
 - `public_key_file`、`verifier_python`、`verifier_script` 缺一不可，否则按错误码拒绝。
 
 ### 3. 公钥生成、保管与更换
