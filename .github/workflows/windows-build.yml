@@ -47,6 +47,26 @@ jobs:
         with:
           arch: x64
 
+      # Ed25519 验签依赖 OpenSSL 3.0，CMake 侧已改为 REQUIRED：这里必须装上真实库，
+      # 否则配置阶段就会失败（而不是悄悄编成 stub）。Chocolatey 的 openssl 包安装到
+      # Program Files\OpenSSL-Win64；把 bin 加进 PATH，测试运行时才能找到
+      # libcrypto-3-x64.dll。
+      - name: Install OpenSSL 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install openssl --yes --no-progress
+          $root = $null
+          foreach ($p in @("$env:ProgramFiles\OpenSSL-Win64", "$env:ProgramFiles\OpenSSL")) {
+            if (Test-Path (Join-Path $p 'include\openssl\evp.h')) { $root = $p; break }
+          }
+          if (-not $root) { throw '未找到 OpenSSL 安装目录（include\openssl\evp.h）' }
+          $ver = (& (Join-Path $root 'bin\openssl.exe') version) -join ' '
+          if ($ver -notmatch '^OpenSSL 3\.') { throw "OpenSSL 版本不是 3.x：$ver" }
+          "OPENSSL_ROOT_DIR=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Join-Path $root 'bin' | Out-File -FilePath $env:GITHUB_PATH -Append
+          Write-Host "OpenSSL：$ver（$root）"
+
       - name: 计算构建号
         shell: bash
         run: echo "XIAOTU_BUILD=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"
@@ -147,6 +167,12 @@ jobs:
       - name: 计算构建号
         shell: bash
         run: echo "XIAOTU_BUILD=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"
+
+      # macOS 自带的是 LibreSSL，必须用 Homebrew 的 OpenSSL 3（CMake 侧已 REQUIRED）。
+      - name: Install OpenSSL 3
+        run: |
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
 
       - name: Configure
         run: cmake --preset macos-release -DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=${{ env.XIAOTU_BUILD }}

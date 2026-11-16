@@ -152,19 +152,14 @@ else()
   message(STATUS "nlohmann/json: third_party 内嵌头文件")
 endif()
 
-# Ed25519 验签：优先系统/brew OpenSSL（含 EVP Ed25519）；缺失时静默降级，
-# 客户端跳过 C++ 侧验签但 Sparkle（接入后）会自行校验 appcast.xml EdDSA。
-# Windows/macOS 开发机一般通过 brew / vcpkg / 系统自带提供 OpenSSL。
+# Ed25519 清单验签依赖 OpenSSL 3.0 的 EVP 接口。缺失时不再静默降级：配置阶段
+# 直接失败，避免 CI 在「永远返回成功」的 stub 上把验签测试跑成假通过。
 # macOS 发布包必须能在没有 brew 的机器上运行，因此强制静态链接 OpenSSL，
 # 避免产物依赖 /opt/homebrew/.../libssl.dylib。
 if(APPLE)
   set(OPENSSL_USE_STATIC_LIBS TRUE)
 endif()
-find_package(OpenSSL QUIET)
-if(OpenSSL_FOUND AND OpenSSL_VERSION VERSION_GREATER_EQUAL "3.0")
-  target_link_libraries(xiaotu_core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-  target_compile_definitions(xiaotu_core PRIVATE XIAOTU_HAS_OPENSSL=1)
-  message(STATUS "OpenSSL (Ed25519): ${OpenSSL_VERSION} (${OpenSSL_INCLUDE_DIR})")
-else()
-  message(STATUS "OpenSSL >=3.0 未找到，Ed25519 验签降级为 stub")
-endif()
+find_package(OpenSSL 3.0 REQUIRED)
+target_link_libraries(xiaotu_core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+target_compile_definitions(xiaotu_core PRIVATE XIAOTU_HAS_OPENSSL=1)
+message(STATUS "OpenSSL (Ed25519): ${OPENSSL_VERSION} (${OPENSSL_INCLUDE_DIR})")

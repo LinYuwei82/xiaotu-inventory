@@ -72,14 +72,15 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | ccache | 任意 | 编译缓存 |
 | Python | 3.10+ | 仅代码生成器需要 |
 | Jinja2 | 见 `tools/codegen/requirements.txt` | 仅代码生成器需要 |
+| OpenSSL | 3.0+ | Ed25519 清单验签（配置阶段 REQUIRED）；macOS 用 `openssl@3`，Windows 用 Chocolatey / vcpkg |
 
-可选：安装 vcpkg 并设置 `VCPKG_ROOT` 后，`nlohmann/json`、`cpp-httplib` 会优先使用 vcpkg 版本；未安装时自动回落到 `third_party/` 内嵌头文件，构建不依赖网络。
+可选：安装 vcpkg 并设置 `VCPKG_ROOT` 后，`nlohmann/json`、`cpp-httplib` 会优先使用 vcpkg 版本；未安装时自动回落到 `third_party/` 内嵌头文件，构建不依赖网络。OpenSSL 不在回落范围内，缺失时配置会直接失败。
 
 ```bash
-brew install cmake ninja ccache
+brew install cmake ninja ccache openssl@3
 ```
 
-Windows 只构建服务端与测试时另需 CMake 3.25+、Ninja、Visual Studio 2022 Build Tools（MSVC，C++20）；若要构建 `shell/win` 桌面壳，还需要 WebView2 SDK 与目标机器上的 WebView2 Runtime（见下方「Windows 桌面壳」）。
+Windows 只构建服务端与测试时另需 CMake 3.25+、Ninja、Visual Studio 2022 Build Tools（MSVC，C++20）与 OpenSSL 3.0（`choco install openssl`，或 `vcpkg` 并设置 `OPENSSL_ROOT_DIR`）；若要构建 `shell/win` 桌面壳，还需要 WebView2 SDK 与目标机器上的 WebView2 Runtime（见下方「Windows 桌面壳」）。
 不需要 Xcode、ccache 或 vcpkg，`cpp-httplib`、`nlohmann/json`、SQLite、Argon2 均已内嵌在 `third_party/`。
 
 ## 2. 构建

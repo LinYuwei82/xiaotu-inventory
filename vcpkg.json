@@ -4,6 +4,7 @@
   "description": "小兔进销存（单机版 / 网络版）",
   "dependencies": [
     "cpp-httplib",
-    "nlohmann-json"
+    "nlohmann-json",
+    "openssl"
   ]
 }
