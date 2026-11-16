@@ -41,6 +41,7 @@ constexpr NSTimeInterval kCheckInterval = 86400;  // 24h
 constexpr NSTimeInterval kJitter = 7200;          // ±2h
 constexpr NSTimeInterval kRequestTimeout = 10;
 constexpr NSTimeInterval kManualCooldown = 600;  // 10min
+constexpr NSTimeInterval kFirstCheckDelay = 30;  // 首次安装后的首轮检查延迟
 constexpr int kMaxLaunchFailures = 3;
 
 // status.last_result 与 checkNow 的 code 取值，和交接单第 2、3 节保持一致。
@@ -491,7 +492,9 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
 - (void)scheduleNextCheckIfNeeded {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   if ([defaults doubleForKey:kNextCheckKey] <= 0) {
-    [self scheduleNextCheck];
+    // 首次安装：启动后 30 秒做首轮检查，避免新装用户要等满 24 小时；
+    // 之后由 checkIfDue 重新按 24h±2h 排期。
+    [defaults setDouble:now_epoch() + kFirstCheckDelay forKey:kNextCheckKey];
   }
 }
 
