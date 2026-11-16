@@ -6861,9 +6861,112 @@
 
   // 软件更新：状态、下载、安装都在服务端完成；前端只展示结果与发起动作。
   // 不自动安装：下载后仍需管理员点「安装更新」并二次确认。
+  // 原生自动更新卡片：由壳内 XiaotuUpdater 提供状态、检查与安装。
+  function renderNativeUpdate(card, nativeBridge) {
+    const resultText = (status) => {
+      const labels = {
+        UPDATE_AVAILABLE: "发现新版本",
+        NO_UPDATE: "已是最新版本",
+        CHECK_FAILED: "检查失败（网络或清单验签未通过）",
+        PAUSED: "自动更新已暂停（连续启动失败）",
+        SKIPPED: "已跳过该版本",
+        INCOMPATIBLE_SCHEMA: "版本不兼容，需先升级到中间版本",
+        INTERMEDIATE_REQUIRED: "需先安装中间版本",
+        NOT_CONFIGURED: "未配置更新源",
+      };
+      const last = status && status.last_result;
+      return last ? labels[last] || last : "尚未检查";
+    };
+
+    function render(status) {
+      status = status || { update_available: false };
+      const rows = [
+        ["检查通道", status.channel || "stable"],
+        [
+          "上次检查",
+          status.last_check_at ? new Date(status.last_check_at * 1000).toLocaleString() : "—",
+        ],
+        ["检查结果", resultText(status)],
+        [
+          "待安装版本",
+          status.update_available
+            ? `${status.pending_version}（构建 ${status.pending_build}）`
+            : "—",
+        ],
+      ];
+      card.innerHTML = `
+        <div class="page-head" style="margin-bottom:8px">
+          <div>
+            <h2>软件更新</h2>
+            <p class="page-sub">检查通过签名校验后，由系统完成替换并自动重启</p>
+          </div>
+        </div>
+        <table class="table"><tbody>${rows
+          .map(
+            ([label, value]) =>
+              `<tr><th style="width: 120px">${escapeHtml(label)}</th><td>${escapeHtml(
+                value
+              )}</td></tr>`
+          )
+          .join("")}</tbody></table>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
+          <button class="btn" type="button" data-role="check">检查更新</button>
+          <button class="btn primary" type="button" data-role="install" ${
+            status.update_available ? "" : "disabled"
+          }>安装更新</button>
+        </div>`;
+
+      const checkButton = card.querySelector('[data-role="check"]');
+      checkButton.addEventListener("click", () => {
+        checkButton.disabled = true;
+        checkButton.textContent = "检查中…";
+        nativeBridge.xiaotuUpdateCheckNow.postMessage({});
+      });
+      card.querySelector('[data-role="install"]').addEventListener("click", async () => {
+        const confirmed = await askConfirm(
+          "安装更新后应用会自动退出并重启，是否继续？",
+          { okText: "安装", cancelText: "取消" }
+        );
+        if (!confirmed) return;
+        nativeBridge.xiaotuUpdateInstall.postMessage({});
+      });
+    }
+
+    window.xiaotuUpdateStatusDone = (payload) => render(payload && payload.status);
+    window.xiaotuUpdateCheckDone = (payload) => {
+      const status = (payload && payload.status) || {};
+      render(status);
+      if (payload && payload.code === "COOLDOWN") {
+        showNotice("检查过于频繁，请稍后再试", "error");
+      } else if (payload && payload.update_available) {
+        showNotice("发现新版本，可点「安装更新」完成替换", "ok");
+      } else if (payload && payload.ok === false) {
+        showNotice(resultText(status), "error");
+      } else {
+        showNotice(resultText(status), "ok");
+      }
+    };
+    window.xiaotuUpdateInstallDone = (payload) => {
+      if (payload && payload.ok === false) {
+        showNotice("无法启动安装流程：" + (payload.code || ""), "error");
+      }
+    };
+    nativeBridge.xiaotuUpdateStatus.postMessage({});
+  }
+
   async function renderUpdateCard(mount) {
     const card = mount.querySelector('[data-role="update"]');
     if (!card) return;
+    // 桌面壳内：检查走壳内清单验签（Ed25519），安装交给 Sparkle 做原子替换与重启；
+    // 浏览器访问时没有该桥，仍走服务端更新源。
+    const nativeBridge =
+      typeof window.webkit !== "undefined" && window.webkit.messageHandlers
+        ? window.webkit.messageHandlers
+        : null;
+    if (nativeBridge && nativeBridge.xiaotuUpdateCheckNow) {
+      renderNativeUpdate(card, nativeBridge);
+      return;
+    }
     const canManage = can("setting.write");
     let polling = false;
 
