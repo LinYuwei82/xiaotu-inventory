@@ -10,8 +10,10 @@
 #
 # 目录结构（与 index.html 已在用的保持一致）：
 #   oss://<bucket>/<product>/<app>-<ver>.dmg                ← 长缓存 / immutable
-#   oss://<bucket>/<product>/updates/<channel>/latest.json  ← 5 分钟缓存
-#   oss://<bucket>/<product>/updates/<channel>/appcast.xml  ← 5 分钟缓存
+#   oss://<bucket>/<product>/updates/<channel>/latest.json  ← 60 秒缓存
+#   oss://<bucket>/<product>/updates/<channel>/appcast.xml  ← 60 秒缓存
+#
+# 发布后还会同步桶根目录 index.html 里该产品的字节数 / SHA256（UPDATE_INDEX_PAGE=false 可关闭）。
 #
 # 依赖：ossutil、python3 + cryptography（tools/package/.venv）、openssl、shasum、PlistBuddy
 #
@@ -21,6 +23,9 @@
 #
 #   # dry-run：只本地生成 + 验签，不碰 OSS
 #   OSS_SKIP=true PRODUCT=xiaotu tools/package/publish_oss.sh
+#
+#   # 关闭下载页数字同步
+#   UPDATE_INDEX_PAGE=false PRODUCT=xiaotu tools/package/publish_oss.sh
 
 set -euo pipefail
 
@@ -84,6 +89,8 @@ API_MAX="${API_MAX:-1}"
 MANDATORY="${MANDATORY:-}"
 RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-}"
 PURGE="${PURGE:-true}"
+# 发布后自动把 index.html 里小兔包的字节数/SHA256 改成新包的值
+UPDATE_INDEX_PAGE="${UPDATE_INDEX_PAGE:-true}"
 
 # ---- 依赖检查 ----
 VENV_PY="$REPO_ROOT/tools/package/.venv/bin/python"
@@ -275,7 +282,64 @@ if [ "$OSS_SKIP" != "true" ]; then
   fi
 fi
 
-# ---- ⑥ 完成 ----
+# ---- ⑥ 同步下载页数字 ----
+# index.html 里小兔包卡片硬编码了字节数与 SHA256，发布后自动改写，避免每次手改。
+if [ "$OSS_SKIP" != "true" ] && [ "$UPDATE_INDEX_PAGE" = "true" ]; then
+  echo ""
+  echo "===== ⑥ 同步下载页 index.html（小兔包大小与 SHA256）"
+  "$OSS_PY" - "$OSS_BUCKET" "$OSS_REGION" "$OSS_ACCESS_KEY_ID" "$OSS_ACCESS_KEY_SECRET" \
+    "$DMG_SIZE" "$DMG_SHA256" <<'PY_EOF'
+import re
+import sys
+import oss2
+
+bucket_name, region, ak, sk, size_s, sha = sys.argv[1:]
+size = int(size_s)
+bkt = oss2.Bucket(oss2.Auth(ak, sk), f"https://oss-{region}.aliyuncs.com", bucket_name)
+try:
+    html = bkt.get_object("index.html").read().decode("utf-8")
+except oss2.exceptions.NoSuchKey:
+    print("  跳过：桶根目录没有 index.html")
+    raise SystemExit(0)
+
+idx = html.find('id="sha-xiaotu-mac"')
+if idx < 0:
+    print('  跳过：index.html 里没有 id="sha-xiaotu-mac"')
+    raise SystemExit(0)
+
+before = html[:idx]
+pattern = re.compile(r'(<span class="mono">)\d[\d,]*(</span> 字节（约 )[\d.]+( MB）)')
+matches = list(pattern.finditer(before))
+if not matches:
+    print("  跳过：未找到小兔包的字节数展示位")
+    raise SystemExit(0)
+m = matches[-1]
+new_size = f"{size:,}"
+new_mb = f"{size / (1024 * 1024):.1f}"
+before = (before[:m.start()] + m.group(1) + new_size + m.group(2) + new_mb +
+          m.group(3) + before[m.end():])
+
+after = html[idx:]
+after = re.sub(r'(id="sha-xiaotu-mac"\s+title=")[0-9a-f]{64}(")',
+               r'\g<1>' + sha + r'\g<2>', after, count=1)
+after = re.sub(r'(id="sha-xiaotu-mac"[^>]*>)[0-9a-f]{64}(</code>)',
+               r'\g<1>' + sha + r'\g<2>', after, count=1)
+
+html2 = before + after
+if html2 == html:
+    print(f"  无需更新：下载页已是 {new_size} 字节 / {new_mb} MB")
+else:
+    bkt.put_object("index.html", html2.encode("utf-8"),
+                   headers={"Content-Type": "text/html; charset=utf-8",
+                            "Cache-Control": "no-cache, max-age=60"})
+    print(f"  ✓ index.html 已更新：{new_size} 字节 / {new_mb} MB / {sha[:16]}…")
+PY_EOF
+else
+  echo ""
+  echo "===== ⑥ [跳过] 下载页数字同步（UPDATE_INDEX_PAGE=false 或 dry-run）"
+fi
+
+# ---- ⑦ 完成 ----
 echo ""
 echo "================ 发布完成 ================"
 echo "版本 / build / channel：  $VERSION / $BUILD / $CHANNEL"
