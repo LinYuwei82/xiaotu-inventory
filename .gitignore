@@ -19,3 +19,6 @@ backups/
 
 # 本地 OSS 凭据（不要提交）
 .config/xiaotu-updates/
+
+# Windows 打包产物（安装包 / 绿色包，不入库）
+packaging/win/out/
