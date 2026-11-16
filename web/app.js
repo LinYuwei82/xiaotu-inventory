@@ -7542,6 +7542,8 @@
     mount.innerHTML = `
       <div class="page-head">
         <div>
+          <img src="/icons/about-512.png" alt="小兔进销存" width="64" height="64"
+               style="display:block;margin-bottom:10px;border-radius:15px" />
           <h2>关于与诊断</h2>
           <p class="page-sub">只读信息，可直接复制贴给维护人员；不包含口令、密钥或会话令牌</p>
         </div>
