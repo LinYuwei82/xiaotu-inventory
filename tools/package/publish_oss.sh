@@ -13,7 +13,8 @@
 #   oss://<bucket>/<product>/updates/<channel>/latest.json  ← 60 秒缓存
 #   oss://<bucket>/<product>/updates/<channel>/appcast.xml  ← 60 秒缓存
 #
-# 发布后还会同步桶根目录 index.html 里该产品的字节数 / SHA256（UPDATE_INDEX_PAGE=false 可关闭）。
+# 发布后还会同步桶根目录 index.html 里该产品的字节数 / SHA256（UPDATE_INDEX_PAGE=false 可关闭），
+# 并下载一次新包预热 CDN 边缘缓存（WARMUP=false 关闭）。
 #
 # 依赖：ossutil、python3 + cryptography（tools/package/.venv）、openssl、shasum、PlistBuddy
 #
@@ -91,6 +92,9 @@ RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-}"
 PURGE="${PURGE:-true}"
 # 发布后自动把 index.html 里小兔包的字节数/SHA256 改成新包的值
 UPDATE_INDEX_PAGE="${UPDATE_INDEX_PAGE:-true}"
+# 发布后下载一次 dmg 预热 CDN 边缘缓存（WARMUP=false 关闭，WARM_TIMEOUT 单位秒）
+WARMUP="${WARMUP:-true}"
+WARM_TIMEOUT="${WARM_TIMEOUT:-300}"
 
 # ---- 依赖检查 ----
 VENV_PY="$REPO_ROOT/tools/package/.venv/bin/python"
@@ -339,7 +343,36 @@ else
   echo "===== ⑥ [跳过] 下载页数字同步（UPDATE_INDEX_PAGE=false 或 dry-run）"
 fi
 
-# ---- ⑦ 完成 ----
+# ---- ⑦ 预热 CDN ----
+# 发布后主动下载一次新包，让边缘节点先缓存，避免首个用户吃冷启动（香港节点尤其明显）。
+if [ "$OSS_SKIP" != "true" ] && [ "$WARMUP" = "true" ]; then
+  echo ""
+  echo "===== ⑦ 预热 CDN（下载一次新包写入边缘缓存）"
+  if command -v curl >/dev/null 2>&1; then
+    WARM_ERR="$(mktemp)"
+    set +e
+    WARM_RESULT="$(curl -sS -L -o /dev/null --max-time "$WARM_TIMEOUT" \
+      -w '%{http_code} %{size_download} %{speed_download} %{time_total}' \
+      "$DMG_PUBLIC_URL" 2>"$WARM_ERR")"
+    WARM_RC=$?
+    set -e
+    read -r WARM_CODE WARM_BYTES WARM_SPEED WARM_TIME <<<"$WARM_RESULT"
+    if [ "$WARM_RC" -eq 0 ] && [ "${WARM_CODE:-0}" = "200" ]; then
+      WARM_MBPS="$(awk -v s="${WARM_SPEED:-0}" 'BEGIN{printf "%.2f", s/1048576}')"
+      echo "  ✓ 已预热：HTTP $WARM_CODE · $WARM_BYTES 字节 · ${WARM_TIME}s · ${WARM_MBPS} MB/s"
+    else
+      echo "  ! 预热未完成（curl exit=$WARM_RC，HTTP ${WARM_CODE:-?}）：$(tr '\n' ' ' <"$WARM_ERR")"
+    fi
+    rm -f "$WARM_ERR"
+  else
+    echo "  (未安装 curl，跳过预热)"
+  fi
+else
+  echo ""
+  echo "===== ⑦ [跳过] CDN 预热（WARMUP=false 或 dry-run）"
+fi
+
+# ---- ⑧ 完成 ----
 echo ""
 echo "================ 发布完成 ================"
 echo "版本 / build / channel：  $VERSION / $BUILD / $CHANNEL"
