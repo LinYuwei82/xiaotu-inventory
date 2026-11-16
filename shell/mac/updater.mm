@@ -54,8 +54,9 @@ NSString* const kResultSkipped = @"SKIPPED";
 NSString* const kResultIncompatible = @"INCOMPATIBLE_SCHEMA";
 NSString* const kResultIntermediate = @"INTERMEDIATE_REQUIRED";
 
-NSDictionary* fetch_json(NSURL* url) {
+NSDictionary* fetch_json(NSURL* url, NSString** errorOut) {
   __block NSDictionary* result = nil;
+  __block NSString* failure = nil;
   dispatch_semaphore_t done = dispatch_semaphore_create(0);
   NSURLSessionConfiguration* config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
   config.timeoutIntervalForRequest = kRequestTimeout;
@@ -66,7 +67,25 @@ NSDictionary* fetch_json(NSURL* url) {
                                        timeoutInterval:kRequestTimeout];
   [[session dataTaskWithRequest:request
               completionHandler:^(NSData* data, NSURLResponse* response, NSError* error) {
-                if (error == nil && data != nil) {
+                if (error != nil) {
+                  failure = [NSString stringWithFormat:@"网络错误 %ld：%@",
+                             static_cast<long>(error.code),
+                             error.localizedDescription ?: @"unknown"];
+                } else if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
+                  const NSInteger status = static_cast<NSHTTPURLResponse*>(response).statusCode;
+                  if (status != 200) {
+                    failure = [NSString stringWithFormat:@"HTTP %ld", static_cast<long>(status)];
+                  } else if (data != nil) {
+                    NSDictionary* parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+                    if ([parsed isKindOfClass:[NSDictionary class]]) {
+                      result = parsed;
+                    } else {
+                      failure = @"响应不是 JSON 对象";
+                    }
+                  } else {
+                    failure = @"响应为空";
+                  }
+                } else if (data != nil) {
                   NSDictionary* parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
                   if ([parsed isKindOfClass:[NSDictionary class]]) {
                     result = parsed;
@@ -74,9 +93,16 @@ NSDictionary* fetch_json(NSURL* url) {
                 }
                 dispatch_semaphore_signal(done);
               }] resume];
-  dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW,
-                                              static_cast<int64_t>((kRequestTimeout + 1) * NSEC_PER_SEC)));
+  const long wait = dispatch_semaphore_wait(
+      done, dispatch_time(DISPATCH_TIME_NOW,
+                          static_cast<int64_t>((kRequestTimeout + 1) * NSEC_PER_SEC)));
+  if (wait != 0) {
+    failure = [NSString stringWithFormat:@"请求超时（%gs）", kRequestTimeout];
+  }
   [session invalidateAndCancel];
+  if (result == nil && errorOut != nullptr) {
+    *errorOut = failure ?: @"未知原因";
+  }
   return result;
 }
 
@@ -542,9 +568,17 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
     }
   };
 
-  NSDictionary* manifest = fetch_json([NSURL URLWithString:manifestURL]);
+  NSString* fetchError = nil;
+  NSDictionary* manifest = fetch_json([NSURL URLWithString:manifestURL], &fetchError);
   if (manifest == nil) {
-    xiaotu::log_warn("更新：清单获取失败，按下一周期重试");
+    // 首次启动常见冷 DNS / CDN 首包慢，重试一次再判失败，避免误判后等 24 小时
+    [NSThread sleepForTimeInterval:2.0];
+    fetchError = nil;
+    manifest = fetch_json([NSURL URLWithString:manifestURL], &fetchError);
+  }
+  if (manifest == nil) {
+    xiaotu::log_warn(std::string("更新：清单获取失败（") +
+                     (fetchError.UTF8String ?: "未知原因") + "），按下一周期重试");
     finish(kResultCheckFailed);
     return;
   }
@@ -599,8 +633,10 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
 
   int localSchema = 0;
   if (self.healthBase.length > 0) {
+    NSString* healthError = nil;
     NSDictionary* health = fetch_json([NSURL URLWithString:
-                                             [self.healthBase stringByAppendingString:@"/api/health"]]);
+                                           [self.healthBase stringByAppendingString:@"/api/health"]],
+                                       &healthError);
     localSchema = static_cast<int>(json_long(health, @"schema_version"));
   }
   const long long schemaMin = json_long(manifest, @"schema_min");
