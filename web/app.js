@@ -6932,7 +6932,9 @@
       });
     }
 
-    window.xiaotuUpdateStatusDone = (payload) => render(payload && payload.status);
+    // 状态回调直接传 status 本体；检查回调里是 {status: ...} 包装。
+    window.xiaotuUpdateStatusDone = (payload) =>
+      render(payload && payload.status ? payload.status : payload);
     window.xiaotuUpdateCheckDone = (payload) => {
       const status = (payload && payload.status) || {};
       render(status);
