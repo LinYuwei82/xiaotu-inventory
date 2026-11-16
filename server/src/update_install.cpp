@@ -56,10 +56,35 @@ std::filesystem::path update_package_path(const std::filesystem::path& directory
                       url_file_name(manifest.url));
 }
 
+void remove_update_packages(const std::filesystem::path& directory,
+                            const std::filesystem::path& keep) {
+  std::error_code error;
+  std::filesystem::directory_iterator entry(directory, error);
+  if (error) {
+    return;
+  }
+  const std::string keep_name = keep.filename().string();
+  for (const std::filesystem::directory_iterator end; entry != end; entry.increment(error)) {
+    if (error) {
+      return;
+    }
+    std::error_code type_error;
+    if (!entry->is_regular_file(type_error) || type_error) {
+      continue;
+    }
+    if (!keep_name.empty() && entry->path().filename().string() == keep_name) {
+      continue;
+    }
+    std::error_code remove_error;
+    std::filesystem::remove(entry->path(), remove_error);
+  }
+}
+
 UpdatePackageResult download_update_package(const UpdateSettings& settings,
                                             const std::string& manifest_file,
                                             const UpdateManifest& manifest,
-                                            const std::filesystem::path& directory) {
+                                            const std::filesystem::path& directory,
+                                            const std::atomic<bool>* cancel) {
   UpdatePackageResult result;
   result.path = update_package_path(directory, manifest);
   result.sha256 = manifest.sha256;
@@ -72,8 +97,17 @@ UpdatePackageResult download_update_package(const UpdateSettings& settings,
     log_warn("更新下载失败：" + result.error_message);
     return result;
   }
+  // 同一时间只保留一个待装包：开始下载前清掉目录里的旧包，避免版本累积占磁盘。
+  remove_update_packages(directory, result.path);
   std::filesystem::remove(result.path, error);
   error.clear();
+
+  if (cancel != nullptr && cancel->load()) {
+    result.error_code = "UPDATE_DOWNLOAD_CANCELED";
+    result.error_message = "已取消下载";
+    log_info("更新下载已取消：" + result.path.filename().string());
+    return result;
+  }
 
   // curl 在 Windows 10 1803 以上与 macOS 均随系统提供；不引入新的网络依赖。
   const std::vector<std::string> args = {
@@ -81,7 +115,14 @@ UpdatePackageResult download_update_package(const UpdateSettings& settings,
       "--connect-timeout", "10",     "--max-time", "600",
       "--output",    result.path.string(),
       manifest.url};
-  const ProcessResult process = run_process_capture("curl", args);
+  const ProcessResult process = run_process_capture("curl", args, cancel);
+  if (process.canceled) {
+    result.error_code = "UPDATE_DOWNLOAD_CANCELED";
+    result.error_message = "已取消下载";
+    std::filesystem::remove(result.path, error);
+    log_info("更新下载已取消：" + result.path.filename().string());
+    return result;
+  }
   if (!process.started) {
     result.error_code = "UPDATE_DOWNLOAD_UNAVAILABLE";
     result.error_message = "无法启动 curl 下载安装包：" + process_failure_text(process);

@@ -712,6 +712,30 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                                               {"build", manifest.build}});
                 }));
 
+  // 取消后台下载：置位取消标志并唤醒退避等待；正在跑的 curl 会被终止，
+  // 任务状态随后由下载线程改为 canceled，前端轮询 /api/update/status 获取结果。
+  server_->Post("/api/update/download/cancel",
+                guard("setting.write", [this](const httplib::Request&, httplib::Response& res) {
+                  if (current_context().role != "admin") {
+                    json_error(res, 403, "FORBIDDEN", "仅管理员可取消下载更新");
+                    return;
+                  }
+                  bool running = false;
+                  {
+                    std::lock_guard<std::mutex> lock(update_job_mutex_);
+                    running = update_job_state_ == "running";
+                    if (running) {
+                      update_job_cancel_ = true;
+                    }
+                  }
+                  if (!running) {
+                    json_error(res, 409, "UPDATE_NOT_DOWNLOADING", "当前没有正在进行的下载");
+                    return;
+                  }
+                  update_job_cv_.notify_all();
+                  json_ok(res, nlohmann::json{{"ok", true}, {"state", "canceling"}});
+                }));
+
   // 安装更新：必须显式 confirm，服务端再次校验安装包哈希与签名后才打开安装包。
   // 不自动退出进程：替换正在运行的二进制与占用中的数据库不安全，由用户确认后自行退出。
   server_->Post("/api/update/install",
@@ -1322,8 +1346,9 @@ void HttpServer::serve_blocking() {
 }
 
 void HttpServer::stop() {
-  // 先唤醒定时等待与下载退避等待，避免退出时还要等满 10 分钟。
+  // 先唤醒定时等待与下载退避等待，并中止正在跑的下载，避免退出时等满 10 分钟。
   stopping_ = true;
+  update_job_cancel_ = true;
   update_job_cv_.notify_all();
   update_scheduler_cv_.notify_all();
   if (shutdown_thread_.joinable()) {
@@ -1415,6 +1440,19 @@ void HttpServer::update_scheduler_loop() {
                    result.error_message);
         } else if (!result.decision.update_available) {
           log_info("更新：后台自动检查完成，当前已是最新");
+          // 已是最新：清掉历史安装包回收磁盘。持锁操作，避免与手动下载并发删到正在写的文件。
+          std::lock_guard<std::mutex> job_lock(update_job_mutex_);
+          if (update_job_state_ != "running") {
+            if (update_job_state_ == "done") {
+              update_job_state_ = "idle";
+              update_job_code_.clear();
+              update_job_message_.clear();
+              update_job_file_.clear();
+              update_job_bytes_ = 0;
+              update_job_at_ = now_text();
+            }
+            remove_update_packages(update_download_dir());
+          }
         } else {
           log_info("更新：后台自动检查发现新版本 " + result.manifest.version + "（build " +
                    std::to_string(result.manifest.build) + "）");
@@ -1430,6 +1468,11 @@ void HttpServer::update_scheduler_loop() {
                   static_cast<std::uintmax_t>(result.manifest.size)));
             if (cached) {
               log_info("更新：本地已有同版本安装包，跳过后台下载");
+              // 只保留当前待装包，清掉切换版本后遗留的旧包。
+              std::lock_guard<std::mutex> job_lock(update_job_mutex_);
+              if (update_job_state_ != "running") {
+                remove_update_packages(update_download_dir(), package);
+              }
             } else {
               start_update_download(settings, settings.manifest_file, result.manifest, true);
             }
@@ -1459,6 +1502,7 @@ bool HttpServer::start_update_download(const UpdateSettings& settings,
       return false;
     }
     previous = std::move(update_job_thread_);
+    update_job_cancel_ = false;
     update_job_state_ = "running";
     update_job_code_.clear();
     update_job_message_.clear();
@@ -1473,16 +1517,27 @@ bool HttpServer::start_update_download(const UpdateSettings& settings,
   const std::filesystem::path directory = update_download_dir();
   update_job_thread_ = std::thread([this, settings, manifest_file, manifest, directory, retry]() {
     for (int attempt = 1; attempt <= 3; ++attempt) {
-      if (stopping_.load()) {
+      if (stopping_.load() || update_job_cancel_.load()) {
         std::lock_guard<std::mutex> lock(update_job_mutex_);
-        update_job_state_ = "failed";
-        update_job_code_ = "UPDATE_DOWNLOAD_CANCELLED";
-        update_job_message_ = "服务正在停止，已中止后台下载";
+        update_job_state_ = "canceled";
+        update_job_code_ = "UPDATE_DOWNLOAD_CANCELED";
+        update_job_message_ = stopping_.load() ? "服务正在停止，已中止后台下载" : "已取消下载";
         update_job_at_ = now_text();
         return;
       }
-      const UpdatePackageResult downloaded =
-          download_update_package(settings, manifest_file, manifest, directory);
+      const UpdatePackageResult downloaded = download_update_package(
+          settings, manifest_file, manifest, directory, &update_job_cancel_);
+      if (downloaded.error_code == "UPDATE_DOWNLOAD_CANCELED") {
+        // 用户取消：删除半成品（download 内已完成），不再自动重试。
+        std::lock_guard<std::mutex> lock(update_job_mutex_);
+        update_job_state_ = "canceled";
+        update_job_code_ = downloaded.error_code;
+        update_job_message_ = downloaded.error_message;
+        update_job_file_.clear();
+        update_job_bytes_ = 0;
+        update_job_at_ = now_text();
+        return;
+      }
       {
         std::lock_guard<std::mutex> lock(update_job_mutex_);
         update_job_state_ = downloaded.ok ? "done" : "failed";
@@ -1505,10 +1560,14 @@ bool HttpServer::start_update_download(const UpdateSettings& settings,
       const auto backoff = attempt == 1 ? std::chrono::seconds(60)
                                         : std::chrono::seconds(600);
       std::unique_lock<std::mutex> lock(update_job_mutex_);
-      if (update_job_cv_.wait_for(lock, backoff, [this] { return stopping_.load(); })) {
-        update_job_state_ = "failed";
-        update_job_code_ = "UPDATE_DOWNLOAD_CANCELLED";
-        update_job_message_ = "服务正在停止，已中止后台下载";
+      if (update_job_cv_.wait_for(lock, backoff, [this] {
+            return stopping_.load() || update_job_cancel_.load();
+          })) {
+        update_job_state_ = "canceled";
+        update_job_code_ = "UPDATE_DOWNLOAD_CANCELED";
+        update_job_message_ = stopping_.load() ? "服务正在停止，已中止后台下载" : "已取消下载";
+        update_job_file_.clear();
+        update_job_bytes_ = 0;
         update_job_at_ = now_text();
         return;
       }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -16,13 +17,17 @@ struct ProcessResult {
   int exit_code = -1;
   std::string output;
   std::string error;
+  // 调用方通过 cancel 主动中止：子进程已被终止，output 只保留已读到的部分。
+  bool canceled = false;
 };
 
 // 不经 shell 执行程序：程序与参数分开传入，路径含空格、引号时按平台规则转义。
 // 标准输出与标准错误通过管道读回，避免只拿到退出码却说不清失败原因。
 // Windows 走 CreateProcess + 管道；POSIX 走 fork/execvp + 管道。
+// cancel 非空时轮询该标志，置位后终止子进程并尽快返回（用于取消大文件下载）。
 ProcessResult run_process_capture(const std::string& program,
-                                  const std::vector<std::string>& args);
+                                  const std::vector<std::string>& args,
+                                  const std::atomic<bool>* cancel = nullptr);
 
 // 统一描述失败原因：未启动时给系统错误描述；已启动但收集失败时明确说明
 // 进程确实起来了，只是拿不到退出状态，避免被写成「无法启动」。

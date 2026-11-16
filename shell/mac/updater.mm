@@ -405,6 +405,24 @@ didCompleteWithError:(NSError*)error {
     _prefetchTotal = static_cast<long long>([defaults integerForKey:kPrefetchTotalKey]);
     _prefetchReceived =
         static_cast<long long>([defaults integerForKey:kPrefetchBytesKey]);
+    // 上一次安装成功后旧包仍会留在缓存目录：done 且待装 build 不高于当前 build 时，
+    // 说明该版本已装上（或已被更新版本覆盖），删除旧包并回到 idle，避免长期占磁盘。
+    if ([_prefetchState isEqualToString:kPrefetchDone] &&
+        pending_build(defaults) <= current_build()) {
+      [self removePrefetchFilesExcept:nil];
+      _prefetchState = kPrefetchIdle;
+      _prefetchFile = nil;
+      _prefetchMessage = nil;
+      _prefetchReceived = 0;
+      _prefetchTotal = 0;
+      [defaults setObject:kPrefetchIdle forKey:kPrefetchStateKey];
+      [defaults removeObjectForKey:kPrefetchFileKey];
+      [defaults removeObjectForKey:kPrefetchVersionKey];
+      [defaults removeObjectForKey:kPrefetchAttemptsKey];
+      [defaults removeObjectForKey:kPrefetchBytesKey];
+      [defaults removeObjectForKey:kPrefetchTotalKey];
+      [defaults removeObjectForKey:kPrefetchMessageKey];
+    }
     // 缓存目录可能被系统清理过：done 但文件不在时按 idle 处理，界面不会给一个打不开的包。
     if ([_prefetchState isEqualToString:kPrefetchDone] &&
         (_prefetchFile.length == 0 ||

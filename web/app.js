@@ -7158,6 +7158,8 @@
         downloadLine = "正在下载并校验安装包…";
       } else if (download.state === "done") {
         downloadLine = `已下载并校验：${download.file}（${formatBytes(download.bytes)}）`;
+      } else if (download.state === "canceled") {
+        downloadLine = "已取消本次下载，可重新下载";
       } else if (download.state === "failed") {
         downloadLine = `下载或校验失败：${download.message || download.code || ""}`;
       }
@@ -7184,6 +7186,11 @@
               ? `<button class="btn" type="button" data-role="download" ${
                   data.update_available && download.state !== "running" ? "" : "disabled"
                 }>下载并校验</button>
+                 ${
+                   download.state === "running"
+                     ? `<button class="btn" type="button" data-role="cancel">取消下载</button>`
+                     : ""
+                 }
                  <button class="btn primary" type="button" data-role="install" ${
                    data.update_available && download.state === "done" ? "" : "disabled"
                  }>安装更新</button>`
@@ -7204,6 +7211,20 @@
             poll();
           } catch (error) {
             showNotice(error.message, "error");
+          }
+        });
+      }
+      const cancelButton = card.querySelector('[data-role="cancel"]');
+      if (cancelButton) {
+        cancelButton.addEventListener("click", async () => {
+          cancelButton.disabled = true;
+          try {
+            await api("POST", "/api/update/download/cancel", {});
+            showNotice("已请求取消下载", "ok");
+            poll();
+          } catch (error) {
+            showNotice(error.message, "error");
+            cancelButton.disabled = false;
           }
         });
       }

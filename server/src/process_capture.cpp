@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstring>
+#include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -116,23 +117,69 @@ bool is_batch_script(const std::string& path) {
   return extension == ".bat" || extension == ".cmd";
 }
 
-std::string read_pipe(HANDLE pipe) {
+// 轮询读取管道：PeekNamedPipe 无数据时短暂休眠，便于发现取消标志；
+// 所有写端关闭后 Peek 返回 FALSE，循环结束。
+std::string read_pipe(HANDLE pipe, const std::atomic<bool>* cancel, bool& canceled) {
   std::string text;
   char buffer[4096];
-  DWORD read = 0;
-  while (::ReadFile(pipe, buffer, sizeof(buffer), &read, nullptr) && read > 0) {
-    text.append(buffer, read);
+  while (true) {
+    DWORD available = 0;
+    if (::PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr) == FALSE) {
+      break;
+    }
+    if (available > 0) {
+      const DWORD want =
+          available < sizeof(buffer) ? available : static_cast<DWORD>(sizeof(buffer));
+      DWORD read = 0;
+      if (::ReadFile(pipe, buffer, want, &read, nullptr) == FALSE || read == 0) {
+        break;
+      }
+      text.append(buffer, read);
+      continue;
+    }
+    if (cancel != nullptr && cancel->load()) {
+      canceled = true;
+      return text;
+    }
+    ::Sleep(50);
   }
   return text;
 }
 
 #else
 
-std::string read_fd(int fd) {
+// 用 poll 等待可读，避免阻塞在 read 上无法响应取消；100ms 轮询足够及时。
+std::string read_fd(int fd, const std::atomic<bool>* cancel, bool& canceled) {
   std::string text;
   char buffer[4096];
-  ssize_t read = 0;
-  while ((read = ::read(fd, buffer, sizeof(buffer))) > 0) {
+  while (true) {
+    struct pollfd entry {};
+    entry.fd = fd;
+    entry.events = POLLIN;
+    const int ready = ::poll(&entry, 1, 100);
+    if (ready < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      break;
+    }
+    if (ready == 0) {
+      if (cancel != nullptr && cancel->load()) {
+        canceled = true;
+        return text;
+      }
+      continue;
+    }
+    const ssize_t read = ::read(fd, buffer, sizeof(buffer));
+    if (read < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      break;
+    }
+    if (read == 0) {
+      break;
+    }
     text.append(buffer, static_cast<std::size_t>(read));
   }
   return text;
@@ -339,10 +386,16 @@ std::string clean_windows_error_message(const std::string& text) {
 }
 
 ProcessResult run_process_capture(const std::string& program,
-                                  const std::vector<std::string>& args) {
+                                  const std::vector<std::string>& args,
+                                  const std::atomic<bool>* cancel) {
   ProcessResult result;
   if (program.empty()) {
     result.error = "程序路径为空";
+    return result;
+  }
+  if (cancel != nullptr && cancel->load()) {
+    result.canceled = true;
+    result.error = "已取消";
     return result;
   }
 
@@ -420,14 +473,20 @@ ProcessResult run_process_capture(const std::string& program,
 
   // 先读管道再等待，避免子进程写满管道后阻塞、父进程又在等它退出。
   result.started = true;
-  result.output = read_pipe(pipe_read);
+  bool canceled = false;
+  result.output = read_pipe(pipe_read, cancel, canceled);
   ::CloseHandle(pipe_read);
+  if (canceled) {
+    // 取消后立即终止 curl，避免继续占用带宽；终止后仍走统一的退出状态收集。
+    ::TerminateProcess(process.hProcess, 1);
+  }
   ::WaitForSingleObject(process.hProcess, INFINITE);
   DWORD exit_code = 1;
   if (::GetExitCodeProcess(process.hProcess, &exit_code) == FALSE) {
     const DWORD code = ::GetLastError();
     ::CloseHandle(process.hThread);
     ::CloseHandle(process.hProcess);
+    result.canceled = canceled;
     result.error = "无法获取子进程退出状态（系统错误 " + std::to_string(code) + "）";
     return result;
   }
@@ -435,6 +494,7 @@ ProcessResult run_process_capture(const std::string& program,
   ::CloseHandle(process.hProcess);
   result.collected = true;
   result.exit_code = static_cast<int>(exit_code);
+  result.canceled = canceled;
   return result;
 
 #else
@@ -475,8 +535,13 @@ ProcessResult run_process_capture(const std::string& program,
   }
 
   ::close(pipe_fd[1]);
-  result.output = read_fd(pipe_fd[0]);
+  bool canceled = false;
+  result.output = read_fd(pipe_fd[0], cancel, canceled);
   ::close(pipe_fd[0]);
+  if (canceled) {
+    // 取消后终止子进程，避免 curl 继续占用带宽；SIGTERM 足够结束 curl。
+    ::kill(pid, SIGTERM);
+  }
 
   int status = 0;
   pid_t waited = -1;
@@ -488,10 +553,12 @@ ProcessResult run_process_capture(const std::string& program,
     // 初值 0，若继续往下走会被 WIFEXITED(0) 当成「正常退出、退出码 0」。
     const int saved_errno = errno;
     result.exit_code = -1;
+    result.canceled = canceled;
     result.error = std::string("无法获取子进程退出状态：") + std::strerror(saved_errno);
     return result;
   }
   result.collected = true;
+  result.canceled = canceled;
   if (WIFEXITED(status)) {
     result.exit_code = WEXITSTATUS(status);
   } else if (WIFSIGNALED(status)) {

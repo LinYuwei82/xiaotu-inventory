@@ -113,12 +113,15 @@ class HttpServer {
   std::mutex update_job_mutex_;
   std::condition_variable update_job_cv_;
   std::thread update_job_thread_;
-  std::string update_job_state_ = "idle";  // idle / running / done / failed
+  // idle / running / done / failed / canceled；canceling 只作为取消接口的即时响应。
+  std::string update_job_state_ = "idle";
   std::string update_job_code_;
   std::string update_job_message_;
   std::string update_job_file_;
   std::uintmax_t update_job_bytes_ = 0;
   std::string update_job_at_;
+  // 取消标志：置位后下载线程终止 curl、删除半成品并置 canceled，不再自动重试。
+  std::atomic<bool> update_job_cancel_{false};
   // 自动检查线程：与下载线程分开，检查很轻，下载可能很慢。
   std::mutex update_scheduler_mutex_;
   std::condition_variable update_scheduler_cv_;

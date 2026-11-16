@@ -1,5 +1,6 @@
 #include <httplib.h>
 
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -99,10 +100,15 @@ int main() {
   manifest.sha256 = "0123456789abcdef";
 
   const fs::path download_dir = root / "updates";
+  // 下载目录里的旧版本包：开始下载前应被清掉，只保留当前待装包。
+  fs::create_directories(download_dir);
+  const fs::path stale = download_dir / "1.0.0-1-old.dmg";
+  std::ofstream(stale) << "stale";
   xiaotu::UpdatePackageResult result =
       xiaotu::download_update_package(settings, settings.manifest_file, manifest, download_dir);
   check(result.ok, "下载并通过校验后返回成功");
   check(fs::exists(result.path), "成功时保留安装包");
+  check(!fs::exists(stale), "下载前删除目录内的旧安装包");
   check(result.bytes == payload.size(), "成功时字节数与下载内容一致");
   check(result.path.filename().string().find("9.9.9-2026111301-") == 0,
         "安装包文件名带版本与构建号");
@@ -160,6 +166,16 @@ int main() {
   check(result.error_message.find("退出码 0") == std::string::npos,
         "不再用「退出码 0」兜底描述与退出码无关的失败");
 #endif
+
+  // 已取消：标志在下载前就置位时不启动 curl，不留下文件。
+  std::atomic<bool> cancel{true};
+  manifest.build = 2026111306;
+  manifest.url = "http://127.0.0.1:" + std::to_string(port) + "/pkg.dmg";
+  result = xiaotu::download_update_package(settings, settings.manifest_file, manifest,
+                                           download_dir, &cancel);
+  check(!result.ok && result.error_code == "UPDATE_DOWNLOAD_CANCELED",
+        "取消标志置位时返回 UPDATE_DOWNLOAD_CANCELED");
+  check(!fs::exists(result.path), "取消后不保留下载文件");
 
   server.stop();
   serving.join();
