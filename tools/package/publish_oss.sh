@@ -16,6 +16,14 @@
 # 发布后还会同步桶根目录 index.html 里该产品的字节数 / SHA256（UPDATE_INDEX_PAGE=false 可关闭），
 # 并下载一次新包预热 CDN 边缘缓存（WARMUP=false 关闭）。
 #
+# 凭据（AccessKey）：
+#   1. 优先读环境变量 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET；
+#   2. 未设置环境变量时读仓库外的 ~/.config/xiaotu-updates/oss-credentials.env
+#      （两行键值，权限必须为 600 或 400；可用 OSS_CRED_FILE 改路径）。
+#   密钥只授予该桶的最小权限，绝不写进仓库、脚本或 CI 日志；若曾以明文出现在
+#   聊天、命令行历史或日志里，请立即到 RAM 控制台轮换。发布前脚本会检查受版本
+#   控制的文件里是否残留当前 AccessKey，命中即拒绝发布。
+#
 # 依赖：ossutil、python3 + cryptography（tools/package/.venv）、openssl、shasum、PlistBuddy
 #
 # 用法：
@@ -37,7 +45,7 @@ VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION" 2>/dev/null)"
 [ -n "$VERSION" ] || { echo "无法从仓库根 VERSION 文件读取版本号。" >&2; exit 1; }
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
 }
 case "${1:-}" in -h|--help) usage; exit 0 ;; "") ;;
   *) echo "未知参数：$1（用 --help 查看用法）" >&2; exit 2 ;; esac
@@ -96,6 +104,56 @@ UPDATE_INDEX_PAGE="${UPDATE_INDEX_PAGE:-true}"
 WARMUP="${WARMUP:-true}"
 WARM_TIMEOUT="${WARM_TIMEOUT:-300}"
 
+# ---- OSS 凭据：环境变量优先，其次仓库外 600 权限的凭据文件 ----
+# 凭据只在本进程内使用，不导出给子进程：上传时按参数传给 Python。
+OSS_CRED_FILE="${OSS_CRED_FILE:-$HOME/.config/xiaotu-updates/oss-credentials.env}"
+
+cred_value() {  # cred_value <文件> <键名>
+  sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
+    | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+mask_ak() {  # 只露前 8 位，便于确认用的是哪把密钥
+  local key="${1:-}"
+  if [ "${#key}" -le 8 ]; then printf '****'; else printf '%s****' "${key:0:8}"; fi
+}
+
+load_oss_credentials() {
+  if [ -n "${OSS_ACCESS_KEY_ID:-}" ] && [ -n "${OSS_ACCESS_KEY_SECRET:-}" ]; then
+    OSS_CRED_SOURCE="环境变量"
+  else
+    if [ ! -f "$OSS_CRED_FILE" ]; then
+      echo "缺少 OSS 凭据：请设置 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET，" >&2
+      echo "或写入仓库外的 $OSS_CRED_FILE（权限 600）。" >&2
+      exit 1
+    fi
+    local perm
+    perm="$(stat -c %a "$OSS_CRED_FILE" 2>/dev/null || stat -f %Lp "$OSS_CRED_FILE" 2>/dev/null || echo unknown)"
+    case "$perm" in
+      600|400) ;;
+      *) echo "凭据文件权限过宽（$perm）：先 chmod 600 $OSS_CRED_FILE 再重试。" >&2; exit 1 ;;
+    esac
+    OSS_ACCESS_KEY_ID="$(cred_value "$OSS_CRED_FILE" OSS_ACCESS_KEY_ID)"
+    OSS_ACCESS_KEY_SECRET="$(cred_value "$OSS_CRED_FILE" OSS_ACCESS_KEY_SECRET)"
+    if [ -z "$OSS_ACCESS_KEY_ID" ] || [ -z "$OSS_ACCESS_KEY_SECRET" ]; then
+      echo "凭据文件缺少 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET：$OSS_CRED_FILE" >&2
+      exit 1
+    fi
+    OSS_CRED_SOURCE="$(basename "$OSS_CRED_FILE")"
+  fi
+  AK_MASK="$(mask_ak "$OSS_ACCESS_KEY_ID")"
+}
+
+# 轮换自检：当前 AccessKey 不得出现在受版本控制的文件里，命中即拒绝发布。
+assert_cred_not_tracked() {
+  git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  if git -C "$REPO_ROOT" grep -qF -- "$OSS_ACCESS_KEY_ID" -- . 2>/dev/null; then
+    echo "✗ AccessKey 出现在仓库受版本控制的文件里，已拒绝发布。" >&2
+    echo "  请先移除该值，再到 RAM 控制台轮换这对密钥后重跑。" >&2
+    exit 1
+  fi
+}
+
 # ---- 依赖检查 ----
 VENV_PY="$REPO_ROOT/tools/package/.venv/bin/python"
 if [ ! -x "$VENV_PY" ]; then
@@ -117,9 +175,8 @@ if [ "$OSS_SKIP" != "true" ]; then
     "$HOME/.venv-oss/bin/pip" install -q oss2
     OSS_PY="$HOME/.venv-oss/bin/python"
   fi
-  if [ -z "${OSS_ACCESS_KEY_ID:-}" ] || [ -z "${OSS_ACCESS_KEY_SECRET:-}" ]; then
-    echo "缺少 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET 环境变量" >&2; exit 1
-  fi
+  load_oss_credentials
+  assert_cred_not_tracked
 fi
 
 # ---- 元数据：从 dmg 的 Info.plist 读构建号 ----
@@ -169,6 +226,7 @@ echo "dmg：                     ${DMG_PATH} （${DMG_SIZE} 字节）"
 echo "sha256：                  ${DMG_SHA256}"
 echo "公钥 base64：             ${PUB_BASE64}"
 echo "bucket / region：         ${OSS_BUCKET:-<dry-run>} / ${OSS_REGION:-<dry-run>}"
+echo "AK / 来源：               ${AK_MASK:-<dry-run>} / ${OSS_CRED_SOURCE:-<dry-run>}"
 echo "域名：                    ${CDN_DOMAIN}"
 echo "OSS key："
 echo "  dmg：                   ${DMG_KEY}"
@@ -383,6 +441,11 @@ echo "appcast.xml：            $APPCAST_PUBLIC"
 echo "schema / api：           $SCHEMA_MIN ~ $SCHEMA_MAX / $API_MIN ~ $API_MAX"
 echo "key_id / rollout：       $MANIFEST_KEY_ID / ${MANIFEST_ROLLOUT}%"
 echo ""
+if [ "${OSS_CRED_SOURCE:-}" = "环境变量" ]; then
+  echo "→ 提醒：本次凭据来自环境变量。若曾明文粘贴到聊天、命令行历史或日志，"
+  echo "  请到 RAM 控制台轮换这对密钥，并改用 $OSS_CRED_FILE（chmod 600）。"
+  echo ""
+fi
 echo "→ 客户端 Info.plist 注入（make_dmg.sh 参数）："
 echo "  XIAOTU_UPDATE_MANIFEST_URL=$MANIFEST_PUBLIC"
 echo "  XIAOTU_UPDATE_FEED_URL=$APPCAST_PUBLIC"
