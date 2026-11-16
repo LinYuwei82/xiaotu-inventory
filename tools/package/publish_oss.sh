@@ -24,10 +24,12 @@
 #   聊天、命令行历史或日志里，请立即到 RAM 控制台轮换。发布前脚本会检查受版本
 #   控制的文件里是否残留当前 AccessKey，命中即拒绝发布。
 #
-# 依赖：ossutil、python3 + cryptography（tools/package/.venv）、openssl、shasum、PlistBuddy
+# 依赖：python3 + cryptography / oss2（见 tools/package/requirements.txt）、openssl 3.x、
+#       shasum、PlistBuddy。openssl 会自动找 brew 的 openssl@3（keg-only，不进 PATH），
+#       也可用 OPENSSL_BIN=/path/to/openssl 指定；macOS 自带的 LibreSSL 会被拒绝。
 #
 # 用法：
-#   # 完整发布（需要 ossutil + 预配置 bucket）
+#   # 完整发布（需要 OSS 凭据，见上）
 #   OSS_BUCKET=xxx OSS_REGION=cn-hangzhou PRODUCT=xiaotu tools/package/publish_oss.sh
 #
 #   # dry-run：只本地生成 + 验签，不碰 OSS
@@ -85,9 +87,26 @@ DMG_PATH="${DMG_PATH:-$DEFAULT_DMG}"
 
 DEFAULT_KEY="$HOME/.config/xiaotu-updates/update_signing_2026.pem"
 SIGNING_KEY="${SIGNING_KEY:-$DEFAULT_KEY}"
+
+# ---- openssl 解析：必须是真 OpenSSL 3.x，不能落到 macOS 自带的 LibreSSL ----
+# Homebrew 的 openssl@3 是 keg-only、不会进 PATH，所以优先用 brew prefix；
+# 也支持 OPENSSL_BIN 显式指定。
+resolve_openssl_bin() {
+  if [ -n "${OPENSSL_BIN:-}" ]; then printf '%s\n' "$OPENSSL_BIN"; return 0; fi
+  if command -v brew >/dev/null 2>&1; then
+    local prefix
+    prefix="$(brew --prefix openssl@3 2>/dev/null || true)"
+    if [ -n "$prefix" ] && [ -x "$prefix/bin/openssl" ]; then
+      printf '%s\n' "$prefix/bin/openssl"; return 0
+    fi
+  fi
+  command -v openssl 2>/dev/null
+}
+OPENSSL_BIN="$(resolve_openssl_bin || true)"
+
 [ -f "$SIGNING_KEY" ] || {
   echo "签名私钥不存在：$SIGNING_KEY" >&2
-  echo "用 openssl genpkey -algorithm ED25519 -out $SIGNING_KEY 生成" >&2; exit 1; }
+  echo "用 ${OPENSSL_BIN:-openssl} genpkey -algorithm ED25519 -out $SIGNING_KEY 生成" >&2; exit 1; }
 SIGNING_PUB="${SIGNING_KEY%.pem}.pub.pem"
 
 KEY_ID="${KEY_ID:-2026-11}"
@@ -160,9 +179,16 @@ if [ ! -x "$VENV_PY" ]; then
   python3 -m venv "$REPO_ROOT/tools/package/.venv"
   "$REPO_ROOT/tools/package/.venv/bin/pip" install -q -r "$REPO_ROOT/tools/package/requirements.txt"
 fi
-for dep in openssl shasum; do
-  command -v "$dep" >/dev/null 2>&1 || { echo "未找到 $dep" >&2; exit 1; }
-done
+[ -n "$OPENSSL_BIN" ] || {
+  echo "未找到 openssl：请 brew install openssl@3，或用 OPENSSL_BIN 指定可执行文件" >&2; exit 1; }
+OPENSSL_VER="$("$OPENSSL_BIN" version 2>/dev/null || true)"
+case "$OPENSSL_VER" in
+  "OpenSSL 3."*) ;;
+  *) echo "openssl 不可用：$OPENSSL_BIN → ${OPENSSL_VER:-<无输出>}" >&2
+     echo "需要 OpenSSL 3.x；macOS 自带的 LibreSSL 不算" >&2
+     exit 1 ;;
+esac
+command -v shasum >/dev/null 2>&1 || { echo "未找到 shasum" >&2; exit 1; }
 if [ "$OSS_SKIP" != "true" ]; then
   # 用 Python oss2 SDK 上传（无需 ossutil 二进制）
   OSS_PY="${OSS_PY:-$HOME/.venv-oss/bin/python}"
@@ -208,7 +234,7 @@ DMG_SIZE="$(stat -f %z "$DMG_PATH")"
 DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
 PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 DMG_BASENAME="$(basename "$DMG_PATH")"
-PUB_BASE64="$(openssl pkey -pubin -in "$SIGNING_PUB" -outform DER 2>/dev/null \
+PUB_BASE64="$("$OPENSSL_BIN" pkey -pubin -in "$SIGNING_PUB" -outform DER 2>/dev/null \
   | tail -c 32 | base64 | tr -d '\n')"
 
 # ---- 路径（纯 object key，不含 bucket/endpoint）----
