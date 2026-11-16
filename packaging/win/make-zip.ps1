@@ -84,11 +84,16 @@ if ($NoShell) {
   }
 }
 
-# 版本号取自根 CMakeLists.txt（只读，不修改）。
-$projectLine = Select-String -LiteralPath (Join-Path $root 'CMakeLists.txt') `
-  -Pattern 'project\(\s*xiaotu_inventory\s+VERSION\s+([0-9][0-9.]*)' | Select-Object -First 1
-if (-not $projectLine) { throw '无法从 CMakeLists.txt 读取项目版本号' }
-$version = $projectLine.Matches[0].Groups[1].Value
+# 版本号取自仓库根的 VERSION 文件：与 CMakeLists.txt 的 file(READ .../VERSION) 同源，
+# 不能从 project() 里抓字面值——那里写的是 ${XIAOTU_VERSION_STRING}。
+$versionFile = Join-Path $root 'VERSION'
+if (-not (Test-Path -LiteralPath $versionFile -PathType Leaf)) {
+  throw "未找到版本文件：$versionFile"
+}
+$version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
+if ($version -notmatch '^[0-9]+(\.[0-9]+)+$') {
+  throw "VERSION 内容不是 x.y(.z) 形式：$version"
+}
 
 if (-not $Name) { $Name = "xiaotu-inventory-$version-win64" }
 $stage = Join-Path $OutDir $Name
