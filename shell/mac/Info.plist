@@ -8,6 +8,12 @@
   <string>小兔进销存</string>
   <key>CFBundleIdentifier</key>
   <string>com.simem.xiaotu</string>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>zh_CN</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>zh_CN</string>
+  </array>
   <key>CFBundleExecutable</key>
   <string>xiaotu-inventory</string>
   <key>CFBundleIconFile</key>
