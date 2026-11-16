@@ -24,3 +24,11 @@ dir = "/var/log/xiaotu"
 [sales]
 # 客户信用额度超额行为：warn 提示并二次确认后放行（写审计）；reject 直接拒绝
 credit_limit_mode = "warn"
+
+[update]
+# 网络版更新源：manifest_file 为空表示不启用自动检查。
+# auto_check = true   # 启动 30 秒后与每 24h±2h 自动检查
+# prefetch = true     # 自动检查命中新版本时后台下载并校验安装包
+# manifest_file = "/srv/xiaotu-updates/macos/stable/latest.json"
+# channel = "stable"
+# rollout_percent = 100

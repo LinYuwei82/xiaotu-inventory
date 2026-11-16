@@ -3,10 +3,12 @@
 #include <httplib.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <ctime>
 #include <exception>
 #include <filesystem>
+#include <random>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -628,6 +630,9 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                  nlohmann::json body;
                  body["ok"] = true;
                  body["configured"] = result.configured;
+                 // 后台策略只读展示：由 config.toml 的 [update] 段决定，运行中不提供切换。
+                 body["auto_check"] = info_.update_auto_check;
+                 body["prefetch"] = info_.update_prefetch;
                  body["current"] = {{"version", info_.version},
                                     {"build", current_build_number()},
                                     {"schema_version", services_.db.schema_version()},
@@ -695,42 +700,12 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                     json_error(res, 409, "NO_UPDATE_AVAILABLE", "当前已是最新版本，无需下载");
                     return;
                   }
-                  std::thread previous;
-                  {
-                    std::lock_guard<std::mutex> lock(update_job_mutex_);
-                    if (update_job_state_ == "running") {
-                      json_error(res, 409, "UPDATE_BUSY", "已有更新包正在下载");
-                      return;
-                    }
-                    previous = std::move(update_job_thread_);
-                    update_job_state_ = "running";
-                    update_job_code_.clear();
-                    update_job_message_.clear();
-                    update_job_file_.clear();
-                    update_job_bytes_ = 0;
-                    update_job_at_ = now_text();
-                  }
-                  // 先解锁再 join，避免上一轮线程收尾时还在等锁。
-                  if (previous.joinable()) {
-                    previous.join();
-                  }
                   const std::string manifest_file = settings.manifest_file;
                   const UpdateManifest manifest = result.manifest;
-                  const std::filesystem::path directory = update_download_dir();
-                  update_job_thread_ = std::thread([this, settings, manifest_file, manifest,
-                                                    directory]() {
-                    const UpdatePackageResult downloaded =
-                        download_update_package(settings, manifest_file, manifest, directory);
-                    std::lock_guard<std::mutex> lock(update_job_mutex_);
-                    update_job_state_ = downloaded.ok ? "done" : "failed";
-                    update_job_code_ = downloaded.error_code;
-                    update_job_message_ =
-                        downloaded.ok ? "下载并校验通过" : downloaded.error_message;
-                    update_job_file_ =
-                        downloaded.ok ? downloaded.path.filename().string() : std::string();
-                    update_job_bytes_ = downloaded.bytes;
-                    update_job_at_ = now_text();
-                  });
+                  if (!start_update_download(settings, manifest_file, manifest, false)) {
+                    json_error(res, 409, "UPDATE_BUSY", "已有更新包正在下载");
+                    return;
+                  }
                   json_ok(res, nlohmann::json{{"ok", true},
                                               {"state", "running"},
                                               {"version", manifest.version},
@@ -1333,6 +1308,7 @@ int HttpServer::bind(const std::string& host, int port) {
 
 void HttpServer::serve_async() {
   serving_ = true;
+  start_update_scheduler();
   thread_ = std::thread([this] {
     server_->listen_after_bind();
     serving_ = false;
@@ -1346,8 +1322,16 @@ void HttpServer::serve_blocking() {
 }
 
 void HttpServer::stop() {
+  // 先唤醒定时等待与下载退避等待，避免退出时还要等满 10 分钟。
+  stopping_ = true;
+  update_job_cv_.notify_all();
+  update_scheduler_cv_.notify_all();
   if (shutdown_thread_.joinable()) {
     shutdown_thread_.join();
+  }
+  // 先停调度线程：它可能在退出瞬间再拉起一次下载，必须先确保不会再新增任务。
+  if (update_scheduler_thread_.joinable()) {
+    update_scheduler_thread_.join();
   }
   // 下载线程可能仍在跑 curl；停止监听后等它收尾，避免析构时访问已释放的成员。
   if (update_job_thread_.joinable()) {
@@ -1397,6 +1381,140 @@ UpdateSettings HttpServer::update_settings() const {
 
 std::filesystem::path HttpServer::update_download_dir() const {
   return std::filesystem::path(info_.data_dir) / "updates";
+}
+
+void HttpServer::start_update_scheduler() {
+  // 单机版的自动检查由 macOS 壳负责；这里只服务网络版，避免同一进程双份检查。
+  if (info_.mode != "server" || !info_.update_auto_check ||
+      info_.update_manifest_file.empty()) {
+    return;
+  }
+  update_scheduler_thread_ = std::thread([this] { update_scheduler_loop(); });
+}
+
+void HttpServer::update_scheduler_loop() {
+  using namespace std::chrono;
+  std::mt19937 rng(static_cast<std::mt19937::result_type>(
+      steady_clock::now().time_since_epoch().count()));
+  // 首轮与单机版保持一致：启动后 30 秒再检查，避免和启动阶段的初始化抢资源。
+  auto delay = seconds(30);
+  std::unique_lock<std::mutex> lock(update_scheduler_mutex_);
+  while (!stopping_.load()) {
+    if (update_scheduler_cv_.wait_for(lock, delay, [this] { return stopping_.load(); })) {
+      return;
+    }
+    lock.unlock();
+    try {
+      const UpdateSettings settings = update_settings();
+      if (!settings.manifest_file.empty()) {
+        const UpdateCheckResult result =
+            check_for_update(settings, self_update_query(),
+                             static_cast<std::int64_t>(std::time(nullptr)));
+        if (!result.manifest_ok) {
+          log_warn("更新：后台自动检查未通过（" + result.error_code + "）" +
+                   result.error_message);
+        } else if (!result.decision.update_available) {
+          log_info("更新：后台自动检查完成，当前已是最新");
+        } else {
+          log_info("更新：后台自动检查发现新版本 " + result.manifest.version + "（build " +
+                   std::to_string(result.manifest.build) + "）");
+          if (info_.update_prefetch && !stopping_.load()) {
+            // 同版本安装包已经下载并校验过就不再重复拉一遍；文件只会在校验通过后保留。
+            const std::filesystem::path package =
+                update_package_path(update_download_dir(), result.manifest);
+            std::error_code exists_error;
+            const bool cached =
+                std::filesystem::exists(package, exists_error) &&
+                (result.manifest.size <= 0 ||
+                 (std::filesystem::file_size(package, exists_error) ==
+                  static_cast<std::uintmax_t>(result.manifest.size)));
+            if (cached) {
+              log_info("更新：本地已有同版本安装包，跳过后台下载");
+            } else {
+              start_update_download(settings, settings.manifest_file, result.manifest, true);
+            }
+          }
+        }
+      }
+    } catch (const std::exception& error) {
+      log_warn(std::string("更新：后台自动检查异常：") + error.what());
+    }
+    lock.lock();
+    // 24h ± 2h：与单机版相同的抖动规则，避免多台服务器同时拉清单。
+    const int jitter = static_cast<int>(rng() % (2 * 7200 + 1)) - 7200;
+    delay = seconds(86400 + jitter);
+  }
+}
+
+bool HttpServer::start_update_download(const UpdateSettings& settings,
+                                       const std::string& manifest_file,
+                                       const UpdateManifest& manifest, bool retry) {
+  if (stopping_.load()) {
+    return false;
+  }
+  std::thread previous;
+  {
+    std::lock_guard<std::mutex> lock(update_job_mutex_);
+    if (stopping_.load() || update_job_state_ == "running") {
+      return false;
+    }
+    previous = std::move(update_job_thread_);
+    update_job_state_ = "running";
+    update_job_code_.clear();
+    update_job_message_.clear();
+    update_job_file_.clear();
+    update_job_bytes_ = 0;
+    update_job_at_ = now_text();
+  }
+  // 先解锁再 join，避免上一轮线程收尾时还在等锁。
+  if (previous.joinable()) {
+    previous.join();
+  }
+  const std::filesystem::path directory = update_download_dir();
+  update_job_thread_ = std::thread([this, settings, manifest_file, manifest, directory, retry]() {
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+      if (stopping_.load()) {
+        std::lock_guard<std::mutex> lock(update_job_mutex_);
+        update_job_state_ = "failed";
+        update_job_code_ = "UPDATE_DOWNLOAD_CANCELLED";
+        update_job_message_ = "服务正在停止，已中止后台下载";
+        update_job_at_ = now_text();
+        return;
+      }
+      const UpdatePackageResult downloaded =
+          download_update_package(settings, manifest_file, manifest, directory);
+      {
+        std::lock_guard<std::mutex> lock(update_job_mutex_);
+        update_job_state_ = downloaded.ok ? "done" : "failed";
+        update_job_code_ = downloaded.error_code;
+        update_job_message_ = downloaded.ok ? "下载并校验通过" : downloaded.error_message;
+        update_job_file_ =
+            downloaded.ok ? downloaded.path.filename().string() : std::string();
+        update_job_bytes_ = downloaded.bytes;
+        update_job_at_ = now_text();
+        // 自动预下载失败时最多再退避重试 2 次；手动下载保持原有的一次性行为。
+        if (!downloaded.ok && retry && attempt < 3) {
+          update_job_state_ = "running";
+          update_job_message_ = "第 " + std::to_string(attempt) +
+                                " 次下载失败，稍后自动重试：" + downloaded.error_message;
+        }
+      }
+      if (downloaded.ok || !retry || attempt >= 3) {
+        return;
+      }
+      const auto backoff = attempt == 1 ? std::chrono::seconds(60)
+                                        : std::chrono::seconds(600);
+      std::unique_lock<std::mutex> lock(update_job_mutex_);
+      if (update_job_cv_.wait_for(lock, backoff, [this] { return stopping_.load(); })) {
+        update_job_state_ = "failed";
+        update_job_code_ = "UPDATE_DOWNLOAD_CANCELLED";
+        update_job_message_ = "服务正在停止，已中止后台下载";
+        update_job_at_ = now_text();
+        return;
+      }
+    }
+  });
+  return true;
 }
 
 void HttpServer::register_routes() { register_all_routes(*server_, services_); }

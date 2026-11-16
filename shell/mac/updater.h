@@ -37,6 +37,22 @@ NS_ASSUME_NONNULL_BEGIN
 // 未暂停时返回 NOT_PAUSED（幂等，不视为错误）。
 - (void)resumeWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
 
+// 更新开关与首次流量提示确认。options 支持可选布尔：
+//   auto_check            自动检查（关闭后手动检查仍可用）
+//   prefetch              发现新版本时自动在后台下载安装包
+//   ack_prefetch_notice   确认首次后台下载的流量提示
+// 结果 code 为 UPDATED；参数类型不对返回 INVALID_ARGUMENT。
+- (void)setOptions:(nullable id)options
+        completion:(void (^)(NSDictionary<NSString*, id>* result))completion;
+
+// 手动下载并校验待更新安装包（不受 prefetch 开关与“本次已取消”限制）。
+// code：STARTED / RUNNING / DONE / NO_PENDING_UPDATE / FAILED。
+- (void)downloadUpdateWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
+
+// 取消进行中的后台预下载；已完成的包不删除，仍可安装。
+// code：CANCELED / NOT_RUNNING。
+- (void)cancelPrefetchWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
+
 - (NSDictionary<NSString*, id>*)status;
 
 @end

@@ -491,6 +491,8 @@ int main(int argc, char** argv) {
         .update_verifier_python =
             file_config.update_verifier_python.value_or("python3"),
         .update_verifier_script = file_config.update_verifier_script.value_or(""),
+        .update_auto_check = file_config.update_auto_check.value_or(true),
+        .update_prefetch = file_config.update_prefetch.value_or(true),
     };
     xiaotu::HttpServer http(services, info, token);
 

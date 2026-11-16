@@ -420,6 +420,25 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
     }];
     return;
   }
+  if ([message.name isEqualToString:@"xiaotuUpdateOptions"]) {
+    [[XiaotuUpdater shared] setOptions:body
+                            completion:^(NSDictionary* result) {
+                              [self callUpdateCallback:@"xiaotuUpdateOptionsDone" payload:result];
+                            }];
+    return;
+  }
+  if ([message.name isEqualToString:@"xiaotuUpdateDownload"]) {
+    [[XiaotuUpdater shared] downloadUpdateWithCompletion:^(NSDictionary* result) {
+      [self callUpdateCallback:@"xiaotuUpdateDownloadDone" payload:result];
+    }];
+    return;
+  }
+  if ([message.name isEqualToString:@"xiaotuUpdateCancelPrefetch"]) {
+    [[XiaotuUpdater shared] cancelPrefetchWithCompletion:^(NSDictionary* result) {
+      [self callUpdateCallback:@"xiaotuUpdateCancelDone" payload:result];
+    }];
+    return;
+  }
 }
 
 - (void)printDocumentWithPaper:(NSDictionary*)paper {
@@ -607,6 +626,9 @@ int run_webview(const std::string& url, const std::string& title) {
     [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateSkip"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateInstall"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateResume"];
+    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateOptions"];
+    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateDownload"];
+    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateCancelPrefetch"];
     static XiaotuKeychainHandler* g_keychainHandler = nil;
     if (g_keychainHandler == nil) {
       g_keychainHandler = [[XiaotuKeychainHandler alloc] init];

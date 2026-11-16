@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -46,6 +47,9 @@ struct ServerInfo {
   std::string update_public_key_file;
   std::string update_verifier_python = "python3";
   std::string update_verifier_script;
+  // 网络版后台策略：auto_check 按 24h±2h 自动检查，prefetch 命中新版本后自动下载。
+  bool update_auto_check = true;
+  bool update_prefetch = true;
 };
 
 // HTTP 外壳：只负责认证、路由注册与生命周期，业务全部在 Services 内。
@@ -81,6 +85,12 @@ class HttpServer {
   UpdateQuery self_update_query() const;
   UpdateSettings update_settings() const;
   std::filesystem::path update_download_dir() const;
+  // 网络版后台更新：启动后 30 秒做首轮检查，之后每 24h±2h；prefetch 打开时自动下载。
+  void start_update_scheduler();
+  void update_scheduler_loop();
+  // 启动一次后台下载；已有任务在跑时返回 false。retry 为 true 时失败按 60s / 600s 退避重试。
+  bool start_update_download(const UpdateSettings& settings, const std::string& manifest_file,
+                             const UpdateManifest& manifest, bool retry);
 
   Services& services_;
   ServerInfo info_;
@@ -101,6 +111,7 @@ class HttpServer {
   std::atomic<bool> maintenance_{false};
   // 更新下载任务：大安装包会超过 15 秒写超时，改为后台执行 + 轮询状态。
   std::mutex update_job_mutex_;
+  std::condition_variable update_job_cv_;
   std::thread update_job_thread_;
   std::string update_job_state_ = "idle";  // idle / running / done / failed
   std::string update_job_code_;
@@ -108,6 +119,12 @@ class HttpServer {
   std::string update_job_file_;
   std::uintmax_t update_job_bytes_ = 0;
   std::string update_job_at_;
+  // 自动检查线程：与下载线程分开，检查很轻，下载可能很慢。
+  std::mutex update_scheduler_mutex_;
+  std::condition_variable update_scheduler_cv_;
+  std::thread update_scheduler_thread_;
+  // 停止信号：唤醒定时等待与下载退避等待，避免退出时干等 10 分钟。
+  std::atomic<bool> stopping_{false};
   std::unique_ptr<httplib::Server> server_;
   std::thread thread_;
   std::atomic<bool> serving_{false};

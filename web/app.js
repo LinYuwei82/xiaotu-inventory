@@ -6878,8 +6878,57 @@
       return last ? labels[last] || last : "尚未检查";
     };
 
+    // 后台预下载状态文案：下载中显示进度，重试与失败显示原因，完成后显示包名与大小。
+    function prefetchText(status) {
+      const state = status && status.prefetch_state;
+      const bytes = status && status.prefetch_bytes ? formatBytes(status.prefetch_bytes) : "0 B";
+      const total = status && status.prefetch_total ? formatBytes(status.prefetch_total) : "";
+      if (state === "running") {
+        return total
+          ? `正在后台下载 ${status.prefetch_version || ""}（${bytes} / ${total}）`
+          : `正在后台下载 ${status.prefetch_version || ""}（${bytes}）`;
+      }
+      if (state === "retrying") {
+        return status.prefetch_message || "下载失败，稍后自动重试";
+      }
+      if (state === "done") {
+        return `已下载并校验：${status.prefetch_file || ""}（${bytes}）`;
+      }
+      if (state === "failed") {
+        return `后台下载失败：${status.prefetch_message || "可手动下载"}`;
+      }
+      if (state === "canceled") {
+        return "已取消本次后台下载，可手动下载";
+      }
+      if (state === "needs_consent") {
+        return "首次后台下载前需要确认流量提示";
+      }
+      return "—";
+    }
+
+    let pollTimer = null;
+    function stopPoll() {
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+    }
+    // 下载进度只在页面停留时轮询，离开关于页后定时器自行结束。
+    function schedulePoll(status) {
+      stopPoll();
+      if (!status || status.prefetch_state !== "running") return;
+      pollTimer = setTimeout(() => {
+        pollTimer = null;
+        if (!document.body.contains(card)) return;
+        nativeBridge.xiaotuUpdateStatus.postMessage({});
+      }, 1500);
+    }
+
     function render(status) {
       status = status || { update_available: false };
+      const prefetchRunning =
+        status.prefetch_state === "running" || status.prefetch_state === "retrying";
+      const prefetchDone = status.prefetch_state === "done";
       const rows = [
         ["检查通道", status.channel || "stable"],
         [
@@ -6893,12 +6942,21 @@
             ? `${status.pending_version}（构建 ${status.pending_build}）`
             : "—",
         ],
+        ["后台下载", prefetchText(status)],
       ];
+      const consent =
+        status.prefetch_state === "needs_consent"
+          ? `<p class="page-sub" style="margin-top:10px">
+               发现新版本时会在后台自动下载安装包，可能产生网络流量并占用磁盘空间。
+               可随时关闭上方开关。
+             </p>
+             <button class="btn" type="button" data-role="ack-prefetch">我知道了，开始后台下载</button>`
+          : "";
       card.innerHTML = `
         <div class="page-head" style="margin-bottom:8px">
           <div>
             <h2>软件更新</h2>
-            <p class="page-sub">检查通过签名校验后，由系统完成替换并自动重启</p>
+            <p class="page-sub">检查与下载均通过签名校验；安装前会再次确认并关闭程序</p>
           </div>
         </div>
         <table class="table"><tbody>${rows
@@ -6909,8 +6967,29 @@
               )}</td></tr>`
           )
           .join("")}</tbody></table>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px">
+          <label class="checkbox"><input type="checkbox" data-role="auto-check" ${
+            status.auto_check ? "checked" : ""
+          } /> 自动检查更新</label>
+          <label class="checkbox"><input type="checkbox" data-role="prefetch" ${
+            status.prefetch ? "checked" : ""
+          } /> 发现新版本时自动下载安装包</label>
+        </div>
+        ${consent}
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
           <button class="btn" type="button" data-role="check">检查更新</button>
+          ${
+            status.update_available
+              ? `<button class="btn" type="button" data-role="download" ${
+                  prefetchRunning || prefetchDone ? "disabled" : ""
+                }>${prefetchDone ? "已下载" : "下载并校验"}</button>`
+              : ""
+          }
+          ${
+            prefetchRunning
+              ? `<button class="btn" type="button" data-role="cancel">取消下载</button>`
+              : ""
+          }
           <button class="btn primary" type="button" data-role="install" ${
             status.update_available ? "" : "disabled"
           }>安装更新</button>
@@ -6922,14 +7001,64 @@
         checkButton.textContent = "检查中…";
         nativeBridge.xiaotuUpdateCheckNow.postMessage({});
       });
+      const autoInput = card.querySelector('[data-role="auto-check"]');
+      autoInput.addEventListener("change", () => {
+        autoInput.disabled = true;
+        nativeBridge.xiaotuUpdateOptions.postMessage({ auto_check: autoInput.checked });
+      });
+      const prefetchInput = card.querySelector('[data-role="prefetch"]');
+      prefetchInput.addEventListener("change", async () => {
+        if (prefetchInput.checked && status.prefetch_notice_acked !== true) {
+          const confirmed = await askConfirm(
+            "发现新版本时会在后台自动下载安装包，可能产生网络流量并占用磁盘空间。" +
+              "可随时在此处关闭，是否开启？",
+            { okText: "开启", cancelText: "取消" }
+          );
+          if (!confirmed) {
+            prefetchInput.checked = false;
+            return;
+          }
+          nativeBridge.xiaotuUpdateOptions.postMessage({
+            prefetch: true,
+            ack_prefetch_notice: true,
+          });
+          return;
+        }
+        nativeBridge.xiaotuUpdateOptions.postMessage({ prefetch: prefetchInput.checked });
+      });
+      const downloadButton = card.querySelector('[data-role="download"]');
+      if (downloadButton) {
+        downloadButton.addEventListener("click", () => {
+          downloadButton.disabled = true;
+          nativeBridge.xiaotuUpdateDownload.postMessage({});
+        });
+      }
+      const cancelButton = card.querySelector('[data-role="cancel"]');
+      if (cancelButton) {
+        cancelButton.addEventListener("click", () => {
+          cancelButton.disabled = true;
+          nativeBridge.xiaotuUpdateCancelPrefetch.postMessage({});
+        });
+      }
+      const ackButton = card.querySelector('[data-role="ack-prefetch"]');
+      if (ackButton) {
+        ackButton.addEventListener("click", () => {
+          ackButton.disabled = true;
+          nativeBridge.xiaotuUpdateOptions.postMessage({
+            prefetch: true,
+            ack_prefetch_notice: true,
+          });
+        });
+      }
       card.querySelector('[data-role="install"]').addEventListener("click", async () => {
         const confirmed = await askConfirm(
-          "安装更新后应用会自动退出并重启，是否继续？",
+          "安装更新会打开安装包，请在安装前退出本程序，是否继续？",
           { okText: "安装", cancelText: "取消" }
         );
         if (!confirmed) return;
         nativeBridge.xiaotuUpdateInstall.postMessage({});
       });
+      schedulePoll(status);
     }
 
     // 状态回调直接传 status 本体；检查回调里是 {status: ...} 包装。
@@ -6951,6 +7080,34 @@
     window.xiaotuUpdateInstallDone = (payload) => {
       if (payload && payload.ok === false) {
         showNotice("无法启动安装流程：" + (payload.code || ""), "error");
+      } else if (payload && payload.code === "OPENED") {
+        showNotice(payload.message || "已打开安装包，请退出本程序后完成安装", "ok");
+      }
+    };
+    window.xiaotuUpdateOptionsDone = (payload) => {
+      if (payload && payload.ok === false) {
+        showNotice("设置未保存：" + (payload.code || ""), "error");
+      }
+      render((payload && payload.status) || {});
+    };
+    window.xiaotuUpdateDownloadDone = (payload) => {
+      const status = (payload && payload.status) || {};
+      render(status);
+      if (payload && payload.ok === false) {
+        showNotice(
+          payload.code === "NO_PENDING_UPDATE"
+            ? "没有可下载的待更新版本"
+            : "下载未能开始：" + (payload.code || ""),
+          "error"
+        );
+      } else if (payload && payload.code === "STARTED") {
+        showNotice("已开始下载，完成后会自动校验", "ok");
+      }
+    };
+    window.xiaotuUpdateCancelDone = (payload) => {
+      render((payload && payload.status) || {});
+      if (payload && payload.code === "CANCELED") {
+        showNotice("已取消本次后台下载", "ok");
       }
     };
     nativeBridge.xiaotuUpdateStatus.postMessage({});
@@ -6990,6 +7147,11 @@
         ["最新版本", latest ? `${latest.version}（构建 ${latest.build}）` : "—"],
         ["发布日期", latest && latest.published_at ? latest.published_at : "—"],
         ["状态", statusText(data)],
+        [
+          "后台策略",
+          `${data.auto_check === false ? "自动检查已关闭" : "自动检查已开启"}；` +
+            `${data.prefetch === false ? "不自动下载" : "发现新版本自动下载"}（config.toml）`,
+        ],
       ];
       let downloadLine = "";
       if (download.state === "running") {

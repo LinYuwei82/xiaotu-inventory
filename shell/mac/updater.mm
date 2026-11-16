@@ -1,5 +1,7 @@
 #include "updater.h"
 
+#import <AppKit/AppKit.h>
+#import <CommonCrypto/CommonDigest.h>
 #import <Foundation/Foundation.h>
 
 #include <cstdlib>
@@ -36,6 +38,32 @@ NSString* const kPausedKey = @"XiaotuUpdatePaused";
 NSString* const kLastCheckKey = @"XiaotuLastCheckAt";
 NSString* const kLastManualCheckKey = @"XiaotuLastManualCheckAt";
 NSString* const kLastResultKey = @"XiaotuLastCheckResult";
+NSString* const kAutoCheckKey = @"XiaotuAutoCheckEnabled";
+NSString* const kPrefetchKey = @"XiaotuPrefetchEnabled";
+NSString* const kPrefetchNoticeKey = @"XiaotuPrefetchNoticeAcked";
+NSString* const kPrefetchVersionKey = @"XiaotuPrefetchVersion";
+NSString* const kPrefetchAttemptsKey = @"XiaotuPrefetchAttempts";
+NSString* const kPrefetchStateKey = @"XiaotuPrefetchState";
+NSString* const kPrefetchFileKey = @"XiaotuPrefetchFile";
+NSString* const kPrefetchBytesKey = @"XiaotuPrefetchBytes";
+NSString* const kPrefetchTotalKey = @"XiaotuPrefetchTotal";
+NSString* const kPrefetchMessageKey = @"XiaotuPrefetchMessage";
+NSString* const kPendingURLKey = @"XiaotuPendingPackageURL";
+NSString* const kPendingSHAKey = @"XiaotuPendingPackageSHA256";
+NSString* const kPendingSizeKey = @"XiaotuPendingPackageSize";
+
+// 后台预下载状态。running / retrying 只在本次进程内有效，重启后回到 idle。
+NSString* const kPrefetchIdle = @"idle";
+NSString* const kPrefetchNeedsConsent = @"needs_consent";
+NSString* const kPrefetchRunning = @"running";
+NSString* const kPrefetchRetrying = @"retrying";
+NSString* const kPrefetchDone = @"done";
+NSString* const kPrefetchFailed = @"failed";
+NSString* const kPrefetchCanceled = @"canceled";
+
+constexpr int kMaxPrefetchAttempts = 3;
+constexpr NSTimeInterval kPrefetchRetryFirstDelay = 60;   // 首次失败后 1 分钟
+constexpr NSTimeInterval kPrefetchRetrySecondDelay = 600;  // 第二次失败后 10 分钟
 
 constexpr NSTimeInterval kCheckInterval = 86400;  // 24h
 constexpr NSTimeInterval kJitter = 7200;          // ±2h
@@ -135,6 +163,84 @@ std::int64_t pending_build(NSUserDefaults* defaults) {
              : 0;
 }
 
+bool auto_check_enabled() {
+  return [[NSUserDefaults standardUserDefaults] boolForKey:kAutoCheckKey];
+}
+
+bool prefetch_enabled() {
+  return [[NSUserDefaults standardUserDefaults] boolForKey:kPrefetchKey];
+}
+
+// 预下载缓存目录：Application Support 下按 bundle id 分开，卸载时随应用数据一起清理。
+NSURL* prefetch_directory() {
+  NSFileManager* manager = [NSFileManager defaultManager];
+  NSURL* base = [manager URLForDirectory:NSApplicationSupportDirectory
+                                inDomain:NSUserDomainMask
+                       appropriateForURL:nil
+                                  create:YES
+                                   error:NULL];
+  if (base == nil) {
+    return nil;
+  }
+  NSURL* directory = [base URLByAppendingPathComponent:@"com.simem.xiaotu/updates"
+                                           isDirectory:YES];
+  [manager createDirectoryAtURL:directory
+      withIntermediateDirectories:YES
+                       attributes:nil
+                            error:NULL];
+  return directory;
+}
+
+NSString* safe_file_component(NSString* text) {
+  NSMutableString* out = [NSMutableString string];
+  for (NSUInteger i = 0; i < text.length; ++i) {
+    const unichar ch = [text characterAtIndex:i];
+    const BOOL allowed = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                         (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == '_';
+    [out appendString:allowed ? [NSString stringWithFormat:@"%C", ch] : @"_"];
+  }
+  if (out.length == 0 || [out isEqualToString:@"."] || [out isEqualToString:@".."]) {
+    return @"update-package";
+  }
+  return out;
+}
+
+NSString* prefetch_file_name(NSDictionary* manifest) {
+  NSString* urlText = json_string(manifest, @"url") ?: @"";
+  NSString* last = [[NSURL URLWithString:urlText] lastPathComponent] ?: @"update-package";
+  last = [last stringByRemovingPercentEncoding] ?: last;
+  NSString* version = json_string(manifest, @"version") ?: @"0.0.0";
+  return [NSString stringWithFormat:@"%@-%lld-%@", safe_file_component(version),
+                                    json_long(manifest, @"build"), safe_file_component(last)];
+}
+
+// 安装包 SHA-256：用 CommonCrypto 流式读取，避免把几十 MB 的包整个读进内存。
+NSString* sha256_of_file(NSURL* url) {
+  NSInputStream* stream = [NSInputStream inputStreamWithURL:url];
+  if (stream == nil) {
+    return nil;
+  }
+  [stream open];
+  CC_SHA256_CTX context;
+  CC_SHA256_Init(&context);
+  uint8_t buffer[64 * 1024];
+  NSInteger read = 0;
+  while ((read = [stream read:buffer maxLength:sizeof(buffer)]) > 0) {
+    CC_SHA256_Update(&context, buffer, static_cast<CC_LONG>(read));
+  }
+  [stream close];
+  if (read < 0) {
+    return nil;
+  }
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256_Final(digest, &context);
+  NSMutableString* hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+  for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; ++i) {
+    [hex appendFormat:@"%02x", digest[i]];
+  }
+  return hex;
+}
+
 // 只把 upgrade_path 交给 core 解析与选择，避免在 Objective-C++ 里重写字段规则；
 // 清单其余字段仍按原有流程判定，不因 upgrade_path 引入额外前置条件。
 std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int local_schema) {
@@ -161,6 +267,88 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
 }
 }  // namespace
 
+// 后台预下载：URLSession 的下载任务在完成回调里文件只在本次回调内有效，
+// 所以这里先同步搬到目标路径，再把结果异步交给 updater 的串行队列处理校验。
+@interface XiaotuPrefetchDownload : NSObject <NSURLSessionDownloadDelegate>
+@property(nonatomic, strong) NSURLSession* session;
+@property(nonatomic, strong) NSURLSessionDownloadTask* task;
+@property(nonatomic, copy) NSURL* destination;
+// 下面三个会被取消方与 URLSession 回调线程同时访问，保持原子属性。
+@property(atomic, assign) BOOL cancelled;
+@property(atomic, copy, nullable) void (^onProgress)(int64_t received, int64_t total);
+@property(atomic, copy, nullable) void (^onFinish)(NSURL* location, NSError* error);
+@end
+
+@implementation XiaotuPrefetchDownload
+
+- (void)startWithURL:(NSURL*)url destination:(NSURL*)destination {
+  self.destination = destination;
+  NSURLSessionConfiguration* config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+  // 安装包可能较大，单次请求超时留足时间；连接失败仍由系统尽快返回。
+  config.timeoutIntervalForRequest = 30;
+  config.timeoutIntervalForResource = 1800;
+  self.session = [NSURLSession sessionWithConfiguration:config delegate:self delegateQueue:nil];
+  self.task = [self.session downloadTaskWithURL:url];
+  [self.task resume];
+}
+
+- (void)cancel {
+  self.cancelled = YES;
+  self.onProgress = nil;
+  self.onFinish = nil;
+  [self.task cancel];
+  [self.session invalidateAndCancel];
+}
+
+- (void)URLSession:(NSURLSession*)session
+      downloadTask:(NSURLSessionDownloadTask*)downloadTask
+      didWriteData:(int64_t)bytesWritten
+ totalBytesWritten:(int64_t)totalBytesWritten
+totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite {
+  if (self.onProgress != nil) {
+    self.onProgress(totalBytesWritten, totalBytesExpectedToWrite);
+  }
+}
+
+- (void)URLSession:(NSURLSession*)session
+      downloadTask:(NSURLSessionDownloadTask*)downloadTask
+didFinishDownloadingToURL:(NSURL*)location {
+  if (self.cancelled) {
+    return;
+  }
+  NSError* error = nil;
+  NSFileManager* manager = [NSFileManager defaultManager];
+  [manager removeItemAtURL:self.destination error:NULL];
+  if (![manager moveItemAtURL:location toURL:self.destination error:&error]) {
+    [self report:nil error:error];
+    return;
+  }
+  [self report:self.destination error:nil];
+}
+
+- (void)URLSession:(NSURLSession*)session
+              task:(NSURLSessionTask*)task
+didCompleteWithError:(NSError*)error {
+  if (self.cancelled || error == nil) {
+    return;
+  }
+  [self report:nil error:error];
+}
+
+- (void)report:(nullable NSURL*)location error:(nullable NSError*)error {
+  void (^finish)(NSURL*, NSError*) = self.onFinish;
+  self.onFinish = nil;
+  // 取消路径已经 invalidate 过，重复调用会抛异常。
+  if (!self.cancelled && self.session != nil) {
+    [self.session finishTasksAndInvalidate];
+  }
+  if (finish != nil) {
+    finish(location, error);
+  }
+}
+
+@end
+
 @interface XiaotuUpdater ()
 @property(nonatomic, strong) dispatch_queue_t queue;
 @property(nonatomic, copy, nullable) NSString* manifestURL;
@@ -169,6 +357,17 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
 @property(nonatomic, assign) BOOL running;
 // 递增令牌用于作废旧定时器；只在 self.queue 上读写。
 @property(nonatomic, assign) NSUInteger timerToken;
+// 后台预下载：状态与进度只在 self.queue 上写，status 在主线程读。
+@property(nonatomic, strong, nullable) XiaotuPrefetchDownload* prefetchDownload;
+@property(nonatomic, copy) NSString* prefetchState;
+@property(nonatomic, copy, nullable) NSString* prefetchMessage;
+@property(nonatomic, copy, nullable) NSString* prefetchFile;
+@property(nonatomic, assign) long long prefetchReceived;
+@property(nonatomic, assign) long long prefetchTotal;
+@property(nonatomic, assign) NSUInteger prefetchGeneration;
+@property(nonatomic, assign) NSUInteger prefetchRetryToken;
+// 本次下载是否由用户手动发起：手动失败不进入自动退避重试。
+@property(nonatomic, assign) BOOL prefetchManual;
 #if XIAOTU_HAS_SPARKLE
 // 必须持有，否则控制器释放后 Sparkle 的后续下载/安装会中断。只在主线程访问。
 @property(nonatomic, strong, nullable) SPUStandardUpdaterController* sparkleController;
@@ -191,6 +390,30 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
   if (self != nil) {
     _queue = dispatch_queue_create("com.simem.xiaotu.update", DISPATCH_QUEUE_SERIAL);
     _channel = @"stable";
+    // 两个开关默认开启：registerDefaults 只影响「从未写过」的键，用户改过就保留用户值。
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    [defaults registerDefaults:@{kAutoCheckKey : @YES, kPrefetchKey : @YES}];
+    _prefetchState = [defaults stringForKey:kPrefetchStateKey] ?: kPrefetchIdle;
+    // running / retrying 只在本次进程内有效，重启后下载已经不存在，回到 idle。
+    if ([_prefetchState isEqualToString:kPrefetchRunning] ||
+        [_prefetchState isEqualToString:kPrefetchRetrying]) {
+      _prefetchState = kPrefetchIdle;
+      [defaults setObject:kPrefetchIdle forKey:kPrefetchStateKey];
+    }
+    _prefetchFile = [defaults stringForKey:kPrefetchFileKey];
+    _prefetchMessage = [defaults stringForKey:kPrefetchMessageKey];
+    _prefetchTotal = static_cast<long long>([defaults integerForKey:kPrefetchTotalKey]);
+    _prefetchReceived =
+        static_cast<long long>([defaults integerForKey:kPrefetchBytesKey]);
+    // 缓存目录可能被系统清理过：done 但文件不在时按 idle 处理，界面不会给一个打不开的包。
+    if ([_prefetchState isEqualToString:kPrefetchDone] &&
+        (_prefetchFile.length == 0 ||
+         ![[NSFileManager defaultManager] fileExistsAtPath:_prefetchFile])) {
+      _prefetchState = kPrefetchIdle;
+      _prefetchFile = nil;
+      [defaults setObject:kPrefetchIdle forKey:kPrefetchStateKey];
+      [defaults removeObjectForKey:kPrefetchFileKey];
+    }
   }
   return self;
 }
@@ -238,18 +461,494 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
   });
 }
 
-// 清除待更新与中间版本记录（两者互斥）；不触碰跳过版本与定时。
+// 清除待更新与中间版本记录（两者互斥）；同时作废该版本的后台预下载。
+// 跳过版本与定时不受影响。
 - (void)clearPending {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   [defaults removeObjectForKey:kPendingBuildKey];
   [defaults removeObjectForKey:kPendingVersionKey];
   [defaults removeObjectForKey:kPendingReasonKey];
   [defaults removeObjectForKey:kPendingNotesKey];
+  [defaults removeObjectForKey:kPendingURLKey];
+  [defaults removeObjectForKey:kPendingSHAKey];
+  [defaults removeObjectForKey:kPendingSizeKey];
   [defaults setBool:NO forKey:kMandatoryKey];
   [defaults removeObjectForKey:kIntermediateVersionKey];
   [defaults removeObjectForKey:kIntermediateBuildKey];
   [defaults removeObjectForKey:kIntermediateSchemaKey];
+  // 调用方可能来自主线程（跳过版本），统一回到串行队列里改预下载状态。
+  dispatch_async(self.queue, ^{
+    [self resetPrefetchOnQueue];
+  });
 }
+
+- (void)setPrefetchState:(NSString*)state message:(nullable NSString*)message {
+  self.prefetchState = state;
+  self.prefetchMessage = message;
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  [defaults setObject:state forKey:kPrefetchStateKey];
+  if (message.length > 0) {
+    [defaults setObject:message forKey:kPrefetchMessageKey];
+  } else {
+    [defaults removeObjectForKey:kPrefetchMessageKey];
+  }
+}
+
+// 取消进行中的下载并作废回调用令牌；只在 self.queue 上调用。
+- (void)cancelActiveDownload {
+  XiaotuPrefetchDownload* download = self.prefetchDownload;
+  self.prefetchDownload = nil;
+  self.prefetchGeneration += 1;
+  self.prefetchManual = NO;
+  if (download != nil) {
+    [download cancel];
+  }
+  NSURL* directory = prefetch_directory();
+  if (directory == nil) {
+    return;
+  }
+  NSArray<NSURL*>* files =
+      [[NSFileManager defaultManager] contentsOfDirectoryAtURL:directory
+                                    includingPropertiesForKeys:nil
+                                                       options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                         error:NULL];
+  for (NSURL* file in files) {
+    if ([file.pathExtension isEqualToString:@"part"]) {
+      [[NSFileManager defaultManager] removeItemAtURL:file error:NULL];
+    }
+  }
+}
+
+// 同一时间只保留一个待装包：新版本开始下载前清掉旧包与旧进度。
+- (void)removePrefetchFilesExcept:(nullable NSString*)keepName {
+  NSURL* directory = prefetch_directory();
+  if (directory == nil) {
+    return;
+  }
+  NSArray<NSURL*>* files =
+      [[NSFileManager defaultManager] contentsOfDirectoryAtURL:directory
+                                    includingPropertiesForKeys:nil
+                                                       options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                         error:NULL];
+  for (NSURL* file in files) {
+    if (keepName.length > 0 &&
+        ([file.lastPathComponent isEqualToString:keepName] ||
+         [file.lastPathComponent isEqualToString:[keepName stringByAppendingString:@".part"]])) {
+      continue;
+    }
+    [[NSFileManager defaultManager] removeItemAtURL:file error:NULL];
+  }
+}
+
+// 清理该版本的预下载记录；只在 self.queue 上调用。
+- (void)resetPrefetchOnQueue {
+  self.prefetchRetryToken += 1;
+  [self cancelActiveDownload];
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  [defaults removeObjectForKey:kPrefetchVersionKey];
+  [defaults removeObjectForKey:kPrefetchAttemptsKey];
+  [defaults removeObjectForKey:kPrefetchFileKey];
+  [defaults removeObjectForKey:kPrefetchBytesKey];
+  [defaults removeObjectForKey:kPrefetchTotalKey];
+  [defaults removeObjectForKey:kPrefetchMessageKey];
+  [defaults setObject:kPrefetchIdle forKey:kPrefetchStateKey];
+  self.prefetchState = kPrefetchIdle;
+  self.prefetchMessage = nil;
+  self.prefetchFile = nil;
+  self.prefetchReceived = 0;
+  self.prefetchTotal = 0;
+  [self removePrefetchFilesExcept:nil];
+}
+
+// 待更新版本的安装包信息；用 status/ack/手动下载时不必重新拉清单。
+- (nullable NSDictionary*)pendingPackageManifest {
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSString* version = [defaults stringForKey:kPendingVersionKey];
+  NSString* url = [defaults stringForKey:kPendingURLKey];
+  if (version.length == 0 || url.length == 0) {
+    return nil;
+  }
+  return @{
+    @"version" : version,
+    @"build" : @([defaults integerForKey:kPendingBuildKey]),
+    @"url" : url,
+    @"sha256" : [defaults stringForKey:kPendingSHAKey] ?: @"",
+    @"size" : @([defaults integerForKey:kPendingSizeKey]),
+  };
+}
+
+// 自动检查命中新版本后调用：记录版本、按开关与提示确认情况决定是否自动开始。
+// autoStart=NO 用于手动检查：只准备状态，不自动下载。
+- (void)preparePrefetchForManifest:(NSDictionary*)manifest autoStart:(BOOL)autoStart {
+  NSString* version = json_string(manifest, @"version");
+  if (version.length == 0) {
+    return;
+  }
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSString* tracked = [defaults stringForKey:kPrefetchVersionKey];
+  if (![tracked isEqualToString:version]) {
+    [self resetPrefetchOnQueue];
+    [defaults setObject:version forKey:kPrefetchVersionKey];
+  }
+  if (!prefetch_enabled()) {
+    if ([self.prefetchState isEqualToString:kPrefetchRunning] ||
+        [self.prefetchState isEqualToString:kPrefetchRetrying] ||
+        [self.prefetchState isEqualToString:kPrefetchNeedsConsent]) {
+      [self cancelActiveDownload];
+      [self setPrefetchState:kPrefetchIdle message:nil];
+    }
+    return;
+  }
+  if ([self.prefetchState isEqualToString:kPrefetchDone]) {
+    if (self.prefetchFile.length > 0 &&
+        [[NSFileManager defaultManager] fileExistsAtPath:self.prefetchFile]) {
+      return;
+    }
+    [self setPrefetchState:kPrefetchIdle message:nil];
+  }
+  // 取消或失败过的版本不再自动重试；手动下载仍可。
+  if ([self.prefetchState isEqualToString:kPrefetchCanceled] ||
+      [self.prefetchState isEqualToString:kPrefetchFailed]) {
+    return;
+  }
+  if (![defaults boolForKey:kPrefetchNoticeKey]) {
+    [self setPrefetchState:kPrefetchNeedsConsent
+                   message:@"首次后台下载前需要确认流量提示"];
+    return;
+  }
+  if (!autoStart) {
+    if (![self.prefetchState isEqualToString:kPrefetchRunning] &&
+        ![self.prefetchState isEqualToString:kPrefetchRetrying]) {
+      [self setPrefetchState:kPrefetchIdle message:nil];
+    }
+    return;
+  }
+  [self startPrefetchWithManifest:manifest manual:NO];
+}
+
+// 真正发起下载；manual=YES 表示用户显式点了「下载并校验」，不受取消记录限制。
+- (void)startPrefetchWithManifest:(NSDictionary*)manifest manual:(BOOL)manual {
+  if (!manual && !prefetch_enabled()) {
+    return;
+  }
+  if (self.prefetchDownload != nil) {
+    return;
+  }
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSString* version = json_string(manifest, @"version");
+  if (version.length == 0) {
+    return;
+  }
+  if (![[defaults stringForKey:kPrefetchVersionKey] isEqualToString:version]) {
+    [self resetPrefetchOnQueue];
+    [defaults setObject:version forKey:kPrefetchVersionKey];
+  }
+  if (!manual && [self.prefetchState isEqualToString:kPrefetchCanceled]) {
+    return;
+  }
+  if (![defaults boolForKey:kPrefetchNoticeKey]) {
+    if (!manual) {
+      [self setPrefetchState:kPrefetchNeedsConsent
+                     message:@"首次后台下载前需要确认流量提示"];
+      return;
+    }
+    // 手动下载是显式动作，视为已知悉流量提示，不再单独弹一次性提示。
+    [defaults setBool:YES forKey:kPrefetchNoticeKey];
+  }
+  if (manual) {
+    [defaults setInteger:0 forKey:kPrefetchAttemptsKey];
+    self.prefetchRetryToken += 1;
+  }
+  NSURL* directory = prefetch_directory();
+  NSString* name = prefetch_file_name(manifest);
+  NSURL* url = [NSURL URLWithString:json_string(manifest, @"url") ?: @""];
+  if (directory == nil || name.length == 0 || url == nil) {
+    [self setPrefetchState:kPrefetchFailed message:@"无法创建更新缓存目录或安装包地址无效"];
+    return;
+  }
+  NSURL* partURL = [directory URLByAppendingPathComponent:[name stringByAppendingString:@".part"]];
+  NSURL* finalURL = [directory URLByAppendingPathComponent:name];
+  [self removePrefetchFilesExcept:name];
+  [defaults removeObjectForKey:kPrefetchFileKey];
+  self.prefetchFile = nil;
+  const long long expected = json_long(manifest, @"size");
+  self.prefetchReceived = 0;
+  self.prefetchTotal = expected > 0 ? expected : 0;
+  self.prefetchManual = manual;
+  [self setPrefetchState:kPrefetchRunning message:@"正在后台下载安装包"];
+  const NSUInteger generation = self.prefetchGeneration + 1;
+  self.prefetchGeneration = generation;
+
+  XiaotuPrefetchDownload* download = [[XiaotuPrefetchDownload alloc] init];
+  self.prefetchDownload = download;
+  dispatch_queue_t queue = self.queue;
+  __weak XiaotuUpdater* weakSelf = self;
+  download.onProgress = ^(int64_t received, int64_t total) {
+    XiaotuUpdater* strongSelf = weakSelf;
+    if (strongSelf == nil) {
+      return;
+    }
+    strongSelf.prefetchReceived = received;
+    if (total > 0) {
+      strongSelf.prefetchTotal = total;
+    }
+  };
+  download.onFinish = ^(NSURL* location, NSError* error) {
+    dispatch_async(queue, ^{
+      XiaotuUpdater* strongSelf = weakSelf;
+      if (strongSelf == nil || generation != strongSelf.prefetchGeneration) {
+        return;
+      }
+      [strongSelf finishPrefetchWithLocation:location
+                                       error:error
+                                     partURL:partURL
+                                    finalURL:finalURL
+                                    manifest:manifest];
+    });
+  };
+  [download startWithURL:url destination:partURL];
+}
+
+- (void)finishPrefetchWithLocation:(nullable NSURL*)location
+                             error:(nullable NSError*)error
+                           partURL:(NSURL*)partURL
+                          finalURL:(NSURL*)finalURL
+                          manifest:(NSDictionary*)manifest {
+  (void)location;  // 文件已由下载代理同步搬到 partURL，这里只需处理 partURL。
+  self.prefetchDownload = nil;
+  const BOOL manual = self.prefetchManual;
+  self.prefetchManual = NO;
+  if (error != nil) {
+    [[NSFileManager defaultManager] removeItemAtURL:partURL error:NULL];
+    [self handlePrefetchFailure:[NSString stringWithFormat:@"下载失败：%@",
+                                                           error.localizedDescription ?: @"未知原因"]
+                        manifest:manifest
+                          manual:manual];
+    return;
+  }
+  const long long expectedSize = json_long(manifest, @"size");
+  NSDictionary* attributes =
+      [[NSFileManager defaultManager] attributesOfItemAtPath:partURL.path error:NULL];
+  const long long actualSize =
+      attributes != nil ? [attributes[NSFileSize] longLongValue] : 0;
+  if (expectedSize > 0 && actualSize != expectedSize) {
+    [[NSFileManager defaultManager] removeItemAtURL:partURL error:NULL];
+    [self handlePrefetchFailure:[NSString
+                                    stringWithFormat:@"安装包大小不符（应为 %lld 字节，实际 %lld 字节）",
+                                                     expectedSize, actualSize]
+                        manifest:manifest
+                          manual:manual];
+    return;
+  }
+  NSString* expectedSHA = [json_string(manifest, @"sha256") lowercaseString];
+  NSString* actualSHA = sha256_of_file(partURL);
+  if (expectedSHA.length > 0 && ![expectedSHA isEqualToString:actualSHA ?: @""]) {
+    [[NSFileManager defaultManager] removeItemAtURL:partURL error:NULL];
+    [self handlePrefetchFailure:@"安装包 SHA-256 校验失败" manifest:manifest manual:manual];
+    return;
+  }
+  [[NSFileManager defaultManager] removeItemAtURL:finalURL error:NULL];
+  NSError* moveError = nil;
+  if (![[NSFileManager defaultManager] moveItemAtURL:partURL toURL:finalURL error:&moveError]) {
+    [self handlePrefetchFailure:[NSString stringWithFormat:@"无法保存安装包：%@",
+                                                           moveError.localizedDescription ?: @"未知原因"]
+                        manifest:manifest
+                          manual:manual];
+    return;
+  }
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  [defaults setInteger:0 forKey:kPrefetchAttemptsKey];
+  [defaults setObject:finalURL.path forKey:kPrefetchFileKey];
+  [defaults setInteger:actualSize forKey:kPrefetchBytesKey];
+  [defaults setInteger:(expectedSize > 0 ? expectedSize : actualSize) forKey:kPrefetchTotalKey];
+  self.prefetchFile = finalURL.path;
+  self.prefetchReceived = actualSize;
+  self.prefetchTotal = expectedSize > 0 ? expectedSize : actualSize;
+  [self setPrefetchState:kPrefetchDone message:@"下载并校验通过"];
+  xiaotu::log_info("更新：后台预下载完成 " +
+                   std::string(finalURL.lastPathComponent.UTF8String ?: ""));
+}
+
+- (void)handlePrefetchFailure:(NSString*)message
+                     manifest:(NSDictionary*)manifest
+                       manual:(BOOL)manual {
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSInteger attempts = [defaults integerForKey:kPrefetchAttemptsKey] + 1;
+  [defaults setInteger:attempts forKey:kPrefetchAttemptsKey];
+  xiaotu::log_warn("更新：后台预下载失败（第 " + std::to_string(attempts) + " 次）：" +
+                   (message.UTF8String ?: ""));
+  // 手动下载失败直接结束；自动预下载最多 3 次（首次 + 两次退避）。
+  const BOOL retry = !manual && prefetch_enabled() && attempts < kMaxPrefetchAttempts;
+  if (!retry) {
+    [self setPrefetchState:kPrefetchFailed message:message];
+    return;
+  }
+  const NSTimeInterval delay =
+      attempts == 1 ? kPrefetchRetryFirstDelay : kPrefetchRetrySecondDelay;
+  [self setPrefetchState:kPrefetchRetrying
+                 message:[NSString stringWithFormat:@"%@，稍后自动重试（第 %ld/%d 次）", message,
+                                                    static_cast<long>(attempts) + 1,
+                                                    kMaxPrefetchAttempts]];
+  self.prefetchRetryToken += 1;
+  const NSUInteger token = self.prefetchRetryToken;
+  NSString* version = json_string(manifest, @"version") ?: @"";
+  dispatch_queue_t queue = self.queue;
+  __weak XiaotuUpdater* weakSelf = self;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(delay * NSEC_PER_SEC)),
+                 queue, ^{
+                   XiaotuUpdater* strongSelf = weakSelf;
+                   if (strongSelf == nil || token != strongSelf.prefetchRetryToken) {
+                     return;
+                   }
+                   if (!prefetch_enabled()) {
+                     return;
+                   }
+                   if (![[[NSUserDefaults standardUserDefaults]
+                            stringForKey:kPrefetchVersionKey] isEqualToString:version]) {
+                     return;
+                   }
+                   [strongSelf startPrefetchWithManifest:manifest manual:NO];
+                 });
+}
+
+// 开关与「首次流量提示」确认：auto_check / prefetch / ack_prefetch_notice 都是可选布尔。
+- (void)setOptions:(id)options
+        completion:(void (^)(NSDictionary<NSString*, id>* result))completion {
+  void (^respond)(NSDictionary*) = ^(NSDictionary* result) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(result);
+    });
+  };
+  NSDictionary* body = [options isKindOfClass:[NSDictionary class]] ? options : @{};
+  id autoValue = body[@"auto_check"];
+  id prefetchValue = body[@"prefetch"];
+  id ackValue = body[@"ack_prefetch_notice"];
+  const BOOL hasAuto = autoValue != nil;
+  const BOOL hasPrefetch = prefetchValue != nil;
+  const BOOL ackNotice = [ackValue isKindOfClass:[NSNumber class]] && [ackValue boolValue];
+  if ((hasAuto && ![autoValue isKindOfClass:[NSNumber class]]) ||
+      (hasPrefetch && ![prefetchValue isKindOfClass:[NSNumber class]]) ||
+      (ackValue != nil && ![ackValue isKindOfClass:[NSNumber class]])) {
+    respond(@{
+      @"ok" : @NO,
+      @"code" : @"INVALID_ARGUMENT",
+      @"status" : [self status],
+    });
+    return;
+  }
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  if (hasAuto) {
+    [defaults setBool:[autoValue boolValue] forKey:kAutoCheckKey];
+  }
+  if (hasPrefetch) {
+    [defaults setBool:[prefetchValue boolValue] forKey:kPrefetchKey];
+  }
+  if (ackNotice) {
+    [defaults setBool:YES forKey:kPrefetchNoticeKey];
+  }
+  dispatch_async(self.queue, ^{
+    if (hasAuto) {
+      if (auto_check_enabled()) {
+        [self scheduleNextCheckIfNeeded];
+        [self checkIfDue];
+        [self armTimerOnQueue];
+      } else {
+        // 递增令牌作废已武装的定时器；手动检查不受影响。
+        self.timerToken += 1;
+      }
+    }
+    if (hasPrefetch || ackNotice) {
+      if (!prefetch_enabled() && !ackNotice) {
+        [self cancelActiveDownload];
+        self.prefetchRetryToken += 1;
+        if ([self.prefetchState isEqualToString:kPrefetchRunning] ||
+            [self.prefetchState isEqualToString:kPrefetchRetrying] ||
+            [self.prefetchState isEqualToString:kPrefetchNeedsConsent]) {
+          [self setPrefetchState:kPrefetchIdle message:nil];
+        }
+      } else if ([defaults boolForKey:kPrefetchNoticeKey]) {
+        NSDictionary* manifest = [self pendingPackageManifest];
+        if (manifest != nil) {
+          [self preparePrefetchForManifest:manifest autoStart:YES];
+        }
+      }
+    }
+    respond(@{
+      @"ok" : @YES,
+      @"code" : @"UPDATED",
+      @"status" : [self status],
+    });
+  });
+}
+
+// 手动下载：开关关闭或同版本已取消都可以由用户显式重新发起。
+- (void)downloadUpdateWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion {
+  void (^respond)(NSDictionary*) = ^(NSDictionary* result) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(result);
+    });
+  };
+  dispatch_async(self.queue, ^{
+    NSDictionary* manifest = [self pendingPackageManifest];
+    if (manifest == nil) {
+      respond(@{
+        @"ok" : @NO,
+        @"code" : @"NO_PENDING_UPDATE",
+        @"status" : [self status],
+      });
+      return;
+    }
+    if (self.prefetchDownload != nil) {
+      respond(@{
+        @"ok" : @YES,
+        @"code" : @"RUNNING",
+        @"status" : [self status],
+      });
+      return;
+    }
+    if ([self.prefetchState isEqualToString:kPrefetchDone] && self.prefetchFile.length > 0 &&
+        [[NSFileManager defaultManager] fileExistsAtPath:self.prefetchFile]) {
+      respond(@{
+        @"ok" : @YES,
+        @"code" : @"DONE",
+        @"status" : [self status],
+      });
+      return;
+    }
+    [self startPrefetchWithManifest:manifest manual:YES];
+    const BOOL started = [self.prefetchState isEqualToString:kPrefetchRunning];
+    respond(@{
+      @"ok" : @(started),
+      @"code" : started ? @"STARTED" : @"FAILED",
+      @"status" : [self status],
+    });
+  });
+}
+
+- (void)cancelPrefetchWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion {
+  void (^respond)(NSDictionary*) = ^(NSDictionary* result) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(result);
+    });
+  };
+  dispatch_async(self.queue, ^{
+    const BOOL active = self.prefetchDownload != nil ||
+                        [self.prefetchState isEqualToString:kPrefetchRunning] ||
+                        [self.prefetchState isEqualToString:kPrefetchRetrying];
+    self.prefetchRetryToken += 1;
+    [self cancelActiveDownload];
+    if (active) {
+      // 取消后本次版本不再自动重试，但不清版本记录：手动下载仍可。
+      [self setPrefetchState:kPrefetchCanceled message:@"已取消本次后台下载"];
+    }
+    respond(@{
+      @"ok" : @YES,
+      @"code" : active ? @"CANCELED" : @"NOT_RUNNING",
+      @"status" : [self status],
+    });
+  });
+}
+
 
 - (void)skipVersion:(id)version
                days:(id)days
@@ -322,15 +1021,23 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
 #if XIAOTU_HAS_SPARKLE
   const bool installerAvailable = true;
+  NSURL* packageURL = nil;
 #else
-  const bool installerAvailable = false;
+  // 没有 Sparkle 时，后台预下载并校验通过的安装包就是安装入口：由系统打开，
+  // 替换与重启仍交给安装器，程序自身不静默替换正在运行的二进制。
+  NSURL* packageURL = nil;
+  if ([self.prefetchState isEqualToString:kPrefetchDone] && self.prefetchFile.length > 0 &&
+      [[NSFileManager defaultManager] fileExistsAtPath:self.prefetchFile]) {
+    packageURL = [NSURL fileURLWithPath:self.prefetchFile];
+  }
+  const bool installerAvailable = packageURL != nil;
 #endif
   switch (xiaotu::decide_install(installerAvailable, pending_build(defaults), current_build())) {
     case xiaotu::InstallDecision::kUnavailable:
       respond(@{
         @"ok" : @NO,
         @"code" : @"UNAVAILABLE",
-        @"message" : @"当前构建未链接 Sparkle，请手动下载安装",
+        @"message" : @"当前构建没有可用的安装包，请手动下载安装",
       });
       return;
     case xiaotu::InstallDecision::kNoPendingUpdate:
@@ -348,7 +1055,19 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
   [[[self sparkleController] updater] checkForUpdates];
   respond(@{@"ok" : @YES, @"code" : @"STARTED"});
 #else
-  respond(@{@"ok" : @NO, @"code" : @"UNAVAILABLE"});
+  if ([[NSWorkspace sharedWorkspace] openURL:packageURL]) {
+    respond(@{
+      @"ok" : @YES,
+      @"code" : @"OPENED",
+      @"message" : @"已打开安装包，请退出本程序后按提示完成安装。",
+    });
+  } else {
+    respond(@{
+      @"ok" : @NO,
+      @"code" : @"UNAVAILABLE",
+      @"message" : @"无法打开安装包，请手动下载安装",
+    });
+  }
 #endif
 }
 
@@ -373,8 +1092,8 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
     return;
   }
 
-  // 立即做一次自动检查，并重新安排下一周期；未配置清单时只清除暂停标记。
-  if (self.running && self.manifestURL.length > 0) {
+  // 立即做一次自动检查，并重新安排下一周期；未配置清单或自动检查关闭时只清除暂停标记。
+  if (self.running && self.manifestURL.length > 0 && auto_check_enabled()) {
     dispatch_async(self.queue, ^{
       [self scheduleNextCheck];
       [self performCheckWithCompletion:nil];
@@ -468,9 +1187,30 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
       @"schema" : @([defaults integerForKey:kIntermediateSchemaKey]),
     };
   }
+  // 重启后内存里的进度会归零，已完成/上次中断的字节数从 defaults 兜底。
+  long long prefetchBytes = self.prefetchReceived;
+  if (prefetchBytes <= 0) {
+    prefetchBytes = static_cast<long long>([defaults integerForKey:kPrefetchBytesKey]);
+  }
+  long long prefetchTotal = self.prefetchTotal;
+  if (prefetchTotal <= 0) {
+    prefetchTotal = static_cast<long long>([defaults integerForKey:kPrefetchTotalKey]);
+  }
   return @{
     @"enabled" : @(self.manifestURL.length > 0),
     @"channel" : self.channel ?: @"stable",
+    @"auto_check" : @(auto_check_enabled()),
+    @"prefetch" : @(prefetch_enabled()),
+    @"prefetch_notice_acked" : @([defaults boolForKey:kPrefetchNoticeKey]),
+    @"prefetch_state" : self.prefetchState ?: kPrefetchIdle,
+    @"prefetch_version" : [defaults stringForKey:kPrefetchVersionKey] ?: [NSNull null],
+    @"prefetch_attempts" : @([defaults integerForKey:kPrefetchAttemptsKey]),
+    @"prefetch_bytes" : @(prefetchBytes),
+    @"prefetch_total" : @(prefetchTotal),
+    @"prefetch_file" : self.prefetchFile.length > 0 ? [self.prefetchFile lastPathComponent]
+                                                     : [NSNull null],
+    @"prefetch_message" : self.prefetchMessage.length > 0 ? self.prefetchMessage
+                                                          : [NSNull null],
     @"next_check_at" : @([defaults doubleForKey:kNextCheckKey]),
     @"launch_attempts" : @([defaults integerForKey:kLaunchAttemptsKey]),
     @"paused" : @([defaults boolForKey:kPausedKey]),
@@ -497,6 +1237,10 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
   if (!self.running || self.manifestURL.length == 0) {
     return;
   }
+  // 自动检查关闭时不武装任何定时器；手动检查仍可走 checkNow。
+  if (!auto_check_enabled()) {
+    return;
+  }
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   if ([defaults boolForKey:kPausedKey]) {
     return;
@@ -516,6 +1260,9 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
 }
 
 - (void)scheduleNextCheckIfNeeded {
+  if (!auto_check_enabled()) {
+    return;
+  }
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   if ([defaults doubleForKey:kNextCheckKey] <= 0) {
     // 首次安装：启动后 30 秒做首轮检查，避免新装用户要等满 24 小时；
@@ -531,7 +1278,7 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
 }
 
 - (void)checkIfDue {
-  if (!self.running || self.manifestURL.length == 0) {
+  if (!self.running || self.manifestURL.length == 0 || !auto_check_enabled()) {
     return;
   }
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
@@ -687,8 +1434,14 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
   [defaults setBool:mandatory forKey:kMandatoryKey];
   [defaults setObject:json_string(manifest, @"mandatory_reason") ?: @"" forKey:kPendingReasonKey];
   [defaults setObject:json_string(manifest, @"release_notes_url") ?: @"" forKey:kPendingNotesKey];
+  // 预下载需要安装包地址、哈希与大小；持久化后用户确认流量提示时不必重新拉清单。
+  [defaults setObject:json_string(manifest, @"url") ?: @"" forKey:kPendingURLKey];
+  [defaults setObject:json_string(manifest, @"sha256") ?: @"" forKey:kPendingSHAKey];
+  [defaults setInteger:json_long(manifest, @"size") forKey:kPendingSizeKey];
   xiaotu::log_info("更新：发现新版本 " + std::string(version.UTF8String ?: "") +
                    "（build " + std::to_string(remoteBuild) + "）");
+  // 自动检查（completion == nil）命中新版本才自动预下载；手动检查只准备状态。
+  [self preparePrefetchForManifest:manifest autoStart:(completion == nil)];
   finish(kResultUpdateAvailable);
 #if XIAOTU_HAS_SPARKLE
   // 只触发检查。Q25 现行口径下 Info.plist 的 SUAutomaticallyUpdate 与

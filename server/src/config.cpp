@@ -103,6 +103,16 @@ std::int64_t parse_int(const std::string& raw, const std::filesystem::path& path
   return value;
 }
 
+bool parse_bool(const std::string& raw, const std::filesystem::path& path, int line_no) {
+  if (raw == "true") {
+    return true;
+  }
+  if (raw == "false") {
+    return false;
+  }
+  fail(path, line_no, "布尔值只能是 true 或 false：" + raw);
+}
+
 void assign(ConfigValues& values, const std::string& section, const std::string& key,
             const std::string& raw, const std::filesystem::path& path, int line_no,
             std::set<std::string>& seen) {
@@ -216,6 +226,14 @@ void assign(ConfigValues& values, const std::string& section, const std::string&
   }
   if (section == "update" && key == "verifier_script") {
     values.update_verifier_script = parse_string(raw, path, line_no);
+    return;
+  }
+  if (section == "update" && key == "auto_check") {
+    values.update_auto_check = parse_bool(raw, path, line_no);
+    return;
+  }
+  if (section == "update" && key == "prefetch") {
+    values.update_prefetch = parse_bool(raw, path, line_no);
     return;
   }
   fail(path, line_no, "未知配置项：" + qualified);

@@ -244,6 +244,8 @@ credit_limit_mode = "warn"
 [update]
 channel = "stable"
 rollout_percent = 100
+auto_check = true
+prefetch = true
 # manifest_file = "/var/lib/xiaotu/update-manifest.json"
 ```
 
@@ -259,6 +261,8 @@ rollout_percent = 100
 | `channel` | `stable` | 只接受 `stable` / `beta` |
 | `min_supported_version` | 空 | 形如 `1.2.3`；低于它的客户端按清单策略处理 |
 | `rollout_percent` | `100` | 灰度比例，1–100 |
+| `auto_check` | `true` | 网络版服务端启动 30 秒后与每 24h±2h 自动检查更新 |
+| `prefetch` | `true` | 自动检查发现新版本时后台下载并校验安装包；失败按 60s / 600s 退避重试 2 次 |
 | `public_key_file` | 空 | 清单验签公钥文件 |
 | `verifier_python` | `python3` | 清单验签脚本的解释器 |
 | `verifier_script` | 空 | 清单验签脚本路径 |

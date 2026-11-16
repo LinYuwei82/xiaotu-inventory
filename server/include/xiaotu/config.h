@@ -26,6 +26,10 @@ struct ConfigValues {
   std::optional<std::string> update_public_key_file;
   std::optional<std::string> update_verifier_python;
   std::optional<std::string> update_verifier_script;
+  // [update] 网络版后台策略：auto_check 打开时按 24h±2h 自动检查；
+  // prefetch 打开时发现新版本自动下载并校验。
+  std::optional<bool> update_auto_check;
+  std::optional<bool> update_prefetch;
 };
 
 // 读取 config.toml。只支持本程序需要的 TOML 子集：
