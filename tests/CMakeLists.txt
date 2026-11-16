@@ -80,15 +80,16 @@ target_link_libraries(xiaotu_update_download_smoke PRIVATE xiaotu_server Threads
 
 add_test(NAME update_download_smoke COMMAND xiaotu_update_download_smoke)
 
-# 该用例靠 popen 调用 openssl 命令行生成密钥与签名，并依赖 /tmp、base64、tr、tail
-# 与 2>/dev/null，只能在 POSIX 环境运行；MSVC 既没有 popen，也没有这些工具。
-if(NOT WIN32)
-  add_executable(xiaotu_update_signature_test
-                 "${CMAKE_CURRENT_SOURCE_DIR}/update_signature_test.cpp")
-  target_link_libraries(xiaotu_update_signature_test PRIVATE xiaotu_core Threads::Threads)
+# 验签用例在进程内用 OpenSSL EVP 生成密钥与签名，不依赖命令行工具，全平台可跑。
+# 该文件直接 include OpenSSL 头文件，而 core 里 OpenSSL 是 PRIVATE 链接（include 目录
+# 不传递），所以这里显式再找一次并链接 OpenSSL::Crypto。
+find_package(OpenSSL 3.0 REQUIRED)
+add_executable(xiaotu_update_signature_test
+               "${CMAKE_CURRENT_SOURCE_DIR}/update_signature_test.cpp")
+target_link_libraries(xiaotu_update_signature_test
+                      PRIVATE xiaotu_core Threads::Threads OpenSSL::Crypto)
 
-  add_test(NAME update_signature COMMAND xiaotu_update_signature_test)
-endif()
+add_test(NAME update_signature COMMAND xiaotu_update_signature_test)
 
 add_executable(xiaotu_process_capture_smoke
                "${CMAKE_CURRENT_SOURCE_DIR}/process_capture_smoke.cpp")
