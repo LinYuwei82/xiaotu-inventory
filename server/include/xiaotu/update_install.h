@@ -3,6 +3,7 @@
 #include <atomic>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 #include "xiaotu/update.h"
 #include "xiaotu/update_service.h"
@@ -16,7 +17,7 @@ struct UpdatePackageResult {
   std::filesystem::path path;
   std::uintmax_t bytes = 0;
   std::string sha256;
-  // launch 时返回：manual 表示只打开安装包，由用户完成安装。
+  // replace 表示已定位可替换的新程序（stage）或已启动替换脚本（schedule）。
   std::string mode;
 };
 
@@ -42,12 +43,39 @@ UpdatePackageResult download_update_package(const UpdateSettings& settings,
                                             const std::filesystem::path& directory,
                                             const std::atomic<bool>* cancel = nullptr);
 
-// 安装前再次校验安装包，然后交给系统打开：
-//   macOS 用 open（挂载 dmg 或打开安装器），Windows 用 cmd /c start。
-// 只打开安装包，不关闭本进程：替换正在运行的二进制与占用中的数据库不安全，
-// 是否退出由用户确认后自行执行（见 docs/更新模块技术方案.md 第 6 节）。
-UpdatePackageResult launch_update_package(const UpdateSettings& settings,
-                                          const std::string& manifest_file,
-                                          const std::filesystem::path& package);
+// 当前进程可执行文件的绝对路径：Windows 用 GetModuleFileNameW，macOS 用
+// _NSGetExecutablePath，Linux 读 /proc/self/exe。取不到时返回空路径。
+std::filesystem::path current_executable_path();
+
+// 自动替换所需的运行信息。args 不含 argv[0]；重启时按原参数拉起。
+struct UpdateApplyOptions {
+  std::filesystem::path executable;
+  std::vector<std::string> args;
+  std::filesystem::path working_dir;
+  std::filesystem::path log_file;
+  // 0 表示替换脚本等待当前进程；测试可传固定值。
+  long long pid = 0;
+};
+
+// 安装前复验，并定位真正要替换的可执行文件：
+//   - 包本身是可执行文件（Windows .exe / POSIX 无扩展名或 .bin）时直接使用；
+//   - .zip 包先解压到 staging_dir，再按「与当前可执行文件同名」查找。
+// 找不到载荷返回 UPDATE_PACKAGE_PAYLOAD_MISSING，不猜测其它文件。
+UpdatePackageResult stage_update_package(const UpdateSettings& settings,
+                                         const std::string& manifest_file,
+                                         const std::filesystem::path& package,
+                                         const std::filesystem::path& staging_dir,
+                                         const std::filesystem::path& executable);
+
+// 生成「等待旧进程退出 → 备份 → 覆盖 → 用原参数重启」的脚本文本。
+// 拆成纯函数便于测试转义与失败回滚分支。
+std::string update_replace_script(const UpdateApplyOptions& options,
+                                  const std::filesystem::path& new_executable);
+
+// 写入替换脚本并在后台启动：立即返回，脚本等本进程退出后完成替换与重启。
+// 成功返回后调用方应尽快优雅退出；失败时不会改动当前程序。
+UpdatePackageResult schedule_update_replace(const std::filesystem::path& new_executable,
+                                            const UpdateApplyOptions& options,
+                                            const std::filesystem::path& staging_dir);
 
 }  // namespace xiaotu

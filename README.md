@@ -246,6 +246,7 @@ channel = "stable"
 rollout_percent = 100
 auto_check = true
 prefetch = true
+# manifest_url = "https://dl.xiaotu.online/xiaotu/server/updates/stable/latest.json"
 # manifest_file = "/var/lib/xiaotu/update-manifest.json"
 ```
 
@@ -257,7 +258,8 @@ prefetch = true
 
 | 键 | 默认值 | 说明 |
 | --- | --- | --- |
-| `manifest_file` | 空（不启用） | 更新清单文件路径 |
+| `manifest_url` | 空（不启用） | 厂商清单地址，必须 HTTPS；拉取后验签并缓存 10 分钟，失败回退旧缓存 |
+| `manifest_file` | 空（不启用） | 本地/离线清单路径；与 `manifest_url` 同时配置时作为兜底 |
 | `channel` | `stable` | 只接受 `stable` / `beta` |
 | `min_supported_version` | 空 | 形如 `1.2.3`；低于它的客户端按清单策略处理 |
 | `rollout_percent` | `100` | 灰度比例，1–100 |
@@ -269,7 +271,7 @@ prefetch = true
 
 `auto_check` 与 `prefetch` 只影响自动链路：关闭前者停止后台检查，手动「检查更新」仍可用；关闭后者不自动下载，用户仍可点「下载并校验」。两项在服务启动时读取，运行中不提供切换，修改后需重启；`GET /api/update/status` 只读回显当前取值。
 
-服务端更新链路（网络版）：`GET /api/update/check` 免登录做轻量握手；`GET /api/update/status`、`POST /api/update/download`、`POST /api/update/download/cancel`、`POST /api/update/install` 需要登录，下载、取消与安装仅管理员可用。下载目录固定为 `<数据目录>/updates/`，安装包先按清单 `size` 与 sha256 校验、再用同一验证工具验签，失败会删除文件并写日志；下载前清掉旧包，后台检查确认已是最新且下载空闲时清空目录，取消会终止下载并删除半成品；安装动作只打开安装包，需要在二次确认后由用户退出程序完成安装。
+服务端更新链路（网络版）：`GET /api/update/check` 免登录做轻量握手；`GET /api/update/status`、`POST /api/update/download`、`POST /api/update/download/cancel`、`POST /api/update/install` 需要登录，下载、取消与安装仅管理员可用。下载目录固定为 `<数据目录>/updates/`，安装包先按清单 `size` 与 sha256 校验、再用同一验证工具验签，失败会删除文件并写日志；下载前清掉旧包，后台检查确认已是最新且下载空闲时清空目录，取消会终止下载并删除半成品。安装需二次确认：服务端复验后解包定位新程序，返回响应后优雅退出，替换脚本把旧程序备份为 `<程序>.old`、覆盖新程序并按原参数重启；覆盖失败会回滚旧版本，日志写入 `<数据目录>/updates/staging-*/update-apply.log`。
 
 完整说明、systemd 单元与运维步骤见 [docs/部署与配置.md](docs/部署与配置.md)，示例见 `deploy/config.toml.example`、`deploy/systemd/xiaotu.service`。
 
@@ -677,7 +679,7 @@ struct DocumentDefinition {
 - 成本按移动加权平均，暂不支持其他计价方式；成本重算保持**只读核对**（`/api/stock/cost-recalc` 与库存页「成本重算核对」），不静默写回。金额差异可一键生成成本调整单草稿（`POST /api/cost-adjustments/drafts`）后人工审核，数量差异引导去做盘点；调整单反审核若会使结存金额为负则拒绝，需先处理后续出库或调整。
 - 桌面版已支持直接「导出 PDF」（原生保存面板，不弹系统打印面板），导出走窗口模态打印会话（`runOperationModalForWindow`），避免 WKWebView 异步分页在无窗口会话下产出空白页。打印与 PDF 均按模板纸型（A4 / A5 / 自定义针式 241×140、241×93）与页边距设置 `NSPrintInfo`，PDF 的 MediaBox 与实际纸张一致；针式套打位置仍待真机验证。打印入口的查询串统一用 `URL` + `URLSearchParams` 组装。页码依赖打印引擎：WKWebView 实测不渲染 `@page` margin box、不支持 `counter(page)`，`position: fixed` 页脚只在末页出现且解析为 0；`show_page_no` 仅作提示性字段，不做前端分页与 PDF 后处理，网络版可在浏览器打印对话框勾选页眉和页脚。
 - Windows：顶层 CMake 默认不构建 GUI 壳（`XIAOTU_BUILD_WIN_SHELL=OFF`），界面通过浏览器访问；`shell/win` 是 Win32 + WebView2 壳工程，可显式打开顶层开关，也可独立构建。打包脚本与验收脚本共用同一套壳路径解析顺序，找不到壳会报错而不是静默出无壳包。
-- 更新策略：macOS 单机版已端到端跑通——启动 30 秒首查、之后每日一次（±2 小时抖动），只开 stable、不做 beta 与灰度、不做强制升级与静默安装。清单与安装包托管在 `https://dl.xiaotu.online`（阿里云 OSS 香港 + CDN），`latest.json` / `appcast.xml` 做 Ed25519 签名，安装包由 Developer ID 签名 + 公证 + staple。自动检查与后台预下载两个开关已实现（默认开，关于页可改；首次后台下载前有流量提示，可取消，失败按 60s/600s 退避、最多 3 次，同一时间只保留一个待装包）。安装仍由内嵌的 Sparkle 2.10.1 在用户确认后完成，预下载的包不会交给 Sparkle 复用，安装时会重新下载。自动回滚、强制升级 UI、灰度分桶尚未实现；网络版服务端已实现同名的 `auto_check` / `prefetch` 与服务端调度，以及检查/状态/下载/安装接口，但尚未接这份清单。Windows 首发仍为手动下载安装包，不接 WinSparkle。
+- 更新策略：macOS 单机版已端到端跑通——启动 30 秒首查、之后每日一次（±2 小时抖动），只开 stable、不做 beta 与灰度、不做强制升级与静默安装。清单与安装包托管在 `https://dl.xiaotu.online`（阿里云 OSS 香港 + CDN），`latest.json` / `appcast.xml` 做 Ed25519 签名，安装包由 Developer ID 签名 + 公证 + staple。自动检查与后台预下载两个开关已实现（默认开，关于页可改；首次后台下载前有流量提示，可取消，失败按 60s/600s 退避、最多 3 次，同一时间只保留一个待装包）。安装仍由内嵌的 Sparkle 2.10.1 在用户确认后完成，预下载的包不会交给 Sparkle 复用，安装时会重新下载。自动回滚、强制升级 UI、灰度分桶尚未实现；网络版服务端已实现同名的 `auto_check` / `prefetch` 与服务端调度，以及检查/状态/下载/安装接口，并接入厂商清单（`manifest_url`）与自动替换重启（确认后退出、备份、覆盖、按原参数重启，失败回滚）。Windows 首发仍为手动下载安装包，不接 WinSparkle。
 - 导航使用 `#/<key>` 路由：**刷新保页**在单机版与网络版都有效；**前进 / 后退**只在 `--server` 的浏览器里有效，单机版 WKWebView 没有后退入口。单机版有意不开 `allowsBackForwardNavigationGestures`、也不加后退 / 前进菜单项：侧栏已经是完整导航路径，录入页的脏标记会拦住误跳，横扫手势还会和明细表的横向滚动冲突。未保存离开确认与提示 / 输入框都是页内自绘（`askDialog`），不依赖 `window.confirm` / `alert` / `prompt`（WKWebView 未实现对应面板）；单机版直接关闭窗口不会拦（WKWebView 不执行 `beforeunload`），网络版浏览器会提示，单机版请先保存再关窗。
 - 商品条码支持**一商品多码**（v25 起正式启用）：`item_barcode` 保存全部码，其中一个为主码；`item.barcode` 只作主码镜像并由应用层同步，避免两处真相。条码全局唯一，空码不占位；商品表单可增删码并切换主码，扫码按任意码精确命中商品。导入导出用 `|` 分隔多个码、第一个为主码。升级时 v25 会把已有 `item.barcode` 回填为主码行，不丢码。箱码换算、一码多商品、校验位计算未实现。
 - 含税价**第一步已落地**（v26）：单据行保存 `tax_rate_bp`（整数万分比，默认取商品税率、可逐行覆盖）、`price_includes_tax` 与算好的 `net_cents` / `tax_cents`。**逐行算税再汇总**，每行恒有「净额 + 税额 = 价税合计」，整数分四舍五入、不引入浮点；选逐行是因为每行展示的净额 / 税额能与合计逐分对上，汇总后再算税会出现「行税额之和 ≠ 合计税额」。退货红字沿用同一公式，数量与金额按红字取负后税额同步为负，冲回对称。单据页面、打印、CSV、XLSX 均输出「税额」与「价税合计」。含税行与不含税行的「金额」列含义不同（前者是价税合计、后者是不含税金额），因此该列头统一写作「金额（录入价）」，并且「价税合计」列常显，数值不做任何改动。库存成本口径由 v33 参数控制：默认按含税价（`amount_cents`），可切到不含税净额（`net_cents`），只影响切换后新审核的单据，报表标注切换日；历史单据的结存、流水与毛利不重算、不回填。

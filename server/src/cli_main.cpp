@@ -9,6 +9,8 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "xiaotu/audit.h"
 #include "xiaotu/backup.h"
@@ -471,6 +473,11 @@ int main(int argc, char** argv) {
     backup_scheduler.start();
 
     const std::string token = xiaotu::random_hex(32);
+    std::vector<std::string> launch_args;
+    launch_args.reserve(static_cast<std::size_t>(argc));
+    for (int index = 0; index < argc; ++index) {
+      launch_args.emplace_back(argv[index] == nullptr ? "" : argv[index]);
+    }
     xiaotu::ServerInfo info{
         .mode = options.server ? "server" : "local",
         .app_name = "小兔进销存",
@@ -483,6 +490,7 @@ int main(int argc, char** argv) {
         .backup_dir_custom =
             file_config.backup_dir.has_value() && !file_config.backup_dir->empty(),
         .update_manifest_file = file_config.update_manifest_file.value_or(""),
+        .update_manifest_url = file_config.update_manifest_url.value_or(""),
         .update_channel = file_config.update_channel.value_or("stable"),
         .update_min_supported_version =
             file_config.update_min_supported_version.value_or(""),
@@ -493,6 +501,7 @@ int main(int argc, char** argv) {
         .update_verifier_script = file_config.update_verifier_script.value_or(""),
         .update_auto_check = file_config.update_auto_check.value_or(true),
         .update_prefetch = file_config.update_prefetch.value_or(true),
+        .launch_args = std::move(launch_args),
     };
     xiaotu::HttpServer http(services, info, token);
 

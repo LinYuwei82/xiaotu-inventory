@@ -80,6 +80,12 @@ target_link_libraries(xiaotu_update_download_smoke PRIVATE xiaotu_server Threads
 
 add_test(NAME update_download_smoke COMMAND xiaotu_update_download_smoke)
 
+add_executable(xiaotu_update_install_smoke
+               "${CMAKE_CURRENT_SOURCE_DIR}/update_install_smoke.cpp")
+target_link_libraries(xiaotu_update_install_smoke PRIVATE xiaotu_server Threads::Threads)
+
+add_test(NAME update_install_smoke COMMAND xiaotu_update_install_smoke)
+
 # 验签用例在进程内用 OpenSSL EVP 生成密钥与签名，不依赖命令行工具，全平台可跑。
 # 该文件直接 include OpenSSL 头文件，而 core 里 OpenSSL 是 PRIVATE 链接（include 目录
 # 不传递），所以这里显式再找一次并链接 OpenSSL::Crypto。

@@ -1,7 +1,12 @@
+#include <httplib.h>
+
+#include <atomic>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include "xiaotu/update_service.h"
 
@@ -173,6 +178,82 @@ int main() {
   check(result.error_code == "UPDATE_SIGNATURE_INVALID", "验签工具返回非零时判为验签失败");
   check(result.error_message.find("清单签名无效") != std::string::npos,
         "验签失败信息应包含工具的 stderr 输出");
+
+  // 远端厂商清单：拉取 → 验签 → 写缓存；TTL 内不重复拉取；失败回退上一次缓存。
+  const auto cache_dir = dir / "vendor-cache";
+  std::atomic<int> hits{0};
+  std::string remote_body = manifest_json("1.5.0", 2026120101, 28, 32, 100);
+  httplib::Server vendor;
+  vendor.Get("/latest.json", [&](const httplib::Request&, httplib::Response& res) {
+    ++hits;
+    res.set_content(remote_body, "application/json");
+  });
+  vendor.Get("/bad.json", [](const httplib::Request&, httplib::Response& res) {
+    res.set_content("{not json", "application/json");
+  });
+  const int vendor_port = vendor.bind_to_any_port("127.0.0.1");
+  check(vendor_port > 0, "远端清单测试服务启动");
+  std::thread vendor_thread([&vendor] { vendor.listen_after_bind(); });
+
+  xiaotu::UpdateSettings remote;
+  remote.manifest_url =
+      "http://127.0.0.1:" + std::to_string(vendor_port) + "/latest.json";
+  remote.manifest_cache_file = (cache_dir / "latest.json").string();
+  remote.manifest_ttl_seconds = 600;
+  remote.public_key_file = pub_path.string();
+  remote.verifier_script = script_path.string();
+#if defined(_WIN32)
+  remote.verifier_python = (dir / "stub-verifier.bat").string();
+#else
+  remote.verifier_python = "/usr/bin/true";
+#endif
+
+  const std::int64_t base = static_cast<std::int64_t>(std::time(nullptr));
+  result = xiaotu::check_for_update(remote, query(), base);
+  check(result.manifest_ok && result.manifest_source == "network",
+        "远端清单拉取并验签后按 network 返回");
+  check(hits.load() == 1, "首次检查只拉取一次");
+  check(result.manifest_path == remote.manifest_cache_file, "判定使用落盘的缓存清单");
+
+  result = xiaotu::check_for_update(remote, query(), base + 10);
+  check(result.manifest_ok && result.manifest_source == "cache" && !result.manifest_stale,
+        "缓存有效期内直接读缓存且不标记过期");
+  check(hits.load() == 1, "缓存有效期内不重复访问厂商更新源");
+
+  result = xiaotu::check_for_update(remote, query(), base + 700);
+  check(result.manifest_ok && result.manifest_source == "network" && hits.load() == 2,
+        "缓存到期后重新拉取");
+
+  // 远端内容损坏：不能覆盖上一次验签通过的缓存，按旧缓存继续判定并给出警告。
+  remote.manifest_url =
+      "http://127.0.0.1:" + std::to_string(vendor_port) + "/bad.json";
+  remote.manifest_ttl_seconds = 0;
+  result = xiaotu::check_for_update(remote, query(), base + 2000);
+  check(result.manifest_ok && result.manifest_source == "cache" && result.manifest_stale,
+        "远端清单损坏时回退旧缓存");
+  check(result.manifest_warning.find("不是合法 JSON") != std::string::npos,
+        "回退时说明远端清单损坏原因");
+  check(hits.load() == 2, "损坏响应只影响本次刷新，不额外下载");
+
+  // 网络彻底不可用：继续使用旧缓存；没有缓存才报错。
+  vendor.stop();
+  vendor_thread.join();
+  result = xiaotu::check_for_update(remote, query(), base + 3000);
+  check(result.manifest_ok && result.manifest_source == "cache" && result.manifest_stale,
+        "厂商更新源不可达时回退旧缓存");
+  check(result.manifest_warning.find("拉取更新清单失败") != std::string::npos,
+        "网络失败时说明具体原因");
+
+  xiaotu::UpdateSettings no_cache;
+  no_cache.manifest_url =
+      "http://127.0.0.1:" + std::to_string(vendor_port) + "/latest.json";
+  no_cache.manifest_cache_file = (dir / "empty-cache" / "latest.json").string();
+  no_cache.public_key_file = pub_path.string();
+  no_cache.verifier_script = script_path.string();
+  no_cache.verifier_python = remote.verifier_python;
+  result = xiaotu::check_for_update(no_cache, query(), base + 4000);
+  check(!result.manifest_ok && result.error_code == "UPDATE_MANIFEST_UNREACHABLE",
+        "无缓存且网络不可用时明确报错");
 
   std::filesystem::remove_all(dir);
   if (failures == 0) {

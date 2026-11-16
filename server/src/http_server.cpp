@@ -557,14 +557,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
       return;
     }
 
-    UpdateSettings settings;
-    settings.manifest_file = info_.update_manifest_file;
-    settings.channel = info_.update_channel;
-    settings.min_supported_version = info_.update_min_supported_version;
-    settings.rollout_percent = info_.update_rollout_percent;
-    settings.public_key_file = info_.update_public_key_file;
-    settings.verifier_python = info_.update_verifier_python;
-    settings.verifier_script = info_.update_verifier_script;
+    const UpdateSettings settings = update_settings();
     const UpdateCheckResult result =
         check_for_update(settings, query, static_cast<std::int64_t>(std::time(nullptr)));
     if (!result.manifest_ok) {
@@ -630,6 +623,15 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                  nlohmann::json body;
                  body["ok"] = true;
                  body["configured"] = result.configured;
+                 // 清单来源与回退提示：network=本次刚拉取，cache=本地缓存（可能是网络失败后的回退），
+                 // file=部署侧同步的本地清单。
+                 body["manifest_source"] = result.manifest_source.empty()
+                                               ? nlohmann::json(nullptr)
+                                               : nlohmann::json(result.manifest_source);
+                 body["manifest_stale"] = result.manifest_stale;
+                 body["manifest_warning"] = result.manifest_warning.empty()
+                                                ? nlohmann::json(nullptr)
+                                                : nlohmann::json(result.manifest_warning);
                  // 后台策略只读展示：由 config.toml 的 [update] 段决定，运行中不提供切换。
                  body["auto_check"] = info_.update_auto_check;
                  body["prefetch"] = info_.update_prefetch;
@@ -700,7 +702,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                     json_error(res, 409, "NO_UPDATE_AVAILABLE", "当前已是最新版本，无需下载");
                     return;
                   }
-                  const std::string manifest_file = settings.manifest_file;
+                  const std::string manifest_file = result.manifest_path;
                   const UpdateManifest manifest = result.manifest;
                   if (!start_update_download(settings, manifest_file, manifest, false)) {
                     json_error(res, 409, "UPDATE_BUSY", "已有更新包正在下载");
@@ -736,8 +738,9 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                   json_ok(res, nlohmann::json{{"ok", true}, {"state", "canceling"}});
                 }));
 
-  // 安装更新：必须显式 confirm，服务端再次校验安装包哈希与签名后才打开安装包。
-  // 不自动退出进程：替换正在运行的二进制与占用中的数据库不安全，由用户确认后自行退出。
+  // 安装更新：必须显式 confirm。服务端复验安装包哈希与签名后，准备替换脚本、
+  // 返回响应，然后优雅退出；脚本等进程退出后备份旧程序、覆盖新程序并按原参数重启。
+  // 失败时脚本回滚旧程序，不留下无法启动的状态。
   server_->Post("/api/update/install",
                 guard("setting.write", [this](const httplib::Request& req,
                                               httplib::Response& res) {
@@ -764,25 +767,69 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                   }
                   const std::filesystem::path package =
                       update_package_path(update_download_dir(), result.manifest);
-                  const UpdatePackageResult launched =
-                      launch_update_package(settings, settings.manifest_file, package);
-                  if (!launched.ok) {
-                    json_error(res, launched.error_code == "UPDATE_PACKAGE_MISSING" ? 409 : 500,
-                               launched.error_code, launched.error_message);
+                  // 解包/复验后准备替换：真正的替换由脚本在本进程退出后完成，
+                  // 避免覆盖正在运行的二进制；失败时不改动当前程序。
+                  const std::filesystem::path staging =
+                      update_download_dir() /
+                      ("staging-" + result.manifest.version + "-" +
+                       std::to_string(result.manifest.build));
+                  const std::filesystem::path executable = current_executable_path();
+                  const UpdatePackageResult staged = stage_update_package(
+                      settings, result.manifest_path, package, staging, executable);
+                  if (!staged.ok) {
+                    int status = 500;
+                    if (staged.error_code == "UPDATE_PACKAGE_MISSING" ||
+                        staged.error_code == "UPDATE_PACKAGE_PAYLOAD_MISSING" ||
+                        staged.error_code == "UPDATE_PACKAGE_UNSUPPORTED" ||
+                        staged.error_code == "UPDATE_EXTRACT_FAILED" ||
+                        staged.error_code == "UPDATE_SIGNATURE_INVALID") {
+                      status = 409;
+                    } else if (staged.error_code == "UPDATE_UNVERIFIED" ||
+                               staged.error_code == "UPDATE_VERIFY_UNAVAILABLE") {
+                      status = 503;
+                    }
+                    json_error(res, status, staged.error_code, staged.error_message);
+                    return;
+                  }
+                  UpdateApplyOptions options;
+                  options.executable = executable;
+                  if (info_.launch_args.size() > 1) {
+                    options.args.assign(info_.launch_args.begin() + 1, info_.launch_args.end());
+                  }
+                  std::error_code cwd_error;
+                  options.working_dir = std::filesystem::current_path(cwd_error);
+                  if (cwd_error) {
+                    options.working_dir = executable.parent_path();
+                  }
+                  options.log_file = staging / "update-apply.log";
+                  const UpdatePackageResult scheduled =
+                      schedule_update_replace(staged.path, options, staging);
+                  if (!scheduled.ok) {
+                    json_error(res, 500, scheduled.error_code, scheduled.error_message);
                     return;
                   }
                   try {
                     services_.db.write([&](sqlite3* conn) {
                       audit_write(conn, "update_install", "system", 0, result.manifest.version,
-                                  "安装包: " + package.filename().string());
+                                  "自动替换: " + package.filename().string());
                     });
                   } catch (const std::exception& error) {
                     log_warn(std::string("更新安装审计写入失败: ") + error.what());
                   }
                   json_ok(res, nlohmann::json{{"ok", true},
-                                              {"mode", launched.mode},
+                                              {"mode", scheduled.mode},
+                                              {"restarting", true},
                                               {"file", package.filename().string()},
-                                              {"message", launched.error_message}});
+                                              {"message", scheduled.error_message}});
+                  // 先让响应写出，再停止监听：主循环退出后替换脚本接管。
+                  // 置维护态，避免退出前的几百毫秒里再接受新的写请求。
+                  maintenance_ = true;
+                  if (!shutdown_started_.exchange(true)) {
+                    shutdown_thread_ = std::thread([this] {
+                      std::this_thread::sleep_for(std::chrono::milliseconds(800));
+                      server_->stop();
+                    });
+                  }
                 }));
 
   // 恢复向导：列出备份 → 预检查 → 二次确认后落请求并优雅退出。
@@ -1395,6 +1442,17 @@ UpdateQuery HttpServer::self_update_query() const {
 UpdateSettings HttpServer::update_settings() const {
   UpdateSettings settings;
   settings.manifest_file = info_.update_manifest_file;
+  settings.manifest_url = info_.update_manifest_url;
+  if (!settings.manifest_url.empty()) {
+    // 远端清单缓存放在 updates/manifest/<channel>/ 下：remove_update_packages 只清理
+    // updates/ 顶层的安装包，不会误删子目录里的清单。
+    const std::string channel =
+        info_.update_channel.empty() ? "stable" : info_.update_channel;
+    settings.manifest_cache_file =
+        (std::filesystem::path(info_.data_dir) / "updates" / "manifest" / channel /
+         "latest.json")
+            .string();
+  }
   settings.channel = info_.update_channel;
   settings.min_supported_version = info_.update_min_supported_version;
   settings.rollout_percent = info_.update_rollout_percent;
@@ -1411,7 +1469,7 @@ std::filesystem::path HttpServer::update_download_dir() const {
 void HttpServer::start_update_scheduler() {
   // 单机版的自动检查由 macOS 壳负责；这里只服务网络版，避免同一进程双份检查。
   if (info_.mode != "server" || !info_.update_auto_check ||
-      info_.update_manifest_file.empty()) {
+      (info_.update_manifest_file.empty() && info_.update_manifest_url.empty())) {
     return;
   }
   update_scheduler_thread_ = std::thread([this] { update_scheduler_loop(); });
@@ -1431,7 +1489,7 @@ void HttpServer::update_scheduler_loop() {
     lock.unlock();
     try {
       const UpdateSettings settings = update_settings();
-      if (!settings.manifest_file.empty()) {
+      if (!settings.manifest_file.empty() || !settings.manifest_url.empty()) {
         const UpdateCheckResult result =
             check_for_update(settings, self_update_query(),
                              static_cast<std::int64_t>(std::time(nullptr)));
@@ -1474,7 +1532,7 @@ void HttpServer::update_scheduler_loop() {
                 remove_update_packages(update_download_dir(), package);
               }
             } else {
-              start_update_download(settings, settings.manifest_file, result.manifest, true);
+              start_update_download(settings, result.manifest_path, result.manifest, true);
             }
           }
         }

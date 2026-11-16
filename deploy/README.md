@@ -77,8 +77,10 @@ python3 -m venv /opt/xiaotu/tools/package/.venv
 
 ```toml
 [update]
-# 部署侧同步到本机的清单文件（服务端只读，不主动访问外网）
-manifest_file = "/srv/xiaotu-updates/macos/stable/latest.json"
+# 厂商清单地址：服务端拉取、验签后缓存，缓存有效期 10 分钟。
+manifest_url = "https://dl.xiaotu.online/xiaotu/server/updates/stable/latest.json"
+# 可选：本地/离线清单。manifest_url 不可用且没有缓存时，才使用这里的文件。
+manifest_file = "/srv/xiaotu-updates/windows/stable/latest.json"
 channel = "stable"                  # stable / beta
 min_supported_version = "1.3.0"     # 低于此版本强制升级（理由 MIN_SUPPORTED）
 rollout_percent = 100               # 灰度上限，实际取 min(清单, 本值)
@@ -89,7 +91,10 @@ verifier_python = "/opt/xiaotu/tools/package/.venv/bin/python"
 verifier_script = "/opt/xiaotu/tools/package/update_manifest.py"
 ```
 
-- `manifest_file` 每次请求重新读取，替换文件后无需重启。
+- `manifest_url` 必须是 HTTPS；服务端把清单缓存在 `<data_dir>/updates/manifest/<channel>/latest.json`，有效期内不重复访问外网。
+- 远端拉取失败（超时、5xx、断网）或清单校验失败时，回退到上一次验签通过的缓存，状态接口会带 `manifest_stale=true` 与原因；没有缓存才返回错误。
+- 新拉取的清单必须先通过结构校验与 Ed25519 验签才会替换缓存，损坏或未签名内容不会污染缓存。
+- `manifest_file` 保留给内网/离线部署：不需要访问外网时只配它，每次请求重新读取，替换文件后无需重启。
 - 其余配置在进程启动时读取，修改后需重启服务。
 - `auto_check` / `prefetch` 在服务启动时读取，运行中不提供切换；修改后必须重启 `xiaotu-server` 才生效，`GET /api/update/status` 只读回显当前值。
 - `public_key_file`、`verifier_python`、`verifier_script` 缺一不可，否则按错误码拒绝。
@@ -127,7 +132,7 @@ PY
 
 ### 4. 清单与 appcast 同步
 
-使用 `deploy/update-sync.sh`，不要手工 `cp`：
+配置 `manifest_url` 时服务端会自行拉取并缓存，不需要本节脚本；只有使用 `manifest_file` 的内网/离线部署才需要同步。同步时不要手工 `cp`：
 
 ```bash
 XIAOTU_UPDATE_SOURCE=https://updates.example.com/macos/stable/latest.json \
@@ -143,6 +148,23 @@ XIAOTU_UPDATE_TOOL=/opt/xiaotu/tools/package/update_manifest.py \
 - 脚本先下载到同目录临时文件、验签通过后再原子替换，服务端不会读到半个文件。
 - 定时执行：安装 `deploy/cron/xiaotu-update-sync` 到 `/etc/cron.d/`，或改用 systemd timer，**二选一**。
 - 若 `XIAOTU_UPDATE_PUBKEY` 为空，脚本不验签；生产环境必须配置。
+
+### 4.1 安装与自动替换
+
+`POST /api/update/install`（管理员 + `setting.write`，请求体 `{"confirm": true}`）：
+
+1. 再次校验清单签名与安装包 `sha256`；
+2. 按安装包形态定位新程序：单文件可执行程序直接使用；`.zip` 解压后查找与当前程序同名的文件（如 `xiaotu-server.exe`）；
+3. 在 `<data_dir>/updates/staging-<version>-<build>/` 生成替换脚本并后台启动；
+4. 返回响应后服务优雅退出；脚本等待进程退出（最多 120 秒），把旧程序备份为 `<程序>.old`、覆盖新程序，再按**原启动参数、原工作目录**重启；
+5. 覆盖失败时把 `.old` 移回原位置，程序保持旧版本可用；结果写入 `staging-*/update-apply.log`。
+
+限制与注意事项：
+
+- 安装包必须是单文件可执行程序或 zip 包；`.dmg` 等安装器型包不支持服务端自动替换，会返回 `UPDATE_PACKAGE_UNSUPPORTED`。
+- 只替换当前可执行文件，不覆盖 web 静态资源、配置、数据库或备份；这些仍由部署流程管理。
+- systemd 部署同样适用：脚本会直接拉起新进程；`Restart=on-failure` 只作为额外兜底。
+- 替换脚本以服务进程相同权限运行，因此程序所在目录必须可写；只读目录会失败并保留旧版本。
 
 ### 5. 灰度放行与回滚
 
@@ -173,13 +195,21 @@ tools/package/.venv/bin/python tools/package/update_manifest.py resign \
 
 | 错误码 | 出现原因 | 处理 |
 | --- | --- | --- |
-| `UPDATE_NOT_CONFIGURED` | 未配置 `manifest_file`；返回 200 且无更新 | 补齐配置并重启 |
+| `UPDATE_NOT_CONFIGURED` | 未配置 `manifest_url` 与 `manifest_file`；返回 200 且无更新 | 补齐配置并重启 |
+| `UPDATE_MANIFEST_UNREACHABLE` | 厂商清单拉取失败且本地没有可用缓存（503） | 检查网络、代理与 `manifest_url` |
+| `UPDATE_MANIFEST_CACHE_UNWRITABLE` | 清单缓存目录不可写（503） | 检查 `<data_dir>/updates` 权限 |
 | `UPDATE_UNVERIFIED` | 未配置 `public_key_file`，服务端拒绝信任清单（503） | 配置公钥并重启 |
 | `UPDATE_VERIFY_UNAVAILABLE` | 公钥/验签脚本路径不存在，或 Python/cryptography 缺失（503） | 安装依赖、修正 `verifier_python` 与 `verifier_script` |
 | `UPDATE_SIGNATURE_INVALID` | 清单被篡改、私钥不匹配、规范化不一致（503） | 用发布工具重新生成并签名；检查 `key_id` 与公钥是否配套 |
 | `MANIFEST_UPGRADE_PATH_INVALID` | `upgrade_path` 元素缺字段、schema/build 非正数、version 非 SemVer（503） | 修正清单的 `upgrade_path` 后重新签名 |
 | `INTERMEDIATE_REQUIRED` | 客户端 schema 低于 `schema_min`，需先升到中间版本（200，`update_available=false`） | 按响应中的 `intermediate.version` 引导用户先升级 |
 | `INCOMPATIBLE_SCHEMA` | 客户端 schema 高于 `schema_max`，或低于 `schema_min` 且无可用升级路径（200） | 检查版本是否过旧/过新；必要时补充 `upgrade_path` 或人工迁移 |
+| `UPDATE_PACKAGE_MISSING` | 安装前发现待装包不存在（409） | 重新下载并校验 |
+| `UPDATE_EXTRACT_FAILED` | zip 解压失败（409） | 检查系统 `tar`/`unzip` 是否可用，或改用单文件包 |
+| `UPDATE_PACKAGE_PAYLOAD_MISSING` | zip 内没有与当前程序同名的文件（409） | 打包时保留原程序名 |
+| `UPDATE_PACKAGE_UNSUPPORTED` | 安装包既不是可执行文件也不是 zip（409） | 改用可自动替换的包；否则手动安装 |
+| `UPDATE_APPLY_UNSUPPORTED` | 程序路径或启动参数含批处理/shell 不支持的字符（500） | 去掉参数中的 `%`、双引号或换行后重试 |
+| `UPDATE_APPLY_FAILED` | 替换脚本写入或启动失败（500） | 检查程序目录与 `updates/` 的写权限 |
 
 ### 7. 发布侧清单生成
 

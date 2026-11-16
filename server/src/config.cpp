@@ -188,6 +188,18 @@ void assign(ConfigValues& values, const std::string& section, const std::string&
     values.update_manifest_file = value;
     return;
   }
+  if (section == "update" && key == "manifest_url") {
+    const std::string value = parse_string(raw, path, line_no);
+    if (value.empty()) {
+      fail(path, line_no, "update.manifest_url 不能为空");
+    }
+    // 清单签名能防篡改，但传输仍必须走 HTTPS，避免被降级或替换成旧清单。
+    if (value.rfind("https://", 0) != 0) {
+      fail(path, line_no, "update.manifest_url 必须以 https:// 开头");
+    }
+    values.update_manifest_url = value;
+    return;
+  }
   if (section == "update" && key == "channel") {
     std::string value = parse_string(raw, path, line_no);
     for (char& ch : value) {

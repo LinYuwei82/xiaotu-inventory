@@ -7206,7 +7206,7 @@
     let polling = false;
 
     function statusText(data) {
-      if (!data.configured) return "未配置更新源（[update] manifest_file 为空）";
+      if (!data.configured) return "未配置更新源（[update] manifest_url / manifest_file 为空）";
       if (data.error) return "检查失败：" + data.error.message;
       if (data.update_available && data.latest) {
         return `发现新版本 ${data.latest.version}（构建 ${data.latest.build}）`;
@@ -7224,11 +7224,24 @@
         ["发布日期", latest && latest.published_at ? latest.published_at : "—"],
         ["状态", statusText(data)],
         [
+          "清单来源",
+          data.manifest_source === "network"
+            ? "厂商更新源（本次已刷新）"
+            : data.manifest_source === "cache"
+              ? "本地缓存" + (data.manifest_stale ? "（网络不可用，已回退）" : "")
+              : data.manifest_source === "file"
+                ? "本地清单文件"
+                : "—",
+        ],
+        [
           "后台策略",
           `${data.auto_check === false ? "自动检查已关闭" : "自动检查已开启"}；` +
             `${data.prefetch === false ? "不自动下载" : "发现新版本自动下载"}（config.toml）`,
         ],
       ];
+      if (data.manifest_warning) {
+        rows.push(["清单提示", data.manifest_warning]);
+      }
       let downloadLine = "";
       if (download.state === "running") {
         downloadLine = "正在下载并校验安装包…";
@@ -7243,7 +7256,7 @@
         <div class="page-head" style="margin-bottom:8px">
           <div>
             <h2>软件更新</h2>
-            <p class="page-sub">清单与安装包均由配置的更新源提供；安装前需再次确认</p>
+            <p class="page-sub">安装会退出服务、自动替换程序并重启；替换失败自动回滚旧版本</p>
           </div>
         </div>
         <table class="table"><tbody>${rows
@@ -7309,14 +7322,15 @@
         installButton.addEventListener("click", async () => {
           if (!latest) return;
           const confirmed = await askConfirm(
-            `将安装 ${latest.version}（构建 ${latest.build}）。安装程序会被打开，` +
-              "请在安装前退出本程序；是否继续？",
-            { okText: "安装", cancelText: "取消" }
+            `将安装 ${latest.version}（构建 ${latest.build}）。服务会先退出，` +
+              "随后自动替换程序并重启；替换失败会回滚旧版本。是否继续？",
+            { okText: "安装并重启", cancelText: "取消" }
           );
           if (!confirmed) return;
           try {
             const result = await api("POST", "/api/update/install", { confirm: true });
-            showNotice(result.message || "已打开安装包", "ok");
+            installButton.disabled = true;
+            showNotice(result.message || "已准备替换，服务即将重启", "ok");
           } catch (error) {
             showNotice(error.message, "error");
           }

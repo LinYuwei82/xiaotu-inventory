@@ -9,6 +9,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "xiaotu/login_limiter.h"
 #include "xiaotu/services.h"
@@ -38,9 +39,10 @@ struct ServerInfo {
   // health 本身不输出任何目录或绝对路径。
   std::string backup_dir;
   bool backup_dir_custom = false;
-  // 网络版更新源（见 docs/更新模块技术方案.md）：清单文件由部署侧同步，
-  // 服务端只做解析与判定；空 manifest_file 表示未启用更新检查。
+  // 网络版更新源（见 docs/更新模块技术方案.md）：manifest_url 非空时由服务端
+  // 拉取厂商清单并缓存，manifest_file 作为本地/离线清单兜底；两者都空表示未启用。
   std::string update_manifest_file;
+  std::string update_manifest_url;
   std::string update_channel = "stable";
   std::string update_min_supported_version;
   int update_rollout_percent = 100;
@@ -50,6 +52,8 @@ struct ServerInfo {
   // 网络版后台策略：auto_check 按 24h±2h 自动检查，prefetch 命中新版本后自动下载。
   bool update_auto_check = true;
   bool update_prefetch = true;
+  // 启动参数（含 argv[0]）：自动替换后按原参数重启，不重新拼命令行。
+  std::vector<std::string> launch_args;
 };
 
 // HTTP 外壳：只负责认证、路由注册与生命周期，业务全部在 Services 内。

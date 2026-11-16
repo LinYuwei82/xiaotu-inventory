@@ -18,8 +18,9 @@ struct ConfigValues {
   std::optional<std::string> log_dir;   // [log] dir
   // [sales] credit_limit_mode：warn（默认，提示并二次确认后放行）/ reject（硬拦）。
   std::optional<std::string> credit_limit_mode;
-  // [update] 网络版更新源：本地暂存清单、通道、最低支持版本、灰度比例。
+  // [update] 网络版更新源：本地暂存清单/远端厂商清单、通道、最低支持版本、灰度比例。
   std::optional<std::string> update_manifest_file;
+  std::optional<std::string> update_manifest_url;
   std::optional<std::string> update_channel;
   std::optional<std::string> update_min_supported_version;
   std::optional<int> update_rollout_percent;

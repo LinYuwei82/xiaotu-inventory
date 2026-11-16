@@ -52,7 +52,8 @@ int main() {
       "dir = \"/var/log/xiaotu\"\n"
       "[update]\n"
       "auto_check = false\n"
-      "prefetch = true\n");
+      "prefetch = true\n"
+      "manifest_url = \"https://dl.xiaotu.online/xiaotu/updates/stable/latest.json\"\n");
   const xiaotu::ConfigValues values = xiaotu::load_config_file(valid);
   check(values.listen.has_value() && *values.listen == "127.0.0.1", "读取 server.listen");
   check(values.port.has_value() && *values.port == 18099, "读取 server.port");
@@ -64,6 +65,10 @@ int main() {
         "读取 update.auto_check");
   check(values.update_prefetch.has_value() && *values.update_prefetch == true,
         "读取 update.prefetch");
+  check(values.update_manifest_url.has_value() &&
+            *values.update_manifest_url ==
+                "https://dl.xiaotu.online/xiaotu/updates/stable/latest.json",
+        "读取 update.manifest_url");
   {
     const xiaotu::ConfigValues empty =
         xiaotu::load_config_file(write_temp("backup_empty", "[storage]\nbackup_dir = \"\"\n"));
@@ -95,13 +100,16 @@ int main() {
   check(error_code_of(write_temp("bad_bool", "[update]\nauto_check = 1\n")) ==
             "INVALID_CONFIG",
         "布尔值只接受 true / false");
+  check(error_code_of(write_temp("insecure_url", "[update]\nmanifest_url = \"http://x\"\n")) ==
+            "INVALID_CONFIG",
+        "update.manifest_url 必须使用 https");
   check(error_code_of(std::filesystem::temp_directory_path() / "xiaotu_config_missing.toml") ==
             "NOT_FOUND",
         "文件不存在报错");
 
   for (const auto& name : {"valid", "unknown_key", "unknown_section", "duplicate", "range",
                            "no_section", "bad_string", "bad_bool", "backup_empty",
-                           "backup_relative"}) {
+                           "backup_relative", "insecure_url"}) {
     std::error_code ignored;
     std::filesystem::remove(std::filesystem::temp_directory_path() /
                                 ("xiaotu_config_" + std::string(name) + ".toml"),
