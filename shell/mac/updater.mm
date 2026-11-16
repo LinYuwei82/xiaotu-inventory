@@ -1,4 +1,4 @@
-#import "updater.h"
+#include "updater.h"
 
 #import <Foundation/Foundation.h>
 
@@ -10,6 +10,7 @@
 
 #include "xiaotu/log.h"
 #include "xiaotu/update.h"
+#include "xiaotu/update_signature.h"
 
 #if __has_include(<Sparkle/Sparkle.h>)
 #import <Sparkle/Sparkle.h>
@@ -544,6 +545,40 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
     finish(kResultCheckFailed);
     return;
   }
+
+  // ---- Ed25519 清单签名校验（信任锚）----
+  // 公钥从 Info.plist 的 SUPublicEDKey 读取（Sparkle 自己也会用）。
+  // 验签失败 → 直接 abort，不做版本比较、不通知用户、不触发 Sparkle。
+  // OpenSSL 不可用时（XIAOTU_HAS_OPENSSL 未定义）跳过 C++ 侧验签，
+  // 由 Sparkle 在用户点"安装更新"时自行校验 appcast.xml EdDSA。
+  NSString* pubKeyB64 = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"SUPublicEDKey"];
+  if (pubKeyB64.length > 0) {
+    @try {
+      NSError* jserr = nil;
+      NSData* jsonData = [NSJSONSerialization dataWithJSONObject:manifest
+                                                        options:0
+                                                          error:&jserr];
+      if (jsonData != nil) {
+        std::string jsonStr(reinterpret_cast<const char*>([jsonData bytes]),
+                            [jsonData length]);
+        nlohmann::json parsed = nlohmann::json::parse(jsonStr);
+        if (!xiaotu::verify_manifest_signature(parsed, pubKeyB64.UTF8String)) {
+          xiaotu::log_error("更新：清单 Ed25519 验签失败，本次检查中止");
+          finish(kResultCheckFailed);
+          return;
+        }
+        xiaotu::log_info("更新：清单 Ed25519 验签通过");
+      }
+    } @catch (NSException* ex) {
+      xiaotu::log_warn(std::string("更新：清单转 JSON 异常：") +
+                       (ex.reason.UTF8String ?: "unknown"));
+      finish(kResultCheckFailed);
+      return;
+    }
+  } else {
+    xiaotu::log_warn("更新：Info.plist 未配置 SUPublicEDKey，跳过 C++ 侧验签");
+  }
+
   NSString* platform = manifest[@"platform"];
   NSString* channel = manifest[@"channel"];
   if (![platform isEqualToString:@"macos"] || ![channel isEqualToString:self.channel]) {
