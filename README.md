@@ -671,12 +671,12 @@ struct DocumentDefinition {
 - 成本按移动加权平均，暂不支持其他计价方式；成本重算保持**只读核对**（`/api/stock/cost-recalc` 与库存页「成本重算核对」），不静默写回。金额差异可一键生成成本调整单草稿（`POST /api/cost-adjustments/drafts`）后人工审核，数量差异引导去做盘点；调整单反审核若会使结存金额为负则拒绝，需先处理后续出库或调整。
 - 桌面版已支持直接「导出 PDF」（原生保存面板，不弹系统打印面板），导出走窗口模态打印会话（`runOperationModalForWindow`），避免 WKWebView 异步分页在无窗口会话下产出空白页。打印与 PDF 均按模板纸型（A4 / A5 / 自定义针式 241×140、241×93）与页边距设置 `NSPrintInfo`，PDF 的 MediaBox 与实际纸张一致；针式套打位置仍待真机验证。打印入口的查询串统一用 `URL` + `URLSearchParams` 组装。页码依赖打印引擎：WKWebView 实测不渲染 `@page` margin box、不支持 `counter(page)`，`position: fixed` 页脚只在末页出现且解析为 0；`show_page_no` 仅作提示性字段，不做前端分页与 PDF 后处理，网络版可在浏览器打印对话框勾选页眉和页脚。
 - Windows：顶层 CMake 默认不构建 GUI 壳（`XIAOTU_BUILD_WIN_SHELL=OFF`），界面通过浏览器访问；`shell/win` 是 Win32 + WebView2 壳工程，可显式打开顶层开关，也可独立构建。打包脚本与验收脚本共用同一套壳路径解析顺序，找不到壳会报错而不是静默出无壳包。
-- 更新策略定为启动一次 + 每日一次、只开 stable、不做 beta 与灰度、不做强制升级与静默安装，Windows 首发手动下载安装包、不接 WinSparkle。服务端已实现清单验签、检查/状态/下载/安装接口、下载后哈希与签名校验、以及二次确认后的「打开安装包」，下载与安装的进程失败区分「未启动」与「已启动但无法收集退出状态」；macOS 桌面壳有检查/跳过/安装/状态桥，`Info.plist` 可注入清单地址、`SUFeedURL` 与公钥，发布工具可生成并签 `latest.json` 与 `appcast.xml`。但仓库不内嵌 `Sparkle.framework`，默认出包不链接，自动替换与旧版本回滚仍未接入，清单也暂未启用。
+- 更新策略：macOS 单机版已端到端跑通——启动 30 秒首查、之后每日一次（±2 小时抖动），只开 stable、不做 beta 与灰度、不做强制升级与静默安装。清单与安装包托管在 `https://dl.xiaotu.online`（阿里云 OSS 香港 + CDN），`latest.json` / `appcast.xml` 做 Ed25519 签名，安装包由 Developer ID 签名 + 公证 + staple，下载与原子替换交给内嵌的 Sparkle 2.10.1。后台预下载、自动回滚、旧包清理、强制升级 UI 尚未实现；网络版服务端已实现清单验签、检查/状态/下载/安装接口与二次确认后「打开安装包」，但尚未接这份清单。Windows 首发仍为手动下载安装包，不接 WinSparkle。
 - 导航使用 `#/<key>` 路由：**刷新保页**在单机版与网络版都有效；**前进 / 后退**只在 `--server` 的浏览器里有效，单机版 WKWebView 没有后退入口。单机版有意不开 `allowsBackForwardNavigationGestures`、也不加后退 / 前进菜单项：侧栏已经是完整导航路径，录入页的脏标记会拦住误跳，横扫手势还会和明细表的横向滚动冲突。未保存离开确认与提示 / 输入框都是页内自绘（`askDialog`），不依赖 `window.confirm` / `alert` / `prompt`（WKWebView 未实现对应面板）；单机版直接关闭窗口不会拦（WKWebView 不执行 `beforeunload`），网络版浏览器会提示，单机版请先保存再关窗。
 - 商品条码支持**一商品多码**（v25 起正式启用）：`item_barcode` 保存全部码，其中一个为主码；`item.barcode` 只作主码镜像并由应用层同步，避免两处真相。条码全局唯一，空码不占位；商品表单可增删码并切换主码，扫码按任意码精确命中商品。导入导出用 `|` 分隔多个码、第一个为主码。升级时 v25 会把已有 `item.barcode` 回填为主码行，不丢码。箱码换算、一码多商品、校验位计算未实现。
 - 含税价**第一步已落地**（v26）：单据行保存 `tax_rate_bp`（整数万分比，默认取商品税率、可逐行覆盖）、`price_includes_tax` 与算好的 `net_cents` / `tax_cents`。**逐行算税再汇总**，每行恒有「净额 + 税额 = 价税合计」，整数分四舍五入、不引入浮点；选逐行是因为每行展示的净额 / 税额能与合计逐分对上，汇总后再算税会出现「行税额之和 ≠ 合计税额」。退货红字沿用同一公式，数量与金额按红字取负后税额同步为负，冲回对称。单据页面、打印、CSV、XLSX 均输出「税额」与「价税合计」。含税行与不含税行的「金额」列含义不同（前者是价税合计、后者是不含税金额），因此该列头统一写作「金额（录入价）」，并且「价税合计」列常显，数值不做任何改动。库存成本口径由 v33 参数控制：默认按含税价（`amount_cents`），可切到不含税净额（`net_cents`），只影响切换后新审核的单据，报表标注切换日；历史单据的结存、流水与毛利不重算、不回填。
 - 审计日志覆盖登录成功 / 失败（失败记录尝试的用户名与来源 IP）、导出（`format=csv|xlsx` 与 `/export`，记录路径与筛选条件）、手动备份与恢复、用户角色变更（`role_change`，含原角色与新角色）、系统参数修改（`entity=setting`，逐键记录原值与新值）、主数据导入、单据审核 / 反审核、收付款、成本超限确认等。每条审计记录来源 IP（`client_ip`）与客户端请求号（`request_id`），审计页可按这两列筛选，CSV / XLSX 导出同步带出；单据接口沿用前端携带的幂等键作为请求号，未带请求号的接口与 CLI 路径留空，不伪造。导出审计只记 200 成功的请求并在响应写出前落库；`config.toml` 仍由运维改文件后重启生效，不写审计。
-- 无 Developer ID 证书，`.dmg` 为 ad-hoc 签名且未公证；Windows 安装包未签名。两端首次打开都需手动放行一次，说明见 [docs/发行与安装说明.md](docs/发行与安装说明.md)。
+- macOS `.dmg` 已用 Developer ID Application 签名并公证 + staple，Gatekeeper 不再拦截；Windows 安装包未签名，首次打开仍需手动放行一次，说明见 [docs/发行与安装说明.md](docs/发行与安装说明.md)。
 - 应收应付与账龄只统计 v7 迁移之后审核的单据，升级前已审核单据不计入，详见「应收应付统计口径」。
 - 未接入 vcpkg 时依赖 `third_party/` 内嵌头文件；接入 vcpkg 后 `vcpkg.json` 会自动生效。
 
@@ -692,11 +692,23 @@ tools/package/make_dmg.sh
 与指向 `/Applications` 的「应用程序」软链。脚本、签名参数与校验方式见
 [tools/package/README.md](tools/package/README.md)。
 
-包体实测（0.9.0）：dmg **2,980,224 B（2.84 MiB）**；`.app` 表观 5.12 MiB / 实占 5,256 KiB；主可执行 4,502,048 B（占 83.8%）；内嵌前端 270,103 B（未压缩）；`Frameworks` 为 0；图标 867,537 B；未 strip 符号表约 1.03 MiB。原「10–30 MB」估算已不适用，目标下调为 dmg ≤ 3 MiB。
+包体实测（0.9.0）：dmg **6,633,958 B（6.33 MiB）**；`.app` 实占 13,844 KiB（约 13.5 MiB）；主可执行 10,153,072 B；内嵌 `Sparkle.framework` 3,032 KiB；图标 867,537 B。引入 Sparkle 与静态 OpenSSL 后，原「dmg ≤ 3 MiB」目标不再适用。
 
-**签名现状**：仓库当前没有 Developer ID 证书，脚本默认做 ad-hoc 签名，也未做公证。首次打开的放行方式（含 Windows）统一见 [docs/发行与安装说明.md](docs/发行与安装说明.md)。当前分发方式为手工发送，未启用下载页与更新清单。
+**签名与公证**：dmg 用 `Developer ID Application: Yuwei Lin (BMCUC4B6XX)` 签名（hardened runtime），并已公证 + staple。打包命令：
 
-拿到 Developer ID 证书后可设置 `XIAOTU_SIGN_IDENTITY` 重新打包；要免拦截仍需额外公证与 staple，当前不在仓库范围内。
+```bash
+XIAOTU_SIGN_IDENTITY="Developer ID Application: Yuwei Lin (BMCUC4B6XX)" \
+XIAOTU_NOTARY_PROFILE="xiaotu-notary" \
+XIAOTU_BUILD=<单调递增构建号> \
+XIAOTU_UPDATE_MANIFEST_URL=https://dl.xiaotu.online/xiaotu/updates/stable/latest.json \
+XIAOTU_UPDATE_FEED_URL=https://dl.xiaotu.online/xiaotu/updates/stable/appcast.xml \
+XIAOTU_UPDATE_PUBKEY=<Ed25519 公钥 base64> \
+tools/package/make_dmg.sh
+```
+
+**发布**：`PRODUCT=xiaotu tools/package/publish_oss.sh` 一条命令完成上传 dmg、生成并签 `latest.json` / `appcast.xml`、本地验签、上传清单、purge CDN、同步下载页数字与预热 CDN；OSS 凭据只从环境变量或仓库外 600 权限文件读取。详见 [tools/package/README.md](tools/package/README.md)。
+
+用户侧放行方式见 [docs/发行与安装说明.md](docs/发行与安装说明.md)。
 
 ## 11. 开发流程与并行约定
 
