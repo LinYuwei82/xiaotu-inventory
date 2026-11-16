@@ -155,6 +155,11 @@ endif()
 # Ed25519 验签：优先系统/brew OpenSSL（含 EVP Ed25519）；缺失时静默降级，
 # 客户端跳过 C++ 侧验签但 Sparkle（接入后）会自行校验 appcast.xml EdDSA。
 # Windows/macOS 开发机一般通过 brew / vcpkg / 系统自带提供 OpenSSL。
+# macOS 发布包必须能在没有 brew 的机器上运行，因此强制静态链接 OpenSSL，
+# 避免产物依赖 /opt/homebrew/.../libssl.dylib。
+if(APPLE)
+  set(OPENSSL_USE_STATIC_LIBS TRUE)
+endif()
 find_package(OpenSSL QUIET)
 if(OpenSSL_FOUND AND OpenSSL_VERSION VERSION_GREATER_EQUAL "3.0")
   target_link_libraries(xiaotu_core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
