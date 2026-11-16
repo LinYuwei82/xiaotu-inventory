@@ -267,6 +267,8 @@ prefetch = true
 | `verifier_python` | `python3` | 清单验签脚本的解释器 |
 | `verifier_script` | 空 | 清单验签脚本路径 |
 
+`auto_check` 与 `prefetch` 只影响自动链路：关闭前者停止后台检查，手动「检查更新」仍可用；关闭后者不自动下载，用户仍可点「下载并校验」。两项在服务启动时读取，运行中不提供切换，修改后需重启；`GET /api/update/status` 只读回显当前取值。
+
 服务端更新链路（网络版）：`GET /api/update/check` 免登录做轻量握手；`GET /api/update/status`、`POST /api/update/download`、`POST /api/update/download/cancel`、`POST /api/update/install` 需要登录，下载、取消与安装仅管理员可用。下载目录固定为 `<数据目录>/updates/`，安装包先按清单 `size` 与 sha256 校验、再用同一验证工具验签，失败会删除文件并写日志；下载前清掉旧包，后台检查确认已是最新且下载空闲时清空目录，取消会终止下载并删除半成品；安装动作只打开安装包，需要在二次确认后由用户退出程序完成安装。
 
 完整说明、systemd 单元与运维步骤见 [docs/部署与配置.md](docs/部署与配置.md)，示例见 `deploy/config.toml.example`、`deploy/systemd/xiaotu.service`。
