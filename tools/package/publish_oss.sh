@@ -243,9 +243,9 @@ if [ "$OSS_SKIP" != "true" ]; then
   echo ""
   echo "===== ④ 上传 latest.json + appcast.xml"
   oss_upload "$MANIFEST_LOCAL" "$LATEST_KEY" \
-    "no-cache, max-age=300" "application/json"
+    "no-cache, max-age=60" "application/json"
   oss_upload "$APPCAST_LOCAL" "$APPCAST_KEY" \
-    "no-cache, max-age=300" "application/rss+xml"
+    "no-cache, max-age=60" "application/rss+xml"
 else
   echo ""
   echo "===== ④ [dry-run] 将上传 $LATEST_KEY + $APPCAST_KEY"
@@ -267,11 +267,11 @@ if [ "$OSS_SKIP" != "true" ]; then
         echo "  (手动 purge：$url)"
       fi
     done
-    echo "  CDN purge 完成，5 分钟内全网生效"
+    echo "  CDN purge 完成，1 分钟内全网生效"
   else
     echo ""
     echo "===== ⑤ 跳过 purge（PURGE=false）"
-    echo "  提醒：新 manifest 最多 5 分钟后自动生效"
+    echo "  提醒：新 manifest 最多 1 分钟后自动生效"
   fi
 fi
 
