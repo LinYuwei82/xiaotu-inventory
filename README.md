@@ -78,6 +78,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 ```bash
 brew install cmake ninja ccache openssl@3
+export OPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"   # openssl@3 是 keg-only，需手动指路
 ```
 
 Windows 只构建服务端与测试时另需 CMake 3.25+、Ninja、Visual Studio 2022 Build Tools（MSVC，C++20）与 OpenSSL 3.0（`choco install openssl`，或 `vcpkg` 并设置 `OPENSSL_ROOT_DIR`）；若要构建 `shell/win` 桌面壳，还需要 WebView2 SDK 与目标机器上的 WebView2 Runtime（见下方「Windows 桌面壳」）。

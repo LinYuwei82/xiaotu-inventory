@@ -34,6 +34,10 @@ if(APPLE)
   if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "13.0" CACHE STRING "macOS 最低版本")
   endif()
+  # 发布包要能在没装 brew 的机器上运行：OpenSSL 必须静态链接，否则 .app 会依赖
+  # /opt/homebrew/.../libcrypto.3.dylib。放在顶层才能让 core 与 tests 里的
+  # find_package(OpenSSL) 用同一套选择。
+  set(OPENSSL_USE_STATIC_LIBS TRUE)
 endif()
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)

@@ -154,11 +154,7 @@ endif()
 
 # Ed25519 清单验签依赖 OpenSSL 3.0 的 EVP 接口。缺失时不再静默降级：配置阶段
 # 直接失败，避免 CI 在「永远返回成功」的 stub 上把验签测试跑成假通过。
-# macOS 发布包必须能在没有 brew 的机器上运行，因此强制静态链接 OpenSSL，
-# 避免产物依赖 /opt/homebrew/.../libssl.dylib。
-if(APPLE)
-  set(OPENSSL_USE_STATIC_LIBS TRUE)
-endif()
+# OPENSSL_USE_STATIC_LIBS 在顶层 CMakeLists.txt 统一设置（macOS 静态链接）。
 find_package(OpenSSL 3.0 REQUIRED)
 target_link_libraries(xiaotu_core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 target_compile_definitions(xiaotu_core PRIVATE XIAOTU_HAS_OPENSSL=1)
