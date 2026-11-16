@@ -39,7 +39,7 @@ if(XIAOTU_SPARKLE_DIR AND EXISTS "${XIAOTU_SPARKLE_DIR}/Sparkle.framework")
   target_link_libraries(xiaotu-inventory PRIVATE "-framework Sparkle")
   target_link_options(xiaotu-inventory PRIVATE
     "-F${XIAOTU_SPARKLE_DIR}"
-    "-Wl,-rpath,@loader_path/Frameworks")
+    "-Wl,-rpath,@loader_path/../Frameworks")
   target_compile_options(xiaotu-inventory PRIVATE "-F${XIAOTU_SPARKLE_DIR}")
   target_compile_definitions(xiaotu-inventory PRIVATE XIAOTU_HAS_SPARKLE=1)
   set_target_properties(xiaotu-inventory PROPERTIES

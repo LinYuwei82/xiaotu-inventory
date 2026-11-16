@@ -187,6 +187,17 @@ mkdir -p "$STAGE"
 ditto "$BUILT_APP" "$STAGE/$APP_DISPLAY_NAME.app"
 ln -s /Applications "$STAGE/应用程序"
 
+# Sparkle 必须随 .app 一起分发：可执行文件链接的是 @rpath/Sparkle.framework，
+# 未嵌入时在其他机器上会因 dyld 找不到库而直接崩溃。
+if [ -n "$XIAOTU_SPARKLE_DIR_VAL" ]; then
+  echo "===== 嵌入 Sparkle.framework"
+  mkdir -p "$STAGE/$APP_DISPLAY_NAME.app/Contents/Frameworks"
+  ditto "$XIAOTU_SPARKLE_DIR_VAL/Sparkle.framework" \
+        "$STAGE/$APP_DISPLAY_NAME.app/Contents/Frameworks/Sparkle.framework"
+  ls -d "$STAGE/$APP_DISPLAY_NAME.app/Contents/Frameworks/Sparkle.framework" >/dev/null
+  echo "已嵌入：Contents/Frameworks/Sparkle.framework"
+fi
+
 echo "===== 签名"
 if [ -n "${XIAOTU_SIGN_IDENTITY:-}" ]; then
   echo "使用证书：$XIAOTU_SIGN_IDENTITY"
