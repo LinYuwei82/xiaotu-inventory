@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <optional>
 #include <string>
+#include <unistd.h>
 
 #include <nlohmann/json.hpp>
 
@@ -51,6 +52,13 @@ NSString* const kPrefetchMessageKey = @"XiaotuPrefetchMessage";
 NSString* const kPendingURLKey = @"XiaotuPendingPackageURL";
 NSString* const kPendingSHAKey = @"XiaotuPendingPackageSHA256";
 NSString* const kPendingSizeKey = @"XiaotuPendingPackageSize";
+// 升级验证：安装时记下目标 build，新版本稳定启动 3 次后清理旧包。
+NSString* const kValidatingBuildKey = @"XiaotuValidatingBuild";
+NSString* const kStableLaunchKey = @"XiaotuStableLaunchCount";
+// 恢复模式：连续启动失败达到阈值后置位，直到用户回退或选择继续使用当前版本。
+NSString* const kRecoveryRequiredKey = @"XiaotuUpdateRecoveryRequired";
+NSString* const kPreviousVersionKey = @"XiaotuPreviousVersion";
+NSString* const kPreviousBuildKey = @"XiaotuPreviousBuild";
 
 // 后台预下载状态。running / retrying 只在本次进程内有效，重启后回到 idle。
 NSString* const kPrefetchIdle = @"idle";
@@ -71,6 +79,8 @@ constexpr NSTimeInterval kRequestTimeout = 10;
 constexpr NSTimeInterval kManualCooldown = 600;  // 10min
 constexpr NSTimeInterval kFirstCheckDelay = 30;  // 首次安装后的首轮检查延迟
 constexpr int kMaxLaunchFailures = 3;
+// 新版本连续稳定运行 3 次后，删除安装前保留的旧版本副本。
+constexpr int kStableLaunchesBeforeCleanup = 3;
 
 // status.last_result 与 checkNow 的 code 取值，和交接单第 2、3 节保持一致。
 NSString* const kResultCheckFailed = @"CHECK_FAILED";
@@ -189,6 +199,50 @@ NSURL* prefetch_directory() {
                        attributes:nil
                             error:NULL];
   return directory;
+}
+
+// 回退副本目录：只保留最近 1 份升级前 .app，与预下载缓存分开。
+NSURL* previous_directory() {
+  NSFileManager* manager = [NSFileManager defaultManager];
+  NSURL* base = [manager URLForDirectory:NSApplicationSupportDirectory
+                                inDomain:NSUserDomainMask
+                       appropriateForURL:nil
+                                  create:YES
+                                   error:NULL];
+  if (base == nil) {
+    return nil;
+  }
+  NSURL* directory = [base URLByAppendingPathComponent:@"com.simem.xiaotu/previous"
+                                           isDirectory:YES];
+  [manager createDirectoryAtURL:directory
+      withIntermediateDirectories:YES
+                       attributes:nil
+                            error:NULL];
+  return directory;
+}
+
+NSURL* previous_app_url() {
+  NSURL* directory = previous_directory();
+  return directory != nil ? [directory URLByAppendingPathComponent:@"previous.app"] : nil;
+}
+
+// 备份目录：服务端自动备份（含升级前的 pre-v* 库）都在这里。
+NSURL* backup_directory() {
+  NSFileManager* manager = [NSFileManager defaultManager];
+  NSURL* base = [manager URLForDirectory:NSApplicationSupportDirectory
+                                inDomain:NSUserDomainMask
+                       appropriateForURL:nil
+                                  create:NO
+                                   error:NULL];
+  return base != nil ? [base URLByAppendingPathComponent:@"com.simem.xiaotu/backups"
+                                             isDirectory:YES]
+                     : nil;
+}
+
+// 单引号转义，保证含空格、引号的路径原样传给 /bin/sh。
+NSString* shell_quote(NSString* text) {
+  NSString* escaped = [text stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"];
+  return [NSString stringWithFormat:@"'%@'", escaped];
 }
 
 NSString* safe_file_component(NSString* text) {
@@ -466,17 +520,265 @@ didCompleteWithError:(NSError*)error {
   NSInteger attempts = [defaults integerForKey:kLaunchAttemptsKey] + 1;
   [defaults setInteger:attempts forKey:kLaunchAttemptsKey];
   const std::int64_t pending = pending_build(defaults);
-  if (attempts >= kMaxLaunchFailures && pending != 0 && pending != current_build()) {
+  const std::int64_t validating = [defaults integerForKey:kValidatingBuildKey];
+  // 两种情况都算“更新后不稳定”：新版本仍在验证期，或更高版本已下载但尚未装上。
+  if (xiaotu::should_enter_recovery(static_cast<int>(attempts), kMaxLaunchFailures, validating,
+                                    current_build(), pending)) {
     [defaults setBool:YES forKey:kPausedKey];
+    [defaults setBool:YES forKey:kRecoveryRequiredKey];
     xiaotu::log_error("更新：连续 " + std::to_string(attempts) +
-                      " 次启动未进入稳定状态，已暂停自动更新，建议回退上一版本");
+                      " 次启动未进入稳定状态，已进入恢复模式，可回退上一版本");
   }
+  __weak XiaotuUpdater* weakSelf = self;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), self.queue, ^{
-    [[NSUserDefaults standardUserDefaults] setInteger:0 forKey:kLaunchAttemptsKey];
-    [[NSUserDefaults standardUserDefaults] setBool:NO forKey:kPausedKey];
+    XiaotuUpdater* strongSelf = weakSelf;
+    if (strongSelf == nil) {
+      return;
+    }
+    NSUserDefaults* currentDefaults = [NSUserDefaults standardUserDefaults];
+    [currentDefaults setInteger:0 forKey:kLaunchAttemptsKey];
+    // 恢复模式保持暂停：等用户明确选择回退或继续使用当前版本，避免自动更新又装上问题版本。
+    const BOOL recovery = [currentDefaults boolForKey:kRecoveryRequiredKey];
+    if (!recovery) {
+      [currentDefaults setBool:NO forKey:kPausedKey];
+    }
+    // 新版本连续稳定运行 3 次后，安装前保留的旧副本就可以删了。
+    // 恢复模式期间保留副本（用户可能还要回退）；旧版本自身启动时 validating 不等于当前 build，不会误删。
+    const std::int64_t validatingBuild = [currentDefaults integerForKey:kValidatingBuildKey];
+    if (!recovery && validatingBuild != 0 && validatingBuild == current_build()) {
+      NSInteger stable = [currentDefaults integerForKey:kStableLaunchKey] + 1;
+      if (stable >= kStableLaunchesBeforeCleanup) {
+        [strongSelf removePreviousBundle];
+        [currentDefaults removeObjectForKey:kValidatingBuildKey];
+        stable = 0;
+        xiaotu::log_info("更新：新版本已稳定启动 " +
+                         std::to_string(kStableLaunchesBeforeCleanup) + " 次，已删除旧版本副本");
+      }
+      [currentDefaults setInteger:stable forKey:kStableLaunchKey];
+    }
     // 稳定运行后若此前因暂停没有武装定时器，这里补上。
-    [self armTimerOnQueue];
+    [strongSelf armTimerOnQueue];
   });
+}
+
+// 删除旧版本副本与元数据；保留回退脚本与日志便于排查。
+- (void)removePreviousBundle {
+  NSURL* previous = previous_app_url();
+  if (previous != nil) {
+    [[NSFileManager defaultManager] removeItemAtURL:previous error:NULL];
+  }
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  [defaults removeObjectForKey:kPreviousVersionKey];
+  [defaults removeObjectForKey:kPreviousBuildKey];
+}
+
+- (BOOL)previousBundleAvailable {
+  NSURL* previous = previous_app_url();
+  return previous != nil && [[NSFileManager defaultManager] fileExistsAtPath:previous.path];
+}
+
+// 安装前保留当前 .app：只留最近 1 份，并记下目标 build 进入验证期。
+- (BOOL)preparePreviousBundleWithTargetBuild:(std::int64_t)targetBuild
+                                      error:(NSString**)errorOut {
+  NSURL* bundle = [[NSBundle mainBundle] bundleURL];
+  NSURL* previous = previous_app_url();
+  if (bundle == nil || previous == nil) {
+    if (errorOut != nullptr) {
+      *errorOut = @"无法定位应用包或缓存目录";
+    }
+    return NO;
+  }
+  NSFileManager* manager = [NSFileManager defaultManager];
+  [manager removeItemAtURL:previous error:NULL];
+  NSError* error = nil;
+  if (![manager copyItemAtURL:bundle toURL:previous error:&error]) {
+    if (errorOut != nullptr) {
+      *errorOut = error.localizedDescription ?: @"复制应用包失败";
+    }
+    return NO;
+  }
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSString* version =
+      [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+  [defaults setObject:version ?: @"" forKey:kPreviousVersionKey];
+  [defaults setInteger:current_build() forKey:kPreviousBuildKey];
+  [defaults setInteger:targetBuild forKey:kValidatingBuildKey];
+  [defaults setInteger:0 forKey:kStableLaunchKey];
+  xiaotu::log_info("更新：已保留当前版本副本用于回退，目标 build " +
+                   std::to_string(targetBuild));
+  return YES;
+}
+
+// 写回退脚本：等当前进程退出后，用旧副本替换 .app 并重新启动。
+// 失败时回滚现场并重新打开当前版本，避免用户既回不去也打不开。
+- (nullable NSString*)writeRollbackScriptWithError:(NSString**)errorOut {
+  NSURL* bundle = [[NSBundle mainBundle] bundleURL];
+  NSURL* previous = previous_app_url();
+  NSURL* directory = previous_directory();
+  if (bundle == nil || previous == nil || directory == nil) {
+    if (errorOut != nullptr) {
+      *errorOut = @"无法定位应用包或缓存目录";
+    }
+    return nil;
+  }
+  NSURL* scriptURL = [directory URLByAppendingPathComponent:@"rollback.sh"];
+  NSURL* logURL = [directory URLByAppendingPathComponent:@"rollback.log"];
+  NSString* content = [NSString
+      stringWithFormat:@"#!/bin/sh\n"
+                       "CURRENT=%@\n"
+                       "PREVIOUS=%@\n"
+                       "LOG=%@\n"
+                       "PID=%d\n"
+                       "log() { printf '%%s %%s\\n' \"$(date '+%%Y-%%m-%%d %%H:%%M:%%S')\" "
+                       "\"$1\" >> \"$LOG\"; }\n"
+                       "log '等待当前进程退出'\n"
+                       "i=0\n"
+                       "while kill -0 \"$PID\" 2>/dev/null; do\n"
+                       "  i=$((i+1))\n"
+                       "  if [ \"$i\" -gt 240 ]; then log '等待超时，放弃回退'; "
+                       "/usr/bin/open \"$CURRENT\"; exit 1; fi\n"
+                       "  sleep 0.5\n"
+                       "done\n"
+                       "TMP=\"${CURRENT}.rollback-backup\"\n"
+                       "rm -rf \"$TMP\"\n"
+                       "if mv \"$CURRENT\" \"$TMP\"; then\n"
+                       "  if /usr/bin/ditto \"$PREVIOUS\" \"$CURRENT\"; then\n"
+                       "    rm -rf \"$TMP\" \"$PREVIOUS\"\n"
+                       "    log '回退完成，重新启动旧版本'\n"
+                       "    /usr/bin/open \"$CURRENT\"\n"
+                       "    exit 0\n"
+                       "  fi\n"
+                       "  log '复制旧版本失败，恢复当前版本'\n"
+                       "  rm -rf \"$CURRENT\"\n"
+                       "  mv \"$TMP\" \"$CURRENT\"\n"
+                       "else\n"
+                       "  log '移动当前版本失败，可能没有写入权限'\n"
+                       "fi\n"
+                       "/usr/bin/open \"$CURRENT\"\n"
+                       "exit 1\n",
+                       shell_quote(bundle.path), shell_quote(previous.path),
+                       shell_quote(logURL.path), static_cast<int>(getpid())];
+  NSError* error = nil;
+  if (![content writeToURL:scriptURL atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+    if (errorOut != nullptr) {
+      *errorOut = error.localizedDescription ?: @"写入回退脚本失败";
+    }
+    return nil;
+  }
+  [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions : @(0700)}
+                                   ofItemAtPath:scriptURL.path
+                                          error:NULL];
+  return scriptURL.path;
+}
+
+- (NSDictionary<NSString*, id>*)previousBundleStatus {
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSString* version = [defaults stringForKey:kPreviousVersionKey];
+  return @{
+    @"available" : @([self previousBundleAvailable]),
+    @"version" : version.length > 0 ? version : (id)[NSNull null],
+    @"build" : @([defaults integerForKey:kPreviousBuildKey]),
+  };
+}
+
+- (void)rollbackUpdateWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion {
+  void (^respond)(NSDictionary*) = ^(NSDictionary* result) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(result);
+    });
+  };
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  if (![defaults boolForKey:kRecoveryRequiredKey]) {
+    respond(@{
+      @"ok" : @NO,
+      @"code" : @"NOT_RECOVERY",
+      @"message" : @"当前不在恢复模式",
+    });
+    return;
+  }
+  if (![self previousBundleAvailable]) {
+    respond(@{
+      @"ok" : @NO,
+      @"code" : @"NO_PREVIOUS",
+      @"message" : @"没有可回退的旧版本副本，请从官网重新下载上一版本",
+    });
+    return;
+  }
+  NSString* scriptError = nil;
+  NSString* scriptPath = [self writeRollbackScriptWithError:&scriptError];
+  if (scriptPath == nil) {
+    respond(@{
+      @"ok" : @NO,
+      @"code" : @"FAILED",
+      @"message" : scriptError ?: @"无法准备回退脚本",
+    });
+    return;
+  }
+  NSTask* task = [[NSTask alloc] init];
+  task.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
+  task.arguments = @[ scriptPath ];
+  NSError* launchError = nil;
+  if (![task launchAndReturnError:&launchError]) {
+    respond(@{
+      @"ok" : @NO,
+      @"code" : @"FAILED",
+      @"message" : launchError.localizedDescription ?: @"无法启动回退脚本",
+    });
+    return;
+  }
+  // 旧版本启动后不再提示恢复；失败计数与验证期一并清掉。
+  [defaults setBool:NO forKey:kRecoveryRequiredKey];
+  [defaults setInteger:0 forKey:kLaunchAttemptsKey];
+  [defaults setInteger:0 forKey:kStableLaunchKey];
+  [defaults setBool:NO forKey:kPausedKey];
+  [defaults removeObjectForKey:kValidatingBuildKey];
+  respond(@{
+    @"ok" : @YES,
+    @"code" : @"ROLLING_BACK",
+    @"message" : @"正在退出并回退到上一版本，请稍候…",
+  });
+  // 用 stop 而不是 terminate：回退已经过用户显式确认，跳过未保存内容的拦截，
+  // 让 run loop 正常退出后由主流程关闭服务，脚本再等进程结束后替换 .app。
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [NSApp stop:nil];
+    NSEvent* wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                      location:NSZeroPoint
+                                 modifierFlags:0
+                                     timestamp:0
+                                  windowNumber:0
+                                       context:nil
+                                       subtype:0
+                                         data1:0
+                                         data2:0];
+    [NSApp postEvent:wake atStart:YES];
+  });
+}
+
+- (void)openBackupFolderWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion {
+  void (^respond)(NSDictionary*) = ^(NSDictionary* result) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(result);
+    });
+  };
+  NSURL* directory = backup_directory();
+  if (directory == nil ||
+      ![[NSFileManager defaultManager] fileExistsAtPath:directory.path]) {
+    respond(@{
+      @"ok" : @NO,
+      @"code" : @"NOT_FOUND",
+      @"message" : @"尚未生成备份目录",
+    });
+    return;
+  }
+  if ([[NSWorkspace sharedWorkspace] openURL:directory]) {
+    respond(@{@"ok" : @YES, @"code" : @"OPENED"});
+  } else {
+    respond(@{
+      @"ok" : @NO,
+      @"code" : @"FAILED",
+      @"message" : @"无法打开备份目录",
+    });
+  }
 }
 
 // 清除待更新与中间版本记录（两者互斥）；同时作废该版本的后台预下载。
@@ -1068,6 +1370,13 @@ didCompleteWithError:(NSError*)error {
     case xiaotu::InstallDecision::kStarted:
       break;
   }
+  // 安装前保留当前版本副本，供新版本连续启动失败时一键回退；失败不阻断安装。
+  NSString* backupError = nil;
+  if (![self preparePreviousBundleWithTargetBuild:pending_build(defaults)
+                                            error:&backupError]) {
+    xiaotu::log_warn("更新：未能保留旧版本副本，回退将不可用：" +
+                     std::string(backupError.UTF8String ?: "未知原因"));
+  }
 #if XIAOTU_HAS_SPARKLE
   // 脚本消息在主线程派发；控制器也只在主线程创建。
   [[[self sparkleController] updater] checkForUpdates];
@@ -1097,9 +1406,10 @@ didCompleteWithError:(NSError*)error {
   };
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   const BOOL paused = [defaults boolForKey:kPausedKey];
-  // 无论是否处于暂停，都清掉失败计数，避免恢复后因旧计数立刻再次暂停。
+  // 无论是否处于暂停，都清掉失败计数与恢复标记，避免恢复后因旧状态立刻再次暂停。
   [defaults setBool:NO forKey:kPausedKey];
   [defaults setInteger:0 forKey:kLaunchAttemptsKey];
+  [defaults setBool:NO forKey:kRecoveryRequiredKey];
 
   if (xiaotu::decide_resume(paused) == xiaotu::ResumeDecision::kNotPaused) {
     respond(@{
@@ -1232,6 +1542,9 @@ didCompleteWithError:(NSError*)error {
     @"next_check_at" : @([defaults doubleForKey:kNextCheckKey]),
     @"launch_attempts" : @([defaults integerForKey:kLaunchAttemptsKey]),
     @"paused" : @([defaults boolForKey:kPausedKey]),
+    // 恢复模式：连续启动失败后引导回退；previous 为安装前保留的旧版本副本。
+    @"recovery_required" : @([defaults boolForKey:kRecoveryRequiredKey]),
+    @"previous" : [self previousBundleStatus],
     @"skipped_version" : [defaults stringForKey:kSkippedVersionKey] ?: [NSNull null],
     @"skip_until" : @([defaults doubleForKey:kSkipUntilKey]),
     @"last_check_at" : @([defaults doubleForKey:kLastCheckKey]),

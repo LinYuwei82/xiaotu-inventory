@@ -6952,6 +6952,33 @@
              </p>
              <button class="btn" type="button" data-role="ack-prefetch">我知道了，开始后台下载</button>`
           : "";
+      // 恢复模式：连续启动失败后引导回退。回退只替换程序，数据库结构变更需先恢复升级前备份。
+      const previous = status.previous || {};
+      const recovery = status.recovery_required
+        ? `<div style="margin:8px 0;padding:12px;border:1px solid #e0b252;background:#fff8e6">
+             <p style="margin:0 0 6px"><strong>恢复模式</strong>：当前版本连续 3 次启动未稳定，自动检查已暂停。</p>
+             <p class="page-sub" style="margin:0 0 6px">${
+               previous.available
+                 ? `可回退到安装前保留的上一版本 ${escapeHtml(
+                     previous.version || ""
+                   )}（构建 ${escapeHtml(String(previous.build || ""))}）。`
+                 : "旧版本副本不可用，请从官网重新下载上一版本安装包。"
+             }</p>
+             <p class="page-sub" style="margin:0 0 10px">
+               若升级包含数据库结构变更，回退后旧版本可能无法直接打开数据；
+               请先用升级前的自动备份（backups/app-*-pre-v*.db）按用户手册恢复。
+             </p>
+             <div style="display:flex;gap:8px;flex-wrap:wrap">
+               ${
+                 previous.available
+                   ? `<button class="btn primary" type="button" data-role="rollback">回退到上一版本</button>`
+                   : ""
+               }
+               <button class="btn" type="button" data-role="recovery-dismiss">继续使用当前版本</button>
+               <button class="btn" type="button" data-role="open-backups">打开备份目录</button>
+             </div>
+           </div>`
+        : "";
       card.innerHTML = `
         <div class="page-head" style="margin-bottom:8px">
           <div>
@@ -6959,6 +6986,7 @@
             <p class="page-sub">检查与下载均通过签名校验；安装前会再次确认并关闭程序</p>
           </div>
         </div>
+        ${recovery}
         <table class="table"><tbody>${rows
           .map(
             ([label, value]) =>
@@ -7058,6 +7086,33 @@
         if (!confirmed) return;
         nativeBridge.xiaotuUpdateInstall.postMessage({});
       });
+      const rollbackButton = card.querySelector('[data-role="rollback"]');
+      if (rollbackButton) {
+        rollbackButton.addEventListener("click", async () => {
+          const confirmed = await askConfirm(
+            "回退会退出程序，用上一版本替换当前程序并重新启动。" +
+              "若数据库结构已升级，请先恢复升级前备份；是否继续？",
+            { okText: "回退", cancelText: "取消" }
+          );
+          if (!confirmed) return;
+          rollbackButton.disabled = true;
+          nativeBridge.xiaotuUpdateRollback.postMessage({});
+        });
+      }
+      const dismissRecoveryButton = card.querySelector('[data-role="recovery-dismiss"]');
+      if (dismissRecoveryButton) {
+        dismissRecoveryButton.addEventListener("click", () => {
+          dismissRecoveryButton.disabled = true;
+          nativeBridge.xiaotuUpdateResume.postMessage({});
+        });
+      }
+      const openBackupsButton = card.querySelector('[data-role="open-backups"]');
+      if (openBackupsButton) {
+        openBackupsButton.addEventListener("click", () => {
+          openBackupsButton.disabled = true;
+          nativeBridge.xiaotuUpdateOpenBackupFolder.postMessage({});
+        });
+      }
       schedulePoll(status);
     }
 
@@ -7108,6 +7163,27 @@
       render((payload && payload.status) || {});
       if (payload && payload.code === "CANCELED") {
         showNotice("已取消本次后台下载", "ok");
+      }
+    };
+    window.xiaotuUpdateResumeDone = (payload) => {
+      render((payload && payload.status) || {});
+      if (payload && payload.ok === false) {
+        showNotice("恢复失败：" + (payload.code || ""), "error");
+      } else {
+        showNotice("已继续使用当前版本，自动更新已恢复", "ok");
+      }
+    };
+    window.xiaotuUpdateRollbackDone = (payload) => {
+      if (payload && payload.ok === false) {
+        showNotice(payload.message || "回退未能开始：" + (payload.code || ""), "error");
+        nativeBridge.xiaotuUpdateStatus.postMessage({});
+      } else if (payload && payload.code === "ROLLING_BACK") {
+        showNotice(payload.message || "正在退出并回退到上一版本…", "ok");
+      }
+    };
+    window.xiaotuUpdateOpenBackupFolderDone = (payload) => {
+      if (payload && payload.ok === false) {
+        showNotice(payload.message || "无法打开备份目录", "error");
       }
     };
     nativeBridge.xiaotuUpdateStatus.postMessage({});

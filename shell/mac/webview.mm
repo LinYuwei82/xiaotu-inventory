@@ -439,6 +439,18 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
     }];
     return;
   }
+  if ([message.name isEqualToString:@"xiaotuUpdateRollback"]) {
+    [[XiaotuUpdater shared] rollbackUpdateWithCompletion:^(NSDictionary* result) {
+      [self callUpdateCallback:@"xiaotuUpdateRollbackDone" payload:result];
+    }];
+    return;
+  }
+  if ([message.name isEqualToString:@"xiaotuUpdateOpenBackupFolder"]) {
+    [[XiaotuUpdater shared] openBackupFolderWithCompletion:^(NSDictionary* result) {
+      [self callUpdateCallback:@"xiaotuUpdateOpenBackupFolderDone" payload:result];
+    }];
+    return;
+  }
 }
 
 - (void)printDocumentWithPaper:(NSDictionary*)paper {
@@ -629,6 +641,8 @@ int run_webview(const std::string& url, const std::string& title) {
     [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateOptions"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateDownload"];
     [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateCancelPrefetch"];
+    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateRollback"];
+    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateOpenBackupFolder"];
     static XiaotuKeychainHandler* g_keychainHandler = nil;
     if (g_keychainHandler == nil) {
       g_keychainHandler = [[XiaotuKeychainHandler alloc] init];

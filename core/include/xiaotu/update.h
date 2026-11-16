@@ -133,6 +133,13 @@ InstallDecision decide_install(bool installer_available, std::int64_t pending_bu
 enum class ResumeDecision { kResumed, kNotPaused };
 ResumeDecision decide_resume(bool paused);
 
+// 连续启动失败后的恢复判定：
+//   validating_build == current_build 表示新版本仍在验证期（安装后首次运行）；
+//   pending_build != 0 && pending_build != current_build 表示更高版本已下载但还没装上。
+// 任一情况成立且失败次数达到 threshold 时进入恢复模式，提示回退或继续使用当前版本。
+bool should_enter_recovery(int launch_attempts, int threshold, std::int64_t validating_build,
+                           std::int64_t current_build, std::int64_t pending_build);
+
 // ISO 8601 UTC（YYYY-MM-DDTHH:MM:SSZ）与 epoch 互转；解析失败返回 nullopt。
 std::optional<std::int64_t> parse_iso8601_utc(std::string_view text);
 

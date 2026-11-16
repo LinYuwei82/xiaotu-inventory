@@ -498,6 +498,16 @@ ResumeDecision decide_resume(bool paused) {
   return paused ? ResumeDecision::kResumed : ResumeDecision::kNotPaused;
 }
 
+bool should_enter_recovery(int launch_attempts, int threshold, std::int64_t validating_build,
+                           std::int64_t current_build, std::int64_t pending_build) {
+  if (threshold <= 0 || launch_attempts < threshold) {
+    return false;
+  }
+  const bool validating = validating_build != 0 && validating_build == current_build;
+  const bool pending_update = pending_build != 0 && pending_build != current_build;
+  return validating || pending_update;
+}
+
 UpdateDecision evaluate_manifest(const UpdateManifest& manifest, const UpdateQuery& query,
                                  std::int64_t now_epoch) {
   UpdateDecision decision;

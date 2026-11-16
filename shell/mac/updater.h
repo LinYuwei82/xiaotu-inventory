@@ -34,8 +34,17 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)installUpdateWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
 
 // 清除“连续启动失败”的暂停标记与失败计数，并立即恢复一次自动检查。
-// 未暂停时返回 NOT_PAUSED（幂等，不视为错误）。
+// 未暂停时返回 NOT_PAUSED（幂等，不视为错误）。同时清除恢复模式标记。
 - (void)resumeWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
+
+// 恢复模式：回退到安装前保留的上一版本。
+// code：ROLLING_BACK / NOT_RECOVERY / NO_PREVIOUS / FAILED。
+// 成功后进程会退出并由脚本替换 .app、重新启动旧版本。
+- (void)rollbackUpdateWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
+
+// 在 Finder 中打开服务端备份目录（含升级前 pre-v* 数据库备份）。
+// code：OPENED / NOT_FOUND / FAILED。
+- (void)openBackupFolderWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
 
 // 更新开关与首次流量提示确认。options 支持可选布尔：
 //   auto_check            自动检查（关闭后手动检查仍可用）

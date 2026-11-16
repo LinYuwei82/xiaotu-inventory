@@ -283,6 +283,18 @@ int main() {
   check(xiaotu::decide_resume(false) == ResumeDecision::kNotPaused,
         "未暂停时返回 NOT_PAUSED 语义");
 
+  // 恢复模式：验证期（validating == current）或更高待装版本，失败达阈值才触发。
+  check(xiaotu::should_enter_recovery(3, 3, 2026111301, 2026111301, 0),
+        "新版本验证期连续失败 3 次进入恢复模式");
+  check(xiaotu::should_enter_recovery(3, 3, 0, 2026100101, 2026111301),
+        "更高版本待装时连续失败 3 次进入恢复模式");
+  check(!xiaotu::should_enter_recovery(2, 3, 2026111301, 2026111301, 0),
+        "失败次数未达阈值不进入恢复模式");
+  check(!xiaotu::should_enter_recovery(3, 3, 2026100101, 2026111301, 0),
+        "验证期与当前版本不一致且无待装版本时不进入恢复模式");
+  check(!xiaotu::should_enter_recovery(3, 3, 0, 2026111301, 2026111301),
+        "待装版本等于当前版本时不进入恢复模式");
+
   if (failures == 0) {
     std::cout << "update_smoke 全部通过" << std::endl;
   }
