@@ -318,7 +318,7 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
   }
 #if XIAOTU_HAS_SPARKLE
   // 脚本消息在主线程派发；控制器也只在主线程创建。
-  [[self sparkleController] checkForUpdates:nil];
+  [[[self sparkleController] updater] checkForUpdates];
   respond(@{@"ok" : @YES, @"code" : @"STARTED"});
 #else
   respond(@{@"ok" : @NO, @"code" : @"UNAVAILABLE"});
@@ -656,7 +656,7 @@ std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int
   // SUAllowsAutomaticUpdates 都是 false，Sparkle 不会自动下载或安装；
   // 下载与安装只能由用户在关于页显式点「下载并校验」「安装更新」触发。
   dispatch_async(dispatch_get_main_queue(), ^{
-    [[self sparkleController] checkForUpdatesInBackground];
+    [[[self sparkleController] updater] checkForUpdatesInBackground];
   });
 #else
   xiaotu::log_warn("更新：当前构建未链接 Sparkle，已记录待更新版本，需手动下载安装");

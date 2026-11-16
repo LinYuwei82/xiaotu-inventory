@@ -32,12 +32,19 @@ set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/mac/updater.mm"
 
 # Sparkle 2 可选：仓库不内嵌框架，发布机通过 -DXIAOTU_SPARKLE_DIR=<含 Sparkle.framework 的目录>
 # 接入；未提供时保留可编译的接入点，更新只记录待安装版本。
+# 启用时：链接 + 嵌入 Sparkle.framework 到 .app/Contents/Frameworks/
+# + RPATH 指向 @loader_path/Frameworks（让 app 在运行时找到内嵌 framework）。
 set(XIAOTU_SPARKLE_DIR "" CACHE PATH "Sparkle.framework 所在目录（可选）")
 if(XIAOTU_SPARKLE_DIR AND EXISTS "${XIAOTU_SPARKLE_DIR}/Sparkle.framework")
   target_link_libraries(xiaotu-inventory PRIVATE "-framework Sparkle")
-  target_link_options(xiaotu-inventory PRIVATE "-F${XIAOTU_SPARKLE_DIR}")
+  target_link_options(xiaotu-inventory PRIVATE
+    "-F${XIAOTU_SPARKLE_DIR}"
+    "-Wl,-rpath,@loader_path/Frameworks")
   target_compile_options(xiaotu-inventory PRIVATE "-F${XIAOTU_SPARKLE_DIR}")
-  message(STATUS "Sparkle: ${XIAOTU_SPARKLE_DIR}")
+  target_compile_definitions(xiaotu-inventory PRIVATE XIAOTU_HAS_SPARKLE=1)
+  set_target_properties(xiaotu-inventory PROPERTIES
+    MACOSX_BUNDLE_FRAMEWORKS "${XIAOTU_SPARKLE_DIR}/Sparkle.framework")
+  message(STATUS "Sparkle: 已嵌入 ${XIAOTU_SPARKLE_DIR}/Sparkle.framework")
 else()
   message(STATUS "Sparkle: 未提供，保留接入点（不自动安装）")
 endif()

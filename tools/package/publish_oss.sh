@@ -51,7 +51,7 @@ OSS_SKIP="${OSS_SKIP:-false}"
 if [ "$OSS_SKIP" != "true" ]; then
   if [ -z "$OSS_BUCKET" ] || [ -z "$OSS_REGION" ]; then
     echo "缺少必填：OSS_BUCKET / OSS_REGION" >&2
-    echo "需要 ossutil 能访问 oss://$OSS_BUCKET（先 ossutil config）" >&2
+    echo "需要 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET 环境变量" >&2
     echo "如需只跑本地生成验证：OSS_SKIP=true tools/package/publish_oss.sh" >&2
     exit 1
   fi
@@ -95,10 +95,20 @@ for dep in openssl shasum; do
   command -v "$dep" >/dev/null 2>&1 || { echo "未找到 $dep" >&2; exit 1; }
 done
 if [ "$OSS_SKIP" != "true" ]; then
-  command -v ossutil >/dev/null 2>&1 || {
-    echo "未找到 ossutil：brew install ossutil 或 https://github.com/aliyun/ossutil/releases" >&2; exit 1; }
-  ossutil ls "oss://$OSS_BUCKET" >/dev/null 2>&1 || {
-    echo "ossutil 无法访问 oss://$OSS_BUCKET，请先 ossutil config" >&2; exit 1; }
+  # 用 Python oss2 SDK 上传（无需 ossutil 二进制）
+  OSS_PY="${OSS_PY:-$HOME/.venv-oss/bin/python}"
+  if [ ! -x "$OSS_PY" ]; then
+    OSS_PY="$REPO_ROOT/tools/package/.venv/bin/python"
+  fi
+  if ! "$OSS_PY" -c "import oss2" 2>/dev/null; then
+    echo "未找到 oss2 Python SDK，正在安装..."
+    python3 -m venv "$HOME/.venv-oss"
+    "$HOME/.venv-oss/bin/pip" install -q oss2
+    OSS_PY="$HOME/.venv-oss/bin/python"
+  fi
+  if [ -z "${OSS_ACCESS_KEY_ID:-}" ] || [ -z "${OSS_ACCESS_KEY_SECRET:-}" ]; then
+    echo "缺少 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET 环境变量" >&2; exit 1
+  fi
 fi
 
 # ---- 元数据：从 dmg 的 Info.plist 读构建号 ----
@@ -133,14 +143,14 @@ DMG_BASENAME="$(basename "$DMG_PATH")"
 PUB_BASE64="$(openssl pkey -pubin -in "$SIGNING_PUB" -outform DER 2>/dev/null \
   | tail -c 32 | base64 | tr -d '\n')"
 
-# ---- 路径（适配 dl.xiaotu.online 现有目录结构）----
+# ---- 路径（纯 object key，不含 bucket/endpoint）----
 PRODUCT_DIR="$PRODUCT"
-DMG_OSS="oss://$OSS_BUCKET/$PRODUCT_DIR/$DMG_BASENAME"
-DMG_PUBLIC_URL="$CDN_DOMAIN/$PRODUCT_DIR/$DMG_BASENAME"
-LATEST_OSS="oss://$OSS_BUCKET/$PRODUCT_DIR/updates/$CHANNEL/latest.json"
-APPCAST_OSS="oss://$OSS_BUCKET/$PRODUCT_DIR/updates/$CHANNEL/appcast.xml"
-MANIFEST_PUBLIC="$CDN_DOMAIN/$PRODUCT_DIR/updates/$CHANNEL/latest.json"
-APPCAST_PUBLIC="$CDN_DOMAIN/$PRODUCT_DIR/updates/$CHANNEL/appcast.xml"
+DMG_KEY="$PRODUCT_DIR/$DMG_BASENAME"
+DMG_PUBLIC_URL="$CDN_DOMAIN/$DMG_KEY"
+LATEST_KEY="$PRODUCT_DIR/updates/$CHANNEL/latest.json"
+APPCAST_KEY="$PRODUCT_DIR/updates/$CHANNEL/appcast.xml"
+MANIFEST_PUBLIC="$CDN_DOMAIN/$LATEST_KEY"
+APPCAST_PUBLIC="$CDN_DOMAIN/$APPCAST_KEY"
 
 echo "===== OSS 发布 · ${PRODUCT} ====="
 echo "版本 / build / channel：  ${VERSION} / ${BUILD} / ${CHANNEL}"
@@ -149,27 +159,42 @@ echo "sha256：                  ${DMG_SHA256}"
 echo "公钥 base64：             ${PUB_BASE64}"
 echo "bucket / region：         ${OSS_BUCKET:-<dry-run>} / ${OSS_REGION:-<dry-run>}"
 echo "域名：                    ${CDN_DOMAIN}"
-echo "OSS 路径："
-echo "  dmg：                   ${DMG_OSS}"
-echo "  latest.json：           ${LATEST_OSS}"
-echo "  appcast.xml：           ${APPCAST_OSS}"
+echo "OSS key："
+echo "  dmg：                   ${DMG_KEY}"
+echo "  latest.json：           ${LATEST_KEY}"
+echo "  appcast.xml：           ${APPCAST_KEY}"
 [ "${OSS_SKIP}" = "true" ] && echo "(dry-run：不上传)"
 
 STAGE="$(mktemp -d -t xiaotu-oss-stage)"
 trap 'rm -rf "$STAGE"' EXIT
 
+# ---- Python OSS 上传函数（oss2 SDK）----
+oss_upload() {
+  # oss_upload <local_path> <oss_key> <cache_control> <content_type>
+  local LP="$1" OK="$2" CC="$3" CT="$4"
+  "$OSS_PY" - "$OSS_BUCKET" "$OSS_REGION" "$OSS_ACCESS_KEY_ID" "$OSS_ACCESS_KEY_SECRET" \
+    "$LP" "$OK" "$CC" "$CT" <<'PY_EOF'
+import sys, oss2
+bucket, region, ak, sk, lp, ok, cc, ct = sys.argv[1:]
+endpoint = f"https://oss-{region}.aliyuncs.com"
+auth = oss2.Auth(ak, sk)
+bkt = oss2.Bucket(auth, endpoint, bucket)
+headers = {"Cache-Control": cc, "Content-Type": ct}
+with open(lp, "rb") as f:
+    bkt.put_object(ok, f, headers=headers)
+print(f"  ✓ {ok}  ({ct}, {cc})")
+PY_EOF
+}
+
 # ---- ① 上传 dmg（immutable，长缓存）----
 if [ "$OSS_SKIP" != "true" ]; then
   echo ""
-  echo "===== ① 上传 dmg → $DMG_OSS"
-  ossutil cp "$DMG_PATH" "$DMG_OSS" \
-    --meta "Cache-Control:public, max-age=31536000, immutable" \
-    --meta "Content-Type:application/octet-stream" \
-    -f
-  echo "  上传完成"
+  echo "===== ① 上传 dmg → $DMG_KEY"
+  oss_upload "$DMG_PATH" "$DMG_KEY" \
+    "public, max-age=31536000, immutable" "application/octet-stream"
 else
   echo ""
-  echo "===== ① [dry-run] 将上传 $DMG_OSS"
+  echo "===== ① [dry-run] 将上传 $DMG_KEY"
 fi
 
 # ---- ② 生成 latest.json + appcast.xml ----
@@ -217,17 +242,13 @@ echo "  key_id=$MANIFEST_KEY_ID  rollout=${MANIFEST_ROLLOUT}%"
 if [ "$OSS_SKIP" != "true" ]; then
   echo ""
   echo "===== ④ 上传 latest.json + appcast.xml"
-  ossutil cp "$MANIFEST_LOCAL" "$LATEST_OSS" \
-    --meta "Cache-Control:no-cache, max-age=300" \
-    --meta "Content-Type:application/json" -f
-  ossutil cp "$APPCAST_LOCAL" "$APPCAST_OSS" \
-    --meta "Cache-Control:no-cache, max-age=300" \
-    --meta "Content-Type:application/rss+xml" -f
-  echo "  latest.json → $LATEST_OSS"
-  echo "  appcast.xml → $APPCAST_OSS"
+  oss_upload "$MANIFEST_LOCAL" "$LATEST_KEY" \
+    "no-cache, max-age=300" "application/json"
+  oss_upload "$APPCAST_LOCAL" "$APPCAST_KEY" \
+    "no-cache, max-age=300" "application/rss+xml"
 else
   echo ""
-  echo "===== ④ [dry-run] 将上传 $LATEST_OSS + $APPCAST_OSS"
+  echo "===== ④ [dry-run] 将上传 $LATEST_KEY + $APPCAST_KEY"
 fi
 
 # ---- ⑤ purge CDN ----
