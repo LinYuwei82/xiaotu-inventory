@@ -1332,8 +1332,16 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
   // 先注册全部 API 业务路由，再注册静态资源兜底路由，避免正则把 /api/* 吞掉。
   register_routes();
 
+  // 浏览器会无条件请求 /favicon.ico：返回内嵌图标，未内嵌（开发态）时保持 204。
   server_->Get("/favicon.ico", [](const httplib::Request&, httplib::Response& res) {
-    res.status = 204;
+    resources::Resource resource;
+    if (!resources::find("/favicon.ico", resource)) {
+      res.status = 204;
+      return;
+    }
+    res.set_content(reinterpret_cast<const char*>(resource.data), resource.size,
+                    std::string(resource.content_type));
+    res.set_header("Cache-Control", "no-cache");
   });
 
   server_->Get("/", [](const httplib::Request&, httplib::Response& res) {

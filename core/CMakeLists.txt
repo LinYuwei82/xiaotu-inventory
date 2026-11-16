@@ -23,7 +23,8 @@ else()
   # 构建期把 web/ 下的全部静态文件嵌入二进制；新增生成页面后自动重新配置。
   file(GLOB_RECURSE WEB_ASSET_FILES CONFIGURE_DEPENDS
     RELATIVE "${WEB_DIR}"
-    "${WEB_DIR}/*.html" "${WEB_DIR}/*.js" "${WEB_DIR}/*.css" "${WEB_DIR}/*.json")
+    "${WEB_DIR}/*.html" "${WEB_DIR}/*.js" "${WEB_DIR}/*.css" "${WEB_DIR}/*.json"
+    "${WEB_DIR}/*.ico" "${WEB_DIR}/*.png" "${WEB_DIR}/*.webmanifest")
   string(REPLACE ";" "|" WEB_FILES "${WEB_ASSET_FILES}")
 
   set(EMBEDDED_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/embedded_web.cpp")
