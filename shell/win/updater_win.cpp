@@ -69,17 +69,6 @@ static std::string generateUuid() {
   return buf;
 }
 
-static std::string nowIsoUtc() {
-  auto now = std::chrono::system_clock::now();
-  auto seconds = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
-  std::time_t t = static_cast<std::time_t>(seconds);
-  std::tm tm;
-  gmtime_s(&tm, &t);
-  char buf[32];
-  strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
-  return buf;
-}
-
 static std::int64_t epochNow() {
   return std::chrono::duration_cast<std::chrono::seconds>(
       std::chrono::system_clock::now().time_since_epoch()).count();
@@ -190,10 +179,17 @@ std::string UpdaterWin::sha256File(const std::wstring& path) {
   std::string result;
 
   if (BCryptOpenAlgorithmProvider(&algo, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) return "";
-  DWORD obj_len = 0;
   DWORD cb = 0;
-  BCryptGetProperty(algo, BCRYPT_HASH_LENGTH, reinterpret_cast<PUCHAR>(&hash_len), sizeof(hash_len), &cb, 0);
-  BCryptCreateHash(algo, &hash, nullptr, 0, nullptr, 0, 0);
+  // 拿不到摘要长度就不能继续，否则会按 0 字节算出一个空哈希
+  if (BCryptGetProperty(algo, BCRYPT_HASH_LENGTH, reinterpret_cast<PUCHAR>(&hash_len),
+                        sizeof(hash_len), &cb, 0) != 0 || hash_len == 0) {
+    BCryptCloseAlgorithmProvider(algo, 0);
+    return "";
+  }
+  if (BCryptCreateHash(algo, &hash, nullptr, 0, nullptr, 0, 0) != 0) {
+    BCryptCloseAlgorithmProvider(algo, 0);
+    return "";
+  }
 
   FILE* f = nullptr;
   _wfopen_s(&f, path.c_str(), L"rb");
@@ -298,6 +294,8 @@ std::string UpdaterWin::statusJson() const {
   j["auto_check"] = status_.auto_check;
   j["prefetch"] = status_.prefetch;
   j["channel"] = status_.channel;
+  j["last_check_epoch"] = status_.last_check_epoch;
+  j["next_check_epoch"] = status_.next_check_epoch;
   j["manifest_version"] = status_.manifest_version;
   j["manifest_build"] = status_.manifest_build;
   j["manifest_sha256"] = status_.manifest_sha256;
@@ -313,21 +311,30 @@ std::string UpdaterWin::statusJson() const {
 }
 
 void UpdaterWin::start(const std::string& manifest_url, const std::string& channel) {
-  std::lock_guard<std::mutex> lock(status_mutex_);
-  manifest_url_ = manifest_url;
-  if (!channel.empty()) status_.channel = channel;
-  if (!manifest_url.empty()) {
+  {
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    manifest_url_ = manifest_url;
+    if (!channel.empty()) status_.channel = channel;
+    if (manifest_url.empty()) return;
     status_.enabled = true;
     persistStatus();
-    std::thread([this] { autoCheckLoop(); }).detach();
   }
+  // 只启动一个自动检查线程：线程保存在成员里，析构时 join。重复调用 start 不会再起线程。
+  if (auto_check_thread_.joinable()) return;
+  auto_check_stop_ = false;
+  auto_check_thread_ = std::thread([this] { autoCheckLoop(); });
 }
 
 void UpdaterWin::autoCheckLoop() {
   // 启动 30s 后首次检查
-  std::this_thread::sleep_for(std::chrono::seconds(30));
+  for (int i = 0; i < 30 && !auto_check_stop_; ++i)
+    std::this_thread::sleep_for(std::chrono::seconds(1));
   while (!auto_check_stop_) {
-    std::string url = manifest_url_;
+    std::string url;
+    {
+      std::lock_guard<std::mutex> lock(status_mutex_);
+      url = manifest_url_;
+    }
     if (url.empty()) break;
 
     // 只在 auto_check=true 时自动检查
@@ -445,6 +452,8 @@ void UpdaterWin::downloadUpdate(Completion cb) {
     if (cb) cb("ALREADY_RUNNING", "");
     return;
   }
+  // 上一轮线程已结束但还没回收：先 join，再复用成员（不能 detach，否则析构时可能访问已销毁的 this）。
+  if (download_thread_.joinable()) download_thread_.join();
 
   std::string url, expected_sha256;
   std::int64_t expected_size = 0;
@@ -571,7 +580,6 @@ void UpdaterWin::downloadUpdate(Completion cb) {
       cb(code, err_detail);
     }
   });
-  download_thread_.detach();
 }
 
 void UpdaterWin::cancelPrefetch(Completion cb) {

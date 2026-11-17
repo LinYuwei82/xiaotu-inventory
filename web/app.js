@@ -647,7 +647,7 @@
       const nativeIo = await window.chrome.webview.hostObjects.native_io;
       const b64 = await blobToBase64(new Blob([content], { type: "text/csv;charset=utf-8" }));
       const ok = await nativeIo.saveFile(filename, b64);
-      if (!ok) throw new Error("用户取消了保存");
+      if (ok === false) return;  // 用户取消保存：静默返回，不弹错误
       return;
     }
     const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
@@ -835,7 +835,10 @@
     if (isWinWebview()) {
       return {
         postMessage: (payload) => {
-          window.chrome.webview.postMessage({ kind: "printPdf", filename: payload.filename });
+          // 必须发字符串：壳端优先按字符串读取，对象消息在部分 WebView2 版本读不到
+          window.chrome.webview.postMessage(
+            JSON.stringify({ kind: "printPdf", filename: payload && payload.filename })
+          );
         },
       };
     }
@@ -932,8 +935,7 @@
     }
     if (isWinWebview()) {
       const nativeIo = await window.chrome.webview.hostObjects.native_io;
-      const ok = await nativeIo.saveFile(filename, toBase64(bytes));
-      if (!ok) throw new Error("用户取消了保存");
+      await nativeIo.saveFile(filename, toBase64(bytes));  // 取消保存时静默返回
       return;
     }
     const blob = new Blob([bytes], {
@@ -958,10 +960,18 @@
       return;
     }
     if (isWinWebview()) {
-      window.chrome.webview.hostObjects.native_io.then(async (nativeIo) => {
-        const b64 = await blobToBase64(new Blob([content], { type: "text/plain;charset=utf-8" }));
-        await nativeIo.saveFile(filename, b64);
-      });
+      // hostObjects 下的对象是异步代理，不保证有 .then，统一用 async 函数包一层
+      (async () => {
+        try {
+          const nativeIo = await window.chrome.webview.hostObjects.native_io;
+          const b64 = await blobToBase64(
+            new Blob([content], { type: "text/plain;charset=utf-8" })
+          );
+          await nativeIo.saveFile(filename, b64);
+        } catch (error) {
+          showNotice(error.message, "error");
+        }
+      })();
       return;
     }
     const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
@@ -1514,7 +1524,7 @@
           if (isWinWebview()) {
             try {
               const nativeIo = await window.chrome.webview.hostObjects.native_io;
-              const resultJson = await nativeIo.openFile("Excel (*.xlsx)");
+              const resultJson = await nativeIo.openFile("Excel 文件", "*.xlsx");
               const result = JSON.parse(resultJson);
               if (!result.ok) return;  // 用户取消
               // base64 → Blob → File（保留原文件名）
@@ -1997,7 +2007,7 @@
         if (isWinWebview()) {
           try {
             const nativeIo = await window.chrome.webview.hostObjects.native_io;
-            const resultJson = await nativeIo.openFile("Excel (*.xlsx)");
+            const resultJson = await nativeIo.openFile("Excel 文件", "*.xlsx");
             const result = JSON.parse(resultJson);
             if (!result.ok) return;
             const binary = atob(result.base64);
@@ -6962,10 +6972,192 @@
     return labels[reason] || "";
   }
 
+  // ---------- 桌面壳更新桥 ----------
+  // macOS：WKWebView messageHandlers（方法名 xiaotuUpdateXxx，结果由原生调 window.xxxDone）
+  // Windows：WebView2 HostObject updater_win（方法名 checkNow/statusJson…，结果走 chrome.webview
+  // 的 message 事件）。两边字段名也不同，这里统一适配成 renderNativeUpdate 期望的形状。
+  let winUpdaterBridgeInstance = null;
+  let winUpdaterListenerInstalled = false;
+  let winUpdaterStatusCache = null;
+
+  function normalizeWinUpdateStatus(raw) {
+    const s = raw || {};
+    const state = s.download_state || "";
+    let prefetchState = "";
+    if (state === "RUNNING") prefetchState = "running";
+    else if (state === "DONE") prefetchState = "done";
+    else if (state === "FAILED") prefetchState = "failed";
+    else if (state === "CANCELED") prefetchState = "canceled";
+    return {
+      channel: s.channel || "stable",
+      last_check_at: s.last_check_epoch || 0,
+      last_result: s.last_result || "",
+      update_available: !!s.manifest_version,
+      pending_version: s.manifest_version || "",
+      pending_build: s.manifest_build || 0,
+      pending_size: s.pending_size || 0,
+      mandatory: !!s.mandatory,
+      reason: s.mandatory_reason || "",
+      auto_check: s.auto_check !== false,
+      prefetch: s.prefetch !== false,
+      prefetch_state: prefetchState,
+      prefetch_bytes: s.pending_size || 0,
+      prefetch_file: s.pending_local_path || "",
+      previous: { available: false },
+      recovery_required: false,
+    };
+  }
+
+  // 把 Windows 壳的检查结果码映射成界面文案表的键
+  function mapWinCheckResult(code) {
+    if (code === "UPDATE_AVAILABLE" || code === "NO_UPDATE") return code;
+    if (code === "UPDATE_UNAVAILABLE") return "NOT_CONFIGURED";
+    return "CHECK_FAILED";
+  }
+
+  function parseWebviewMessage(event) {
+    let msg = event && event.data;
+    if (typeof msg === "string") {
+      try {
+        msg = JSON.parse(msg);
+      } catch (error) {
+        return null;
+      }
+    }
+    return msg && typeof msg === "object" ? msg : null;
+  }
+
+  function winUpdateBridge() {
+    if (!isWinWebview()) return null;
+    const hostObjects = window.chrome.webview.hostObjects;
+    if (!hostObjects || !hostObjects.updater_win) return null;
+    if (winUpdaterBridgeInstance) return winUpdaterBridgeInstance;
+
+    const updater = hostObjects.updater_win;
+    let lastCheckResult = "";  // 壳内的 statusJson 不存最近一次检查结果，这里在 JS 侧记一份
+    const finish = (name, payload) => {
+      const fn = window[name];
+      if (typeof fn === "function") fn(payload);
+    };
+    const readStatus = async () => {
+      const raw = await updater.statusJson();
+      let parsed = {};
+      try {
+        parsed = JSON.parse(raw);
+      } catch (error) {
+        parsed = {};
+      }
+      if (!parsed.last_result && lastCheckResult) parsed.last_result = lastCheckResult;
+      winUpdaterStatusCache = parsed;
+      return parsed;
+    };
+
+    if (!winUpdaterListenerInstalled) {
+      winUpdaterListenerInstalled = true;
+      window.chrome.webview.addEventListener("message", (event) => {
+        const msg = parseWebviewMessage(event);
+        if (!msg || !msg.event || msg.event === "printPdf") return;
+        if (msg.status) winUpdaterStatusCache = msg.status;
+        const status = normalizeWinUpdateStatus(msg.status || winUpdaterStatusCache || {});
+        const handlers = {
+          checkNow: "xiaotuUpdateCheckDone",
+          downloadUpdate: "xiaotuUpdateDownloadDone",
+          installUpdate: "xiaotuUpdateInstallDone",
+          cancelPrefetch: "xiaotuUpdateCancelDone",
+          setOptions: "xiaotuUpdateOptionsDone",
+        };
+        const done = handlers[msg.event];
+        if (!done) return;
+        if (msg.event === "checkNow") {
+          lastCheckResult = mapWinCheckResult(msg.code);
+          status.last_result = lastCheckResult;
+        }
+        const failed = /FAILED|INVALID|MISMATCH|PARSE_ERROR|UNAVAILABLE/.test(msg.code || "");
+        finish(done, {
+          status,
+          code: msg.code,
+          ok: msg.event === "checkNow" ? !failed : msg.code !== "FAILED",
+          update_available: status.update_available,
+        });
+      });
+    }
+
+    const noop = { postMessage: () => {} };
+    winUpdaterBridgeInstance = {
+      xiaotuUpdateStatus: {
+        postMessage: () => {
+          (async () => {
+            try {
+              const s = await readStatus();
+              finish("xiaotuUpdateStatusDone", normalizeWinUpdateStatus(s));
+            } catch (error) {
+              finish("xiaotuUpdateStatusDone", normalizeWinUpdateStatus({}));
+            }
+          })();
+        },
+      },
+      xiaotuUpdateCheckNow: {
+        postMessage: () => {
+          updater.checkNow();
+        },
+      },
+      xiaotuUpdateOptions: {
+        postMessage: (opts) => {
+          // 壳的 setOptions 需要两个参数，只是切换一项时用缓存里的另一项补齐
+          const cache = winUpdaterStatusCache || {};
+          const autoCheck =
+            opts && "auto_check" in opts ? !!opts.auto_check : cache.auto_check !== false;
+          const prefetch =
+            opts && "prefetch" in opts ? !!opts.prefetch : cache.prefetch !== false;
+          updater.setOptions(autoCheck, prefetch);
+        },
+      },
+      xiaotuUpdateDownload: {
+        postMessage: () => {
+          updater.downloadUpdate();
+        },
+      },
+      xiaotuUpdateCancelPrefetch: {
+        postMessage: () => {
+          updater.cancelPrefetch();
+        },
+      },
+      xiaotuUpdateInstall: {
+        postMessage: () => {
+          (async () => {
+            try {
+              const s = winUpdaterStatusCache || (await readStatus());
+              if (s.pending_local_path) {
+                updater.installUpdate();
+                return;
+              }
+              // 还没下载：先下载，收到 DOWNLOADED 后自动安装
+              const onMessage = (event) => {
+                const msg = parseWebviewMessage(event);
+                if (!msg || msg.event !== "downloadUpdate") return;
+                window.chrome.webview.removeEventListener("message", onMessage);
+                if (msg.code === "DOWNLOADED") updater.installUpdate();
+                else finish("xiaotuUpdateInstallDone", { ok: false, code: msg.code });
+              };
+              window.chrome.webview.addEventListener("message", onMessage);
+              updater.downloadUpdate();
+            } catch (error) {
+              finish("xiaotuUpdateInstallDone", { ok: false, code: "BRIDGE_ERROR" });
+            }
+          })();
+        },
+      },
+      // Windows 壳暂不支持回退 / 恢复 / 打开备份目录：给空实现，避免调到 undefined
+      xiaotuUpdateRollback: noop,
+      xiaotuUpdateResume: noop,
+      xiaotuUpdateOpenBackupFolder: noop,
+    };
+    return winUpdaterBridgeInstance;
+  }
+
   function nativeUpdateBridge() {
-    return window.webkit && window.webkit.messageHandlers
-      ? window.webkit.messageHandlers
-      : null;
+    if (window.webkit && window.webkit.messageHandlers) return window.webkit.messageHandlers;
+    return winUpdateBridge();
   }
 
   // 强制升级拦截：壳内状态一到就弹不可跳过的提示，只能点「立即安装」。
@@ -7370,12 +7562,9 @@
   async function renderUpdateCard(mount) {
     const card = mount.querySelector('[data-role="update"]');
     if (!card) return;
-    // 桌面壳内：检查走壳内清单验签（Ed25519），安装交给 Sparkle 做原子替换与重启；
+    // 桌面壳内：检查走壳内清单验签（Ed25519），安装交给原生完成；
     // 浏览器访问时没有该桥，仍走服务端更新源。
-    const nativeBridge =
-      typeof window.webkit !== "undefined" && window.webkit.messageHandlers
-        ? window.webkit.messageHandlers
-        : null;
+    const nativeBridge = nativeUpdateBridge();
     if (nativeBridge && nativeBridge.xiaotuUpdateCheckNow) {
       renderNativeUpdate(card, nativeBridge);
       return;

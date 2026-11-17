@@ -90,10 +90,21 @@ AppState g_app;
 ICoreWebView2* g_webview_for_post = nullptr;
 std::mutex g_webview_mutex;
 
+// UTF-8 → UTF-16。不能用 std::wstring(json.begin(), json.end())：
+// 那样是把每个字节当成一个 wchar_t，中文会变成乱码（PostWebMessageAsJson 按 UTF-16 解析）。
+static std::wstring utf8_to_wide(const std::string& s) {
+  if (s.empty()) return L"";
+  int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+  if (n <= 0) return L"";
+  std::wstring out(static_cast<size_t>(n), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
+  return out;
+}
+
 static void post_web_message_json(const std::string& json) {
   std::lock_guard<std::mutex> lock(g_webview_mutex);
   if (!g_webview_for_post) return;
-  std::wstring wide(json.begin(), json.end());
+  std::wstring wide = utf8_to_wide(json);
   g_webview_for_post->PostWebMessageAsJson(wide.c_str());
 }
 
@@ -166,6 +177,7 @@ class UpdaterHost : public IDispatch {
   HRESULT STDMETHODCALLTYPE Invoke(DISPID dispid, REFIID, LCID, WORD flags,
                                    DISPPARAMS* params, VARIANT* result,
                                    EXCEPINFO*, UINT*) override {
+    (void)flags;
     auto& upd = xiaotu::updater::UpdaterWin::instance();
     auto set_str = [&](const std::string& s) -> HRESULT {
       if (!result) return S_OK;
@@ -202,12 +214,7 @@ class UpdaterHost : public IDispatch {
 HWND g_shell_hwnd = nullptr;  // 主窗口句柄，供文件对话框用
 
 std::wstring u8_to_w(const std::string& s) {
-  if (s.empty()) return L"";
-  int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-  if (n <= 0) return L"";
-  std::wstring out(static_cast<size_t>(n), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
-  return out;
+  return utf8_to_wide(s);
 }
 
 std::string w_to_u8(const std::wstring& s) {
@@ -270,8 +277,15 @@ DialogResult show_save_dialog(const std::wstring& default_name) {
     if (co_guard) co_guard();
     return r;
   }
-  if (!default_name.empty()) dlg->SetFileName(default_name.c_str());
-  dlg->SetOptions(FOS_OVERWRITEPROMPT | FOS_FORCEFILESYSTEM | FOS_STRICTFILETYPES);
+  if (!default_name.empty()) {
+    dlg->SetFileName(default_name.c_str());
+    // 用户如果把扩展名删掉，这里补默认扩展名，避免存出没有后缀的文件
+    auto dot = default_name.find_last_of(L'.');
+    if (dot != std::wstring::npos && dot + 1 < default_name.size()) {
+      dlg->SetDefaultExtension(default_name.substr(dot + 1).c_str());
+    }
+  }
+  dlg->SetOptions(FOS_OVERWRITEPROMPT | FOS_FORCEFILESYSTEM);
 
   HRESULT hr = dlg->Show(g_shell_hwnd);
   if (SUCCEEDED(hr)) {
@@ -289,9 +303,23 @@ DialogResult show_save_dialog(const std::wstring& default_name) {
   return r;
 }
 
-// 弹 IFileOpenDialog，可选过滤器（如 "Excel (*.xlsx)"）
-DialogResult show_open_dialog(const std::wstring& filter_name) {
+// 弹 IFileOpenDialog。filter_name 只用于显示，filter_spec 才是真正的过滤规则（如 "*.xlsx"）。
+// 只传 filter_name 时从 "Excel (*.xlsx)" 这类写法里提取括号内容作为过滤规则。
+DialogResult show_open_dialog(const std::wstring& filter_name, const std::wstring& filter_spec) {
   DialogResult r;
+  std::wstring name = filter_name.empty() ? L"所有文件" : filter_name;
+  std::wstring spec = filter_spec;
+  if (spec.empty()) {
+    auto lp = name.find(L'(');
+    auto rp = lp == std::wstring::npos ? std::wstring::npos : name.find(L')', lp);
+    if (lp != std::wstring::npos && rp != std::wstring::npos && rp > lp + 1) {
+      spec = name.substr(lp + 1, rp - lp - 1);
+      name = name.substr(0, lp);
+      while (!name.empty() && (name.back() == L' ' || name.back() == L'\t')) name.pop_back();
+    }
+  }
+  if (spec.empty()) spec = L"*.*";
+
   auto co_init = []() -> std::function<void()> {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (hr == S_OK) return [] { CoUninitialize(); };
@@ -304,23 +332,25 @@ DialogResult show_open_dialog(const std::wstring& filter_name) {
     if (co_guard) co_guard();
     return r;
   }
-  if (!filter_name.empty()) {
-    COMDLG_FILTERSPEC spec;
-    spec.pszName = filter_name.c_str();
-    spec.pszSpec = L"*.*";
-    dlg->SetFileTypes(1, &spec);
-  }
-  dlg->SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+  {
+    // pszName / pszSpec 指向的字符串必须在 Show() 之前保持有效，所以用局部变量持有
+    COMDLG_FILTERSPEC fs;
+    fs.pszName = name.c_str();
+    fs.pszSpec = spec.c_str();
+    dlg->SetFileTypes(1, &fs);
+    dlg->SetFileTypeIndex(1);
+    dlg->SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
 
-  HRESULT hr = dlg->Show(g_shell_hwnd);
-  if (SUCCEEDED(hr)) {
-    IShellItem* item = nullptr;
-    if (SUCCEEDED(dlg->GetResult(&item))) {
-      PWSTR path = nullptr;
-      if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-        r.ok = true; r.path = path; CoTaskMemFree(path);
+    HRESULT hr = dlg->Show(g_shell_hwnd);
+    if (SUCCEEDED(hr)) {
+      IShellItem* item = nullptr;
+      if (SUCCEEDED(dlg->GetResult(&item))) {
+        PWSTR path = nullptr;
+        if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+          r.ok = true; r.path = path; CoTaskMemFree(path);
+        }
+        item->Release();
       }
-      item->Release();
     }
   }
   dlg->Release();
@@ -403,7 +433,7 @@ class NativeIoHost : public IDispatch {
     };
     // DISPPARAMS 参数倒序：rgvarg[0] 是最后一个参数
     auto arg = [&](int idx) -> std::string {
-      if (!params || idx < 0 || idx >= params->cArgs) return "";
+      if (!params || idx < 0 || static_cast<int>(idx) >= static_cast<int>(params->cArgs)) return "";
       VARIANT* v = &params->rgvarg[params->cArgs - 1 - idx];
       if (v->vt == VT_BSTR) return w_to_u8(v->bstrVal ? v->bstrVal : L"");
       return "";
@@ -412,14 +442,17 @@ class NativeIoHost : public IDispatch {
     switch (dispid) {
       case 1: {  // saveFile(filename, contentBase64) → bool
         std::wstring name = u8_to_w(arg(0));
-        auto bytes = base64_decode(arg(1));
+        const std::string b64 = arg(1);
+        auto bytes = base64_decode(b64);
+        // 有内容但解码失败：不能静默写出 0 字节文件（用户会以为导出成功）
+        if (!b64.empty() && bytes.empty()) return set_bool(false);
         if (name.empty()) return set_bool(false);
         DialogResult dr = show_save_dialog(name);
         if (!dr.ok) return set_bool(false);
         return set_bool(write_file_bytes(dr.path, bytes.data(), bytes.size()));
       }
-      case 2: {  // openFile(filterName) → JSON
-        DialogResult dr = show_open_dialog(u8_to_w(arg(0)));
+      case 2: {  // openFile(filterName, filterSpec) → JSON
+        DialogResult dr = show_open_dialog(u8_to_w(arg(0)), u8_to_w(arg(1)));
         if (!dr.ok) return set_str("{\"ok\":false}");
         auto bytes = read_file_bytes(dr.path);
         if (bytes.empty()) return set_str("{\"ok\":false,\"error\":\"read_failed\"}");
@@ -491,10 +524,21 @@ class WebMessageReceivedHandler final
     return c;
   }
   HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) override {
-    PWSTR json = nullptr;
-    if (FAILED(args->TryGetWebMessageAsString(&json)) || !json) return S_OK;
-    std::string msg = w_to_u8(json);
-    CoTaskMemFree(json);
+    (void)sender;
+    // 前端既可能 postMessage(JSON 字符串)，也可能 postMessage(对象)。
+    // TryGetWebMessageAsString 只对「字符串消息」成功；对象消息必须用 get_WebMessageAsJson，
+    // 否则对象消息会被当成失败直接丢弃（PDF 导出点了没反应就是这么来的）。
+    std::string msg;
+    PWSTR raw = nullptr;
+    if (SUCCEEDED(args->TryGetWebMessageAsString(&raw)) && raw) {
+      msg = w_to_u8(raw);
+      CoTaskMemFree(raw);
+    } else {
+      raw = nullptr;
+      if (FAILED(args->get_WebMessageAsJson(&raw)) || !raw) return S_OK;
+      msg = w_to_u8(raw);
+      CoTaskMemFree(raw);
+    }
 
     try {
       auto j = nlohmann::json::parse(msg);
@@ -1186,8 +1230,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
 
   // 启动自动更新桥：manifest_url 先用 OSS 默认路径，之后可以让服务端 /api/health 下发覆盖。
   // channel 默认 stable，用户切换 beta/rc 时通过 JS 桥 setOptions 改。
+  // Windows 清单单独放一个目录：macOS 的 latest.json 里 platform=macos，
+  // 两者共用同一路径会互相覆盖/被判成平台不匹配。
   xiaotu::updater::UpdaterWin::instance().start(
-      "https://dl.xiaotu.online/xiaotu/latest.json",  // TODO: 真实地址与 macOS 一致
+      "https://dl.xiaotu.online/windows/stable/latest.json",
       "stable");
 
   MSG msg{};

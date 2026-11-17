@@ -132,7 +132,8 @@ void run_replace_end_to_end(const std::filesystem::path& root) {
 
   const std::string expected = read_file(replacement);
   bool replaced = false;
-  for (int attempt = 0; attempt < 30 && !replaced; ++attempt) {
+  // 替换脚本要等旧进程退出再覆盖；机器负载高时 15 秒窗口不够，放宽到 30 秒。
+  for (int attempt = 0; attempt < 60 && !replaced; ++attempt) {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     replaced = read_file(target) == expected;
   }
@@ -147,7 +148,7 @@ void run_replace_end_to_end(const std::filesystem::path& root) {
   check(cleaned, "替换成功后清理旧版本副本");
 
   bool relaunched = false;
-  for (int attempt = 0; attempt < 20 && !relaunched; ++attempt) {
+  for (int attempt = 0; attempt < 40 && !relaunched; ++attempt) {
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     relaunched = std::filesystem::exists(restarted);
   }

@@ -7,6 +7,7 @@
 #include <iostream>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -100,7 +101,16 @@ Options parse_args(int argc, char** argv) {
     if (arg == "--server") {
       options.server = true;
     } else if (arg == "--port" && i + 1 < argc) {
-      options.port = std::stoi(argv[++i]);
+      const std::string value = argv[++i];
+      // std::stoi 会接受 "8080abc" 这种前缀数字，也可能抛 invalid_argument/out_of_range，
+      // 这里统一转成可读的参数错误。
+      try {
+        std::size_t used = 0;
+        options.port = std::stoi(value, &used);
+        if (used != value.size()) throw std::invalid_argument("trailing");
+      } catch (const std::exception&) {
+        throw xiaotu::AppError("BAD_ARGUMENT", "--port 需要 1–65535 的整数，收到: " + value);
+      }
     } else if (arg == "--listen" && i + 1 < argc) {
       options.listen = argv[++i];
     } else if (arg == "--config" && i + 1 < argc) {
