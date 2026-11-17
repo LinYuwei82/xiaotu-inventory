@@ -59,10 +59,18 @@ else()
     "${_core_include}"
     "${_third_party}"
     "${_repo_root}/cmake")
-  # 当前版本 / build 号从 VERSION 读
+  # 独立构建没有父工程的 -DXIAOTU_BUILD，改从环境变量读。
+  # 发布包必须与服务端、清单使用同一个 build 号：core 的更新判定是
+  # `manifest.build <= 当前 build → 无更新`，若壳的 build 落后于清单，
+  # 客户端会每次都提示有新版本、装完仍然提示。这里不再回退到 0。
+  set(XIAOTU_SHELL_BUILD "2026111301" CACHE STRING
+      "独立构建 Windows 壳时的 build 号（发布时请用环境变量 XIAOTU_BUILD 覆盖）")
   set(_build_epoch "$ENV{XIAOTU_BUILD}")
   if (NOT _build_epoch OR _build_epoch STREQUAL "")
-    set(_build_epoch "0")
+    set(_build_epoch "${XIAOTU_SHELL_BUILD}")
+    message(WARNING
+      "未设置 XIAOTU_BUILD，壳的 build 号回退为 ${_build_epoch}（仅适合本地开发）。"
+      "发布包请与服务端使用同一个 XIAOTU_BUILD。")
   endif()
   target_compile_definitions(xiaotu_core_updater PUBLIC
     XIAOTU_VERSION="${XIAOTU_VERSION_STRING}"
