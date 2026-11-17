@@ -115,7 +115,14 @@ static xiaotu::updater::Completion BindCompletion(const std::string& event) {
     j["event"] = event;
     j["code"] = code;
     j["detail"] = detail;
-    j["status"] = xiaotu::updater::UpdaterWin::instance().statusJson();
+    // statusJson() 返回的是 JSON 文本；直接赋给 json 会变成字符串，
+    // 前端拿到的 status 就不是对象了。这里解析成对象再嵌入。
+    try {
+      j["status"] = nlohmann::json::parse(
+          xiaotu::updater::UpdaterWin::instance().statusJson());
+    } catch (const nlohmann::json::exception&) {
+      j["status"] = nlohmann::json::object();
+    }
     post_web_message_json(j.dump());
   };
 }

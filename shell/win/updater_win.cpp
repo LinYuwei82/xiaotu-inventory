@@ -304,6 +304,7 @@ std::string UpdaterWin::statusJson() const {
   j["pending_size"] = status_.pending_size;
   j["mandatory"] = status_.mandatory;
   j["mandatory_reason"] = status_.mandatory_reason;
+  j["mandatory_deadline"] = status_.mandatory_deadline;
   j["download_state"] = status_.download_state;
   j["download_progress"] = status_.download_progress;
   j["consecutive_failures"] = status_.consecutive_failures;
@@ -350,9 +351,20 @@ void UpdaterWin::autoCheckLoop() {
 
     checkNow(nullptr);  // 后台，回调为空
 
-    // 24h±2h 间隔
-    int jitter = (rand() % 4 - 2) * 3600;
-    int wait = 86400 + jitter;
+    // 与 macOS 壳 / core 同一口径：失败按 1 分钟 → 10 分钟 → 1 小时退避，
+    // 成功一次即回到 24h±2h。否则清单 404 时仍按天重试，界面会长时间停在旧状态。
+    int failures = 0;
+    {
+      std::lock_guard<std::mutex> lock(status_mutex_);
+      failures = status_.consecutive_failures;
+    }
+    int wait;
+    if (failures > 0) {
+      wait = static_cast<int>(xiaotu::check_retry_delay(failures));
+    } else {
+      int jitter = (rand() % 4 - 2) * 3600;
+      wait = 86400 + jitter;
+    }
     for (int i = 0; i < wait && !auto_check_stop_; ++i)
       std::this_thread::sleep_for(std::chrono::seconds(1));
   }
@@ -387,6 +399,11 @@ void UpdaterWin::checkNow(Completion cb) {
   try {
     j = nlohmann::json::parse(body);
   } catch (const nlohmann::json::exception& e) {
+    {
+      std::lock_guard<std::mutex> lock(status_mutex_);
+      status_.consecutive_failures++;
+      persistStatus();
+    }
     if (cb) cb("MANIFEST_PARSE_ERROR", e.what());
     return;
   }
@@ -406,6 +423,11 @@ void UpdaterWin::checkNow(Completion cb) {
   }
 
   if (!xiaotu::parse_manifest(j, manifest, err)) {
+    {
+      std::lock_guard<std::mutex> lock(status_mutex_);
+      status_.consecutive_failures++;
+      persistStatus();
+    }
     if (cb) cb("MANIFEST_INVALID", err.code + ":" + err.message);
     return;
   }
@@ -436,6 +458,21 @@ void UpdaterWin::checkNow(Completion cb) {
       status_.manifest_size = manifest.size;
       status_.mandatory = decision.mandatory;
       status_.mandatory_reason = decision.reason;
+      status_.mandatory_deadline = manifest.mandatory_deadline;
+    } else {
+      // 无更新（含已跳过、schema 不匹配、平台/通道不符）：必须清掉上一次的待更新信息，
+      // 否则前端按 manifest_version 判定会把“已是最新”误报成“发现新版本”，
+      // 且残留的 mandatory 会让用户反复看到强制升级弹窗。
+      status_.manifest_version.clear();
+      status_.manifest_build = 0;
+      status_.manifest_sha256.clear();
+      status_.manifest_size = 0;
+      status_.mandatory = false;
+      status_.mandatory_reason.clear();
+      status_.mandatory_deadline.clear();
+      status_.pending_local_path.clear();
+      status_.pending_size = 0;
+      if (status_.download_state != "RUNNING") status_.download_state = "IDLE";
     }
     persistStatus();
   }

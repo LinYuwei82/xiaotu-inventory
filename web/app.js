@@ -6988,6 +6988,10 @@
     else if (state === "DONE") prefetchState = "done";
     else if (state === "FAILED") prefetchState = "failed";
     else if (state === "CANCELED") prefetchState = "canceled";
+    // 壳内的 download_progress 形如 "1234/5678 (22%)"，取出已下载字节用于进度展示。
+    let prefetchBytes = 0;
+    const progressMatch = /^(\d+)\//.exec(s.download_progress || "");
+    if (progressMatch) prefetchBytes = Number(progressMatch[1]) || 0;
     return {
       channel: s.channel || "stable",
       last_check_at: s.last_check_epoch || 0,
@@ -6995,13 +6999,16 @@
       update_available: !!s.manifest_version,
       pending_version: s.manifest_version || "",
       pending_build: s.manifest_build || 0,
-      pending_size: s.pending_size || 0,
+      pending_size: s.manifest_size || s.pending_size || 0,
+      pending_deadline: s.mandatory_deadline || "",
       mandatory: !!s.mandatory,
       reason: s.mandatory_reason || "",
       auto_check: s.auto_check !== false,
       prefetch: s.prefetch !== false,
       prefetch_state: prefetchState,
-      prefetch_bytes: s.pending_size || 0,
+      prefetch_bytes: prefetchBytes,
+      prefetch_total: s.manifest_size || 0,
+      prefetch_version: s.manifest_version || "",
       prefetch_file: s.pending_local_path || "",
       previous: { available: false },
       recovery_required: false,
@@ -7024,7 +7031,16 @@
         return null;
       }
     }
-    return msg && typeof msg === "object" ? msg : null;
+    if (!msg || typeof msg !== "object") return null;
+    // 兼容旧版壳：status 可能是 JSON 文本而不是对象。
+    if (typeof msg.status === "string") {
+      try {
+        msg.status = JSON.parse(msg.status);
+      } catch (error) {
+        msg.status = null;
+      }
+    }
+    return msg;
   }
 
   function winUpdateBridge() {
