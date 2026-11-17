@@ -80,7 +80,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#AppName} {#AppVersion}
 ; 安装包自身在资源管理器里的图标：与 macOS/两个 exe 同为候选 A。
 ; 安装向导图（WizardImageFile / WizardSmallImageFile）未自定义，仍是 Inno 默认占位图。
-SetupIconFile=xiaotu-a-rabbit-barcode.ico
+SetupIconFile=xiaotu.ico
 ; 卸载项指向始终存在的服务端 exe（无论是否带壳），避免指向可能不存在的壳。
 UninstallDisplayIcon={app}\{#ServerExeName}
 #ifdef Sign

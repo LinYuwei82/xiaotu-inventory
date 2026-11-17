@@ -46,7 +46,7 @@ endif()
 add_executable(xiaotu-shell WIN32 main.cpp)
 
 # 版本与图标资源：产品版本来自根 VERSION，图标与 macOS 同为候选 A。
-set(XIAOTU_WIN_ICON "${CMAKE_CURRENT_SOURCE_DIR}/../../packaging/win/xiaotu-a-rabbit-barcode.ico")
+set(XIAOTU_WIN_ICON "${CMAKE_CURRENT_SOURCE_DIR}/../../packaging/win/xiaotu.ico")
 if (NOT EXISTS "${XIAOTU_WIN_ICON}")
   message(FATAL_ERROR "未找到 Windows 图标：${XIAOTU_WIN_ICON}")
 endif()

@@ -22,20 +22,22 @@ dmg 内包含：
 
 ## 图标
 
-图标从 `shell/mac/icon/candidate-a-rabbit-barcode.svg` 生成，不手工拖拽：
+正式图标是**青绿色底 + 白色"兔"字**：
+
+- `shell/mac/icon/xiaotu.icns`：macOS App 图标，被 `shell/CMakeLists.txt` 和 `shell/mac/Info.plist` 直接引用。
+- `packaging/win/xiaotu.ico`：Windows exe 与 Inno Setup 安装包图标，从上面的 `.icns` 自动导出。
+
+Windows 图标如果需要重新生成：
 
 ```bash
 tools/package/make_icons.sh
 ```
 
-依赖 macOS 自带的 `sips`、`iconutil` 与 `python3`。产物：
-
-- `shell/mac/icon/xiaotu-a-rabbit-barcode.icns`：16/32/64/128/256/512 及 2x（icp6 的 64 由脚本补入）。
-- `packaging/win/xiaotu-a-rabbit-barcode.ico`：16/24/32/48/64/128/256，PNG 压缩。
-- 旧 `shell/mac/icon/xiaotu.icns`（候选 B）保留用于追溯，不再被 CMake/Info.plist 引用。
-
 Windows 两个 exe 与 Inno Setup 安装包都引用同一个 `.ico`；`xiaotu-shell.exe`、`xiaotu-server.exe`
 的图标来自各自的 `version.rc`。
+
+> **已删除的旧图标**（全库清理）：`xiaotu-a-rabbit-barcode.icns`、`xiaotu-a-rabbit-barcode.ico`、
+> `candidate-a-rabbit-barcode.svg`——紫色底 + 白色小兔 + 条形码，设计方向已废弃。
 
 ## 构建号与更新配置
 

@@ -42,7 +42,7 @@ target_compile_definitions(xiaotu-server PRIVATE XIAOTU_VERSION="${PROJECT_VERSI
 # 版本号取项目级 PROJECT_VERSION（来自仓库根 VERSION），与壳和 XIAOTU_VERSION 宏同源。
 if(WIN32)
   # 服务端 exe 与壳、安装包使用同一份候选 A 图标。
-  set(XIAOTU_WIN_ICON "${CMAKE_SOURCE_DIR}/packaging/win/xiaotu-a-rabbit-barcode.ico")
+  set(XIAOTU_WIN_ICON "${CMAKE_SOURCE_DIR}/packaging/win/xiaotu.ico")
   if (NOT EXISTS "${XIAOTU_WIN_ICON}")
     message(FATAL_ERROR "未找到 Windows 图标：${XIAOTU_WIN_ICON}")
   endif()
