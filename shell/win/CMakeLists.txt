@@ -43,7 +43,54 @@ if (NOT EXISTS "${_wv2_header}" OR NOT EXISTS "${_wv2_lib}")
     "  powershell -ExecutionPolicy Bypass -File \"${CMAKE_CURRENT_SOURCE_DIR}/fetch-webview2.ps1\"")
 endif()
 
-add_executable(xiaotu-shell WIN32 main.cpp)
+# ---- core 更新模块（独立工程直接 add 源文件，顶层构建时用 xiaotu_core target） ----
+set(_repo_root "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+set(_core_include "${_repo_root}/core/include")
+set(_third_party "${_repo_root}/third_party")
+
+if (TARGET xiaotu_core)
+  set(_core_link xiaotu_core)
+else()
+  add_library(xiaotu_core_updater STATIC
+    "${_repo_root}/core/src/update.cpp"
+    "${_repo_root}/core/src/update_signature.cpp"
+    "${_repo_root}/core/src/log.cpp")
+  target_include_directories(xiaotu_core_updater PUBLIC
+    "${_core_include}"
+    "${_third_party}"
+    "${_repo_root}/cmake")
+  # 当前版本 / build 号从 VERSION 读
+  set(_build_epoch "$ENV{XIAOTU_BUILD}")
+  if (NOT _build_epoch OR _build_epoch STREQUAL "")
+    set(_build_epoch "0")
+  endif()
+  target_compile_definitions(xiaotu_core_updater PUBLIC
+    XIAOTU_VERSION="${XIAOTU_VERSION_STRING}"
+    XIAOTU_BUILD=${_build_epoch}
+    XIAOTU_API_VERSION=1
+    XIAOTU_EDITION_CODE="full")
+  target_compile_options(xiaotu_core_updater PUBLIC /utf-8)
+  set(_core_link xiaotu_core_updater)
+endif()
+
+# OpenSSL 3.0（Ed25519 验签），独立工程和顶层都要
+find_package(OpenSSL 3.0 REQUIRED)
+if (NOT TARGET xiaotu_core)
+  target_link_libraries(xiaotu_core_updater PRIVATE OpenSSL::SSL OpenSSL::Crypto bcrypt)
+  target_compile_definitions(xiaotu_core_updater PUBLIC XIAOTU_HAS_OPENSSL=1)
+endif()
+message(STATUS "OpenSSL (Ed25519): ${OPENSSL_VERSION}")
+
+# trust anchor 公钥（Ed25519，base64，32 字节），与 macOS Info.plist SUPublicEDKey 同源。
+# 构建时传入 -DXIAOTU_UPDATE_PUBKEY=<base64>，未传入时 updater_win 跳过验签。
+set(XIAOTU_UPDATE_PUBKEY "" CACHE STRING "更新清单 Ed25519 信任锚公钥（base64）")
+if (XIAOTU_UPDATE_PUBKEY)
+  message(STATUS "更新公钥：已配置")
+else()
+  message(STATUS "更新公钥：未配置（将跳过 C++ 侧验签）")
+endif()
+
+add_executable(xiaotu-shell WIN32 main.cpp updater_win.cpp)
 
 # 版本与图标资源：产品版本来自根 VERSION，图标与 macOS 同为候选 A。
 set(XIAOTU_WIN_ICON "${CMAKE_CURRENT_SOURCE_DIR}/../../packaging/win/xiaotu.ico")
@@ -63,15 +110,23 @@ target_sources(xiaotu-shell PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/version.rc")
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/version.rc"
   PROPERTIES OBJECT_DEPENDS "${XIAOTU_WIN_ICON}")
 
-target_include_directories(xiaotu-shell PRIVATE "${XIAOTU_WEBVIEW2_DIR}/include")
+target_include_directories(xiaotu-shell PRIVATE
+  "${XIAOTU_WEBVIEW2_DIR}/include"
+  "${_core_include}"
+  "${_third_party}"
+  "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_directories(xiaotu-shell PRIVATE "${XIAOTU_WEBVIEW2_DIR}/build/native/x64")
 
 # 源码含中文字面量，MSVC 默认按系统代码页解析会出错。
 target_compile_options(xiaotu-shell PRIVATE /utf-8 /W4 /EHsc)
-target_compile_definitions(xiaotu-shell PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_definitions(xiaotu-shell PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+                                       XIAOTU_UPDATE_PUBKEY="${XIAOTU_UPDATE_PUBKEY}")
 
 target_link_libraries(xiaotu-shell PRIVATE
   WebView2LoaderStatic
+  ${_core_link}
+  OpenSSL::SSL OpenSSL::Crypto
+  winhttp bcrypt
   ole32 oleaut32 user32 shell32 gdi32)
 
 # 头文件拷到产物目录旁，方便与 xiaotu-server.exe 一起分发。

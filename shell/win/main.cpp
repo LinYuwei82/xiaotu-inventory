@@ -13,6 +13,8 @@
 #include <objbase.h>
 // CommandLineToArgvW
 #include <shellapi.h>
+// DISP_E_TOOFEWPARAMS 不在 WIN32_LEAN_AND_MEAN 包含的头里，直接用 E_INVALIDARG 表达参数不足。
+// OAIdl.h / dispids.h 都会引入大量 oidl 常量，没必要为一个错误码 include 进来。
 
 #include <atomic>
 #include <cstdio>
@@ -20,8 +22,11 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <functional>
 
 #include "WebView2.h"
+#include "updater_win.h"
+#include "nlohmann/json.hpp"
 
 namespace {
 
@@ -63,7 +68,129 @@ struct AppState {
 
 AppState g_app;
 
-// 首屏等待上限：命令行 --startup-timeout <秒> > 环境变量 XIAOTU_SHELL_STARTUP_TIMEOUT > 默认 30 秒。
+// ---------- WebView2 ↔ 前端消息桥 ----------
+//
+// 设计：
+//   C++ 端（updater_win）在后台线程跑清单检查/下载/安装，完成后用
+//   g_webview->PostWebMessageAsJson("{event: "checkNow", code: "...", status: {...}}")
+//   推给前端。前端统一监听 window.chrome.webview.addEventListener('message', ...)
+//
+//   JS 桥本身（UpdaterHost）只暴露同步/触发型方法——返回当前状态或立即触发后台动作，
+//   真正的异步结果走 PostWebMessage 推回去。避免在 IDispatch::Invoke 里阻塞 UI 线程。
+
+// 当前 webview 指针（ControllerCompleted 里设置，WM_DESTROY 里清 null），
+// 供 updater_win 的异步回调把结果推回前端。
+ICoreWebView2* g_webview_for_post = nullptr;
+std::mutex g_webview_mutex;
+
+static void post_web_message_json(const std::string& json) {
+  std::lock_guard<std::mutex> lock(g_webview_mutex);
+  if (!g_webview_for_post) return;
+  std::wstring wide(json.begin(), json.end());
+  g_webview_for_post->PostWebMessageAsJson(wide.c_str());
+}
+
+// 把 updater_win 的 Completion 回调接到主线程 → PostWebMessage 推给前端。
+static xiaotu::updater::Completion BindCompletion(const std::string& event) {
+  return [event](const std::string& code, const std::string& detail) {
+    nlohmann::json j;
+    j["event"] = event;
+    j["code"] = code;
+    j["detail"] = detail;
+    j["status"] = xiaotu::updater::UpdaterWin::instance().statusJson();
+    post_web_message_json(j.dump());
+  };
+}
+
+// UpdaterHost —— 最小 IDispatch 实现，暴露给前端做 WebView2 HostObject。
+//
+// 方法 DISPID 映射：
+//   1 checkNow()            立即触发清单检查（立即返回空；结果走 PostWebMessage）
+//   2 downloadUpdate()     触发后台下载 setup.exe
+//   3 installUpdate()      触发 ISCC 静默覆盖
+//   4 cancelPrefetch()     取消下载
+//   5 setOptions(auto_check, prefetch) 设置后台检查开关
+//   6 statusJson()         返回当前状态 JSON（同步）
+//   7 checkMinSupportedVersion() 检查服务端最低要求
+class UpdaterHost : public IDispatch {
+ public:
+  UpdaterHost() : ref_(1) {}
+  ~UpdaterHost() = default;
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+    if (!ppv) return E_POINTER;
+    if (riid == IID_IUnknown || riid == IID_IDispatch) {
+      *ppv = static_cast<IDispatch*>(this);
+      AddRef();
+      return S_OK;
+    }
+    *ppv = nullptr;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    return static_cast<ULONG>(InterlockedIncrement(&ref_));
+  }
+  ULONG STDMETHODCALLTYPE Release() override {
+    ULONG c = static_cast<ULONG>(InterlockedDecrement(&ref_));
+    if (c == 0) delete this;
+    return c;
+  }
+  HRESULT STDMETHODCALLTYPE GetTypeInfoCount(UINT* ctinfo) override {
+    if (!ctinfo) return E_POINTER;
+    *ctinfo = 0;
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE GetTypeInfo(UINT, LCID, ITypeInfo**) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetIDsOfNames(REFIID, LPOLESTR* names, UINT count, LCID, DISPID* ids) override {
+    static const wchar_t* kNames[] = {
+        L"checkNow", L"downloadUpdate", L"installUpdate",
+        L"cancelPrefetch", L"setOptions", L"statusJson",
+        L"checkMinSupportedVersion",
+    };
+    for (UINT i = 0; i < count; ++i) {
+      ids[i] = DISPID_UNKNOWN;
+      for (UINT j = 0; j < 7; ++j) {
+        if (wcscmp(names[i], kNames[j]) == 0) { ids[i] = static_cast<DISPID>(j + 1); break; }
+      }
+      if (ids[i] == DISPID_UNKNOWN) return DISP_E_UNKNOWNNAME;
+    }
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE Invoke(DISPID dispid, REFIID, LCID, WORD flags,
+                                   DISPPARAMS* params, VARIANT* result,
+                                   EXCEPINFO*, UINT*) override {
+    auto& upd = xiaotu::updater::UpdaterWin::instance();
+    auto set_str = [&](const std::string& s) -> HRESULT {
+      if (!result) return S_OK;
+      result->vt = VT_BSTR;
+      result->bstrVal = SysAllocStringByteLen(s.c_str(), static_cast<UINT>(s.size()));
+      return result->bstrVal ? S_OK : E_OUTOFMEMORY;
+    };
+    switch (dispid) {
+      case 1: upd.checkNow(BindCompletion("checkNow")); return set_str("");
+      case 2: upd.downloadUpdate(BindCompletion("downloadUpdate")); return set_str("");
+      case 3: upd.installUpdate(BindCompletion("installUpdate")); return set_str("");
+      case 4: upd.cancelPrefetch(BindCompletion("cancelPrefetch")); return set_str("");
+      case 5: {
+        if (!params || params->cArgs < 2) return E_INVALIDARG;
+        bool ac = (params->rgvarg[params->cArgs - 2].vt == VT_BOOL) &&
+                  (params->rgvarg[params->cArgs - 2].boolVal != VARIANT_FALSE);
+        bool pf = (params->rgvarg[params->cArgs - 1].vt == VT_BOOL) &&
+                  (params->rgvarg[params->cArgs - 1].boolVal != VARIANT_FALSE);
+        upd.setOptions(ac, pf, BindCompletion("setOptions"));
+        return set_str("");
+      }
+      case 6: return set_str(upd.statusJson());
+      case 7: upd.checkMinSupportedVersion(BindCompletion("checkMinSupportedVersion")); return set_str("");
+      default: return DISP_E_MEMBERNOTFOUND;
+    }
+  }
+
+ private:
+  LONG ref_ = 1;
+};
+
+// ---------- 文本与路径 ----------
 UINT g_startup_timeout_ms = kDefaultStartupTimeoutMs;
 // 单实例互斥体句柄，进程存活期间一直持有。
 HANDLE g_instance_mutex = nullptr;
@@ -421,6 +548,26 @@ class ControllerCompleted
       return S_OK;
     }
     app_->controller_ready = true;
+    // 给前端暴露 updater_win HostObject：
+    //   window.chrome.webview.hostObjects.updater_win.checkNow() / .statusJson() 等
+    // WebView2 的 AddHostObjectToScript 接收 IDispatch*（VARIANT 的 vt=VT_DISPATCH），
+    // 失败时我们 Release 让它 refcount 归零自动 delete（UpdaterHost 的 Release 做）。
+    {
+      VARIANT v{};
+      v.vt = VT_DISPATCH;
+      v.pdispVal = new UpdaterHost();
+      std::wstring name = L"updater_win";
+      HRESULT hr = app_->webview->AddHostObjectToScript(name.c_str(), &v);
+      if (FAILED(hr)) {
+        // AddHostObjectToScript 失败时不接管引用，手动 Release 回收。
+        v.pdispVal->Release();
+      }
+    }
+    // 给 updater_win 异步回调用的 webview 指针
+    {
+      std::lock_guard<std::mutex> lock(g_webview_mutex);
+      g_webview_for_post = app_->webview;
+    }
     resize_webview();
     if (!app_->pending_url.empty()) navigate_when_ready(app_->pending_url);
     return S_OK;
@@ -572,6 +719,11 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_DESTROY:
       save_window_state(hwnd);
       shutdown_child();
+      // 先清 post 指针：updater_win 后台回调还在跑，清 null 就不会往已释放的 webview 推消息。
+      {
+        std::lock_guard<std::mutex> lock(g_webview_mutex);
+        g_webview_for_post = nullptr;
+      }
       if (g_app.webview) {
         g_app.webview->Release();
         g_app.webview = nullptr;
@@ -681,6 +833,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
 
   start_reader();
   SetTimer(g_app.hwnd, kTimerStartup, g_startup_timeout_ms, nullptr);
+
+  // 启动自动更新桥：manifest_url 先用 OSS 默认路径，之后可以让服务端 /api/health 下发覆盖。
+  // channel 默认 stable，用户切换 beta/rc 时通过 JS 桥 setOptions 改。
+  xiaotu::updater::UpdaterWin::instance().start(
+      "https://dl.xiaotu.online/xiaotu/latest.json",  // TODO: 真实地址与 macOS 一致
+      "stable");
 
   MSG msg{};
   while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

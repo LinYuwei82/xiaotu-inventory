@@ -83,6 +83,9 @@ UninstallDisplayName={#AppName} {#AppVersion}
 SetupIconFile=xiaotu.ico
 ; 卸载项指向始终存在的服务端 exe（无论是否带壳），避免指向可能不存在的壳。
 UninstallDisplayIcon={app}\{#ServerExeName}
+; RestartIfRunning 不是 [Setup] 指令！静默覆盖场景下壳占用处理靠 [Code] 里的 KillOldShell：
+;   ssPreInstall 阶段 taskkill /F /IM xiaotu-shell.exe → 文件释放 → 安装继续 → 启新壳
+; 见本脚本 [Code] 段 CurStepChanged。
 #ifdef Sign
 SignTool=signtool
 SignedUninstaller=yes
@@ -213,6 +216,8 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -221,6 +226,13 @@ begin
       MsgBox('本机未检测到 WebView2 Runtime。' + #13#10#13#10 +
              '桌面窗口依赖该运行时；完成页提供了官方安装入口，装好后重新打开即可。' + #13#10 +
              '也可以直接用开始菜单里的「浏览器访问」入口。', mbInformation, MB_OK);
+  end;
+
+  // 静默覆盖更新（updater_win 调 /VERYSILENT）时，壳文件会被占用导致安装失败。
+  // 这里在安装开始前强制 kill 旧壳，释放文件锁；安装完后 [Run] 段（postinstall）会启新壳。
+  if CurStep = ssInstall then
+  begin
+    Exec('taskkill.exe', '/F /IM xiaotu-shell.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 
