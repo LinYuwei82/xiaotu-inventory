@@ -126,7 +126,10 @@ CI（`.github/workflows/windows-build.yml`）检测到 secret 时先用 `sign.ps
   用 `-Thumbprint`；CI 无法插 token，应改用 CA 的云签名服务或 Azure Trusted Signing。
   上面两个 PFX secret 只适用于仍提供 PFX 的证书。
 
-### Certum 云签名（选定方案）
+### Certum 云签名（候选方案，当前暂不购买）
+
+2026-11-17 决定：Windows 端先不买证书，继续以未签名安装包分发给早期客户；以下流程保留，
+后续启用时按此执行。
 
 产品：**Certum Standard Code Signing in the Cloud**（SimplySign 云签名，OV）。个人可申请，
 材料为身份证/护照 + 手机话费发票；证书主体是个人法定姓名（如 `Yuwei Lin`），不是 `si_mem`。
@@ -163,8 +166,8 @@ CI（`.github/workflows/windows-build.yml`）检测到 secret 时先用 `sign.ps
 
 ### 尚未验证的边界
 
-- 真实 Authenticode 签名：脚本与 CI 已接入，待购买证书后实签验证（当前本地产物仍为未签名，
-  `SIGNING.txt` 已注明）。
+- 真实 Authenticode 签名：脚本与 CI 已接入；当前决定暂不购买证书，启用后再实签验证
+  （本地产物仍为未签名，`SIGNING.txt` 已注明）。
 - 保留数据弹窗与「仅卸载不删数据」的交互提示：静默卸载已验「数据目录与 `app.db` 保留」，
   但交互模式下的提示文案与按钮仍需人工看一眼。
 - WebView2 缺失提示、窗口位置记忆、打印对话框、SmartScreen 表现：见
