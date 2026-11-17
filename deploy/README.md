@@ -168,10 +168,35 @@ XIAOTU_UPDATE_TOOL=/opt/xiaotu/tools/package/update_manifest.py \
 
 ### 5. 灰度放行与回滚
 
-清单是签名的，**不能直接改 `rollout_percent`**（会导致签名失效）。使用 `resign` 只改放量比例并重新签名，其余字段原样保留：
+清单是签名的，**不能直接改 `rollout_percent`**（会导致签名失效）。使用 `resign` 只改放量比例并重新签名，其余字段原样保留。
+
+自动逐档放量（默认 1% → 10% → 50% → 100%，每档 24 小时）：
 
 ```bash
-# 1% → 10% → 50% → 100%
+# 0. 取回当前线上清单（publish_oss.sh 的临时目录不会保留）
+curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/latest.json \
+  -o build/package/latest.json
+
+# 1. 预览：只本地重签并验签，不上传、不等待
+tools/package/rollout_oss.sh --manifest build/package/latest.json --dry-run
+
+# 2. 正式放量：每档自动上传 / purge / 等 CDN 生效，再等观察时长进入下一档
+OSS_BUCKET=你的bucket OSS_REGION=cn-hangzhou \
+  tools/package/rollout_oss.sh --manifest build/package/latest.json --yes
+
+# 自定义：每档 12 小时，比例 5% → 20% → 60% → 100%
+tools/package/rollout_oss.sh --steps 5,20,60,100 --interval 12h --yes
+```
+
+- 脚本只改清单，appcast 不随比例变化，不重传；清单每档归档到 `build/package/rollout/<version>-<build>/latest-<比例>.json`。
+- 每档上传后会用 `?t=` 绕缓存轮询 CDN，确认 `rollout_percent` 已生效才进入下一档；超时则停下，当前档保持生效。
+- Ctrl-C 可随时停在当前档，不会回退比例；要继续时重跑并跳过已完成的档位即可。
+- 依赖 OSS 凭据（同 `publish_oss.sh`）与签名私钥；`--dry-run` 不需要 OSS。
+
+手动重签仍然可用：
+
+```bash
+# 只把比例改成 10%，其余字段不动
 tools/package/.venv/bin/python tools/package/update_manifest.py resign \
   --manifest build/package/latest.json \
   --key ~/keys/update_signing.pem \
@@ -182,7 +207,7 @@ tools/package/.venv/bin/python tools/package/update_manifest.py resign \
 - `resign` 只接受 `--rollout`（1–100）与 `--channel`（stable/beta），版本、构建号、URL、sha256、强制理由等不可在重签时改写。
 - 重签后的清单可直接被 `verify` 与 core 解析器接受；同一输入连续重签同一值输出一致（Ed25519 确定性签名，`published_at` 沿用原值，不参与刷新）。
 
-放量步骤：1% → 10% → 50% → 100%，每档观察至少 24 小时；替换清单与 appcast 后 purge CDN，确认 `/api/update/check` 返回符合预期。服务端读取 `min(清单 rollout, 配置 rollout_percent)`。
+放量观察：每档至少 24 小时，确认 `/api/update/check` 返回符合预期，且无启动失败/回退日志后再进入下一档。服务端读取 `min(清单 rollout, 配置 rollout_percent)`；单机版壳按安装 UUID + 目标 build 稳定分桶，强制更新不受比例限制。
 
 回滚：
 

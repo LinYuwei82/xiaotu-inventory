@@ -127,3 +127,25 @@ tools/package/publish_oss.sh
   `~/.config/xiaotu-updates/oss-credentials.env`（权限必须 600/400）。
 - 关闭下载页同步：`UPDATE_INDEX_PAGE=false`；关闭预热：`WARMUP=false`；只本地生成不碰 OSS：`OSS_SKIP=true`。
 - 发布地址：`https://dl.xiaotu.online/xiaotu/updates/stable/latest.json` 与同目录 `appcast.xml`。
+
+## 逐档放量
+
+清单签名后不能直接改 `rollout_percent`。用 `rollout_oss.sh` 按计划重签、上传、purge 并等待 CDN 生效：
+
+```bash
+# 取回线上清单（发布脚本的临时目录不保留）
+curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/latest.json \
+  -o build/package/latest.json
+
+# 预览：只重签 + 验签，不上传、不等待
+tools/package/rollout_oss.sh --manifest build/package/latest.json --dry-run
+
+# 默认 1% → 10% → 50% → 100%，每档 24 小时
+PRODUCT=xiaotu OSS_BUCKET=xiaotu-update OSS_REGION=cn-hongkong \
+  tools/package/rollout_oss.sh --manifest build/package/latest.json --yes
+```
+
+- 只改清单；appcast 不随比例变化，不重传。每档归档到 `build/package/rollout/<version>-<build>/`。
+- 每档上传后轮询 CDN，确认 `rollout_percent` 生效才进入下一档；超时即停，当前档保持生效。
+- Ctrl-C 停在当前档；重跑时从下一档开始即可。`--interval` 支持 `30s` / `90m` / `12h` / `2d`。
+- 强制更新（`mandatory=true`）不受比例限制；网络版服务端实际比例取 `min(清单 rollout, 配置 rollout_percent)`。
