@@ -80,6 +80,17 @@ DEFAULT_SETUP="$REPO_ROOT/packaging/win/out/xiaotu-inventory-$VERSION-win64-setu
 SETUP_PATH="${SETUP_PATH:-$DEFAULT_SETUP}"
 [ -f "$SETUP_PATH" ] || { echo "安装包不存在：$SETUP_PATH" >&2; exit 1; }
 
+# 清单里的下载地址直接由文件名推导，文件名不规范会写出指向错误对象的 URL
+# （例如从浏览器另存为 win_setup.exe，清单就指向 /xiaotu/win_setup.exe）。
+EXPECTED_NAME="xiaotu-inventory-$VERSION-win64-setup.exe"
+ACTUAL_NAME="$(basename "$SETUP_PATH")"
+if [ "$ACTUAL_NAME" != "$EXPECTED_NAME" ]; then
+  echo "安装包文件名不符合发布规范：$ACTUAL_NAME" >&2
+  echo "必须命名为 ${EXPECTED_NAME}（清单下载地址由它推导）。" >&2
+  echo "可先改名或放到 packaging/win/out/$EXPECTED_NAME 再重试。" >&2
+  exit 1
+fi
+
 DEFAULT_KEY="$HOME/.config/xiaotu-updates/update_signing_2026.pem"
 SIGNING_KEY="${SIGNING_KEY:-$DEFAULT_KEY}"
 [ -f "$SIGNING_KEY" ] || {

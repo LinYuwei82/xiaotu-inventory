@@ -69,7 +69,7 @@ MAC_BASE64="$(openssl pkey -pubin -in "$KEY_DIR/update_signing_2026.pub.pem" \
   -outform DER 2>/dev/null | tail -c 32 | base64 | tr -d '\n')"
 echo "  $MAC_BASE64"
 
-EXPECTED_BASE64="bc1rp4ISWC+0OEkw4ndoMnTVQBr2U99qGUVlUTCv4og="
+EXPECTED_BASE64="HgCDvW0MQ32HFguQ/jW5fVtQh74lBsXMsyfo0sRLH1Y="
 echo "期望（CMake 硬编码）："
 echo "  $EXPECTED_BASE64"
 
