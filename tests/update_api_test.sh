@@ -70,6 +70,17 @@ done
 base="http://127.0.0.1:$PORT/api/update/check"
 query="current_version=1.3.6&build=2026100101&channel=stable&platform=macos&api_version=1&install_id=abc"
 
+# 轻量握手：health 必须回显服务端要求的最低客户端版本，供桌面壳阻断旧版本。
+health="$(curl -s "http://127.0.0.1:$PORT/api/health")"
+echo "$health" | grep -q '"min_supported_version":"1.3.0"' || {
+  echo "FAIL: health 应返回 min_supported_version: $health" >&2; exit 1;
+}
+
+# 低于最低支持版本时，即使清单判定为无更新也必须有强制标记。
+required="$(curl -s "$base?current_version=1.2.0&build=2026100101&channel=stable&platform=macos&api_version=1&install_id=abc&schema_version=30")"
+echo "$required" | grep -q '"mandatory":true' || { echo "FAIL: 低于最低支持版本应强制升级: $required" >&2; exit 1; }
+echo "$required" | grep -q '"MIN_SUPPORTED"' || { echo "FAIL: 强制原因应为 MIN_SUPPORTED: $required" >&2; exit 1; }
+
 ok="$(curl -s "$base?$query&schema_version=30")"
 echo "$ok" | grep -q '"update_available":true' || { echo "FAIL: 签名正确应返回可用更新: $ok" >&2; exit 1; }
 

@@ -544,6 +544,44 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
 }
 @end
 
+// 轻量握手阻断页：低于服务端最低支持版本时替换 WebView 内容，不进入业务界面。
+// 页面内联样式，升级后可直接点「重新进入」再加载原地址。
+static NSString* XiaotuEscapeHTML(NSString* text) {
+  NSString* value = text ?: @"";
+  value = [value stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"];
+  value = [value stringByReplacingOccurrencesOfString:@"<" withString:@"&lt;"];
+  value = [value stringByReplacingOccurrencesOfString:@">" withString:@"&gt;"];
+  value = [value stringByReplacingOccurrencesOfString:@"\"" withString:@"&quot;"];
+  return value;
+}
+
+static NSString* XiaotuBlockingHTML(NSString* minimum, NSString* current, NSString* appURL) {
+  NSString* minimumText = XiaotuEscapeHTML(minimum);
+  NSString* currentText = XiaotuEscapeHTML(current);
+  NSString* reloadURL = XiaotuEscapeHTML(appURL);
+  return [NSString stringWithFormat:
+      @"<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+       "<title>必须升级</title><style>"
+       "html,body{height:100%%;margin:0}body{display:flex;align-items:center;"
+       "justify-content:center;background:#f6f7f9;color:#1f2329;"
+       "font:14px/1.7 -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif}"
+       ".box{max-width:520px;padding:32px 36px;background:#fff;border:1px solid #e5e6eb;"
+       "border-radius:12px;box-shadow:0 8px 24px rgba(31,35,41,.08)}"
+       "h1{margin:0 0 12px;font-size:20px}"
+       "p{margin:0 0 10px;color:#4e5969}"
+       ".version{color:#1f2329;font-weight:600}"
+       "a{display:inline-block;margin-top:12px;padding:8px 18px;border-radius:6px;"
+       "background:#1664ff;color:#fff;text-decoration:none}"
+       "</style></head><body><div class=\"box\">"
+       "<h1>必须升级后才能继续使用</h1>"
+       "<p>当前版本 <span class=\"version\">%@</span> 低于服务端要求的最低版本 "
+       "<span class=\"version\">%@</span>。</p>"
+       "<p>请退出本程序，安装新版本后重新打开。升级不会影响已有数据。</p>"
+       "<a href=\"%@\">已升级，重新进入</a>"
+       "</div></body></html>",
+      currentText, minimumText, reloadURL];
+}
+
 namespace xiaotu::platform {
 
 int run_webview(const std::string& url, const std::string& title) {
@@ -685,6 +723,19 @@ int run_webview(const std::string& url, const std::string& title) {
     [[XiaotuUpdater shared] startWithManifestURL:manifest_url
                                      healthBase:health_base
                                         channel:update_channel ?: @"stable"];
+
+    // 启动即做一次轻量握手：低于服务端最低支持版本时直接换成“必须升级”阻塞页。
+    [[XiaotuUpdater shared] checkMinSupportedVersionWithCompletion:^(NSDictionary* result) {
+      if (result == nil || ![result[@"blocked"] boolValue]) {
+        return;
+      }
+      NSString* minimum = result[@"minimum"] ?: @"";
+      NSString* current = result[@"current"] ?: @"";
+      NSLog(@"[xiaotu] 当前版本 %@ 低于服务端最低支持版本 %@，已阻断进入", current, minimum);
+      [webview loadHTMLString:XiaotuBlockingHTML(minimum, current,
+                                                 [NSString stringWithUTF8String:url.c_str()])
+                     baseURL:nil];
+    }];
 
     [NSApp activateIgnoringOtherApps:YES];
     [NSApp run];

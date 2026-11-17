@@ -497,18 +497,19 @@ didCompleteWithError:(NSError*)error {
 - (void)startWithManifestURL:(NSString*)manifestURL
                   healthBase:(NSString*)healthBase
                      channel:(NSString*)channel {
-  if (manifestURL.length == 0) {
-    xiaotu::log_info("更新：未配置清单地址，自动检查关闭");
-    return;
-  }
   @synchronized(self) {
+    // 轻量握手与本地 schema 只依赖 health，即使未配置清单也要保留。
+    self.healthBase = healthBase;
+    self.channel = channel.length > 0 ? channel : @"stable";
+    if (manifestURL.length == 0) {
+      xiaotu::log_info("更新：未配置清单地址，自动检查关闭");
+      return;
+    }
     if (self.running) {
       return;
     }
     self.running = YES;
     self.manifestURL = manifestURL;
-    self.healthBase = healthBase;
-    self.channel = channel.length > 0 ? channel : @"stable";
   }
   dispatch_async(self.queue, ^{
     [self scheduleNextCheckIfNeeded];
@@ -1495,6 +1496,44 @@ didCompleteWithError:(NSError*)error {
   });
 }
 
+// 轻量握手：服务端 health 里的 min_supported_version 高于当前壳版本时返回 blocked。
+// 与定时检查分开，启动即可调用，不必等首轮自动检查。
+- (void)checkMinSupportedVersionWithCompletion:
+    (void (^)(NSDictionary<NSString*, id>* result))completion {
+  void (^respond)(NSDictionary*) = ^(NSDictionary* result) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      completion(result);
+    });
+  };
+  NSString* base = self.healthBase;
+  if (base.length == 0) {
+    respond(@{@"blocked" : @NO});
+    return;
+  }
+  dispatch_async(self.queue, ^{
+    NSDictionary* health =
+        fetch_json([NSURL URLWithString:[base stringByAppendingString:@"/api/health"]], nil);
+    NSString* minimum = json_string(health, @"min_supported_version");
+    NSString* current = [NSString stringWithUTF8String:xiaotu::current_product_version()];
+    if (minimum.length == 0) {
+      respond(@{@"blocked" : @NO, @"current" : current ?: @""});
+      return;
+    }
+    [[NSUserDefaults standardUserDefaults] setObject:minimum forKey:kMinSupportedKey];
+    xiaotu::ProductVersion currentVersion{};
+    xiaotu::ProductVersion requiredVersion{};
+    const BOOL blocked =
+        xiaotu::parse_product_version(current.UTF8String, currentVersion) &&
+        xiaotu::parse_product_version(minimum.UTF8String, requiredVersion) &&
+        xiaotu::compare_product_version(currentVersion, requiredVersion) < 0;
+    respond(@{
+      @"blocked" : @(blocked),
+      @"minimum" : minimum,
+      @"current" : current ?: @"",
+    });
+  });
+}
+
 - (NSDictionary<NSString*, id>*)status {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   const std::int64_t pending = pending_build(defaults);
@@ -1738,6 +1777,21 @@ didCompleteWithError:(NSError*)error {
                                            [self.healthBase stringByAppendingString:@"/api/health"]],
                                        &healthError);
     localSchema = static_cast<int>(json_long(health, @"schema_version"));
+    // 轻量握手：服务端可要求最低客户端版本。这里只记录与告警，
+    // 启动时的阻塞页由 webview 在加载前单独检查，避免等待 30 秒后的首轮检查。
+    NSString* minimum = json_string(health, @"min_supported_version");
+    if (minimum.length > 0) {
+      [[NSUserDefaults standardUserDefaults] setObject:minimum forKey:kMinSupportedKey];
+      xiaotu::ProductVersion currentVersion{};
+      xiaotu::ProductVersion requiredVersion{};
+      if (xiaotu::parse_product_version(xiaotu::current_product_version(), currentVersion) &&
+          xiaotu::parse_product_version(minimum.UTF8String, requiredVersion) &&
+          xiaotu::compare_product_version(currentVersion, requiredVersion) < 0) {
+        xiaotu::log_warn("更新：当前版本 " + std::string(xiaotu::current_product_version()) +
+                         " 低于服务端最低支持版本 " + std::string(minimum.UTF8String) +
+                         "，应阻断业务入口并提示升级");
+      }
+    }
   }
   const long long schemaMin = json_long(manifest, @"schema_min");
   const long long schemaMax = json_long(manifest, @"schema_max");

@@ -24,6 +24,12 @@ NS_ASSUME_NONNULL_BEGIN
 // 立即检查一次（绕过 24h 定时，遵守暂停与跳过）；10 分钟冷却内返回 COOLDOWN。
 - (void)checkNowWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
 
+// 轻量握手：读取服务端 /api/health 的 min_supported_version 并与当前壳版本比较。
+// 返回 {blocked: bool, minimum: string, current: string}；未配置时报 blocked=false。
+// 供启动时展示“必须升级”阻塞页，不依赖 24h 定时检查。
+- (void)checkMinSupportedVersionWithCompletion:
+    (void (^)(NSDictionary<NSString*, id>* result))completion;
+
 // version 必须是字符串且非空；days 可为 nil（默认 7）或 1–30 的整数。
 // 参数非法返回 INVALID_ARGUMENT，强制更新返回 MANDATORY_UPDATE。
 - (void)skipVersion:(nullable id)version

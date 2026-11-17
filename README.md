@@ -261,7 +261,7 @@ prefetch = true
 | `manifest_url` | 空（不启用） | 厂商清单地址，必须 HTTPS；拉取后验签并缓存 10 分钟，失败回退旧缓存 |
 | `manifest_file` | 空（不启用） | 本地/离线清单路径；与 `manifest_url` 同时配置时作为兜底 |
 | `channel` | `stable` | 只接受 `stable` / `beta` |
-| `min_supported_version` | 空 | 形如 `1.2.3`；低于它的客户端按清单策略处理 |
+| `min_supported_version` | 空 | 形如 `1.2.3`；低于它的桌面客户端在启动握手时直接展示“必须升级”阻塞页，网络版检查接口同时返回强制升级标记 |
 | `rollout_percent` | `100` | 灰度比例，1–100 |
 | `auto_check` | `true` | 网络版服务端启动 30 秒后与每 24h±2h 自动检查更新；运行中不可切换，**改后需重启服务** |
 | `prefetch` | `true` | 自动检查发现新版本时后台下载并校验安装包；失败按 60s / 600s 退避重试 2 次；运行中不可切换，**改后需重启服务** |

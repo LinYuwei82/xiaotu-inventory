@@ -473,6 +473,10 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     body["status"] = "ok";
     body["app"] = info_.app_name;
     body["version"] = info_.version;
+    // 轻量握手：桌面壳据此判断是否需要阻断旧客户端；未配置时为空。
+    body["min_supported_version"] = info_.update_min_supported_version.empty()
+                                        ? nlohmann::json(nullptr)
+                                        : nlohmann::json(info_.update_min_supported_version);
     body["mode"] = info_.mode;
     body["edition"] = std::string(EditionPolicy::instance().code());
     body["api_version"] = gen::kApiVersion;
