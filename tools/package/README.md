@@ -9,7 +9,7 @@ tools/package/make_dmg.sh
 产物在 `build/package/`（已在 `.gitignore` 的 `build/` 下，不入库）：
 
 ```text
-build/package/xiaotu-inventory-0.9.0.dmg
+build/package/xiaotu-inventory-1.0.0.dmg
 ```
 
 dmg 内包含：
@@ -98,9 +98,9 @@ tools/package/.venv/bin/pip install -r tools/package/requirements.txt
 
 # 生成并签名清单，同时生成 Sparkle appcast
 tools/package/.venv/bin/python tools/package/update_manifest.py generate \
-  --file build/package/xiaotu-inventory-0.9.0.dmg \
-  --version 0.9.0 --build 2026111710 \
-  --url https://dl.xiaotu.online/xiaotu/xiaotu-inventory-0.9.0.dmg \
+  --file build/package/xiaotu-inventory-1.0.0.dmg \
+  --version 1.0.0 --build 2026111710 \
+  --url https://dl.xiaotu.online/xiaotu/xiaotu-inventory-1.0.0.dmg \
   --schema-min 1 --schema-max 39 --api-min 1 --api-max 1 \
   --key ~/.config/xiaotu-updates/update_signing_2026.pem --key-id 2026-11 \
   --out build/package/latest.json --appcast build/package/appcast.xml
@@ -108,7 +108,7 @@ tools/package/.venv/bin/python tools/package/update_manifest.py generate \
 # 校验清单签名与安装包哈希
 tools/package/.venv/bin/python tools/package/update_manifest.py verify \
   --manifest build/package/latest.json --pub ~/.config/xiaotu-updates/update_signing_2026.pub.pem \
-  --file build/package/xiaotu-inventory-0.9.0.dmg
+  --file build/package/xiaotu-inventory-1.0.0.dmg
 ```
 
 私钥不进入仓库与构建产物；`--appcast` 生成的是对 dmg 文件字节的 Ed25519 签名，供 Sparkle 校验。

@@ -36,8 +36,8 @@ SDK 与构建目录都在 `.cache\`、`build\` 下，已被本目录的 `.gitign
 
 ```powershell
 # 把壳放到服务端程序旁边（分发包目录），或在同一目录下同时存在两个 exe
-Copy-Item shell\win\build\xiaotu-shell.exe build\package\win\xiaotu-inventory-0.9.0-win64\
-.\build\package\win\xiaotu-inventory-0.9.0-win64\xiaotu-shell.exe
+Copy-Item shell\win\build\xiaotu-shell.exe build\package\win\xiaotu-inventory-1.0.0-win64\
+.\build\package\win\xiaotu-inventory-1.0.0-win64\xiaotu-shell.exe
 ```
 
 - 数据目录：服务端默认位置 `%LOCALAPPDATA%\com.simem.xiaotu`
