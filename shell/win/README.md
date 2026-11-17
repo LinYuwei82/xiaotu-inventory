@@ -94,3 +94,22 @@ $env:XIAOTU_SHELL_STARTUP_TIMEOUT = '60'; .\xiaotu-shell.exe
 | 窗口记忆 | `GetWindowPlacement` 取 `rcNormalPosition` 落盘，`MonitorFromRect` + 工作区交集校验 |
 | 窗口缩放 | `WM_SIZE` → `ICoreWebView2Controller::put_Bounds` |
 | 首屏 | WebView2 环境初始化与服务端启动并行，拿到地址即 `Navigate` |
+
+## 自动更新桥（`updater_win`）
+
+`updater_win.cpp` / `updater_win.h` 实现与 macOS 同规范的壳内自动更新，**零新增第三方依赖**：
+
+| 环节 | 实现 |
+| --- | --- |
+| 拉清单 | WinHTTP GET `latest.json` |
+| 验签 | `xiaotu::verify_manifest_signature`（OpenSSL Ed25519，trust anchor 编译期注入） |
+| 判定 | 复用 core 层 `parse_manifest` / `evaluate_manifest`：平台、通道、`min_os`、API 区间、schema、灰度分桶、`mandatory` |
+| 校验包 | BCrypt 计算 SHA256，与清单逐字节比对 |
+| 安装 | `ShellExecute` 跑 Inno Setup `/VERYSILENT /RESTARTAPPLICATIONS`，自动关壳、覆盖、启新壳 |
+| 定时 | 启动 30 秒后首查，之后 24h±2h；失败按 1 分钟 / 10 分钟 / 1 小时退避 |
+| 持久化 | `%LOCALAPPDATA%\com.simem.xiaotu\updater.json` |
+| 握手 | `checkMinSupportedVersion` 读服务端 `/api/health` 的 `min_supported_version` |
+
+对外暴露：`main.cpp` 用 `AddHostObjectToScript("updater_win", ...)` 把 `UpdaterWin` 挂到 `window.chrome.webview.hostObjects.updater_win`，可用 `checkNow()` / `downloadUpdate()` / `installUpdate()` / `cancelPrefetch()` / `setOptions(auto, prefetch)` / `statusJson()`。
+
+**当前限制**：`web/app.js` 的更新卡片只识别 macOS 的 `window.webkit.messageHandlers`，尚未接 Windows 的 `hostObjects.updater_win`，因此 Windows 界面看到的仍是服务端更新源分支。桥本身未经真机验证；正式分发仍以手动下载安装包为准。

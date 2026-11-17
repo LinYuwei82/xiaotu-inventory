@@ -79,6 +79,18 @@ tools/package/make_dmg.sh
 - 不传 `XIAOTU_SIGN_IDENTITY` 时回落到 ad-hoc 签名并打印警告，只用于本地验证，不是可分发产物。
 - 正式产物实测 `spctl` 输出 `source=Notarized Developer ID`，首次打开不再被 Gatekeeper 拦截。
 
+## 签名密钥同步（Windows → Mac）
+
+发布清单的 Ed25519 私钥在 Windows 主发布机上。需要换机或重装时，在 Mac 上运行：
+
+```bash
+scripts/sync-signing-key-to-mac.sh
+```
+
+- 备份旧密钥 → `scp` 从 Windows 拉 `%USERPROFILE%\.config\xiaotu-updates\update_signing_2026.pem` → `openssl` 取 DER 原始 32 字节公钥并转 base64 → 与根 `CMakeLists.txt` 和 `shell/win/CMakeLists.txt` 里硬编码的 trust anchor 比对。
+- 公钥不一致时立即报错退出，避免签出 Windows 壳拒绝的清单。
+- 预期公钥：`bc1rp4ISWC+0OEkw4ndoMnTVQBr2U99qGUVlUTCv4og=`。
+
 ## 数据目录
 
 单机版数据仍然写入：
