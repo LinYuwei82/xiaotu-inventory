@@ -58,6 +58,10 @@ configure_file(
   "${CMAKE_CURRENT_BINARY_DIR}/version.rc"
   @ONLY)
 target_sources(xiaotu-shell PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/version.rc")
+# version.rc 只引用 ico 路径，内容不随图标变化；显式声明依赖，
+# 换图标后 reconfigure + build 才会重新编译资源，不必手动 clean。
+set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/version.rc"
+  PROPERTIES OBJECT_DEPENDS "${XIAOTU_WIN_ICON}")
 
 target_include_directories(xiaotu-shell PRIVATE "${XIAOTU_WEBVIEW2_DIR}/include")
 target_link_directories(xiaotu-shell PRIVATE "${XIAOTU_WEBVIEW2_DIR}/build/native/x64")
