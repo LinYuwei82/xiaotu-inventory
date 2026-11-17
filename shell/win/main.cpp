@@ -1237,10 +1237,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
 
   // 启动自动更新桥：manifest_url 先用 OSS 默认路径，之后可以让服务端 /api/health 下发覆盖。
   // channel 默认 stable，用户切换 beta/rc 时通过 JS 桥 setOptions 改。
-  // Windows 清单单独放一个目录：macOS 的 latest.json 里 platform=macos，
-  // 两者共用同一路径会互相覆盖/被判成平台不匹配。
+  // Windows 清单与 macOS 的 latest.json 分开命名（windows.json），放在各自的
+  // <product>/updates/<channel>/ 下，避免两种平台清单互相覆盖或被判成平台不匹配。
   xiaotu::updater::UpdaterWin::instance().start(
-      "https://dl.xiaotu.online/windows/stable/latest.json",
+      "https://dl.xiaotu.online/xiaotu/updates/stable/windows.json",
       "stable");
 
   MSG msg{};
