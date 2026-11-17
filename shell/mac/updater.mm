@@ -30,6 +30,7 @@ NSString* const kLaunchAttemptsKey = @"XiaotuLaunchAttempts";
 NSString* const kPendingBuildKey = @"XiaotuPendingBuild";
 NSString* const kPendingVersionKey = @"XiaotuPendingVersion";
 NSString* const kPendingReasonKey = @"XiaotuPendingReason";
+NSString* const kPendingDeadlineKey = @"XiaotuPendingDeadline";
 NSString* const kPendingNotesKey = @"XiaotuPendingNotes";
 NSString* const kMandatoryKey = @"XiaotuPendingMandatory";
 NSString* const kIntermediateVersionKey = @"XiaotuIntermediateVersion";
@@ -43,6 +44,8 @@ NSString* const kLastResultKey = @"XiaotuLastCheckResult";
 NSString* const kCheckFailuresKey = @"XiaotuCheckFailures";
 // 服务端轻量握手要求的最低客户端版本；未配置或从未握手为 nil。
 NSString* const kMinSupportedKey = @"XiaotuMinSupportedVersion";
+// 灰度分桶用的安装标识：首次检查时生成 UUID，之后保持不变。
+NSString* const kInstallIDKey = @"XiaotuInstallID";
 NSString* const kAutoCheckKey = @"XiaotuAutoCheckEnabled";
 NSString* const kPrefetchKey = @"XiaotuPrefetchEnabled";
 NSString* const kPrefetchNoticeKey = @"XiaotuPrefetchNoticeAcked";
@@ -95,6 +98,9 @@ NSString* const kResultUpdateAvailable = @"UPDATE_AVAILABLE";
 NSString* const kResultSkipped = @"SKIPPED";
 NSString* const kResultIncompatible = @"INCOMPATIBLE_SCHEMA";
 NSString* const kResultIntermediate = @"INTERMEDIATE_REQUIRED";
+NSString* const kResultOsUnsupported = @"OS_UNSUPPORTED";
+NSString* const kResultIncompatibleApi = @"INCOMPATIBLE_API";
+NSString* const kResultNotInRollout = @"NOT_IN_ROLLOUT";
 
 NSDictionary* fetch_json(NSURL* url, NSString** errorOut) {
   __block NSDictionary* result = nil;
@@ -169,6 +175,25 @@ double now_epoch() {
 
 std::int64_t current_build() {
   return static_cast<std::int64_t>(XIAOTU_BUILD);
+}
+
+// 灰度分桶标识：首次使用生成 UUID 并持久化，重装应用数据后才会变化。
+NSString* installation_id() {
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSString* value = [defaults stringForKey:kInstallIDKey];
+  if (value.length == 0) {
+    value = [[NSUUID UUID] UUIDString];
+    [defaults setObject:value forKey:kInstallIDKey];
+  }
+  return value;
+}
+
+// 本机 macOS 版本，形如 "14.1.2"，用于清单 min_os 判定。
+NSString* system_version_string() {
+  NSOperatingSystemVersion version = [[NSProcessInfo processInfo] operatingSystemVersion];
+  return [NSString stringWithFormat:@"%ld.%ld.%ld", static_cast<long>(version.majorVersion),
+                                    static_cast<long>(version.minorVersion),
+                                    static_cast<long>(version.patchVersion)];
 }
 
 std::int64_t pending_build(NSUserDefaults* defaults) {
@@ -793,6 +818,7 @@ didCompleteWithError:(NSError*)error {
   [defaults removeObjectForKey:kPendingBuildKey];
   [defaults removeObjectForKey:kPendingVersionKey];
   [defaults removeObjectForKey:kPendingReasonKey];
+  [defaults removeObjectForKey:kPendingDeadlineKey];
   [defaults removeObjectForKey:kPendingNotesKey];
   [defaults removeObjectForKey:kPendingURLKey];
   [defaults removeObjectForKey:kPendingSHAKey];
@@ -1599,6 +1625,9 @@ didCompleteWithError:(NSError*)error {
     @"pending_build" : @(updateAvailable ? pending : 0),
     // 安装包大小：Sparkle 安装前会重新下载，界面据此提示“将重新下载约 X MB”。
     @"pending_size" : @(updateAvailable ? [defaults integerForKey:kPendingSizeKey] : 0),
+    @"pending_deadline" : updateAvailable
+        ? (id)([defaults stringForKey:kPendingDeadlineKey] ?: [NSNull null])
+        : [NSNull null],
     @"update_available" : @(updateAvailable),
     @"mandatory" : @(mandatory),
     @"reason" : reasonValue,
@@ -1763,6 +1792,18 @@ didCompleteWithError:(NSError*)error {
     finish(kResultNoUpdate);
     return;
   }
+  // 清单声明的最低系统版本：与 core 的 evaluate_manifest 同一口径。
+  NSString* minOS = json_string(manifest, @"min_os");
+  if (minOS.length > 0) {
+    NSString* systemVersion = system_version_string();
+    if (xiaotu::compare_dotted_version(systemVersion.UTF8String, minOS.UTF8String) < 0) {
+      xiaotu::log_warn("更新：当前系统 " + std::string(systemVersion.UTF8String) +
+                       " 低于清单要求 " + std::string(minOS.UTF8String) + "，本次不提示");
+      [self clearPending];
+      finish(kResultOsUnsupported);
+      return;
+    }
+  }
   const std::int64_t remoteBuild = json_long(manifest, @"build");
   if (remoteBuild <= current_build()) {
     [self clearPending];
@@ -1825,9 +1866,36 @@ didCompleteWithError:(NSError*)error {
     return;
   }
 
+  // API 版本区间：清单通常必填；缺失或非法时按“未声明”处理，避免误拦。
+  const long long apiMin = json_long(manifest, @"api_min");
+  const long long apiMax = json_long(manifest, @"api_max");
+  const int apiVersion = xiaotu::current_api_version();
+  if (apiMin > 0 && apiMax >= apiMin && apiVersion > 0 &&
+      (apiVersion < apiMin || apiVersion > apiMax)) {
+    xiaotu::log_warn("更新：当前 API v" + std::to_string(apiVersion) + " 不在清单区间 [" +
+                     std::to_string(apiMin) + ", " + std::to_string(apiMax) + "]，本次不提示");
+    [self clearPending];
+    finish(kResultIncompatibleApi);
+    return;
+  }
+
   const bool mandatory = json_bool(manifest, @"mandatory");
   NSString* version = json_string(manifest, @"version");
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  // 灰度：强制更新不受分桶限制；其余按安装 UUID + 目标 build 稳定分桶。
+  if (!mandatory) {
+    const long long rollout = json_long(manifest, @"rollout_percent");
+    const int percent =
+        (rollout >= 1 && rollout <= 100) ? static_cast<int>(rollout) : 100;
+    const int bucket = xiaotu::rollout_bucket(installation_id().UTF8String, remoteBuild);
+    if (!xiaotu::rollout_allows(percent, bucket)) {
+      xiaotu::log_info("更新：版本 " + std::string(version.UTF8String ?: "") + " 灰度未命中（" +
+                       std::to_string(bucket) + "/" + std::to_string(percent) + "），本次不提示");
+      [self clearPending];
+      finish(kResultNotInRollout);
+      return;
+    }
+  }
   NSString* skipped = [defaults stringForKey:kSkippedVersionKey];
   const double skipUntil = [defaults doubleForKey:kSkipUntilKey];
   if (!mandatory && [skipped isEqualToString:version] && now_epoch() < skipUntil) {
@@ -1840,6 +1908,9 @@ didCompleteWithError:(NSError*)error {
   [defaults setObject:version ?: @"" forKey:kPendingVersionKey];
   [defaults setBool:mandatory forKey:kMandatoryKey];
   [defaults setObject:json_string(manifest, @"mandatory_reason") ?: @"" forKey:kPendingReasonKey];
+  // 最晚安装时间仅用于界面提示；是否强制仍以 mandatory 为准（与 core 一致）。
+  [defaults setObject:json_string(manifest, @"mandatory_deadline") ?: @""
+               forKey:kPendingDeadlineKey];
   [defaults setObject:json_string(manifest, @"release_notes_url") ?: @"" forKey:kPendingNotesKey];
   // 预下载需要安装包地址、哈希与大小；持久化后用户确认流量提示时不必重新拉清单。
   [defaults setObject:json_string(manifest, @"url") ?: @"" forKey:kPendingURLKey];

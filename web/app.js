@@ -6888,11 +6888,14 @@
     mandatoryBlockOpen = true;
     const reason = mandatoryReasonText(status.reason);
     const size = status.pending_size ? `约 ${formatBytes(status.pending_size)}` : "安装包";
+    const deadline = status.pending_deadline
+      ? `请于 ${status.pending_deadline} 前完成升级。`
+      : "";
     askDialog({
       message:
         `当前版本必须升级${reason ? "（" + reason + "）" : ""}：` +
         `${status.pending_version || "新版本"}（构建 ${status.pending_build || "—"}）。` +
-        `安装时会重新下载${size}并退出程序，升级后才能继续使用。`,
+        `${deadline}安装时会重新下载${size}并退出程序，升级后才能继续使用。`,
       okText: "立即安装",
       cancelText: null,
       blocking: true,
@@ -6928,6 +6931,9 @@
         SKIPPED: "已跳过该版本",
         INCOMPATIBLE_SCHEMA: "版本不兼容，需先升级到中间版本",
         INTERMEDIATE_REQUIRED: "需先安装中间版本",
+        OS_UNSUPPORTED: "当前系统版本过低，不能安装该更新",
+        INCOMPATIBLE_API: "客户端接口版本不兼容",
+        NOT_IN_ROLLOUT: "该版本暂未对当前安装开放（灰度）",
         NOT_CONFIGURED: "未配置更新源",
       };
       const last = status && status.last_result;
@@ -7017,7 +7023,11 @@
                  reason ? escapeHtml(reason) + "，" : ""
                }当前版本需升级到 ${escapeHtml(
                  status.pending_version || "新版本"
-               )} 后才能继续使用，此更新不能跳过。
+               )} 后才能继续使用，此更新不能跳过。${
+                 status.pending_deadline
+                   ? `请于 ${escapeHtml(status.pending_deadline)} 前完成升级。`
+                   : ""
+               }
              </div>`
           : "";
       // 恢复模式：连续启动失败后引导回退。回退只替换程序，数据库结构变更需先恢复升级前备份。
