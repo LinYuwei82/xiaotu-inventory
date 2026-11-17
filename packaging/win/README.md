@@ -73,29 +73,72 @@ $version = (Get-Content VERSION -Raw).Trim()
 `SIGNING.txt` 会明确写「已签名」或「未签名：未配置 WINDOWS_CERT_PFX_BASE64」，
 不会把未签名产物当成已签名。
 
-### 签名（参数化空位）
+### 代码签名
+
+签名分两步，顺序不能反：**先签包内 exe，再打安装包**。Inno 只签安装包与卸载器，
+不会回签已复制的 exe；先打包后签 exe 会得到「安装包已签、包内 exe 未签」的混合状态。
+
+本机（PFX）：
+
+```powershell
+$env:XIAOTU_CERT_PASSWORD = '换成口令'   # 只放当前会话，不进仓库
+
+# 1. 签包内 exe（壳按实际路径改）
+.\packaging\win\sign.ps1 -PfxPath D:\certs\xiaotu.pfx `
+  -Files build\windows\server\xiaotu-server.exe,shell\win\build\xiaotu-shell.exe
+
+# 2. 打包；ISCC 用同一份证书签安装包与卸载器
+$version = (Get-Content VERSION -Raw).Trim()
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" /DSign=1 `
+  '/Ssigntool=C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe sign /fd SHA256 /f D:\certs\xiaotu.pfx /p <口令> /tr http://timestamp.digicert.com /td SHA256 $f' `
+  packaging\win\xiaotu-inventory.iss
+
+# 3. 复验安装包并写 out\SIGNING.txt
+.\packaging\win\sign.ps1 -PfxPath D:\certs\xiaotu.pfx
+```
+
+证书在 USB token / HSM 或已导入证书存储时，用指纹签名，不必在命令行传口令：
+
+```powershell
+.\packaging\win\sign.ps1 -Thumbprint <证书指纹>        # 当前用户存储
+.\packaging\win\sign.ps1 -Thumbprint <指纹> -MachineStore
+```
+
+`sign.ps1` 对每个文件执行 `signtool verify /pa /v`；任一失败即以非 0 退出，并在
+`out\SIGNING.txt` 写「签名失败」，不会写成「已签名」。
+
+CI（`.github/workflows/windows-build.yml`）检测到 secret 时先用 `sign.ps1` 签两个 exe，
+再由 ISCC 签安装包与卸载器，最后对安装包跑 `verify /pa /v`：
 
 | 名称 | 类型 | 用途 |
 | --- | --- | --- |
-| `WINDOWS_CERT_PFX_BASE64` | secret | PFX 证书的 Base64；存在时才签名 |
+| `WINDOWS_CERT_PFX_BASE64` | secret | PFX 的 Base64；存在时才签名 |
 | `WINDOWS_CERT_PFX_PASSWORD` | secret | PFX 口令 |
 
-两个 secret 都存在时，CI 用 Windows SDK 的 `signtool.exe` 以 SHA256 + RFC3161 时间戳
-（`http://timestamp.digicert.com`）签名安装包与卸载器；任一缺失则跳过签名并打印「未签名」。
-证书配置了但签名失败时，CI 直接失败，不会产出看似正常的包。
+**证书怎么选**
+
+- **OV**：消除「未知发布者」；SmartScreen 信誉需随下载量累积。个人可申请，需身份证明，
+  部分 CA 还要求营业执照。
+- **EV**：通常立即获得 SmartScreen 信任，成本更高，私钥在硬件 token / 云 HSM。
+- **Azure Trusted Signing**：按月订阅、云端签名，适合 CI；需要 Azure 订阅并通过组织验证，
+  个人开发者是否可申请以官方为准。
+- 2023 年起 CA 通常不再交付可导出的裸 PFX，私钥须存放在硬件或云 HSM。证书以 token 形式交付时
+  用 `-Thumbprint`；CI 无法插 token，应改用 CA 的云签名服务或 Azure Trusted Signing。
+  上面两个 PFX secret 只适用于仍提供 PFX 的证书。
 
 ### 未签名包的分发方式
 
-当前已定：**暂不购买证书，未签名包可分发给早期客户**，按手工方式发送，并随包附上首次放行说明：
+在拿到证书前，未签名包仍可分发给早期客户，按手工方式发送，并随包附上首次放行说明：
 
 - 用户首次运行会看到 SmartScreen「未知发布者」，点「更多信息 → 仍要运行」即可；
 - 分发时给出 SHA256，便于客户核对包未被篡改；
 - 完整说明见 [`docs/发行与安装说明.md`](../../docs/发行与安装说明.md)；
-- 购买 OV 证书并配置两个 secret 后重编，即可去掉该提示。
+- 拿到证书后按上文完成签名并重编，即可去掉该提示。
 
 ### 尚未验证的边界
 
-- 真实 Authenticode 签名：需要证书，未验（本地产物为未签名，`SIGNING.txt` 已注明）。
+- 真实 Authenticode 签名：脚本与 CI 已接入，待购买证书后实签验证（当前本地产物仍为未签名，
+  `SIGNING.txt` 已注明）。
 - 保留数据弹窗与「仅卸载不删数据」的交互提示：静默卸载已验「数据目录与 `app.db` 保留」，
   但交互模式下的提示文案与按钮仍需人工看一眼。
 - WebView2 缺失提示、窗口位置记忆、打印对话框、SmartScreen 表现：见

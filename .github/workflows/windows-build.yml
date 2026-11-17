@@ -128,11 +128,20 @@ jobs:
               throw '配置了证书 secret，但未找到 signtool.exe，无法签名'
             }
             [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:CERT_PFX_BASE64))
+            # 先签包内两个 exe：Inno 只签安装包与卸载器，不会回签已复制的 exe。
+            $exeFiles = @(
+              'build\windows\server\xiaotu-server.exe',
+              'shell\win\build\xiaotu-shell.exe'
+            ) | Where-Object { Test-Path -LiteralPath $_ }
+            & packaging\win\sign.ps1 -PfxPath $pfxPath -PfxPassword $env:CERT_PFX_PASSWORD -Files $exeFiles
+            if ($LASTEXITCODE -ne 0) {
+              throw "签名 Windows exe 失败（退出码 $LASTEXITCODE）"
+            }
             $signCommand = '/Ssigntool="{0}" sign /fd SHA256 /f "{1}" /p "{2}" /tr http://timestamp.digicert.com /td SHA256 $f' `
               -f $signtool.FullName, $pfxPath, $env:CERT_PFX_PASSWORD
             $isccArgs += '/DSign=1'
             $isccArgs += $signCommand
-            '已签名：检测到证书 secret，安装包与卸载器由 signtool 签名。' |
+            '已签名：检测到证书 secret，xiaotu-server.exe、xiaotu-shell.exe、安装包与卸载器均由 signtool 签名。' |
               Out-File packaging\win\out\SIGNING.txt -Encoding utf8
             Write-Host '签名：已配置证书 secret，开始签名'
           } else {
@@ -144,6 +153,17 @@ jobs:
           & $iscc @isccArgs 'packaging\win\xiaotu-inventory.iss'
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup 编译失败（退出码 $LASTEXITCODE）"
+          }
+          if ($env:CERT_PFX_BASE64) {
+            $setup = Get-ChildItem packaging\win\out\*-setup.exe |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if (-not $setup) {
+              throw '未找到安装包，无法校验签名'
+            }
+            & $signtool.FullName verify /pa /v $setup.FullName
+            if ($LASTEXITCODE -ne 0) {
+              throw '安装包 Authenticode 校验失败'
+            }
           }
           if (Test-Path -LiteralPath $pfxPath) {
             Remove-Item -LiteralPath $pfxPath -Force

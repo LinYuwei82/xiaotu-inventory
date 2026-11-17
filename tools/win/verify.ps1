@@ -282,9 +282,19 @@ if ($SkipInstall) {
         $sign = Join-Path $dir "SIGNING.txt"
         if (-not (Test-Path $sign)) { throw "安装包同目录缺少 SIGNING.txt: $dir" }
         $text = Get-Content -Raw $sign
-        if ($text -match "已签名" -and $text -notmatch "未签名") { throw "SIGNING.txt 标记为已签名，与预期不符" }
-        if ($text -notmatch "未签名") { throw "SIGNING.txt 未明确写未签名" }
-        Pass "安装包签名状态" "SIGNING.txt: $($text.Trim())"
+        $signedFlag = ($text -match "已签名") -and ($text -notmatch "未签名")
+        if (-not $signedFlag -and $text -notmatch "未签名") {
+            throw "SIGNING.txt 既未写「已签名」也未写「未签名」: $($text.Trim())"
+        }
+        $auth = Get-AuthenticodeSignature -FilePath $installerPath
+        if ($signedFlag) {
+            if (-not $auth.SignerCertificate) { throw "SIGNING.txt 标记已签名，但安装包没有 Authenticode 签名" }
+            if ($auth.Status -ne "Valid") { throw "SIGNING.txt 标记已签名，但签名状态为 $($auth.Status)" }
+            Pass "安装包签名状态" "已签名：$($auth.SignerCertificate.Subject) / $($auth.SignerCertificate.Thumbprint)"
+        } else {
+            if ($auth.SignerCertificate) { throw "SIGNING.txt 标记未签名，但安装包已有签名" }
+            Pass "安装包签名状态" "未签名（与 SIGNING.txt 一致）"
+        }
     }
     Invoke-Check "安装包 SHA256" {
         $h = Get-FileHash -Algorithm SHA256 $installerPath
