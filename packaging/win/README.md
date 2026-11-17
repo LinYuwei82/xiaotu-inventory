@@ -126,6 +126,32 @@ CI（`.github/workflows/windows-build.yml`）检测到 secret 时先用 `sign.ps
   用 `-Thumbprint`；CI 无法插 token，应改用 CA 的云签名服务或 Azure Trusted Signing。
   上面两个 PFX secret 只适用于仍提供 PFX 的证书。
 
+### Certum 云签名（选定方案）
+
+产品：**Certum Standard Code Signing in the Cloud**（SimplySign 云签名，OV）。个人可申请，
+材料为身份证/护照 + 手机话费发票；证书主体是个人法定姓名（如 `Yuwei Lin`），不是 `si_mem`。
+
+1. 在 Certum 官方店或授权服务商（如 SSLDUN）下单 1 年或 3 年。2026-02-27 起单张证书最多
+   459 天，2/3 年期会在到期前免费 reissue，不是一张证书用满三年。
+2. 提交身份与地址材料，完成 CA 的电话/视频核验。
+3. 激活 SimplySign 账号（邮箱 + 手机 2FA），安装 SimplySign Desktop 并登录；证书会出现在
+   Windows「个人」证书存储。
+4. 取指纹：
+   ```powershell
+   Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert |
+     Select-Object Subject, Thumbprint, NotAfter
+   ```
+5. 用指纹签名（SimplySign 会要求确认/2FA）：
+   ```powershell
+   .\packaging\win\sign.ps1 -Thumbprint <指纹> `
+     -Files build\windows\server\xiaotu-server.exe,shell\win\build\xiaotu-shell.exe
+   ```
+
+**CI 限制**：SimplySign 依赖桌面虚拟卡与登录会话，GitHub 托管 runner 用不了。可选：
+- 本地或自托管 Windows runner 上打包并签名（当前本机流程即可）；
+- 改用带 API 的云签名（如 SSL.com eSigner），再改 CI；
+- 现有 `WINDOWS_CERT_PFX_BASE64` / `WINDOWS_CERT_PFX_PASSWORD` 对 Certum 云证书不适用。
+
 ### 未签名包的分发方式
 
 在拿到证书前，未签名包仍可分发给早期客户，按手工方式发送，并随包附上首次放行说明：

@@ -105,6 +105,8 @@ jobs:
 
       # 签名是参数化空位：有证书 secret 才加 /DSign=1 与 /Ssigntool；
       # 没有就跳过，并把「未签名」写进产物说明，避免被误当成已签名分发。
+      # 该路径需要可导出的 PFX；Certum SimplySign 云证书无法在托管 runner 使用，
+      # 需自托管 runner 或改用带 API 的云签名（见 packaging/win/README.md）。
       - name: Build Windows installer
         shell: pwsh
         env:
