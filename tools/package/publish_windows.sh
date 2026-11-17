@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # 小兔在线 · Windows 清单发布脚本
 #
-# 输入 Windows 安装包（setup.exe）→ 生成 Ed25519 签名的 latest.json → 上传 dl.xiaotu.online → purge CDN。
+# 输入 Windows 安装包（setup.exe）→ 生成 Ed25519 签名的 windows.json → 上传 dl.xiaotu.online → purge CDN。
 # macOS 用 publish_oss.sh（dmg + appcast）；Windows 没有 appcast，只发清单。
 #
 # 目录结构（与壳里写死的清单地址一致）：
 #   oss://<bucket>/xiaotu/<setup 文件名>                 ← 长缓存 / immutable（下载页也用这个路径）
-#   oss://<bucket>/windows/<channel>/latest.json         ← 60 秒缓存
+#   oss://<bucket>/<product>/updates/<channel>/windows.json ← 60 秒缓存
 #
 # 重要：BUILD 必须与打包时写进 exe 的构建号完全一致。
 # 壳的更新判定是 `manifest.build <= 当前 build → 无更新`；如果清单里的 build
@@ -185,7 +185,7 @@ PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 SETUP_KEY="$PRODUCT/$SETUP_BASENAME"
 SETUP_PUBLIC_URL="$CDN_DOMAIN/$SETUP_KEY"
-LATEST_KEY="windows/$CHANNEL/latest.json"
+LATEST_KEY="$PRODUCT/updates/$CHANNEL/windows.json"
 MANIFEST_PUBLIC="$CDN_DOMAIN/$LATEST_KEY"
 
 echo "===== OSS 发布 · Windows 安装包 ====="
@@ -197,7 +197,7 @@ echo "AK / 来源：               ${AK_MASK:-<dry-run>} / ${OSS_CRED_SOURCE:-<d
 echo "域名：                    ${CDN_DOMAIN}"
 echo "OSS key："
 echo "  setup.exe：             ${SETUP_KEY}"
-echo "  latest.json：           ${LATEST_KEY}"
+echo "  windows.json：          ${LATEST_KEY}"
 [ "${OSS_SKIP}" = "true" ] && echo "(dry-run：不上传)"
 
 STAGE="$(mktemp -d -t xiaotu-win-stage)"
@@ -229,8 +229,8 @@ else
   echo "===== ① [dry-run] 将上传 $SETUP_KEY"
 fi
 
-# ---- ② 生成并签名 latest.json ----
-MANIFEST_LOCAL="$STAGE/latest.json"
+# ---- ② 生成并签名 windows.json ----
+MANIFEST_LOCAL="$STAGE/windows.json"
 MANIFEST_ARGS=(
   generate
   --file "$SETUP_PATH"
@@ -252,7 +252,7 @@ MANIFEST_ARGS=(
 [ -n "$RELEASE_NOTES_URL" ] && MANIFEST_ARGS+=(--release-notes-url "$RELEASE_NOTES_URL")
 
 echo ""
-echo "===== ② 生成 latest.json"
+echo "===== ② 生成 windows.json"
 "$VENV_PY" "$REPO_ROOT/tools/package/update_manifest.py" "${MANIFEST_ARGS[@]}"
 
 # ---- ③ 本地验签 ----
@@ -265,10 +265,10 @@ MANIFEST_BUILD="$("$VENV_PY" -c "import json;print(json.load(open('$MANIFEST_LOC
 [ "$MANIFEST_BUILD" = "$BUILD" ] || {
   echo "清单 build（$MANIFEST_BUILD）与 BUILD（$BUILD）不一致" >&2; exit 1; }
 
-# ---- ④ 上传 latest.json ----
+# ---- ④ 上传 windows.json ----
 if [ "$OSS_SKIP" != "true" ]; then
   echo ""
-  echo "===== ④ 上传 latest.json"
+  echo "===== ④ 上传 windows.json"
   oss_upload "$MANIFEST_LOCAL" "$LATEST_KEY" \
     "no-cache, max-age=60" "application/json"
 else
@@ -302,7 +302,7 @@ echo "================ 发布完成 ================"
 echo "版本 / build / channel：  $VERSION / $BUILD / $CHANNEL"
 echo "安装包下载地址：          $SETUP_PUBLIC_URL"
 echo "  sha256 / size：         $SETUP_SHA256 / $SETUP_SIZE 字节"
-echo "latest.json：             $MANIFEST_PUBLIC"
+echo "windows.json：             $MANIFEST_PUBLIC"
 echo "schema / api：            $SCHEMA_MIN ~ $SCHEMA_MAX / $API_MIN ~ $API_MAX"
 echo ""
 echo "→ 立即验证："
