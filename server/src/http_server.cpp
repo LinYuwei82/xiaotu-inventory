@@ -640,6 +640,15 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                                     {"schema_version", services_.db.schema_version()},
                                     {"platform", query.platform}};
                  body["update_available"] = result.manifest_ok && result.decision.update_available;
+                 // 强制标记可能来自清单 mandatory，也可能来自服务端 min_supported_version；
+                 // 与 latest.mandatory（仅清单字段）分开，界面以这个为准。
+                 body["mandatory"] = result.manifest_ok && result.decision.mandatory;
+                 body["mandatory_reason"] = result.manifest_ok && !result.decision.reason.empty()
+                                                ? nlohmann::json(result.decision.reason)
+                                                : nlohmann::json(nullptr);
+                 body["min_supported_version"] = info_.update_min_supported_version.empty()
+                                                     ? nlohmann::json(nullptr)
+                                                     : nlohmann::json(info_.update_min_supported_version);
                  if (result.manifest_ok) {
                    body["up_to_date"] = result.decision.code == "NO_UPDATE";
                    body["code"] = result.decision.code;

@@ -1558,6 +1558,8 @@ didCompleteWithError:(NSError*)error {
     @"last_result" : lastResult ?: [NSNull null],
     @"pending_version" : pendingVersion ?: [NSNull null],
     @"pending_build" : @(updateAvailable ? pending : 0),
+    // 安装包大小：Sparkle 安装前会重新下载，界面据此提示“将重新下载约 X MB”。
+    @"pending_size" : @(updateAvailable ? [defaults integerForKey:kPendingSizeKey] : 0),
     @"update_available" : @(updateAvailable),
     @"mandatory" : @(mandatory),
     @"reason" : reasonValue,

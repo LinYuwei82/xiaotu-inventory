@@ -114,10 +114,12 @@
   let confirmDialogOpen = false;
 
   // options: message / okText / cancelText（传 null 表示只有确认按钮）/ withInput / defaultValue
+  //          blocking（强制升级用：屏蔽 Esc 与点击遮罩，必须点确认）
   function askDialog(options) {
     const okText = options.okText || "确定";
     const cancelText = options.cancelText === undefined ? "取消" : options.cancelText;
     const withInput = Boolean(options.withInput);
+    const blocking = options.blocking === true;
     if (confirmDialogOpen) return Promise.resolve({ ok: false, value: null });
     confirmDialogOpen = true;
     return new Promise((resolve) => {
@@ -165,7 +167,7 @@
       function onKey(event) {
         if (event.key === "Escape") {
           event.preventDefault();
-          close(false);
+          if (!blocking) close(false);
         } else if (event.key === "Enter") {
           event.preventDefault();
           close(true);
@@ -174,7 +176,7 @@
       cancel.addEventListener("click", () => close(false));
       ok.addEventListener("click", () => close(true));
       mask.addEventListener("click", (event) => {
-        if (event.target === mask) close(false);
+        if (event.target === mask && !blocking) close(false);
       });
       document.addEventListener("keydown", onKey, true);
       document.body.appendChild(mask);
@@ -6859,6 +6861,60 @@
     return (value / 1024 / 1024 / 1024).toFixed(2) + " GB";
   }
 
+  // 强制升级原因文案：清单 mandatory_reason 与服务端 MIN_SUPPORTED 共用。
+  function mandatoryReasonText(reason) {
+    const labels = {
+      SECURITY: "安全漏洞修复",
+      PROTOCOL: "协议不兼容",
+      REGULATORY: "法规或税控要求",
+      MIN_SUPPORTED: "低于服务端最低支持版本",
+    };
+    return labels[reason] || "";
+  }
+
+  function nativeUpdateBridge() {
+    return window.webkit && window.webkit.messageHandlers
+      ? window.webkit.messageHandlers
+      : null;
+  }
+
+  // 强制升级拦截：壳内状态一到就弹不可跳过的提示，只能点「立即安装」。
+  // blocker 只弹一次；安装由壳交给 Sparkle 完成，安装包会重新下载。
+  let mandatoryBlockOpen = false;
+  function blockMandatoryUpdate(status) {
+    if (mandatoryBlockOpen || !status || !status.mandatory || !status.update_available) return;
+    const bridge = nativeUpdateBridge();
+    if (!bridge || !bridge.xiaotuUpdateInstall) return;
+    mandatoryBlockOpen = true;
+    const reason = mandatoryReasonText(status.reason);
+    const size = status.pending_size ? `约 ${formatBytes(status.pending_size)}` : "安装包";
+    askDialog({
+      message:
+        `当前版本必须升级${reason ? "（" + reason + "）" : ""}：` +
+        `${status.pending_version || "新版本"}（构建 ${status.pending_build || "—"}）。` +
+        `安装时会重新下载${size}并退出程序，升级后才能继续使用。`,
+      okText: "立即安装",
+      cancelText: null,
+      blocking: true,
+    }).then(() => {
+      bridge.xiaotuUpdateInstall.postMessage({});
+      mandatoryBlockOpen = false;
+    });
+  }
+
+  // 启动时主动取一次壳内更新状态，用于强制升级拦截；关于页打开后会自己再取。
+  function requestNativeUpdateStatus(onStatus) {
+    const bridge = nativeUpdateBridge();
+    if (!bridge || !bridge.xiaotuUpdateStatus) return;
+    const previous = window.xiaotuUpdateStatusDone;
+    window.xiaotuUpdateStatusDone = (payload) => {
+      window.xiaotuUpdateStatusDone = previous;
+      const status = payload && payload.status ? payload.status : payload;
+      if (status) onStatus(status);
+    };
+    bridge.xiaotuUpdateStatus.postMessage({});
+  }
+
   // 软件更新：状态、下载、安装都在服务端完成；前端只展示结果与发起动作。
   // 不自动安装：下载后仍需管理员点「安装更新」并二次确认。
   // 原生自动更新卡片：由壳内 XiaotuUpdater 提供状态、检查与安装。
@@ -6952,6 +7008,18 @@
              </p>
              <button class="btn" type="button" data-role="ack-prefetch">我知道了，开始后台下载</button>`
           : "";
+      // 强制升级：阻塞式提示，不提供“跳过此版本”，安装入口保持可用。
+      const reason = mandatoryReasonText(status.reason);
+      const mandatory =
+        status.update_available && status.mandatory
+          ? `<div class="notice error" style="margin:10px 0">
+               <strong>必须升级</strong>：${
+                 reason ? escapeHtml(reason) + "，" : ""
+               }当前版本需升级到 ${escapeHtml(
+                 status.pending_version || "新版本"
+               )} 后才能继续使用，此更新不能跳过。
+             </div>`
+          : "";
       // 恢复模式：连续启动失败后引导回退。回退只替换程序，数据库结构变更需先恢复升级前备份。
       const previous = status.previous || {};
       const recovery = status.recovery_required
@@ -6986,6 +7054,7 @@
             <p class="page-sub">检查与下载均通过签名校验；安装前会再次确认并关闭程序</p>
           </div>
         </div>
+        ${mandatory}
         ${recovery}
         <table class="table"><tbody>${rows
           .map(
@@ -7079,8 +7148,17 @@
         });
       }
       card.querySelector('[data-role="install"]').addEventListener("click", async () => {
+        const size = status.pending_size
+          ? `约 ${formatBytes(status.pending_size)}`
+          : "安装包";
         const confirmed = await askConfirm(
-          "安装更新会打开安装包，请在安装前退出本程序，是否继续？",
+          status.mandatory
+            ? `此更新为必须升级（${mandatoryReasonText(status.reason) || "服务端要求"}），不能跳过。` +
+                `安装时会重新下载${size}，随后关闭程序并完成安装。是否继续？`
+            : `将安装 ${status.pending_version || "新版本"}（构建 ${
+                status.pending_build || "—"
+              }）。安装时会重新下载${size}（后台预下载只用于提前校验），` +
+                "随后关闭程序并完成安装。是否继续？",
           { okText: "安装", cancelText: "取消" }
         );
         if (!confirmed) return;
@@ -7242,6 +7320,18 @@
       if (data.manifest_warning) {
         rows.push(["清单提示", data.manifest_warning]);
       }
+      // 强制升级：服务端 min_supported_version 或清单 mandatory 都会置位。
+      const mandatoryReason = mandatoryReasonText(data.mandatory_reason || "");
+      const mandatory =
+        data.update_available && data.mandatory
+          ? `<div class="notice error" style="margin:0 0 10px">
+               <strong>必须升级</strong>：${
+                 mandatoryReason ? escapeHtml(mandatoryReason) + "，" : ""
+               }当前版本需升级到 ${escapeHtml(
+                 latest ? latest.version : "新版本"
+               )} 后才能继续使用，此更新不能跳过。
+             </div>`
+          : "";
       let downloadLine = "";
       if (download.state === "running") {
         downloadLine = "正在下载并校验安装包…";
@@ -7259,6 +7349,7 @@
             <p class="page-sub">安装会退出服务、自动替换程序并重启；替换失败自动回滚旧版本</p>
           </div>
         </div>
+        ${mandatory}
         <table class="table"><tbody>${rows
           .map(
             ([label, value]) =>
@@ -8351,6 +8442,9 @@
         renderChangePassword("管理员已重置口令，请设置新口令");
         return;
       }
+
+      // 强制升级拦截：壳内主动取一次状态；浏览器里没有桥，静默跳过。
+      requestNativeUpdateStatus(blockMandatoryUpdate);
 
       // 数据目录位于同步盘时由服务端给出提示，登录后常驻在页面顶部。
       let warningNode = document.getElementById("data-warning");
