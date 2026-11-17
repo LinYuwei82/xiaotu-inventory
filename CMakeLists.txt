@@ -76,7 +76,7 @@ endif()
 # 三者都为空表示更新功能关闭；只提供一部分视为配置错误。
 set(XIAOTU_UPDATE_MANIFEST_URL "" CACHE STRING "单机版清单地址（https）")
 set(XIAOTU_UPDATE_FEED_URL "" CACHE STRING "Sparkle appcast 地址（https）")
-set(XIAOTU_UPDATE_PUBKEY "" CACHE STRING "Sparkle SUPublicEDKey（Ed25519 公钥，base64）")
+set(XIAOTU_UPDATE_PUBKEY "bc1rp4ISWC+0OEkw4ndoMnTVQBr2U99qGUVlUTCv4og=" CACHE STRING "Sparkle SUPublicEDKey / updater_win 信任锚（Ed25519 公钥，base64，32 字节）")
 # API 版本：破坏性协议变更时 +1，并保留 N-1 一个 MINOR 周期。
 set(XIAOTU_API_VERSION "1" CACHE STRING "API 协议版本")
 
