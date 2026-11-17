@@ -37,7 +37,8 @@ Windows 两个 exe 与 Inno Setup 安装包都引用同一个 `.ico`；`xiaotu-s
 的图标来自各自的 `version.rc`。
 
 > **已删除的旧图标**（全库清理）：`xiaotu-a-rabbit-barcode.icns`、`xiaotu-a-rabbit-barcode.ico`、
-> `candidate-a-rabbit-barcode.svg`——紫色底 + 白色小兔 + 条形码，设计方向已废弃。
+> `candidate-a-rabbit-barcode.svg`、`candidate-b-rabbit-bars.svg`、`candidate-c-rabbit-negative-shelf.svg`——
+> 三套兔耳 SVG 设计方向全部废弃，统一改用 `Tu.icns`（青绿色底 + 白色"兔"字）。
 
 ## 构建号与更新配置
 
