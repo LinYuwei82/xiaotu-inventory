@@ -39,6 +39,10 @@ NSString* const kPausedKey = @"XiaotuUpdatePaused";
 NSString* const kLastCheckKey = @"XiaotuLastCheckAt";
 NSString* const kLastManualCheckKey = @"XiaotuLastManualCheckAt";
 NSString* const kLastResultKey = @"XiaotuLastCheckResult";
+// 清单检查失败计数：成功一次即清零；失败后按 1/10/60 分钟退避。
+NSString* const kCheckFailuresKey = @"XiaotuCheckFailures";
+// 服务端轻量握手要求的最低客户端版本；未配置或从未握手为 nil。
+NSString* const kMinSupportedKey = @"XiaotuMinSupportedVersion";
 NSString* const kAutoCheckKey = @"XiaotuAutoCheckEnabled";
 NSString* const kPrefetchKey = @"XiaotuPrefetchEnabled";
 NSString* const kPrefetchNoticeKey = @"XiaotuPrefetchNoticeAcked";
@@ -1540,6 +1544,9 @@ didCompleteWithError:(NSError*)error {
     @"prefetch_message" : self.prefetchMessage.length > 0 ? self.prefetchMessage
                                                           : [NSNull null],
     @"next_check_at" : @([defaults doubleForKey:kNextCheckKey]),
+    // 失败退避的可观测字段：失败计数与下次重试时间（next_check_at 已按退避重排）。
+    @"check_failures" : @([defaults integerForKey:kCheckFailuresKey]),
+    @"min_supported_version" : [defaults stringForKey:kMinSupportedKey] ?: [NSNull null],
     @"launch_attempts" : @([defaults integerForKey:kLaunchAttemptsKey]),
     @"paused" : @([defaults boolForKey:kPausedKey]),
     // 恢复模式：连续启动失败后引导回退；previous 为安装前保留的旧版本副本。
@@ -1635,8 +1642,21 @@ didCompleteWithError:(NSError*)error {
     NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
     [defaults setDouble:now_epoch() forKey:kLastCheckKey];
     [defaults setObject:code forKey:kLastResultKey];
-    // 仅自动检查后重新武装；手动检查不改变既有排期。
-    if (completion == nil) {
+    // 检查失败按 1 分钟 / 10 分钟 / 1 小时退避，避免网络异常时整天不重试；
+    // 任意一次成功都清零，回到正常的 24h±2h 节奏。
+    const BOOL failed = [code isEqualToString:kResultCheckFailed];
+    if (failed) {
+      const NSInteger failures = [defaults integerForKey:kCheckFailuresKey] + 1;
+      [defaults setInteger:failures forKey:kCheckFailuresKey];
+      const std::int64_t delay = xiaotu::check_retry_delay(static_cast<int>(failures));
+      [defaults setDouble:now_epoch() + static_cast<double>(delay) forKey:kNextCheckKey];
+      xiaotu::log_warn("更新：清单检查失败（第 " + std::to_string(failures) + " 次），" +
+                       std::to_string(delay) + " 秒后重试");
+    } else if ([defaults integerForKey:kCheckFailuresKey] != 0) {
+      [defaults setInteger:0 forKey:kCheckFailuresKey];
+    }
+    // 自动检查后重新武装；手动检查失败也按退避重排，避免继续等满 24 小时。
+    if (completion == nil || failed) {
       [self armTimerOnQueue];
     }
     if (completion != nil) {

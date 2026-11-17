@@ -122,6 +122,10 @@ std::int64_t manual_check_retry_after(std::int64_t last_manual_epoch, std::int64
 // 跳过天数合法范围：1–30 的整数。
 bool valid_skip_days(int days);
 
+// 清单检查失败后的退避间隔（秒）：第 1 次 1 分钟，第 2 次 10 分钟，之后 1 小时。
+// 用失败次数而不是上次间隔，保证重启后仍能从持久化的计数恢复同一节奏。
+std::int64_t check_retry_delay(int failures);
+
 // install 桥方法的三种结果，对应 STARTED / UNAVAILABLE / NO_PENDING_UPDATE。
 enum class InstallDecision { kStarted, kUnavailable, kNoPendingUpdate };
 

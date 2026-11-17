@@ -483,6 +483,16 @@ bool valid_skip_days(int days) {
   return days >= 1 && days <= 30;
 }
 
+std::int64_t check_retry_delay(int failures) {
+  if (failures <= 1) {
+    return 60;
+  }
+  if (failures == 2) {
+    return 600;
+  }
+  return 3600;
+}
+
 InstallDecision decide_install(bool installer_available, std::int64_t pending_build,
                                std::int64_t current_build) {
   if (!installer_available) {

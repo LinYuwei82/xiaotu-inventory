@@ -227,6 +227,12 @@ int main() {
             !xiaotu::valid_skip_days(-7),
         "0、31、负数应拒绝");
 
+  // 检查失败退避：1 分钟 / 10 分钟 / 1 小时，之后保持 1 小时。
+  check(xiaotu::check_retry_delay(1) == 60, "首次失败退避 1 分钟");
+  check(xiaotu::check_retry_delay(2) == 600, "第二次失败退避 10 分钟");
+  check(xiaotu::check_retry_delay(3) == 3600, "第三次失败退避 1 小时");
+  check(xiaotu::check_retry_delay(9) == 3600, "后续失败保持 1 小时");
+
   // install 三种返回。
   using xiaotu::InstallDecision;
   check(xiaotu::decide_install(false, 2026111301, 2026100101) == InstallDecision::kUnavailable,
