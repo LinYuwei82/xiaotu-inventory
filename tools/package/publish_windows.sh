@@ -6,6 +6,7 @@
 #
 # 目录结构（与壳里写死的清单地址一致）：
 #   oss://<bucket>/xiaotu/<setup 文件名>                 ← 长缓存 / immutable（下载页也用这个路径）
+#   oss://<bucket>/xiaotu/<绿色包文件名>                 ← 存在时一并上传；清单写明 portable_*
 #   oss://<bucket>/<product>/updates/<channel>/windows.json ← 60 秒缓存
 #
 # 重要：BUILD 必须与打包时写进 exe 的构建号完全一致。
@@ -79,6 +80,22 @@ BUILD="${BUILD:-}"
 DEFAULT_SETUP="$REPO_ROOT/packaging/win/out/xiaotu-inventory-$VERSION-win64-setup.exe"
 SETUP_PATH="${SETUP_PATH:-$DEFAULT_SETUP}"
 [ -f "$SETUP_PATH" ] || { echo "安装包不存在：$SETUP_PATH" >&2; exit 1; }
+
+# 绿色包（zip）由 Windows 构建产出；存在就一并发布并写进清单，
+# 下载页的绿色包行才有数据可同步（没有时清单只描述安装包）。
+DEFAULT_ZIP="$REPO_ROOT/build/package/win/xiaotu-inventory-$VERSION-win64.zip"
+ZIP_PATH="${ZIP_PATH:-$DEFAULT_ZIP}"
+ZIP_KEY=""
+ZIP_PUBLIC_URL=""
+ZIP_SIZE=""
+ZIP_SHA256=""
+if [ -f "$ZIP_PATH" ]; then
+  ZIP_BASENAME="$(basename "$ZIP_PATH")"
+  ZIP_KEY="$PRODUCT/$ZIP_BASENAME"
+  ZIP_PUBLIC_URL="$CDN_DOMAIN/$ZIP_KEY"
+  ZIP_SIZE="$(stat -f %z "$ZIP_PATH" 2>/dev/null || stat -c %s "$ZIP_PATH")"
+  ZIP_SHA256="$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')"
+fi
 
 # 清单里的下载地址直接由文件名推导，文件名不规范会写出指向错误对象的 URL
 # （例如从浏览器另存为 win_setup.exe，清单就指向 /xiaotu/win_setup.exe）。
@@ -197,6 +214,7 @@ echo "AK / 来源：               ${AK_MASK:-<dry-run>} / ${OSS_CRED_SOURCE:-<d
 echo "域名：                    ${CDN_DOMAIN}"
 echo "OSS key："
 echo "  setup.exe：             ${SETUP_KEY}"
+[ -n "$ZIP_KEY" ] && echo "  zip（绿色包）：         ${ZIP_KEY}（${ZIP_SIZE} 字节）"
 echo "  windows.json：          ${LATEST_KEY}"
 [ "${OSS_SKIP}" = "true" ] && echo "(dry-run：不上传)"
 
@@ -224,9 +242,15 @@ if [ "$OSS_SKIP" != "true" ]; then
   echo "===== ① 上传安装包 → $SETUP_KEY"
   oss_upload "$SETUP_PATH" "$SETUP_KEY" \
     "public, max-age=31536000, immutable" "application/octet-stream"
+  if [ -n "$ZIP_KEY" ]; then
+    echo "===== ① 上传绿色包 → $ZIP_KEY"
+    oss_upload "$ZIP_PATH" "$ZIP_KEY" \
+      "public, max-age=31536000, immutable" "application/zip"
+  fi
 else
   echo ""
   echo "===== ① [dry-run] 将上传 $SETUP_KEY"
+  [ -n "$ZIP_KEY" ] && echo "===== ① [dry-run] 将上传 $ZIP_KEY"
 fi
 
 # ---- ② 生成并签名 windows.json ----
@@ -250,6 +274,7 @@ MANIFEST_ARGS=(
   --published-at "$PUBLISHED_AT"
 )
 [ -n "$RELEASE_NOTES_URL" ] && MANIFEST_ARGS+=(--release-notes-url "$RELEASE_NOTES_URL")
+[ -n "$ZIP_KEY" ] && MANIFEST_ARGS+=(--portable-file "$ZIP_PATH" --portable-url "$ZIP_PUBLIC_URL")
 
 echo ""
 echo "===== ② 生成 windows.json"
@@ -280,7 +305,9 @@ fi
 if [ "$OSS_SKIP" != "true" ] && [ "$PURGE" = "true" ]; then
   echo ""
   echo "===== ⑤ purge CDN 缓存"
-  for url in "$SETUP_PUBLIC_URL" "$MANIFEST_PUBLIC"; do
+  purge_urls=("$SETUP_PUBLIC_URL" "$MANIFEST_PUBLIC")
+  [ -n "$ZIP_KEY" ] && purge_urls+=("$ZIP_PUBLIC_URL")
+  for url in "${purge_urls[@]}"; do
     if command -v aliyun >/dev/null 2>&1; then
       if aliyun cdn RefreshObjectCaches --ObjectPath "$url" >/dev/null 2>&1; then
         echo "  ✓ $url"
@@ -302,6 +329,8 @@ echo "================ 发布完成 ================"
 echo "版本 / build / channel：  $VERSION / $BUILD / $CHANNEL"
 echo "安装包下载地址：          $SETUP_PUBLIC_URL"
 echo "  sha256 / size：         $SETUP_SHA256 / $SETUP_SIZE 字节"
+[ -n "$ZIP_KEY" ] && echo "绿色包下载地址：          $ZIP_PUBLIC_URL
+  sha256 / size：         $ZIP_SHA256 / $ZIP_SIZE 字节"
 echo "windows.json：             $MANIFEST_PUBLIC"
 echo "schema / api：            $SCHEMA_MIN ~ $SCHEMA_MAX / $API_MIN ~ $API_MAX"
 echo ""

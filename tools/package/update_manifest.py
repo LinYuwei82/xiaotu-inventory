@@ -231,6 +231,18 @@ def command_generate(args: argparse.Namespace) -> None:
         "api_max": int(args.api_max),
         "rollout_percent": int(args.rollout),
     }
+    if args.portable_file:
+        portable = Path(args.portable_file)
+        if not portable.is_file():
+            raise SystemExit(f"绿色包不存在：{portable}")
+        portable_url = args.portable_url or (
+            args.url.rsplit("/", 1)[0] + "/" + portable.name
+        )
+        if not portable_url.startswith("https://"):
+            raise SystemExit("portable_url 必须是 https")
+        body["portable_url"] = portable_url
+        body["portable_size"] = portable.stat().st_size
+        body["portable_sha256"] = sha256_file(portable)
     if args.upgrade_step:
         steps = []
         for raw in args.upgrade_step:
@@ -279,6 +291,12 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--channel", default="stable", choices=["stable", "beta"])
     gen.add_argument("--min-os", default="")
     gen.add_argument("--release-notes-url", default="")
+    gen.add_argument(
+        "--portable-file",
+        default="",
+        help="Windows 绿色包 zip；写入 portable_url / portable_size / portable_sha256（下载页用）",
+    )
+    gen.add_argument("--portable-url", default="")
     gen.add_argument("--published-at", default="")
     gen.add_argument("--mandatory", action="store_true")
     gen.add_argument(
