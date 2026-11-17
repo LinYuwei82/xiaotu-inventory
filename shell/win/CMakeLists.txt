@@ -84,7 +84,7 @@ message(STATUS "OpenSSL (Ed25519): ${OPENSSL_VERSION}")
 # trust anchor 公钥（Ed25519，base64，32 字节），与 macOS Info.plist SUPublicEDKey 同源。
 # 默认值来自 build 机 .config/xiaotu-updates/update_signing_2026.pub.pem 取 DER 最后 32 字节 base64。
 # 构建时可用 -DXIAOTU_UPDATE_PUBKEY=<base64> 覆盖，换密钥时只需改这一处。
-set(XIAOTU_UPDATE_PUBKEY "bc1rp4ISWC+0OEkw4ndoMnTVQBr2U99qGUVlUTCv4og=" CACHE STRING "更新清单 Ed25519 信任锚公钥（base64）")
+set(XIAOTU_UPDATE_PUBKEY "HgCDvW0MQ32HFguQ/jW5fVtQh74lBsXMsyfo0sRLH1Y=" CACHE STRING "更新清单 Ed25519 信任锚公钥（base64）")
 if (XIAOTU_UPDATE_PUBKEY)
   message(STATUS "更新公钥：已配置")
 else()
