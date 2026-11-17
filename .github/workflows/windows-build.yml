@@ -55,7 +55,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          choco install openssl --yes --no-progress
+          # 固定 3.x：choco 的 openssl 包已升到 4.x，ABI 与 3.x 不兼容，运行时找的是 libcrypto-3-x64.dll。
+          choco install openssl --version=3.6.2 --allow-downgrade --yes --no-progress
           $root = $null
           foreach ($p in @("$env:ProgramFiles\OpenSSL-Win64", "$env:ProgramFiles\OpenSSL")) {
             if (Test-Path (Join-Path $p 'include\openssl\evp.h')) { $root = $p; break }
