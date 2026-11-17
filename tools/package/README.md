@@ -152,3 +152,24 @@ PRODUCT=xiaotu OSS_BUCKET=xiaotu-update OSS_REGION=cn-hongkong \
 - 每档上传后轮询 CDN，确认 `rollout_percent` 生效才进入下一档；超时即停，当前档保持生效。
 - Ctrl-C 停在当前档；重跑时从下一档开始即可。`--interval` 支持 `30s` / `90m` / `12h` / `2d`。
 - 强制更新（`mandatory=true`）不受比例限制；网络版服务端实际比例取 `min(清单 rollout, 配置 rollout_percent)`。
+
+## 清理 OSS 旧版本
+
+dmg 包按 immutable 长缓存上传，只追加不清理。长期运行桶会堆满历史包。用 `cleanup_oss_versions.sh` 只保留最近 N 个 stable 版本：
+
+```bash
+# 1️⃣ 先 dry-run 看要删哪些（推荐每次先跑这个）
+tools/package/cleanup_oss_versions.sh --dry-run
+
+# 2️⃣ 确认后真删（默认保留最近 3 个）
+tools/package/cleanup_oss_versions.sh --force
+
+# 小兔只保留 1 个（激进）
+tools/package/cleanup_oss_versions.sh --product xiaotu --keep 1 --force
+```
+
+- 默认保留最近 **3 个** 版本，`--keep` 可改；永远至少保留 1 个，不会把产品清空。
+- 脚本按各产品的版本号正则匹配 dmg 文件名（`xiaotu-inventory-1.0.0.dmg`、`DevCard-1.2.2-macos-arm64.dmg`、`Mote-macOS-native-0.3.11.dmg`），用 `semver` 库做版本号排序。
+- **安全保护**：默认 dry-run 模式；非交互环境（CI / 管道）必须显式 `--force` 才允许真删；latest.json / appcast.xml / manual.pdf / index.html / 桶根目录不动；不认识的 dmg（正则不匹配）保守跳过。
+- 凭据加载逻辑与 `publish_oss.sh` 一致：环境变量优先，否则读仓库外 `~/.config/xiaotu-updates/oss-credentials.env`（权限 600）。
+- 依赖：`pip install oss2 semver`（已在 `requirements.txt` 里，首次运行会自动装）。
