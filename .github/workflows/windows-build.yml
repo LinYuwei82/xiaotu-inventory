@@ -192,9 +192,11 @@ jobs:
         run: echo "XIAOTU_BUILD=$(date -u +%Y%m%d%H%M)" >> "$GITHUB_ENV"
 
       # macOS 自带的是 LibreSSL，必须用 Homebrew 的 OpenSSL 3（CMake 侧已 REQUIRED）。
+      # 预设里 CMAKE_*_COMPILER_LAUNCHER=ccache，runner 镜像不带，需自行安装。
       - name: Install OpenSSL 3
         run: |
           brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          brew list ccache >/dev/null 2>&1 || brew install ccache
           echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
 
       - name: Configure
