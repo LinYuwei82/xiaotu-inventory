@@ -40,7 +40,7 @@ if [ -z "$WIN_IP" ]; then
   echo ""
   echo "Windows IP 未找到。请用下面任选一种方式："
   echo "  A.  把脚本改成接受参数后：./scripts/sync-signing-key-to-mac.sh 192.168.50.130"
-  echo "  B.  手动拖文件：Finder 连 Windows → C:\Users\Lin\.config\xiaotu-updates\"
+  echo "  B.  手动拖文件：Finder 连 Windows → C:\\Users\\Lin\\.config\\xiaotu-updates\\"
   echo "      拷 update_signing_2026.pem 和 .pub.pem 到 $KEY_DIR"
   echo "      然后 chmod 600 $KEY_DIR/update_signing_2026.pem 再重新跑本脚本"
   echo "  C.  手动 scp："

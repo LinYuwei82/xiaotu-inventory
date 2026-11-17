@@ -25,9 +25,9 @@ PACKAGES = {
         "label": "macOS",
         "ext": "dmg",
         "file": f"xiaotu-inventory-{VERSION}.dmg",
-        "size": None,          # 需在 Mac build 后填入
-        "sha256": None,        # 同上
-        "note": "（Mac build 后补）",
+        "size": 6378546,
+        "sha256": "fd1dfdc6d39f4d6137c9708959a85828683902f6a3cc9e6d41e54b176449bd5d",
+        "note": "",
     },
     "setup": {
         "label": "Windows 安装包",
@@ -96,14 +96,16 @@ def apply_updates(html: str) -> str:
     for aria_label, pkg_key in ARIA_TO_KEY.items():
         updated = _update_dlrow(updated, aria_label, pkg_key)
 
-    # 卡片内底部 hash 校验命令示例里的旧版本号（在 section 隔离更新之前处理过一次
-    # 卡片内部的；这里再处理一次，因为可能还有漏网之鱼）
-    updated = updated.replace("xiaotu-inventory-0.9.0", f"xiaotu-inventory-{VERSION}")
+    # 卡片内底部 hash 校验命令示例里的旧版本号。用正则覆盖任意旧版本，
+    # 不能写死 0.9.0，否则下一次 1.0.0 → 1.1.0 时会漏改。
+    updated = re.sub(r"xiaotu-inventory-\d+\.\d+\.\d+",
+                     f"xiaotu-inventory-{VERSION}", updated)
 
     result = html[:card_start] + updated + html[card_end:]
 
     # 卡外也有 hash 命令示例（在三个产品卡片之外的通用 footer 区域）
-    result = result.replace("xiaotu-inventory-0.9.0", f"xiaotu-inventory-{VERSION}")
+    result = re.sub(r"xiaotu-inventory-\d+\.\d+\.\d+",
+                    f"xiaotu-inventory-{VERSION}", result)
 
     return result
 
@@ -130,8 +132,8 @@ def _update_dlrow(card: str, aria_label: str, pkg_key: str) -> str:
 
     section_text = card[start:end]
 
-    # 1. 版本号（<span class="mono">v0.9.0</span> 无空格）
-    section_text = section_text.replace(">v0.9.0<", f">v{VERSION}<")
+    # 1. 版本号（<span class="mono">v1.0.0</span> 无空格）；不能写死 0.9.0，否则后续版本会漏改。
+    section_text = re.sub(r">v\d+\.\d+\.\d+<", f">v{VERSION}<", section_text)
 
     # 2. 下载文件名（href）
     href_suffix = ARIA_TO_HREF[aria_label]
@@ -198,8 +200,16 @@ def upload_to_oss(html: str):
         else:
             print(f"  [warn] 本地包不存在：{local}")
 
-    # 上传 index.html
-    bkt.put_object("index.html", html.encode("utf-8"), headers={"Content-Type": "text/html; charset=utf-8"})
+    # 上传 index.html（必须显式给 Content-Type，否则浏览器可能按 xml/纯文本处理；
+    # 下载页要能快速换版，Cache-Control 用 60 秒短缓存）。
+    bkt.put_object(
+        "index.html",
+        html.encode("utf-8"),
+        headers={
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-cache, max-age=60",
+        },
+    )
     print("[oss] PUT index.html 完成")
 
 def purge_cdn():

@@ -22,3 +22,6 @@ backups/
 
 # Windows 打包产物（安装包 / 绿色包，不入库）
 packaging/win/out/
+
+# 下载页改写脚本的中间产物（每次 --fetch/--local 生成，不入库）
+tools/package/_oss_index_*.html
