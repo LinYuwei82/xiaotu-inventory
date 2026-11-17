@@ -605,7 +605,21 @@
     });
   }
 
-  // 报表 / 对账单共用：浏览器走 Blob 下载，单机版 WKWebView 交给原生保存面板。
+  // Windows WebView2 壳检测：chrome.webview + hostObjects 存在
+  function isWinWebview() {
+    return !!(window.chrome && window.chrome.webview && window.chrome.webview.hostObjects);
+  }
+  // Blob → base64（UTF-8 safe，替代 btoa）
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(",")[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // 报表 / 对账单共用：浏览器走 Blob 下载，macOS 原生交 WKWebView，Windows WebView2 走原生对话框。
   async function downloadCsv(path) {
     const response = await fetch(API_BASE + path, { credentials: "include" });
     if (!response.ok) {
@@ -627,6 +641,13 @@
     const handlers = window.webkit && window.webkit.messageHandlers;
     if (handlers && handlers.xiaotuExport) {
       handlers.xiaotuExport.postMessage({ filename, content });
+      return;
+    }
+    if (isWinWebview()) {
+      const nativeIo = await window.chrome.webview.hostObjects.native_io;
+      const b64 = await blobToBase64(new Blob([content], { type: "text/csv;charset=utf-8" }));
+      const ok = await nativeIo.saveFile(filename, b64);
+      if (!ok) throw new Error("用户取消了保存");
       return;
     }
     const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
@@ -809,7 +830,16 @@
 
   function pdfBridge() {
     const handlers = window.webkit && window.webkit.messageHandlers;
-    return handlers && handlers.xiaotuPrintPdf ? handlers.xiaotuPrintPdf : null;
+    if (handlers && handlers.xiaotuPrintPdf) return handlers.xiaotuPrintPdf;
+    // Windows WebView2：mock 一个有 postMessage 的桥，内部用 chrome.webview.postMessage 发到 C++ 壳
+    if (isWinWebview()) {
+      return {
+        postMessage: (payload) => {
+          window.chrome.webview.postMessage({ kind: "printPdf", filename: payload.filename });
+        },
+      };
+    }
+    return null;
   }
 
   function pdfFileName(name) {
@@ -900,6 +930,12 @@
       handlers.xiaotuExport.postMessage({ filename, contentBase64: toBase64(bytes) });
       return;
     }
+    if (isWinWebview()) {
+      const nativeIo = await window.chrome.webview.hostObjects.native_io;
+      const ok = await nativeIo.saveFile(filename, toBase64(bytes));
+      if (!ok) throw new Error("用户取消了保存");
+      return;
+    }
     const blob = new Blob([bytes], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
@@ -913,12 +949,19 @@
     URL.revokeObjectURL(url);
   }
 
-  // 文本类导出（错误清单等）：单机版交给原生保存面板，浏览器走 Blob。
+  // 文本类导出（错误清单等）：macOS 交原生，Windows WebView2 走原生对话框，浏览器走 Blob。
   function saveText(filename, text) {
     const content = "\uFEFF" + text;
     const handlers = window.webkit && window.webkit.messageHandlers;
     if (handlers && handlers.xiaotuExport) {
       handlers.xiaotuExport.postMessage({ filename, content });
+      return;
+    }
+    if (isWinWebview()) {
+      window.chrome.webview.hostObjects.native_io.then(async (nativeIo) => {
+        const b64 = await blobToBase64(new Blob([content], { type: "text/plain;charset=utf-8" }));
+        await nativeIo.saveFile(filename, b64);
+      });
       return;
     }
     const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
@@ -1410,13 +1453,8 @@
         fileInput.accept = ".xlsx";
         fileInput.hidden = true;
         mount.append(fileInput);
-        importButton.addEventListener("click", () => {
-          fileInput.value = "";
-          fileInput.click();
-        });
-        fileInput.addEventListener("change", async () => {
-          const file = fileInput.files && fileInput.files[0];
-          if (!file) return;
+        // 处理导入主逻辑：接收一个 File 对象
+        const runImport = async (file) => {
           const keyLabel = def.key === "item" ? "商品编码" : "编码";
           const confirmed = await askConfirm(
             `将从「${file.name}」导入${def.title}。\n\n` +
@@ -1470,6 +1508,35 @@
             importButton.disabled = false;
             importButton.textContent = "导入";
           }
+        };
+        importButton.addEventListener("click", async () => {
+          // Windows WebView2：走原生打开对话框
+          if (isWinWebview()) {
+            try {
+              const nativeIo = await window.chrome.webview.hostObjects.native_io;
+              const resultJson = await nativeIo.openFile("Excel (*.xlsx)");
+              const result = JSON.parse(resultJson);
+              if (!result.ok) return;  // 用户取消
+              // base64 → Blob → File（保留原文件名）
+              const binary = atob(result.base64);
+              const bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+              const file = new File([bytes], result.name, {
+                type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              });
+              await runImport(file);
+            } catch (error) {
+              showNotice(error.message, "error");
+            }
+            return;
+          }
+          fileInput.value = "";
+          fileInput.click();
+        });
+        fileInput.addEventListener("change", async () => {
+          const file = fileInput.files && fileInput.files[0];
+          if (!file) return;
+          await runImport(file);
         });
       }
     }
@@ -1874,15 +1941,8 @@
         return;
       }
       if (button.dataset.role === "import") {
-        const fileInput = document.createElement("input");
-        fileInput.type = "file";
-        fileInput.accept = ".xlsx";
-        fileInput.hidden = true;
-        mount.append(fileInput);
-        fileInput.addEventListener("change", async () => {
-          const file = fileInput.files && fileInput.files[0];
-          fileInput.remove();
-          if (!file) return;
+        // 共用导入处理函数：接收一个 File 对象
+        const runOpeningImport = async (file) => {
           const confirmed = await askConfirm(
             `将从「${file.name}」导入期初。\n\n` +
               "· 导入前会自动备份数据库，备份失败则中止；\n" +
@@ -1932,6 +1992,36 @@
           } catch (error) {
             showNotice(error.message, "error");
           }
+        };
+        // Windows WebView2：走原生打开对话框
+        if (isWinWebview()) {
+          try {
+            const nativeIo = await window.chrome.webview.hostObjects.native_io;
+            const resultJson = await nativeIo.openFile("Excel (*.xlsx)");
+            const result = JSON.parse(resultJson);
+            if (!result.ok) return;
+            const binary = atob(result.base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            const file = new File([bytes], result.name, {
+              type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            });
+            await runOpeningImport(file);
+          } catch (error) {
+            showNotice(error.message, "error");
+          }
+          return;
+        }
+        const fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.accept = ".xlsx";
+        fileInput.hidden = true;
+        mount.append(fileInput);
+        fileInput.addEventListener("change", async () => {
+          const file = fileInput.files && fileInput.files[0];
+          fileInput.remove();
+          if (!file) return;
+          await runOpeningImport(file);
         });
         fileInput.click();
       }

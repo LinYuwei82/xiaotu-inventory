@@ -13,6 +13,8 @@
 #include <objbase.h>
 // CommandLineToArgvW
 #include <shellapi.h>
+// IFileDialog / IFileSaveDialog / IFileOpenDialog —— 文件对话框（不在 WIN32_LEAN_AND_MEAN 默认包含里）
+#include <shobjidl.h>
 // DISP_E_TOOFEWPARAMS 不在 WIN32_LEAN_AND_MEAN 包含的头里，直接用 E_INVALIDARG 表达参数不足。
 // OAIdl.h / dispids.h 都会引入大量 oidl 常量，没必要为一个错误码 include 进来。
 
@@ -27,6 +29,11 @@
 #include "WebView2.h"
 #include "updater_win.h"
 #include "nlohmann/json.hpp"
+
+// OpenSSL base64 编解码 —— shell 已链接 OpenSSL::SSL OpenSSL::Crypto
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/buffer.h>
 
 namespace {
 
@@ -188,6 +195,333 @@ class UpdaterHost : public IDispatch {
 
  private:
   LONG ref_ = 1;
+};
+
+// ---------- Native IO Host（文件对话框 + base64） ----------
+
+HWND g_shell_hwnd = nullptr;  // 主窗口句柄，供文件对话框用
+
+std::wstring u8_to_w(const std::string& s) {
+  if (s.empty()) return L"";
+  int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+  if (n <= 0) return L"";
+  std::wstring out(static_cast<size_t>(n), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
+  return out;
+}
+
+std::string w_to_u8(const std::wstring& s) {
+  if (s.empty()) return "";
+  int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
+  if (n <= 0) return "";
+  std::string out(static_cast<size_t>(n), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n, nullptr, nullptr);
+  return out;
+}
+
+// OpenSSL base64 解码（无换行）
+std::vector<uint8_t> base64_decode(const std::string& b64) {
+  if (b64.empty()) return {};
+  BIO* b64_bio = BIO_new(BIO_f_base64());
+  BIO* mem = BIO_new_mem_buf(b64.data(), static_cast<int>(b64.size()));
+  if (!b64_bio || !mem) { BIO_free(b64_bio); BIO_free(mem); return {}; }
+  BIO_set_flags(b64_bio, BIO_FLAGS_BASE64_NO_NL);
+  BIO* chain = BIO_push(b64_bio, mem);
+  size_t est = (b64.size() / 4) * 3 + 8;
+  std::vector<uint8_t> out(est);
+  int decoded = BIO_read(chain, out.data(), static_cast<int>(out.size()));
+  if (decoded <= 0) { BIO_free_all(chain); return {}; }
+  out.resize(static_cast<size_t>(decoded));
+  BIO_free_all(chain);
+  return out;
+}
+
+// OpenSSL base64 编码（无换行）
+std::string base64_encode(const uint8_t* data, size_t len) {
+  if (!data || len == 0) return "";
+  BIO* b64_bio = BIO_new(BIO_f_base64());
+  BIO* mem = BIO_new(BIO_s_mem());
+  if (!b64_bio || !mem) { BIO_free(b64_bio); BIO_free(mem); return ""; }
+  BIO_set_flags(b64_bio, BIO_FLAGS_BASE64_NO_NL);
+  BIO* chain = BIO_push(b64_bio, mem);
+  BIO_write(chain, data, static_cast<int>(len));
+  BIO_flush(chain);
+  BUF_MEM* bptr = nullptr;
+  BIO_get_mem_ptr(chain, &bptr);
+  std::string out(bptr->data, bptr->length);
+  BIO_free_all(chain);
+  return out;
+}
+
+struct DialogResult { bool ok = false; std::wstring path; };
+
+// 弹 IFileSaveDialog。成功返回 ok=true + path；取消或失败 ok=false。
+DialogResult show_save_dialog(const std::wstring& default_name) {
+  DialogResult r;
+  auto co_init = []() -> std::function<void()> {
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (hr == S_OK) return [] { CoUninitialize(); };
+    return nullptr;  // S_FALSE 或 RPC_E_CHANGED_MODE：已初始化，不用 uninit
+  };
+  auto co_guard = co_init();
+
+  IFileSaveDialog* dlg = nullptr;
+  if (FAILED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+    if (co_guard) co_guard();
+    return r;
+  }
+  if (!default_name.empty()) dlg->SetFileName(default_name.c_str());
+  dlg->SetOptions(FOS_OVERWRITEPROMPT | FOS_FORCEFILESYSTEM | FOS_STRICTFILETYPES);
+
+  HRESULT hr = dlg->Show(g_shell_hwnd);
+  if (SUCCEEDED(hr)) {
+    IShellItem* item = nullptr;
+    if (SUCCEEDED(dlg->GetResult(&item))) {
+      PWSTR path = nullptr;
+      if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+        r.ok = true; r.path = path; CoTaskMemFree(path);
+      }
+      item->Release();
+    }
+  }
+  dlg->Release();
+  if (co_guard) co_guard();
+  return r;
+}
+
+// 弹 IFileOpenDialog，可选过滤器（如 "Excel (*.xlsx)"）
+DialogResult show_open_dialog(const std::wstring& filter_name) {
+  DialogResult r;
+  auto co_init = []() -> std::function<void()> {
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (hr == S_OK) return [] { CoUninitialize(); };
+    return nullptr;
+  };
+  auto co_guard = co_init();
+
+  IFileOpenDialog* dlg = nullptr;
+  if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+    if (co_guard) co_guard();
+    return r;
+  }
+  if (!filter_name.empty()) {
+    COMDLG_FILTERSPEC spec;
+    spec.pszName = filter_name.c_str();
+    spec.pszSpec = L"*.*";
+    dlg->SetFileTypes(1, &spec);
+  }
+  dlg->SetOptions(FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+
+  HRESULT hr = dlg->Show(g_shell_hwnd);
+  if (SUCCEEDED(hr)) {
+    IShellItem* item = nullptr;
+    if (SUCCEEDED(dlg->GetResult(&item))) {
+      PWSTR path = nullptr;
+      if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+        r.ok = true; r.path = path; CoTaskMemFree(path);
+      }
+      item->Release();
+    }
+  }
+  dlg->Release();
+  if (co_guard) co_guard();
+  return r;
+}
+
+// 读整个文件（Excel 导入 ≤ 100MB）
+std::vector<uint8_t> read_file_bytes(const std::wstring& path) {
+  HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return {};
+  LARGE_INTEGER size{};
+  if (!GetFileSizeEx(h, &size) || size.QuadPart > 100LL * 1024 * 1024) { CloseHandle(h); return {}; }
+  std::vector<uint8_t> buf(static_cast<size_t>(size.QuadPart));
+  DWORD read = 0;
+  if (size.QuadPart > 0 && !ReadFile(h, buf.data(), static_cast<DWORD>(buf.size()), &read, nullptr)) {
+    CloseHandle(h); return {};
+  }
+  CloseHandle(h);
+  return buf;
+}
+
+bool write_file_bytes(const std::wstring& path, const uint8_t* data, size_t len) {
+  HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  bool ok = (len == 0) || WriteFile(h, data, static_cast<DWORD>(len), &written, nullptr);
+  CloseHandle(h);
+  return ok;
+}
+
+// NativeIoHost —— saveFile + openFile，暴露给前端做 WebView2 HostObject。
+// DISPID 映射：1 saveFile(filenameUtf8, contentBase64Utf8) → bool
+//              2 openFile(filterNameUtf8) → JSON {"ok":true,"name":"...","base64":"...","size":n} 或 {"ok":false}
+class NativeIoHost : public IDispatch {
+ public:
+  NativeIoHost() : ref_(1) {}
+  ~NativeIoHost() = default;
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+    if (!ppv) return E_POINTER;
+    if (riid == IID_IUnknown || riid == IID_IDispatch) {
+      *ppv = static_cast<IDispatch*>(this); AddRef(); return S_OK;
+    }
+    *ppv = nullptr; return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&ref_)); }
+  ULONG STDMETHODCALLTYPE Release() override {
+    ULONG c = static_cast<ULONG>(InterlockedDecrement(&ref_));
+    if (c == 0) delete this;
+    return c;
+  }
+  HRESULT STDMETHODCALLTYPE GetTypeInfoCount(UINT* ctinfo) override { if (!ctinfo) return E_POINTER; *ctinfo = 0; return S_OK; }
+  HRESULT STDMETHODCALLTYPE GetTypeInfo(UINT, LCID, ITypeInfo**) override { return E_NOTIMPL; }
+  HRESULT STDMETHODCALLTYPE GetIDsOfNames(REFIID, LPOLESTR* names, UINT count, LCID, DISPID* ids) override {
+    static const wchar_t* kNames[] = { L"saveFile", L"openFile" };
+    for (UINT i = 0; i < count; ++i) {
+      ids[i] = DISPID_UNKNOWN;
+      for (UINT j = 0; j < 2; ++j)
+        if (wcscmp(names[i], kNames[j]) == 0) { ids[i] = static_cast<DISPID>(j + 1); break; }
+      if (ids[i] == DISPID_UNKNOWN) return DISP_E_UNKNOWNNAME;
+    }
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE Invoke(DISPID dispid, REFIID, LCID, WORD, DISPPARAMS* params,
+                                   VARIANT* result, EXCEPINFO*, UINT*) override {
+    auto set_str = [&](const std::string& s) -> HRESULT {
+      if (!result) return S_OK;
+      result->vt = VT_BSTR;
+      result->bstrVal = SysAllocStringByteLen(s.c_str(), static_cast<UINT>(s.size()));
+      return result->bstrVal ? S_OK : E_OUTOFMEMORY;
+    };
+    auto set_bool = [&](bool b) -> HRESULT {
+      if (!result) return S_OK;
+      result->vt = VT_BOOL;
+      result->boolVal = b ? VARIANT_TRUE : VARIANT_FALSE;
+      return S_OK;
+    };
+    // DISPPARAMS 参数倒序：rgvarg[0] 是最后一个参数
+    auto arg = [&](int idx) -> std::string {
+      if (!params || idx < 0 || idx >= params->cArgs) return "";
+      VARIANT* v = &params->rgvarg[params->cArgs - 1 - idx];
+      if (v->vt == VT_BSTR) return w_to_u8(v->bstrVal ? v->bstrVal : L"");
+      return "";
+    };
+
+    switch (dispid) {
+      case 1: {  // saveFile(filename, contentBase64) → bool
+        std::wstring name = u8_to_w(arg(0));
+        auto bytes = base64_decode(arg(1));
+        if (name.empty()) return set_bool(false);
+        DialogResult dr = show_save_dialog(name);
+        if (!dr.ok) return set_bool(false);
+        return set_bool(write_file_bytes(dr.path, bytes.data(), bytes.size()));
+      }
+      case 2: {  // openFile(filterName) → JSON
+        DialogResult dr = show_open_dialog(u8_to_w(arg(0)));
+        if (!dr.ok) return set_str("{\"ok\":false}");
+        auto bytes = read_file_bytes(dr.path);
+        if (bytes.empty()) return set_str("{\"ok\":false,\"error\":\"read_failed\"}");
+        std::wstring fname = dr.path;
+        auto slash = fname.find_last_of(L"\\/");
+        if (slash != std::wstring::npos) fname = fname.substr(slash + 1);
+        nlohmann::json j = {
+          {"ok", true},
+          {"name", w_to_u8(fname)},
+          {"base64", base64_encode(bytes.data(), bytes.size())},
+          {"size", bytes.size()}
+        };
+        return set_str(j.dump());
+      }
+      default: return DISP_E_MEMBERNOTFOUND;
+    }
+  }
+
+ private:
+  LONG ref_ = 1;
+};
+
+// PrintToPdf 回调 —— 通知前端导出完成/失败
+class PrintToPdfCompleted final
+    : public ICoreWebView2PrintToPdfCompletedHandler {
+ public:
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+    if (!ppv) return E_POINTER;
+    if (riid == IID_IUnknown || riid == __uuidof(ICoreWebView2PrintToPdfCompletedHandler)) {
+      *ppv = static_cast<ICoreWebView2PrintToPdfCompletedHandler*>(this); AddRef(); return S_OK;
+    }
+    *ppv = nullptr; return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&ref_)); }
+  ULONG STDMETHODCALLTYPE Release() override {
+    ULONG c = static_cast<ULONG>(InterlockedDecrement(&ref_));
+    if (c == 0) delete this;
+    return c;
+  }
+  HRESULT STDMETHODCALLTYPE Invoke(HRESULT errorCode, BOOL result) override {
+    const char* code = SUCCEEDED(errorCode) && result ? "ok" : "error";
+    nlohmann::json j = {{"event", "printPdf"}, {"code", code}};
+    post_web_message_json(j.dump());
+    return S_OK;
+  }
+
+ private:
+  LONG ref_ = 1;
+};
+
+// WebMessageReceived handler —— 前端用 chrome.webview.postMessage({kind:"printPdf",...}) 发出的消息。
+class WebMessageReceivedHandler final
+    : public ICoreWebView2WebMessageReceivedEventHandler {
+ public:
+  explicit WebMessageReceivedHandler(ICoreWebView2* webview) : webview_(webview) { webview_->AddRef(); }
+  ~WebMessageReceivedHandler() { if (webview_) webview_->Release(); }
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
+    if (!ppv) return E_POINTER;
+    if (riid == IID_IUnknown || riid == __uuidof(ICoreWebView2WebMessageReceivedEventHandler)) {
+      *ppv = static_cast<ICoreWebView2WebMessageReceivedEventHandler*>(this); AddRef(); return S_OK;
+    }
+    *ppv = nullptr; return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&ref_)); }
+  ULONG STDMETHODCALLTYPE Release() override {
+    ULONG c = static_cast<ULONG>(InterlockedDecrement(&ref_));
+    if (c == 0) delete this;
+    return c;
+  }
+  HRESULT STDMETHODCALLTYPE Invoke(ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) override {
+    PWSTR json = nullptr;
+    if (FAILED(args->TryGetWebMessageAsString(&json)) || !json) return S_OK;
+    std::string msg = w_to_u8(json);
+    CoTaskMemFree(json);
+
+    try {
+      auto j = nlohmann::json::parse(msg);
+      std::string kind = j.value("kind", "");
+      if (kind == "printPdf") {
+        // 前端传来 { filename, paper }，用 WebView2.PrintToPdf（ICoreWebView2_7）把当前页面渲染成 PDF
+        std::string fname_utf8 = j.value("filename", "导出.pdf");
+        std::wstring fname = u8_to_w(fname_utf8);
+        DialogResult dr = show_save_dialog(fname);
+        if (!dr.ok) return S_OK;
+        // QI 到 ICoreWebView2_7 才能调 PrintToPdf
+        ICoreWebView2_7* wv7 = nullptr;
+        if (SUCCEEDED(webview_->QueryInterface(IID_PPV_ARGS(&wv7)))) {
+          wv7->PrintToPdf(dr.path.c_str(), nullptr, new PrintToPdfCompleted());
+          wv7->Release();
+        } else {
+          nlohmann::json err = {{"event", "printPdf"}, {"code", "error"}, {"message", "no_wv7"}};
+          post_web_message_json(err.dump());
+        }
+      }
+    } catch (...) { /* JSON 解析失败忽略 */ }
+    return S_OK;
+  }
+
+ private:
+  LONG ref_ = 1;
+  ICoreWebView2* webview_;
 };
 
 // ---------- 文本与路径 ----------
@@ -563,6 +897,22 @@ class ControllerCompleted
         v.pdispVal->Release();
       }
     }
+    // 给前端暴露 native_io HostObject —— 文件打开/保存对话框：
+    //   window.chrome.webview.hostObjects.native_io.saveFile(filename, base64)
+    //   window.chrome.webview.hostObjects.native_io.openFile(filterName)
+    {
+      VARIANT v{};
+      v.vt = VT_DISPATCH;
+      v.pdispVal = new NativeIoHost();
+      std::wstring name = L"native_io";
+      HRESULT hr = app_->webview->AddHostObjectToScript(name.c_str(), &v);
+      if (FAILED(hr)) v.pdispVal->Release();
+    }
+    // 注册 WebMessageReceived —— 前端用 chrome.webview.postMessage({...}) 发的消息。
+    //   { kind: "printPdf", filename, paper } → 原生用 PrintToPdf 把当前页面渲染成 PDF
+    app_->webview->add_WebMessageReceived(new WebMessageReceivedHandler(app_->webview), nullptr);
+    // 给文件对话框用的主窗口句柄
+    g_shell_hwnd = app_->hwnd;
     // 给 updater_win 异步回调用的 webview 指针
     {
       std::lock_guard<std::mutex> lock(g_webview_mutex);
