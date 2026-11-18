@@ -40,6 +40,15 @@ Ed25519 私钥与 OSS 凭据留在 Mac，不拷到 Windows。
 
 ### 1. Windows：编译与打包
 
+在 **Developer PowerShell**（`cl.exe` 在 PATH）里一条命令完成：
+
+```powershell
+.\packaging\win\build-release.ps1                  # 构建号自动取 UTC 时间
+.\packaging\win\build-release.ps1 -Build 202611180930
+```
+
+脚本会依次执行下面的手工步骤，并在最后打印 Mac 上要执行的发布命令。等价的完整手工命令：
+
 ```powershell
 $BUILD = 202611180930
 $env:XIAOTU_BUILD = $BUILD
