@@ -42,6 +42,45 @@ nlohmann::json base_manifest() {
       {"signature", "c2lnbmF0dXJl"}};
 }
 
+// v2 统一清单（manifest.json）：macOS 只带 version、build 固定 0；
+// Windows 带构建号，且 setup 与 portable 两个产物同时存在。
+nlohmann::json v2_base_manifest() {
+  const std::string mac_sha(64, '9');
+  const std::string win_sha(64, '8');
+  const std::string zip_sha(64, '7');
+  nlohmann::json body{
+      {"manifest_version", 2},
+      {"product", "xiaotu"},
+      {"channel", "stable"},
+      {"key_id", "2026-11"},
+      {"updated_at", "2026-11-18T04:48:54Z"},
+      {"signature", "c2lnbmF0dXJl"}};
+  body["platforms"]["macos"] = {
+      {"version", "1.4.2"},
+      {"build", 0},
+      {"min_os", "12.0"},
+      {"artifacts",
+       {{"dmg",
+         {{"url", "https://dl.xiaotu.online/xiaotu/xiaotu-1.4.2-macos-arm64.dmg"},
+          {"size", 48234496},
+          {"sha256", mac_sha}}}}}};
+  body["platforms"]["windows"] = {
+      {"version", "1.4.3"},
+      {"build", 2026111801},
+      {"min_os", "10.0"},
+      {"rollout_percent", 50},
+      {"artifacts",
+       {{"setup",
+         {{"url", "https://dl.xiaotu.online/xiaotu/xiaotu-1.4.3-win64-setup.exe"},
+          {"size", 2655925},
+          {"sha256", win_sha}}},
+        {"portable",
+         {{"url", "https://dl.xiaotu.online/xiaotu/xiaotu-1.4.3-win64-portable.zip"},
+          {"size", 702247},
+          {"sha256", zip_sha}}}}}};
+  return body;
+}
+
 xiaotu::UpdateQuery query() {
   xiaotu::UpdateQuery value;
   value.version = "1.3.0";
@@ -329,6 +368,78 @@ int main() {
         "验证版本与当前版本不一致时不进入恢复模式");
   check(!xiaotu::should_enter_recovery_version(3, 3, "", "1.0.2", "1.0.2"),
         "待装版本等于当前版本时不进入恢复模式");
+
+  // ---- v2 统一清单：按平台拍平 + 版本优先判定 ----
+  xiaotu::UpdateManifest mac_manifest;
+  check(xiaotu::parse_manifest(v2_base_manifest(), "macos", mac_manifest, error),
+        "v2 macOS 段应通过");
+  check(mac_manifest.manifest_version == 2 && mac_manifest.platform == "macos" &&
+            mac_manifest.version == "1.4.2" && mac_manifest.build == 0 &&
+            mac_manifest.rollout_percent == 100,
+        "v2 macOS 段拍平正确");
+  check(mac_manifest.url.find("xiaotu-1.4.2-macos-arm64.dmg") != std::string::npos,
+        "v2 macOS 取 dmg 产物");
+  check(mac_manifest.published_at == "2026-11-18T04:48:54Z",
+        "v2 updated_at 映射为 published_at");
+
+  xiaotu::UpdateManifest win_manifest;
+  check(xiaotu::parse_manifest(v2_base_manifest(), "windows", win_manifest, error),
+        "v2 Windows 段应通过");
+  check(win_manifest.platform == "windows" && win_manifest.build == 2026111801 &&
+            win_manifest.rollout_percent == 50,
+        "v2 Windows 段字段正确");
+  check(win_manifest.url.find("win64-setup.exe") != std::string::npos,
+        "v2 Windows 优先取 setup");
+
+  xiaotu::UpdateManifest first_manifest;
+  check(xiaotu::parse_manifest(v2_base_manifest(), first_manifest, error) &&
+            first_manifest.platform == "macos",
+        "不带平台的 v2 解析校验全部平台并取第一个");
+
+  xiaotu::UpdateManifest unknown_manifest;
+  check(!xiaotu::parse_manifest(v2_base_manifest(), "linux", unknown_manifest, error) &&
+            error.code == "MANIFEST_PLATFORM_MISSING",
+        "v2 请求不存在的平台应拒绝");
+
+  // v2 不再携带 schema/api 区间：旧 schema 客户端也不再被拦截。
+  auto v2_query = query();
+  v2_query.version = "1.4.1";
+  v2_query.build = 2026100101;
+  v2_query.schema_version = 3;
+  check(xiaotu::evaluate_manifest(mac_manifest, v2_query, 0).code == "UPDATE_AVAILABLE",
+        "v2 版本更高应下发更新（忽略 schema/api 区间）");
+
+  auto v2_same = v2_query;
+  v2_same.version = "1.4.2";
+  check(xiaotu::evaluate_manifest(mac_manifest, v2_same, 0).code == "NO_UPDATE",
+        "v2 macOS 版本相同时无更新（build 固定 0）");
+
+  auto v2_win_query = v2_query;
+  v2_win_query.platform = "windows";
+  v2_win_query.version = "1.4.3";
+  v2_win_query.build = 2026111800;
+  check(xiaotu::evaluate_manifest(win_manifest, v2_win_query, 0).code == "UPDATE_AVAILABLE",
+        "v2 Windows 同版本更高构建号应下发");
+  v2_win_query.build = 2026111801;
+  check(xiaotu::evaluate_manifest(win_manifest, v2_win_query, 0).code == "NO_UPDATE",
+        "v2 Windows 同版本同构建号无更新");
+
+  auto v2_newer_local = v2_query;
+  v2_newer_local.version = "1.5.0";
+  check(xiaotu::evaluate_manifest(mac_manifest, v2_newer_local, 0).code == "NO_UPDATE",
+        "v2 本地版本更高时无更新");
+
+  auto v2_missing_dmg = v2_base_manifest();
+  v2_missing_dmg["platforms"]["macos"]["artifacts"].erase("dmg");
+  check(!xiaotu::parse_manifest(v2_missing_dmg, "macos", mac_manifest, error) &&
+            error.code == "MANIFEST_ARTIFACT_MISSING",
+        "v2 macOS 缺少 dmg 应拒绝");
+
+  auto v2_bad_rollout = v2_base_manifest();
+  v2_bad_rollout["platforms"]["windows"]["rollout_percent"] = 0;
+  check(!xiaotu::parse_manifest(v2_bad_rollout, "windows", win_manifest, error) &&
+            error.code == "MANIFEST_ROLLOUT_INVALID",
+        "v2 rollout 0 应拒绝");
 
   if (failures == 0) {
     std::cout << "update_smoke 全部通过" << std::endl;

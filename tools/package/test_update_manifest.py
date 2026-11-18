@@ -39,6 +39,31 @@ def sample_body() -> dict:
     }
 
 
+def sample_v2_body() -> dict:
+    """v2 统一清单：平台字段挂在 platforms.<platform> 下。"""
+    return {
+        "manifest_version": 2,
+        "product": "xiaotu",
+        "channel": "stable",
+        "key_id": "2026-11",
+        "updated_at": "2026-11-18T04:48:54Z",
+        "platforms": {
+            "macos": {
+                "version": "1.4.2",
+                "build": 0,
+                "min_os": "12.0",
+                "artifacts": {
+                    "dmg": {
+                        "url": "https://dl.xiaotu.online/xiaotu/xiaotu-1.4.2-macos-arm64.dmg",
+                        "size": 1024,
+                        "sha256": "9f2c" * 16,
+                    }
+                },
+            }
+        },
+    }
+
+
 class ManifestTest(unittest.TestCase):
     def setUp(self) -> None:
         self.private = Ed25519PrivateKey.generate()
@@ -115,6 +140,19 @@ class ManifestTest(unittest.TestCase):
         resigned["url"] = "https://evil.example.com/a.dmg"
         with self.assertRaises(Exception):
             um.verify_manifest(resigned, self.public)
+
+    def test_v2_signature_roundtrip(self) -> None:
+        body = um.sign_manifest(sample_v2_body(), self.private)
+        um.verify_manifest(body, self.public)
+        body["platforms"]["macos"]["version"] = "9.9.9"
+        with self.assertRaises(Exception):
+            um.verify_manifest(body, self.public)
+
+    def test_v2_missing_top_field_rejected(self) -> None:
+        body = um.sign_manifest(sample_v2_body(), self.private)
+        del body["product"]
+        with self.assertRaises(SystemExit):
+            um.verify_manifest(body, self.public)
 
     def test_public_key_roundtrip(self) -> None:
         raw = self.public.public_bytes(

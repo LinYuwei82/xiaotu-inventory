@@ -56,6 +56,18 @@ REQUIRED_FIELDS = {
     "rollout_percent",
 }
 
+# v2 统一清单（manifest.json）的顶层字段；平台相关字段在 platforms.<platform> 下。
+# 服务端验签仍调用本脚本（见 deploy/README.md），所以 verify 必须同时认得 v1 / v2。
+V2_TOP_FIELDS = {
+    "manifest_version",
+    "product",
+    "channel",
+    "key_id",
+    "updated_at",
+    "platforms",
+    "signature",
+}
+
 
 def canonical_bytes(body: dict[str, Any]) -> bytes:
     """RFC 8785 在本清单结构上的实现：键排序、无空白、UTF-8。"""
@@ -87,11 +99,32 @@ def sign_manifest(body: dict[str, Any], private_key: Ed25519PrivateKey) -> dict[
     return signed
 
 
+def is_manifest_v2(body: dict[str, Any]) -> bool:
+    return body.get("manifest_version") == 2
+
+
+def v2_artifacts(body: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """列出 v2 清单下所有平台的产物 (role, entry)，用于 --file 比对。"""
+    platforms = body.get("platforms")
+    if not isinstance(platforms, dict):
+        return []
+    entries: list[tuple[str, dict[str, Any]]] = []
+    for section in platforms.values():
+        artifacts = section.get("artifacts") if isinstance(section, dict) else None
+        if not isinstance(artifacts, dict):
+            continue
+        for role, entry in artifacts.items():
+            if isinstance(entry, dict):
+                entries.append((role, entry))
+    return entries
+
+
 def verify_manifest(body: dict[str, Any], public_key: Ed25519PublicKey) -> None:
     signature = body.get("signature")
     if not isinstance(signature, str) or not signature:
         raise SystemExit("清单缺少 signature")
-    missing = REQUIRED_FIELDS - set(body)
+    required = V2_TOP_FIELDS if is_manifest_v2(body) else REQUIRED_FIELDS
+    missing = required - set(body)
     if missing:
         raise SystemExit(f"清单缺少字段：{', '.join(sorted(missing))}")
     public_key.verify(base64.b64decode(signature), canonical_bytes(body))
@@ -272,8 +305,17 @@ def command_verify(args: argparse.Namespace) -> None:
     verify_manifest(body, load_public_key(Path(args.pub)))
     print("清单签名有效")
     if args.file:
-        actual = sha256_file(Path(args.file))
-        if actual != body["sha256"]:
+        path = Path(args.file)
+        actual = sha256_file(path)
+        if is_manifest_v2(body):
+            # v2 的 sha256/size 挂在各平台 artifacts 下：文件必须与其中一项完全一致。
+            size = path.stat().st_size
+            entries = v2_artifacts(body)
+            if not any(entry.get("sha256") == actual and entry.get("size") == size
+                       for _, entry in entries):
+                listed = "; ".join(f"{role}:{entry.get('sha256')}" for role, entry in entries) or "(无)"
+                raise SystemExit(f"sha256 不符：清单产物 {listed}，文件 {actual}")
+        elif actual != body["sha256"]:
             raise SystemExit(f"sha256 不符：清单 {body['sha256']}，文件 {actual}")
         print("安装包 sha256 与清单一致")
 

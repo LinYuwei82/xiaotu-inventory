@@ -268,7 +268,204 @@ std::int64_t current_build_number() { return static_cast<std::int64_t>(XIAOTU_BU
 
 int current_api_version() { return XIAOTU_API_VERSION; }
 
+namespace {
+
+// v1 / v2 共用的字段校验。v2 没有 schema/api 区间，平台与构建号规则也不同：
+// macOS 的 build 固定 0，所以只要求非负。
+bool validate_manifest_fields(UpdateManifest& parsed, bool v2, ManifestError& error) {
+  if (parsed.key_id.empty()) {
+    set_error(error, "MANIFEST_KEY_ID_EMPTY", "key_id 不能为空");
+    return false;
+  }
+  if (!v2 && parsed.platform != "macos" && parsed.platform != "windows") {
+    set_error(error, "MANIFEST_PLATFORM_INVALID", "platform 只能是 macos 或 windows");
+    return false;
+  }
+  if (parsed.channel != "stable" && parsed.channel != "beta") {
+    set_error(error, "MANIFEST_CHANNEL_INVALID", "channel 只能是 stable 或 beta");
+    return false;
+  }
+  ProductVersion version;
+  if (!parse_product_version(parsed.version, version)) {
+    set_error(error, "MANIFEST_VERSION_INVALID", "version 不符合 MAJOR.MINOR.PATCH");
+    return false;
+  }
+  if (v2 ? parsed.build < 0 : parsed.build <= 0) {
+    set_error(error, "MANIFEST_BUILD_INVALID", "build 非法");
+    return false;
+  }
+  if (!starts_with(parsed.url, "https://")) {
+    set_error(error, "MANIFEST_URL_INSECURE", "url 必须是 https");
+    return false;
+  }
+  if (!is_hex_sha256(parsed.sha256)) {
+    set_error(error, "MANIFEST_SHA256_INVALID", "sha256 必须是 64 位十六进制");
+    return false;
+  }
+  if (parsed.size <= 0) {
+    set_error(error, "MANIFEST_SIZE_INVALID", "size 必须为正数");
+    return false;
+  }
+  if (!parse_iso8601_utc(parsed.published_at).has_value()) {
+    set_error(error, "MANIFEST_TIME_INVALID", "published_at 必须是 UTC ISO 8601");
+    return false;
+  }
+  if (!parsed.mandatory_deadline.empty() &&
+      !parse_iso8601_utc(parsed.mandatory_deadline).has_value()) {
+    set_error(error, "MANIFEST_TIME_INVALID", "mandatory_deadline 格式错误");
+    return false;
+  }
+  if (!v2) {
+    if (parsed.schema_min <= 0 || parsed.schema_max < parsed.schema_min) {
+      set_error(error, "MANIFEST_SCHEMA_RANGE_INVALID", "schema 范围非法");
+      return false;
+    }
+    if (parsed.api_min <= 0 || parsed.api_max < parsed.api_min) {
+      set_error(error, "MANIFEST_API_RANGE_INVALID", "API 范围非法");
+      return false;
+    }
+  }
+  if (parsed.rollout_percent < 1 || parsed.rollout_percent > 100) {
+    set_error(error, "MANIFEST_ROLLOUT_INVALID", "rollout_percent 必须在 1–100");
+    return false;
+  }
+  if (parsed.mandatory) {
+    const bool known = parsed.mandatory_reason == "SECURITY" ||
+                       parsed.mandatory_reason == "PROTOCOL" ||
+                       parsed.mandatory_reason == "REGULATORY" ||
+                       parsed.mandatory_reason == "MIN_SUPPORTED";
+    if (!known) {
+      set_error(error, "MANIFEST_MANDATORY_REASON_INVALID",
+                "mandatory_reason 必须是四类之一");
+      return false;
+    }
+  } else {
+    parsed.mandatory_reason.clear();
+    parsed.mandatory_deadline.clear();
+  }
+  if (parsed.signature.empty()) {
+    set_error(error, "MANIFEST_SIGNATURE_MISSING", "signature 不能为空");
+    return false;
+  }
+  return true;
+}
+
+// 解析 v2 的单个平台段并拍平：macOS 取 artifacts.dmg，Windows 优先 setup，
+// 缺省时退回 portable（绿色包）。未知 artifacts key 与未知字段一律忽略。
+bool parse_manifest_v2_section(const nlohmann::json& section, const std::string& platform,
+                               UpdateManifest& parsed, ManifestError& error) {
+  if (!section.is_object()) {
+    set_error(error, "MANIFEST_PLATFORM_INVALID",
+              "platforms." + platform + " 必须是对象");
+    return false;
+  }
+  parsed.platform = platform;
+  std::int64_t build = 0;
+  std::int64_t rollout = 100;
+  if (!read_string(section, "version", parsed.version, true, error) ||
+      !read_int(section, "build", build, true, error) ||
+      !read_string(section, "min_os", parsed.min_os, false, error) ||
+      !read_string(section, "notes_url", parsed.release_notes_url, false, error) ||
+      !read_int(section, "rollout_percent", rollout, false, error) ||
+      !read_bool(section, "mandatory", parsed.mandatory, error) ||
+      !read_string(section, "mandatory_reason", parsed.mandatory_reason, false, error) ||
+      !read_string(section, "mandatory_deadline", parsed.mandatory_deadline, false, error)) {
+    return false;
+  }
+  parsed.build = build;
+  parsed.rollout_percent = static_cast<int>(rollout);
+
+  const auto artifacts = section.find("artifacts");
+  if (artifacts == section.end() || !artifacts->is_object()) {
+    set_error(error, "MANIFEST_ARTIFACT_MISSING",
+              "platforms." + platform + " 缺少 artifacts");
+    return false;
+  }
+  const char* role = nullptr;
+  if (platform == "macos") {
+    role = "dmg";
+  } else {
+    const auto setup = artifacts->find("setup");
+    role = (setup != artifacts->end() && setup->is_object()) ? "setup" : "portable";
+  }
+  const auto entry = artifacts->find(role);
+  if (entry == artifacts->end() || !entry->is_object()) {
+    set_error(error, "MANIFEST_ARTIFACT_MISSING",
+              "platforms." + platform + ".artifacts 缺少 " + role);
+    return false;
+  }
+  if (!read_string(*entry, "url", parsed.url, true, error) ||
+      !read_string(*entry, "sha256", parsed.sha256, true, error) ||
+      !read_int(*entry, "size", parsed.size, true, error)) {
+    error.message = std::string("artifacts.") + role + "：" + error.message;
+    return false;
+  }
+  return true;
+}
+
+bool parse_manifest_v2(const nlohmann::json& body, std::string_view requested_platform,
+                       UpdateManifest& out, ManifestError& error) {
+  UpdateManifest base;
+  base.manifest_version = 2;
+  std::string product;
+  if (!read_string(body, "product", product, true, error) ||
+      !read_string(body, "channel", base.channel, true, error) ||
+      !read_string(body, "key_id", base.key_id, true, error) ||
+      !read_string(body, "updated_at", base.published_at, true, error) ||
+      !read_string(body, "signature", base.signature, true, error)) {
+    return false;
+  }
+  const auto platforms = body.find("platforms");
+  if (platforms == body.end() || !platforms->is_object()) {
+    set_error(error, "MANIFEST_PLATFORM_MISSING", "清单缺少 platforms 对象");
+    return false;
+  }
+
+  std::vector<std::string> candidates;
+  if (!requested_platform.empty()) {
+    candidates.emplace_back(requested_platform);
+  } else {
+    for (const char* name : {"macos", "windows"}) {
+      if (platforms->find(name) != platforms->end()) {
+        candidates.emplace_back(name);
+      }
+    }
+  }
+  if (candidates.empty()) {
+    set_error(error, "MANIFEST_PLATFORM_MISSING", "platforms 中没有 macos / windows");
+    return false;
+  }
+
+  UpdateManifest chosen;
+  bool have = false;
+  for (const auto& name : candidates) {
+    const auto section = platforms->find(name);
+    if (section == platforms->end()) {
+      set_error(error, "MANIFEST_PLATFORM_MISSING", "清单缺少 platforms." + name);
+      return false;
+    }
+    UpdateManifest part = base;
+    if (!parse_manifest_v2_section(*section, name, part, error) ||
+        !validate_manifest_fields(part, true, error)) {
+      return false;
+    }
+    if (!have) {
+      chosen = std::move(part);
+      have = true;
+    }
+  }
+  out = std::move(chosen);
+  return true;
+}
+
+}  // namespace
+
 bool parse_manifest(const nlohmann::json& body, UpdateManifest& out, ManifestError& error) {
+  return parse_manifest(body, std::string_view{}, out, error);
+}
+
+bool parse_manifest(const nlohmann::json& body, std::string_view platform, UpdateManifest& out,
+                    ManifestError& error) {
   error = {};
   if (!body.is_object()) {
     set_error(error, "MANIFEST_NOT_OBJECT", "清单必须是 JSON 对象");
@@ -281,6 +478,9 @@ bool parse_manifest(const nlohmann::json& body, UpdateManifest& out, ManifestErr
     return false;
   }
   parsed.manifest_version = static_cast<int>(number);
+  if (parsed.manifest_version == 2) {
+    return parse_manifest_v2(body, platform, out, error);
+  }
   if (parsed.manifest_version != 1) {
     set_error(error, "MANIFEST_VERSION_UNSUPPORTED", "不支持的清单版本");
     return false;
@@ -331,76 +531,7 @@ bool parse_manifest(const nlohmann::json& body, UpdateManifest& out, ManifestErr
     }
   }
 
-  if (parsed.key_id.empty()) {
-    set_error(error, "MANIFEST_KEY_ID_EMPTY", "key_id 不能为空");
-    return false;
-  }
-  if (parsed.platform != "macos" && parsed.platform != "windows") {
-    set_error(error, "MANIFEST_PLATFORM_INVALID", "platform 只能是 macos 或 windows");
-    return false;
-  }
-  if (parsed.channel != "stable" && parsed.channel != "beta") {
-    set_error(error, "MANIFEST_CHANNEL_INVALID", "channel 只能是 stable 或 beta");
-    return false;
-  }
-  ProductVersion version;
-  if (!parse_product_version(parsed.version, version)) {
-    set_error(error, "MANIFEST_VERSION_INVALID", "version 不符合 MAJOR.MINOR.PATCH");
-    return false;
-  }
-  if (parsed.build <= 0) {
-    set_error(error, "MANIFEST_BUILD_INVALID", "build 必须为正整数");
-    return false;
-  }
-  if (!starts_with(parsed.url, "https://")) {
-    set_error(error, "MANIFEST_URL_INSECURE", "url 必须是 https");
-    return false;
-  }
-  if (!is_hex_sha256(parsed.sha256)) {
-    set_error(error, "MANIFEST_SHA256_INVALID", "sha256 必须是 64 位十六进制");
-    return false;
-  }
-  if (parsed.size <= 0) {
-    set_error(error, "MANIFEST_SIZE_INVALID", "size 必须为正数");
-    return false;
-  }
-  if (!parse_iso8601_utc(parsed.published_at).has_value()) {
-    set_error(error, "MANIFEST_TIME_INVALID", "published_at 必须是 UTC ISO 8601");
-    return false;
-  }
-  if (!parsed.mandatory_deadline.empty() &&
-      !parse_iso8601_utc(parsed.mandatory_deadline).has_value()) {
-    set_error(error, "MANIFEST_TIME_INVALID", "mandatory_deadline 格式错误");
-    return false;
-  }
-  if (parsed.schema_min <= 0 || parsed.schema_max < parsed.schema_min) {
-    set_error(error, "MANIFEST_SCHEMA_RANGE_INVALID", "schema 范围非法");
-    return false;
-  }
-  if (parsed.api_min <= 0 || parsed.api_max < parsed.api_min) {
-    set_error(error, "MANIFEST_API_RANGE_INVALID", "API 范围非法");
-    return false;
-  }
-  if (parsed.rollout_percent < 1 || parsed.rollout_percent > 100) {
-    set_error(error, "MANIFEST_ROLLOUT_INVALID", "rollout_percent 必须在 1–100");
-    return false;
-  }
-  if (parsed.mandatory) {
-    const bool known = parsed.mandatory_reason == "SECURITY" ||
-                       parsed.mandatory_reason == "PROTOCOL" ||
-                       parsed.mandatory_reason == "REGULATORY" ||
-                       parsed.mandatory_reason == "MIN_SUPPORTED";
-    if (!known) {
-      set_error(error, "MANIFEST_MANDATORY_REASON_INVALID",
-                "mandatory_reason 必须是四类之一");
-      return false;
-    }
-  } else {
-    parsed.mandatory_reason.clear();
-    parsed.mandatory_deadline.clear();
-  }
-  if (parsed.signature.empty()) {
-    set_error(error, "MANIFEST_SIGNATURE_MISSING", "signature 不能为空");
+  if (!validate_manifest_fields(parsed, false, error)) {
     return false;
   }
 
@@ -576,31 +707,52 @@ UpdateDecision evaluate_manifest(const UpdateManifest& manifest, const UpdateQue
       return decision;
     }
   }
-  if (query.schema_version < manifest.schema_min) {
-    // 旧库无法直接迁移到最新版：按 upgrade_path 给出应先升级到的中间版本。
-    // 与服务端共用 select_intermediate_step，保证两处选出的版本一致。
-    if (const auto chosen = select_intermediate_step(manifest.upgrade_path,
-                                                     query.schema_version)) {
-      decision.code = "INTERMEDIATE_REQUIRED";
-      decision.intermediate_required = true;
-      decision.intermediate = *chosen;
+  if (manifest.manifest_version < 2) {
+    if (query.schema_version < manifest.schema_min) {
+      // 旧库无法直接迁移到最新版：按 upgrade_path 给出应先升级到的中间版本。
+      // 与服务端共用 select_intermediate_step，保证两处选出的版本一致。
+      if (const auto chosen = select_intermediate_step(manifest.upgrade_path,
+                                                       query.schema_version)) {
+        decision.code = "INTERMEDIATE_REQUIRED";
+        decision.intermediate_required = true;
+        decision.intermediate = *chosen;
+        return decision;
+      }
+      decision.code = "INCOMPATIBLE_SCHEMA";
       return decision;
     }
-    decision.code = "INCOMPATIBLE_SCHEMA";
-    return decision;
-  }
-  if (query.schema_version > manifest.schema_max) {
-    decision.code = "INCOMPATIBLE_SCHEMA";
-    return decision;
-  }
-  if (query.api_version > 0 &&
-      (query.api_version < manifest.api_min || query.api_version > manifest.api_max)) {
-    decision.code = "INCOMPATIBLE_API";
-    return decision;
-  }
-  if (manifest.build <= query.build) {
-    decision.code = "NO_UPDATE";
-    return decision;
+    if (query.schema_version > manifest.schema_max) {
+      decision.code = "INCOMPATIBLE_SCHEMA";
+      return decision;
+    }
+    if (query.api_version > 0 &&
+        (query.api_version < manifest.api_min || query.api_version > manifest.api_max)) {
+      decision.code = "INCOMPATIBLE_API";
+      return decision;
+    }
+    if (manifest.build <= query.build) {
+      decision.code = "NO_UPDATE";
+      return decision;
+    }
+  } else {
+    // v2 不携带 schema/api 区间与 upgrade_path，数据兼容性由客户端与服务端握手把关。
+    // 更新判定：macOS 只比 version；Windows 先比 version，同版本再比 build。
+    ProductVersion remote{};
+    ProductVersion local{};
+    if (!parse_product_version(manifest.version, remote) ||
+        !parse_product_version(query.version, local)) {
+      decision.code = "VERSION_INVALID";
+      return decision;
+    }
+    const int order = compare_product_version(remote, local);
+    if (order < 0) {
+      decision.code = "NO_UPDATE";
+      return decision;
+    }
+    if (order == 0 && manifest.build <= query.build) {
+      decision.code = "NO_UPDATE";
+      return decision;
+    }
   }
   const int bucket = rollout_bucket(query.install_id, manifest.build);
   if (!manifest.mandatory && !rollout_allows(manifest.rollout_percent, bucket)) {

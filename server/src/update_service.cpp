@@ -358,7 +358,11 @@ UpdateCheckResult check_for_update(const UpdateSettings& settings, const UpdateQ
   }
 
   ManifestError error;
-  if (!parse_manifest(body, result.manifest, error)) {
+  // v2 清单按平台拍平：查询方声明的平台决定读 platforms.macos 还是 platforms.windows。
+  // Linux 等非桌面平台不参与更新分发，按空平台做结构校验，后续 evaluate 报 PLATFORM_MISMATCH。
+  const std::string requested_platform =
+      (query.platform == "macos" || query.platform == "windows") ? query.platform : std::string();
+  if (!parse_manifest(body, requested_platform, result.manifest, error)) {
     result.error_code = error.code;
     result.error_message = error.message;
     return result;

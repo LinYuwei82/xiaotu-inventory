@@ -67,7 +67,15 @@ struct ManifestError {
 };
 
 // 解析并校验清单；失败时返回 false，error 带稳定错误码。
+// 不带 platform 的重载等价于 platform 为空：v1 清单照常解析；v2 清单校验全部
+// 平台段，但只把第一个可用平台段拍平进 out（仅用于「结构 + 签名」预检）。
 bool parse_manifest(const nlohmann::json& body, UpdateManifest& out, ManifestError& error);
+
+// v2 统一清单（manifest.json）按 platform 拍平：取 platforms.<platform> 的版本、
+// 产物与灰度字段填进 UpdateManifest。platform 为空时行为同上。
+// v2 不再携带 schema/api 区间与 upgrade_path，判定时也不做这些拦截。
+bool parse_manifest(const nlohmann::json& body, std::string_view platform, UpdateManifest& out,
+                    ManifestError& error);
 
 // 解析清单中的可选字段 upgrade_path；非法时返回 false 并设 MANIFEST_UPGRADE_PATH_INVALID。
 bool parse_upgrade_path(const nlohmann::json& path, std::vector<UpgradeStep>& out,
