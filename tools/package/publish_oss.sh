@@ -63,15 +63,32 @@ case "$PRODUCT" in
   *) echo "PRODUCT 必须是 xiaotu" >&2; exit 1 ;;
 esac
 
+# ---- 配置文件：环境变量优先，其次仓库外 600 权限的凭据文件 ----
+OSS_CRED_FILE="${OSS_CRED_FILE:-$HOME/.config/xiaotu-updates/oss-credentials.env}"
+# 兼容只有 .env 的环境（内容为 export KEY=VALUE）
+if [ ! -f "$OSS_CRED_FILE" ] && [ -f "$HOME/.config/xiaotu-updates/.env" ]; then
+  OSS_CRED_FILE="$HOME/.config/xiaotu-updates/.env"
+fi
+
+cred_value() {  # cred_value <文件> <键名>
+  sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
+    | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
 OSS_BUCKET="${OSS_BUCKET:-}"
 OSS_REGION="${OSS_REGION:-}"
+# 未通过环境变量提供时，从凭据文件读取桶名与区域（与 Windows 发布脚本行为一致）
+if [ -f "$OSS_CRED_FILE" ]; then
+  [ -n "$OSS_BUCKET" ] || OSS_BUCKET="$(cred_value "$OSS_CRED_FILE" OSS_BUCKET)"
+  [ -n "$OSS_REGION" ] || OSS_REGION="$(cred_value "$OSS_CRED_FILE" OSS_REGION)"
+fi
 CDN_DOMAIN="${CDN_DOMAIN:-https://dl.xiaotu.online}"
 OSS_SKIP="${OSS_SKIP:-false}"
 
 if [ "$OSS_SKIP" != "true" ]; then
   if [ -z "$OSS_BUCKET" ] || [ -z "$OSS_REGION" ]; then
     echo "缺少必填：OSS_BUCKET / OSS_REGION" >&2
-    echo "需要 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET 环境变量" >&2
+    echo "可用环境变量传入，或写入 ${OSS_CRED_FILE}（OSS_BUCKET= / OSS_REGION=）" >&2
     echo "如需只跑本地生成验证：OSS_SKIP=true tools/package/publish_oss.sh" >&2
     exit 1
   fi
@@ -127,19 +144,8 @@ PURGE="${PURGE:-false}"
 WARMUP="${WARMUP:-true}"
 WARM_TIMEOUT="${WARM_TIMEOUT:-300}"
 
-# ---- OSS 凭据：环境变量优先，其次仓库外 600 权限的凭据文件 ----
+# ---- OSS 凭据：环境变量优先，其次上面的凭据文件 ----
 # 凭据只在本进程内使用，不导出给子进程：上传时按参数传给 Python。
-OSS_CRED_FILE="${OSS_CRED_FILE:-$HOME/.config/xiaotu-updates/oss-credentials.env}"
-# 兼容只有 .env 的环境（内容为 export KEY=VALUE）
-if [ ! -f "$OSS_CRED_FILE" ] && [ -f "$HOME/.config/xiaotu-updates/.env" ]; then
-  OSS_CRED_FILE="$HOME/.config/xiaotu-updates/.env"
-fi
-
-cred_value() {  # cred_value <文件> <键名>
-  sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
-    | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
-}
-
 mask_ak() {  # 只露前 8 位，便于确认用的是哪把密钥
   local key="${1:-}"
   if [ "${#key}" -le 8 ]; then printf '****'; else printf '%s****' "${key:0:8}"; fi
