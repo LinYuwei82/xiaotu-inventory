@@ -949,8 +949,8 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--base", default=DEFAULT_BASE)
         s.add_argument("--version", dest="version", help="断言文件名版本")
         s.add_argument("--offline", action="store_true", help="preflight 跳过线上检查")
-        s.add_argument("--schema", default="v1", choices=["v1", "v2"],
-                       help="v2：manifest.json + 统一命名（见 docs/更新清单Schema-v2.md）")
+        s.add_argument("--schema", default="v2", choices=["v1", "v2"],
+                       help="v2（默认）：manifest.json + 统一命名（见 docs/更新清单Schema-v2.md）")
         s.add_argument("--manifest", help="v2 preflight：本地已签名 manifest.json 路径")
         s.add_argument("--build", type=int, default=None,
                        help="v2：本次发布的 Windows 构建号")
