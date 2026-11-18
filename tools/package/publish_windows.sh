@@ -58,6 +58,26 @@ OSS_REGION="${OSS_REGION:-}"
 CDN_DOMAIN="${CDN_DOMAIN:-https://dl.xiaotu.online}"
 OSS_SKIP="${OSS_SKIP:-false}"
 
+# ---- OSS 凭据文件：环境变量优先，其次仓库外 600 权限的凭据文件 ----
+OSS_CRED_FILE="${OSS_CRED_FILE:-$HOME/.config/xiaotu-updates/oss-credentials.env}"
+# 兼容只有 .env 的环境（内容为 export KEY=VALUE）
+if [ ! -f "$OSS_CRED_FILE" ] && [ -f "$HOME/.config/xiaotu-updates/.env" ]; then
+  OSS_CRED_FILE="$HOME/.config/xiaotu-updates/.env"
+fi
+
+cred_value() {  # cred_value <文件> <键名>
+  sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
+    | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+# 桶名 / 区域也允许写在凭据文件里，省去每次手工 export
+if [ -z "$OSS_BUCKET" ] && [ -f "$OSS_CRED_FILE" ]; then
+  OSS_BUCKET="$(cred_value "$OSS_CRED_FILE" OSS_BUCKET)"
+fi
+if [ -z "$OSS_REGION" ] && [ -f "$OSS_CRED_FILE" ]; then
+  OSS_REGION="$(cred_value "$OSS_CRED_FILE" OSS_REGION)"
+fi
+
 if [ "$OSS_SKIP" != "true" ]; then
   if [ -z "$OSS_BUCKET" ] || [ -z "$OSS_REGION" ]; then
     echo "缺少必填：OSS_BUCKET / OSS_REGION" >&2
@@ -149,18 +169,7 @@ echo ""
 echo "===== ⓪ 发布门禁"
 python3 "$GUARD_PY" preflight "${GUARD_ARGS[@]}"
 
-# ---- OSS 凭据：环境变量优先，其次仓库外 600 权限的凭据文件 ----
-OSS_CRED_FILE="${OSS_CRED_FILE:-$HOME/.config/xiaotu-updates/oss-credentials.env}"
-# 兼容只有 .env 的环境（内容为 export KEY=VALUE）
-if [ ! -f "$OSS_CRED_FILE" ] && [ -f "$HOME/.config/xiaotu-updates/.env" ]; then
-  OSS_CRED_FILE="$HOME/.config/xiaotu-updates/.env"
-fi
-
-cred_value() {  # cred_value <文件> <键名>
-  sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
-    | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
-}
-
+# ---- 凭据文件路径与解析函数已在脚本开头定义 ----
 mask_ak() {
   local key="${1:-}"
   if [ "${#key}" -le 8 ]; then printf '****'; else printf '%s****' "${key:0:8}"; fi
