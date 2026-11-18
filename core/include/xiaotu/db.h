@@ -2,6 +2,7 @@
 
 #include <sqlite3.h>
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
@@ -42,7 +43,9 @@ class Stmt {
 // 单写连接是本方案「先查余额再扣减」得以原子的前提。
 class Db {
  public:
-  explicit Db(std::filesystem::path file, int read_connections = 4);
+  // pool_wait：取读连接的最长等待，超时抛 AppError("DB_BUSY")。
+  explicit Db(std::filesystem::path file, int read_connections = 4,
+              std::chrono::milliseconds pool_wait = std::chrono::seconds(10));
   ~Db();
 
   Db(const Db&) = delete;
@@ -66,6 +69,7 @@ class Db {
 
   mutable std::mutex pool_mutex_;
   mutable std::condition_variable pool_cv_;
+  std::chrono::milliseconds pool_wait_;
   mutable std::vector<sqlite3*> reads_;
   mutable std::vector<bool> read_busy_;
 };

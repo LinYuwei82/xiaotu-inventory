@@ -92,7 +92,8 @@ std::string Stmt::text(int column) const {
   return std::string(reinterpret_cast<const char*>(data), static_cast<std::size_t>(size));
 }
 
-Db::Db(std::filesystem::path file, int read_connections) : file_(std::move(file)) {
+Db::Db(std::filesystem::path file, int read_connections, std::chrono::milliseconds pool_wait)
+    : file_(std::move(file)), pool_wait_(pool_wait) {
   if (file_.has_parent_path()) {
     std::filesystem::create_directories(file_.parent_path());
   }
@@ -153,9 +154,14 @@ void Db::read(const std::function<void(sqlite3*)>& fn) const {
   std::size_t index = read_busy_.size();
   {
     std::unique_lock<std::mutex> lock(pool_mutex_);
-    pool_cv_.wait(lock, [this] {
+    // 不能无限等：读连接被长导出占满时，包括会话校验在内的所有读请求都会挂住，
+    // 整个服务失去响应。超时后让调用方回 503，由前端重试。
+    const bool acquired = pool_cv_.wait_for(lock, pool_wait_, [this] {
       return std::any_of(read_busy_.begin(), read_busy_.end(), [](bool busy) { return !busy; });
     });
+    if (!acquired) {
+      throw AppError("DB_BUSY", "数据库繁忙，请稍后重试");
+    }
     for (std::size_t i = 0; i < read_busy_.size(); ++i) {
       if (!read_busy_[i]) {
         read_busy_[i] = true;

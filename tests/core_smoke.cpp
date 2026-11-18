@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -91,6 +92,28 @@ int main() {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
       check(db.schema_version() == 39, "迁移后 schema 版本应为 39");
+
+      // 读连接被占满时不能无限等待：超时后应报 DB_BUSY，让调用方回 503。
+      {
+        xiaotu::Db pool_db(dir / "pool.db", 1, std::chrono::milliseconds(80));
+        std::latch started(1);
+        std::thread holder([&] {
+          pool_db.read([&](sqlite3*) {
+            started.count_down();
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+          });
+        });
+        started.wait();
+        bool busy = false;
+        try {
+          pool_db.read([](sqlite3*) {});
+        } catch (const xiaotu::AppError& error) {
+          busy = error.code() == "DB_BUSY";
+        }
+        holder.join();
+        check(busy, "读连接占满时应在超时后报 DB_BUSY");
+      }
+
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
       db.read([&](sqlite3* conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");

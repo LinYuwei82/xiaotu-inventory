@@ -48,6 +48,9 @@ void json_from_exception(httplib::Response& res, const AppError& error) {
     status = 429;
   } else if (code.rfind("DUPLICATE", 0) == 0 || code == "VERSION_CONFLICT") {
     status = 409;
+  } else if (code == "DB_BUSY") {
+    // 读池已满：属于临时拥塞，让客户端稍后重试而不是当成请求错误。
+    status = 503;
   } else if (code == "BIND_FAILED" || code == "INTERNAL") {
     status = 500;
   }
