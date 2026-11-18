@@ -42,7 +42,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: 校验 guard 未被单独改动
-        run: sha256sum -c tools/release/guard.sha256
+        shell: bash
+        run: tr -d '\r' < tools/release/guard.sha256 | sha256sum -c -
       - name: guard selftest
         shell: pwsh
         run: python tools/release/guard.py selftest
