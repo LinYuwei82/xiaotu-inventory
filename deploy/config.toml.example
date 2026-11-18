@@ -30,7 +30,7 @@ credit_limit_mode = "warn"
 # 两者都为空表示不启用自动检查。
 # auto_check = true   # 启动 30 秒后与每 24h±2h 自动检查（改后需重启服务）
 # prefetch = true     # 自动检查命中新版本时后台下载并校验（改后需重启服务）
-# manifest_url = "https://dl.xiaotu.online/xiaotu/server/updates/stable/latest.json"
+# manifest_url = "https://dl.xiaotu.online/xiaotu/updates/stable/latest.json"
 # manifest_file = "/srv/xiaotu-updates/windows/stable/latest.json"
 # channel = "stable"
 # rollout_percent = 100

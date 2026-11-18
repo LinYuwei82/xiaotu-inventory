@@ -28,7 +28,7 @@
 #   --manifest PATH     已签名清单（默认 build/package/latest.json）
 #   --steps LIST        逗号分隔、递增且以 100 结尾（默认 1,10,50,100）
 #   --interval DUR      每档停留时长，支持 s/m/h/d（默认 24h）
-#   --product NAME      xiaotu / devcard / mote（默认 xiaotu）
+#   --product NAME      仅支持 xiaotu（默认 xiaotu；DevCard / Mote 已迁出本仓库）
 #   --channel NAME      stable / beta（默认 stable，且必须与清单一致）
 #   --key PATH          Ed25519 私钥（默认 ~/.config/xiaotu-updates/update_signing_2026.pem）
 #   --poll-timeout SEC  上传后等待 CDN 生效的秒数（默认 180）
@@ -60,6 +60,10 @@ ASSUME_YES="false"
 DEFAULT_KEY="$HOME/.config/xiaotu-updates/update_signing_2026.pem"
 SIGNING_KEY="${SIGNING_KEY:-$DEFAULT_KEY}"
 OSS_CRED_FILE="${OSS_CRED_FILE:-$HOME/.config/xiaotu-updates/oss-credentials.env}"
+# 兼容只有 .env 的环境（内容为 export KEY=VALUE）
+if [ ! -f "$OSS_CRED_FILE" ] && [ -f "$HOME/.config/xiaotu-updates/.env" ]; then
+  OSS_CRED_FILE="$HOME/.config/xiaotu-updates/.env"
+fi
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -78,8 +82,11 @@ while [ $# -gt 0 ]; do
 done
 
 case "$PRODUCT" in
-  xiaotu|devcard|mote) ;;
-  *) echo "PRODUCT 必须是 xiaotu / devcard / mote" >&2; exit 1 ;;
+  xiaotu) ;;
+  devcard|mote)
+    echo "PRODUCT=$PRODUCT 已迁出本仓库：请到对应仓库执行放量" >&2
+    exit 1 ;;
+  *) echo "PRODUCT 必须是 xiaotu" >&2; exit 1 ;;
 esac
 
 case "$CHANNEL" in
@@ -191,7 +198,7 @@ fi
 
 # ---- OSS 凭据与上传 ----
 cred_value() {  # cred_value <文件> <键名>
-  sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
+  sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
     | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
 }
 
@@ -284,7 +291,7 @@ if [ "$DRY_RUN" != "true" ]; then
     "$HOME/.venv-oss/bin/pip" install -q oss2
     OSS_PY="$HOME/.venv-oss/bin/python"
   fi
-  echo "OSS：           $OSS_BUCKET / $OSS_REGION（凭据：${OSS_CRED_SOURCE}）"
+  echo "OSS：           $OSS_BUCKET / ${OSS_REGION}（凭据：${OSS_CRED_SOURCE}）"
 fi
 
 # ---- 逐档执行 ----

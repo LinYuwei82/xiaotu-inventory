@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # 小兔在线 · OSS 旧版本清理脚本
 #
-# 清理 dl.xiaotu.online 上各产品历史 dmg 包，只保留最近 N 个 stable 版本。
-# latest.json / appcast.xml 永远只一份（当前索引），manual.pdf 固定名，均不碰。
+# 清理 dl.xiaotu.online 上各产品历史安装包，只保留最近 N 个 stable 版本。
+# 同一版本的 dmg / setup.exe / zip（绿色包）作为一组保留或删除。
+# latest.json / appcast.xml / windows.json 永远只一份（当前索引），manual.pdf 固定名，均不碰。
 #
-# 三款产品的 dmg 文件名格式不同，脚本内置各自的版本号正则：
-#   xiaotu:   xiaotu-inventory-1.0.0.dmg       → 1.0.0
-#   devcard:  DevCard-1.2.2-macos-arm64.dmg    → 1.2.2
-#   mote:     Mote-macOS-native-0.3.11.dmg     → 0.3.11
+# 三款产品的安装包文件名格式不同，脚本内置各自的版本号正则：
+#   xiaotu:   xiaotu-inventory-1.0.0.dmg / -win64-setup.exe / -win64.zip   → 1.0.0
+#   devcard:  DevCard-1.2.2-macos-arm64.dmg / -setup.exe / -win64-portable.zip → 1.2.2
+#   mote:     Mote-macOS-native-0.3.11.dmg / Mote-Setup-0.3.11.exe / -win64-portable.zip → 0.3.11
+# 这是桶级维护脚本，可一次清理三个产品；发布脚本则只允许各自仓库处理自己的产品。
 #
 # 凭据加载逻辑与 publish_oss.sh / rollout_oss.sh 一致：
 #   1. 环境变量 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET
@@ -78,6 +80,10 @@ fi
 OSS_BUCKET="${OSS_BUCKET:-}"
 OSS_REGION="${OSS_REGION:-}"
 OSS_CRED_FILE="${OSS_CRED_FILE:-$HOME/.config/xiaotu-updates/oss-credentials.env}"
+# 兼容只有 .env 的环境（内容为 export KEY=VALUE）
+if [ ! -f "$OSS_CRED_FILE" ] && [ -f "$HOME/.config/xiaotu-updates/.env" ]; then
+  OSS_CRED_FILE="$HOME/.config/xiaotu-updates/.env"
+fi
 
 if [ -z "$OSS_BUCKET" ] || [ -z "$OSS_REGION" ]; then
   echo "缺少必填：OSS_BUCKET / OSS_REGION（或 source ~/.config/xiaotu-updates/.env）" >&2; exit 1
@@ -93,7 +99,7 @@ if ! "$VENV_PY" -c "import oss2" 2>/dev/null; then
 fi
 
 cred_value() {
-  sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
+  sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
     | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
 }
 load_oss_creds() {
@@ -102,11 +108,11 @@ load_oss_creds() {
   fi
   if [ ! -f "$OSS_CRED_FILE" ]; then
     echo "缺少 OSS 凭据：请设置 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET" >&2
-    echo "或写入仓库外的 $OSS_CRED_FILE（权限 600）。" >&2; exit 1
+    echo "或写入仓库外的 ${OSS_CRED_FILE}（权限 600）。" >&2; exit 1
   fi
   local perm
   perm="$(stat -c %a "$OSS_CRED_FILE" 2>/dev/null || stat -f %Lp "$OSS_CRED_FILE" 2>/dev/null || echo unknown)"
-  case "$perm" in 600|400) ;; *) echo "凭据文件权限过宽（$perm）" >&2; exit 1 ;; esac
+  case "$perm" in 600|400) ;; *) echo "凭据文件权限过宽（${perm}）" >&2; exit 1 ;; esac
   OSS_ACCESS_KEY_ID="$(cred_value "$OSS_CRED_FILE" OSS_ACCESS_KEY_ID)"
   OSS_ACCESS_KEY_SECRET="$(cred_value "$OSS_CRED_FILE" OSS_ACCESS_KEY_SECRET)"
   [ -n "$OSS_ACCESS_KEY_ID" ] && [ -n "$OSS_ACCESS_KEY_SECRET" ] || \
@@ -139,11 +145,24 @@ dry = dry_s == "True"
 auth = oss2.Auth(ak, sk)
 bkt = oss2.Bucket(auth, f"https://oss-{region}.aliyuncs.com", bucket)
 
-# 各产品版本号正则：从 dmg 文件名提取 semver
+# 各产品版本号正则：从文件名提取 semver；同名版本的 dmg/exe/zip 归为一组
+VERSION_RE = r"(?P<v>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?)"
 PRODUCT_PATTERNS = {
-    "xiaotu":  re.compile(r"xiaotu-inventory-(\d+\.\d+\.\d+.*)\.dmg$"),
-    "devcard": re.compile(r"DevCard-(\d+\.\d+\.\d+.*)-macos.*\.dmg$"),
-    "mote":    re.compile(r"Mote-macOS-native-(\d+\.\d+\.\d+.*)\.dmg$"),
+    "xiaotu": [
+        ("dmg",   re.compile(rf"^xiaotu-inventory-{VERSION_RE}\.dmg$")),
+        ("setup", re.compile(rf"^xiaotu-inventory-{VERSION_RE}-win64-setup\.exe$")),
+        ("zip",   re.compile(rf"^xiaotu-inventory-{VERSION_RE}-win64\.zip$")),
+    ],
+    "devcard": [
+        ("dmg",   re.compile(rf"^DevCard-{VERSION_RE}-macos.*\.dmg$")),
+        ("setup", re.compile(rf"^DevCard-{VERSION_RE}-setup\.exe$")),
+        ("zip",   re.compile(rf"^DevCard-{VERSION_RE}-win64-portable\.zip$")),
+    ],
+    "mote": [
+        ("dmg",   re.compile(rf"^Mote-macOS-native-{VERSION_RE}\.dmg$")),
+        ("setup", re.compile(rf"^Mote-Setup-{VERSION_RE}\.exe$")),
+        ("zip",   re.compile(rf"^Mote-{VERSION_RE}-win64-portable\.zip$")),
+    ],
 }
 
 def parse_version(vstr):
@@ -157,11 +176,11 @@ def parse_version(vstr):
         nums = [int(p) if p.isdigit() else 0 for p in (parts + ["0", "0", "0"])[:3]]
         return tuple(nums + [vstr.split("-")[1] if "-" in vstr else ""])
 
-def list_dmgs(prefix):
-    """列出 prefix/ 目录下所有 .dmg（精确匹配前缀，不抓 devcard-test 这种）。"""
+def list_artifacts(prefix):
+    """列出 prefix/ 目录下的 dmg / exe / zip（精确匹配前缀，不抓 devcard-test 这种）。"""
     results = []
     for obj in oss2.ObjectIterator(bkt, prefix=prefix + "/"):
-        if obj.key.endswith(".dmg"):
+        if obj.key.endswith((".dmg", ".exe", ".zip")):
             results.append(obj)
     return results
 
@@ -180,67 +199,74 @@ errors = []
 
 for prod in products:
     print(f"--- {prod} ---")
-    pattern = PRODUCT_PATTERNS[prod]
-    prefix = prod
-    dmgs = list_dmgs(prefix)
+    patterns = PRODUCT_PATTERNS[prod]
+    objects = list_artifacts(prod)
 
-    if not dmgs:
-        print(f"  （没有 dmg 文件，跳过）\n")
+    if not objects:
+        print("  （没有安装包，跳过）\n")
         continue
 
-    # 解析版本号 + 过滤
-    parsed = []
+    # 同一版本的 dmg / setup.exe / zip 归为一组，按版本整体保留或清理
+    groups = {}
     unrecognized = []
-    for obj in dmgs:
-        m = pattern.search(obj.key)
-        if m:
-            vstr = m.group(1)
-            parsed.append((parse_version(vstr), vstr, obj))
+    for obj in objects:
+        name = obj.key.rsplit("/", 1)[-1]
+        for kind, pattern in patterns:
+            m = pattern.match(name)
+            if m:
+                groups.setdefault(m.group("v"), []).append((kind, obj))
+                break
         else:
-            # 不匹配任何已知正则的 dmg 不动（保守）
+            # 不匹配任何已知正则的包不动（保守）
             unrecognized.append(obj)
 
-    # 按版本号降序排，保留前 keep 个
-    parsed.sort(key=lambda x: x[0], reverse=True)
-    to_keep = parsed[:keep]
-    to_delete = parsed[keep:]
+    order = sorted(groups.items(), key=lambda kv: parse_version(kv[0]), reverse=True)
+    to_keep = order[:keep]
+    to_delete = order[keep:]
 
     # 输出表格
-    print(f"  共 {len(dmgs)} 个 dmg，保留最近 {len(to_keep)} 个，清理 {len(to_delete)} 个")
-    print(f"  {'版本':16s} {'大小':>10s}  {'上传时间':>16s}  {'动作'}")
-    print(f"  {'-'*16} {'-'*10}  {'-'*16}  {'----'}")
+    print(f"  共 {len(objects)} 个安装包 / {len(groups)} 个版本，"
+          f"保留最近 {len(to_keep)} 个版本，清理 {len(to_delete)} 个版本")
+    print(f"  {'版本':16s} {'文件':32s} {'大小':>10s}  {'上传时间':>16s}  {'动作'}")
+    print(f"  {'-'*16} {'-'*32} {'-'*10}  {'-'*16}  {'----'}")
 
-    for _, vstr, obj in to_keep:
-        print(f"  {vstr:16s} {obj.size:>10,}  {fmt_date(obj.last_modified):>16s}  保留")
-    for _, vstr, obj in to_delete:
-        print(f"  {vstr:16s} {obj.size:>10,}  {fmt_date(obj.last_modified):>16s}  删除")
+    def print_group(group, action):
+        vstr, items = group
+        for _, obj in sorted(items, key=lambda kv: kv[0]):
+            name = obj.key.rsplit("/", 1)[-1]
+            print(f"  {vstr:16s} {name[:32]:32s} {obj.size:>10,}  {fmt_date(obj.last_modified):>16s}  {action}")
+
+    for group in to_keep:
+        print_group(group, "保留")
+    for group in to_delete:
+        print_group(group, "删除")
 
     for obj in unrecognized:
         print(f"  ? 无法识别版本号，保守跳过：{obj.key}")
 
     # 执行
+    delete_count = sum(len(items) for _, items in to_delete)
     if to_delete:
         if force and not dry:
-            print(f"  → 正在删除 {len(to_delete)} 个文件...")
-            for _, vstr, obj in to_delete:
-                try:
-                    bkt.delete_object(obj.key)
-                    print(f"    ✓ {obj.key}")
-                    total_deleted += 1
-                    total_freed += obj.size
-                except Exception as e:
-                    print(f"    ✗ 删除失败：{obj.key} → {e}")
-                    errors.append((prod, obj.key, str(e)))
-        elif dry or not force:
-            if dry:
-                print(f"  → [dry-run] 将删除 {len(to_delete)} 个（加 --force 真删）")
-            else:
-                print(f"  → 将删除 {len(to_delete)} 个（加 --force 真删）")
+            print(f"  → 正在删除 {delete_count} 个文件...")
+            for _, items in to_delete:
+                for _, obj in items:
+                    try:
+                        bkt.delete_object(obj.key)
+                        print(f"    ✓ {obj.key}")
+                        total_deleted += 1
+                        total_freed += obj.size
+                    except Exception as e:
+                        print(f"    ✗ 删除失败：{obj.key} → {e}")
+                        errors.append((prod, obj.key, str(e)))
+        else:
+            label = "[dry-run] 将删除" if dry else "将删除"
+            print(f"  → {label} {delete_count} 个文件（加 --force 真删）")
         print()
     else:
-        print(f"  ✓ 无需清理（已经 ≤ {keep} 个）\n")
+        print(f"  ✓ 无需清理（已经 ≤ {keep} 个版本）\n")
 
-    total_kept += len(to_keep)
+    total_kept += sum(len(items) for _, items in to_keep)
 
 # ---- 汇总 ----
 print("=" * 50)

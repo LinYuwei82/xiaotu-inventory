@@ -246,7 +246,7 @@ channel = "stable"
 rollout_percent = 100
 auto_check = true
 prefetch = true
-# manifest_url = "https://dl.xiaotu.online/xiaotu/server/updates/stable/latest.json"
+# manifest_url = "https://dl.xiaotu.online/xiaotu/updates/stable/latest.json"
 # manifest_file = "/var/lib/xiaotu/update-manifest.json"
 ```
 
@@ -714,7 +714,7 @@ XIAOTU_UPDATE_PUBKEY=<Ed25519 公钥 base64> \
 tools/package/make_dmg.sh
 ```
 
-**发布**：`PRODUCT=xiaotu tools/package/publish_oss.sh` 一条命令完成上传 dmg、生成并签 `latest.json` / `appcast.xml`、本地验签、上传清单、purge CDN、同步下载页数字与预热 CDN；OSS 凭据只从环境变量或仓库外 600 权限文件读取。详见 [tools/package/README.md](tools/package/README.md)。
+**发布**：`PRODUCT=xiaotu tools/package/publish_oss.sh` 一条命令完成上传 dmg、生成并签 `latest.json` / `appcast.xml`、本地验签、上传清单、purge CDN 与预热 CDN；下载页由 `site.js` 读取清单自动同步，脚本不改写 HTML；OSS 凭据只从环境变量或仓库外 600 权限文件读取。详见 [tools/package/README.md](tools/package/README.md)。
 
 用户侧放行方式见 [docs/发行与安装说明.md](docs/发行与安装说明.md)。
 

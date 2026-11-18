@@ -78,7 +78,7 @@ python3 -m venv /opt/xiaotu/tools/package/.venv
 ```toml
 [update]
 # 厂商清单地址：服务端拉取、验签后缓存，缓存有效期 10 分钟。
-manifest_url = "https://dl.xiaotu.online/xiaotu/server/updates/stable/latest.json"
+manifest_url = "https://dl.xiaotu.online/xiaotu/updates/stable/latest.json"
 # 可选：本地/离线清单。manifest_url 不可用且没有缓存时，才使用这里的文件。
 manifest_file = "/srv/xiaotu-updates/windows/stable/latest.json"
 channel = "stable"                  # stable / beta

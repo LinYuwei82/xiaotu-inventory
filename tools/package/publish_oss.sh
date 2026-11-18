@@ -2,19 +2,17 @@
 # 小兔在线 · OSS 发布脚本（自动更新链路）
 #
 # 输入 dmg → 生成 Ed25519 签名的 latest.json + appcast.xml → 上传 dl.xiaotu.online → purge CDN。
-# 三款产品共用同一份脚本，通过 PRODUCT 选择目标子目录：
+# 只负责小兔进销存；DevCard / Mote 各有自己的发布脚本。
 #
 #   PRODUCT=xiaotu  → dl.xiaotu.online/xiaotu/
-#   PRODUCT=devcard → dl.xiaotu.online/devcard/
-#   PRODUCT=mote    → dl.xiaotu.online/mote/
 #
-# 目录结构（与 index.html 已在用的保持一致）：
+# 目录结构：
 #   oss://<bucket>/<product>/<app>-<ver>.dmg                ← 长缓存 / immutable
 #   oss://<bucket>/<product>/updates/<channel>/latest.json  ← 60 秒缓存
 #   oss://<bucket>/<product>/updates/<channel>/appcast.xml  ← 60 秒缓存
 #
-# 发布后还会同步桶根目录 index.html 里该产品的字节数 / SHA256（UPDATE_INDEX_PAGE=false 可关闭），
-# 并下载一次新包预热 CDN 边缘缓存（WARMUP=false 关闭）。
+# 下载页（pre.xiaotu.online/download）由 _site 桶的 site.js 读清单自动同步，
+# 本脚本不再改写任何 HTML。
 #
 # 凭据（AccessKey）：
 #   1. 优先读环境变量 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET；
@@ -35,8 +33,8 @@
 #   # dry-run：只本地生成 + 验签，不碰 OSS
 #   OSS_SKIP=true PRODUCT=xiaotu tools/package/publish_oss.sh
 #
-#   # 关闭下载页数字同步
-#   UPDATE_INDEX_PAGE=false PRODUCT=xiaotu tools/package/publish_oss.sh
+#   # 关闭 CDN 预热
+#   WARMUP=false PRODUCT=xiaotu tools/package/publish_oss.sh
 
 set -euo pipefail
 
@@ -55,8 +53,11 @@ case "${1:-}" in -h|--help) usage; exit 0 ;; "") ;;
 # ---- 核心参数 ----
 PRODUCT="${PRODUCT:-xiaotu}"
 case "$PRODUCT" in
-  xiaotu|devcard|mote) ;;
-  *) echo "PRODUCT 必须是 xiaotu / devcard / mote" >&2; exit 1 ;;
+  xiaotu) ;;
+  devcard|mote)
+    echo "PRODUCT=$PRODUCT 已迁出本仓库：DevCard 用 dev_card_cpp/tools/release/publish_macos.sh，Mote 用 mote/tools/release/publish_macos.sh" >&2
+    exit 1 ;;
+  *) echo "PRODUCT 必须是 xiaotu" >&2; exit 1 ;;
 esac
 
 OSS_BUCKET="${OSS_BUCKET:-}"
@@ -117,8 +118,6 @@ API_MAX="${API_MAX:-1}"
 MANDATORY="${MANDATORY:-}"
 RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-}"
 PURGE="${PURGE:-true}"
-# 发布后自动把 index.html 里小兔包的字节数/SHA256 改成新包的值
-UPDATE_INDEX_PAGE="${UPDATE_INDEX_PAGE:-true}"
 # 发布后下载一次 dmg 预热 CDN 边缘缓存（WARMUP=false 关闭，WARM_TIMEOUT 单位秒）
 WARMUP="${WARMUP:-true}"
 WARM_TIMEOUT="${WARM_TIMEOUT:-300}"
@@ -126,9 +125,13 @@ WARM_TIMEOUT="${WARM_TIMEOUT:-300}"
 # ---- OSS 凭据：环境变量优先，其次仓库外 600 权限的凭据文件 ----
 # 凭据只在本进程内使用，不导出给子进程：上传时按参数传给 Python。
 OSS_CRED_FILE="${OSS_CRED_FILE:-$HOME/.config/xiaotu-updates/oss-credentials.env}"
+# 兼容只有 .env 的环境（内容为 export KEY=VALUE）
+if [ ! -f "$OSS_CRED_FILE" ] && [ -f "$HOME/.config/xiaotu-updates/.env" ]; then
+  OSS_CRED_FILE="$HOME/.config/xiaotu-updates/.env"
+fi
 
 cred_value() {  # cred_value <文件> <键名>
-  sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
+  sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
     | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
 }
 
@@ -143,14 +146,14 @@ load_oss_credentials() {
   else
     if [ ! -f "$OSS_CRED_FILE" ]; then
       echo "缺少 OSS 凭据：请设置 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET，" >&2
-      echo "或写入仓库外的 $OSS_CRED_FILE（权限 600）。" >&2
+      echo "或写入仓库外的 ${OSS_CRED_FILE}（权限 600）。" >&2
       exit 1
     fi
     local perm
     perm="$(stat -c %a "$OSS_CRED_FILE" 2>/dev/null || stat -f %Lp "$OSS_CRED_FILE" 2>/dev/null || echo unknown)"
     case "$perm" in
       600|400) ;;
-      *) echo "凭据文件权限过宽（$perm）：先 chmod 600 $OSS_CRED_FILE 再重试。" >&2; exit 1 ;;
+      *) echo "凭据文件权限过宽（${perm}）：先 chmod 600 $OSS_CRED_FILE 再重试。" >&2; exit 1 ;;
     esac
     OSS_ACCESS_KEY_ID="$(cred_value "$OSS_CRED_FILE" OSS_ACCESS_KEY_ID)"
     OSS_ACCESS_KEY_SECRET="$(cred_value "$OSS_CRED_FILE" OSS_ACCESS_KEY_SECRET)"
@@ -227,7 +230,7 @@ rm -rf "$DMG_MOUNT"
 if ! [[ "$BUILD" =~ ^[0-9]{4,}$ ]]; then
   DMG_BASENAME_FN="$(basename "$DMG_PATH")"
   BUILD="$(echo "$DMG_BASENAME_FN" | sed -E 's/.*-([0-9]{6,})\.dmg$/\1/')"
-  [[ "$BUILD" =~ ^[0-9]{4,}$ ]] || { echo "无法从 dmg 推断构建号（$DMG_BASENAME_FN）" >&2; exit 1; }
+  [[ "$BUILD" =~ ^[0-9]{4,}$ ]] || { echo "无法从 dmg 推断构建号（${DMG_BASENAME_FN}）" >&2; exit 1; }
 fi
 
 DMG_SIZE="$(stat -f %z "$DMG_PATH")"
@@ -356,7 +359,7 @@ if [ "$OSS_SKIP" != "true" ]; then
         if aliyun cdn RefreshObjectCaches --ObjectPath "$url" >/dev/null 2>&1; then
           echo "  ✓ $url"
         else
-          echo "  ✗ purge 失败：$url（手动 purge）"
+          echo "  ✗ purge 失败：${url}（手动 purge）"
         fi
       else
         echo "  (手动 purge：$url)"
@@ -370,68 +373,11 @@ if [ "$OSS_SKIP" != "true" ]; then
   fi
 fi
 
-# ---- ⑥ 同步下载页数字 ----
-# index.html 里小兔包卡片硬编码了字节数与 SHA256，发布后自动改写，避免每次手改。
-if [ "$OSS_SKIP" != "true" ] && [ "$UPDATE_INDEX_PAGE" = "true" ]; then
-  echo ""
-  echo "===== ⑥ 同步下载页 index.html（小兔包大小与 SHA256）"
-  "$OSS_PY" - "$OSS_BUCKET" "$OSS_REGION" "$OSS_ACCESS_KEY_ID" "$OSS_ACCESS_KEY_SECRET" \
-    "$DMG_SIZE" "$DMG_SHA256" <<'PY_EOF'
-import re
-import sys
-import oss2
-
-bucket_name, region, ak, sk, size_s, sha = sys.argv[1:]
-size = int(size_s)
-bkt = oss2.Bucket(oss2.Auth(ak, sk), f"https://oss-{region}.aliyuncs.com", bucket_name)
-try:
-    html = bkt.get_object("index.html").read().decode("utf-8")
-except oss2.exceptions.NoSuchKey:
-    print("  跳过：桶根目录没有 index.html")
-    raise SystemExit(0)
-
-idx = html.find('id="sha-xiaotu-mac"')
-if idx < 0:
-    print('  跳过：index.html 里没有 id="sha-xiaotu-mac"')
-    raise SystemExit(0)
-
-before = html[:idx]
-pattern = re.compile(r'(<span class="mono">)\d[\d,]*(</span> 字节（约 )[\d.]+( MB）)')
-matches = list(pattern.finditer(before))
-if not matches:
-    print("  跳过：未找到小兔包的字节数展示位")
-    raise SystemExit(0)
-m = matches[-1]
-new_size = f"{size:,}"
-new_mb = f"{size / (1024 * 1024):.1f}"
-before = (before[:m.start()] + m.group(1) + new_size + m.group(2) + new_mb +
-          m.group(3) + before[m.end():])
-
-after = html[idx:]
-after = re.sub(r'(id="sha-xiaotu-mac"\s+title=")[0-9a-f]{64}(")',
-               r'\g<1>' + sha + r'\g<2>', after, count=1)
-after = re.sub(r'(id="sha-xiaotu-mac"[^>]*>)[0-9a-f]{64}(</code>)',
-               r'\g<1>' + sha + r'\g<2>', after, count=1)
-
-html2 = before + after
-if html2 == html:
-    print(f"  无需更新：下载页已是 {new_size} 字节 / {new_mb} MB")
-else:
-    bkt.put_object("index.html", html2.encode("utf-8"),
-                   headers={"Content-Type": "text/html; charset=utf-8",
-                            "Cache-Control": "no-cache, max-age=60"})
-    print(f"  ✓ index.html 已更新：{new_size} 字节 / {new_mb} MB / {sha[:16]}…")
-PY_EOF
-else
-  echo ""
-  echo "===== ⑥ [跳过] 下载页数字同步（UPDATE_INDEX_PAGE=false 或 dry-run）"
-fi
-
-# ---- ⑦ 预热 CDN ----
+# ---- ⑥ 预热 CDN ----
 # 发布后主动下载一次新包，让边缘节点先缓存，避免首个用户吃冷启动（香港节点尤其明显）。
 if [ "$OSS_SKIP" != "true" ] && [ "$WARMUP" = "true" ]; then
   echo ""
-  echo "===== ⑦ 预热 CDN（下载一次新包写入边缘缓存）"
+  echo "===== ⑥ 预热 CDN（下载一次新包写入边缘缓存）"
   if command -v curl >/dev/null 2>&1; then
     WARM_ERR="$(mktemp)"
     set +e
@@ -445,7 +391,7 @@ if [ "$OSS_SKIP" != "true" ] && [ "$WARMUP" = "true" ]; then
       WARM_MBPS="$(awk -v s="${WARM_SPEED:-0}" 'BEGIN{printf "%.2f", s/1048576}')"
       echo "  ✓ 已预热：HTTP $WARM_CODE · $WARM_BYTES 字节 · ${WARM_TIME}s · ${WARM_MBPS} MB/s"
     else
-      echo "  ! 预热未完成（curl exit=$WARM_RC，HTTP ${WARM_CODE:-?}）：$(tr '\n' ' ' <"$WARM_ERR")"
+      echo "  ! 预热未完成（curl exit=${WARM_RC}，HTTP ${WARM_CODE:-?}）：$(tr '\n' ' ' <"$WARM_ERR")"
     fi
     rm -f "$WARM_ERR"
   else
@@ -453,10 +399,10 @@ if [ "$OSS_SKIP" != "true" ] && [ "$WARMUP" = "true" ]; then
   fi
 else
   echo ""
-  echo "===== ⑦ [跳过] CDN 预热（WARMUP=false 或 dry-run）"
+  echo "===== ⑥ [跳过] CDN 预热（WARMUP=false 或 dry-run）"
 fi
 
-# ---- ⑧ 完成 ----
+# ---- ⑦ 完成 ----
 echo ""
 echo "================ 发布完成 ================"
 echo "版本 / build / channel：  $VERSION / $BUILD / $CHANNEL"
@@ -469,7 +415,7 @@ echo "key_id / rollout：       $MANIFEST_KEY_ID / ${MANIFEST_ROLLOUT}%"
 echo ""
 if [ "${OSS_CRED_SOURCE:-}" = "环境变量" ]; then
   echo "→ 提醒：本次凭据来自环境变量。若曾明文粘贴到聊天、命令行历史或日志，"
-  echo "  请到 RAM 控制台轮换这对密钥，并改用 $OSS_CRED_FILE（chmod 600）。"
+  echo "  请到 RAM 控制台轮换这对密钥，并改用 ${OSS_CRED_FILE}（chmod 600）。"
   echo ""
 fi
 echo "→ 客户端 Info.plist 注入（make_dmg.sh 参数）："

@@ -49,4 +49,4 @@ print(f'  ✓ {out_path}')
 PY
 
 echo "生成：$out_ico"
-echo "输入：$src_icns（青绿色底 + \"兔\"字，已作为 macOS App 正式图标）"
+echo "输入：${src_icns}（青绿色底 + \"兔\"字，已作为 macOS App 正式图标）"

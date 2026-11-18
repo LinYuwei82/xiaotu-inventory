@@ -136,11 +136,12 @@ tools/package/publish_oss.sh
 ```
 
 一条命令完成：上传 dmg（immutable 长缓存）→ 生成并签 `latest.json` / `appcast.xml` → 本地验签 →
-上传清单（60 秒缓存）→ purge CDN → 回写桶根 `index.html` 的字节数与 SHA256 → 下载一次预热 CDN。
+上传清单（60 秒缓存）→ purge CDN → 下载一次预热 CDN。
 
 - 凭据：优先读 `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET`；未设置时读仓库外
-  `~/.config/xiaotu-updates/oss-credentials.env`（权限必须 600/400）。
-- 关闭下载页同步：`UPDATE_INDEX_PAGE=false`；关闭预热：`WARMUP=false`；只本地生成不碰 OSS：`OSS_SKIP=true`。
+  `~/.config/xiaotu-updates/oss-credentials.env`，该文件不存在时回退到
+  `~/.config/xiaotu-updates/.env`（权限必须 600/400）。
+- 关闭预热：`WARMUP=false`；只本地生成不碰 OSS：`OSS_SKIP=true`。
 - 发布地址：`https://dl.xiaotu.online/xiaotu/updates/stable/latest.json` 与同目录 `appcast.xml`。
 
 ## 逐档放量
@@ -167,7 +168,7 @@ PRODUCT=xiaotu OSS_BUCKET=xiaotu-update OSS_REGION=cn-hongkong \
 
 ## 清理 OSS 旧版本
 
-dmg 包按 immutable 长缓存上传，只追加不清理。长期运行桶会堆满历史包。用 `cleanup_oss_versions.sh` 只保留最近 N 个 stable 版本：
+dmg / setup.exe / 绿色包 zip 都按 immutable 长缓存上传，只追加不清理。长期运行桶会堆满历史包。用 `cleanup_oss_versions.sh` 只保留最近 N 个 stable 版本（同一版本的三种包作为一组保留或删除）：
 
 ```bash
 # 1️⃣ 先 dry-run 看要删哪些（推荐每次先跑这个）
@@ -181,7 +182,7 @@ tools/package/cleanup_oss_versions.sh --product xiaotu --keep 1 --force
 ```
 
 - 默认保留最近 **3 个** 版本，`--keep` 可改；永远至少保留 1 个，不会把产品清空。
-- 脚本按各产品的版本号正则匹配 dmg 文件名（`xiaotu-inventory-1.0.0.dmg`、`DevCard-1.2.2-macos-arm64.dmg`、`Mote-macOS-native-0.3.11.dmg`），用 `semver` 库做版本号排序。
-- **安全保护**：默认 dry-run 模式；非交互环境（CI / 管道）必须显式 `--force` 才允许真删；latest.json / appcast.xml / manual.pdf / index.html / 桶根目录不动；不认识的 dmg（正则不匹配）保守跳过。
-- 凭据加载逻辑与 `publish_oss.sh` 一致：环境变量优先，否则读仓库外 `~/.config/xiaotu-updates/oss-credentials.env`（权限 600）。
+- 脚本按各产品的版本号正则匹配安装包文件名（dmg / setup.exe / `-win64.zip` 绿色包），用 `semver` 库做版本号排序；同版本的多个包一起保留或删除。
+- **安全保护**：默认 dry-run 模式；非交互环境（CI / 管道）必须显式 `--force` 才允许真删；latest.json / appcast.xml / windows.json / manual.pdf / index.html / 桶根目录不动；不认识的包（正则不匹配）保守跳过。
+- 凭据加载逻辑与 `publish_oss.sh` 一致：环境变量优先，否则读仓库外 `~/.config/xiaotu-updates/oss-credentials.env`（不存在时回退 `.env`，权限 600）。
 - 依赖：`pip install oss2 semver`（已在 `requirements.txt` 里，首次运行会自动装）。

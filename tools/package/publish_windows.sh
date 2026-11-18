@@ -46,8 +46,11 @@ case "${1:-}" in -h|--help) usage; exit 0 ;; "") ;;
 # ---- 核心参数 ----
 PRODUCT="${PRODUCT:-xiaotu}"
 case "$PRODUCT" in
-  xiaotu|devcard|mote) ;;
-  *) echo "PRODUCT 必须是 xiaotu / devcard / mote" >&2; exit 1 ;;
+  xiaotu) ;;
+  devcard|mote)
+    echo "PRODUCT=$PRODUCT 已迁出本仓库：DevCard 用 dev_card_cpp/tools/release/publish_windows.ps1，Mote 用 mote/tools/release/publish_windows.sh" >&2
+    exit 1 ;;
+  *) echo "PRODUCT 必须是 xiaotu" >&2; exit 1 ;;
 esac
 
 OSS_BUCKET="${OSS_BUCKET:-}"
@@ -132,11 +135,39 @@ if [ ! -x "$VENV_PY" ]; then
 fi
 command -v shasum >/dev/null 2>&1 || { echo "未找到 shasum" >&2; exit 1; }
 
+# ---- 门禁：绿色包里的壳必须带当前清单地址 ----
+# 壳把清单地址编译进了二进制。旧构建产物会静默指向已下线的地址（如
+# /windows/stable/latest.json），客户端此后永远检查不到更新——上传前必须拦住。
+if [ -n "$ZIP_KEY" ]; then
+  echo ""
+  echo "===== ⓪ 校验绿色包内的壳使用当前清单地址"
+  "$VENV_PY" - "$ZIP_PATH" "xiaotu/updates/$CHANNEL/windows.json" <<'PY_EOF'
+import sys, zipfile
+
+zip_path, expected = sys.argv[1], sys.argv[2]
+url = f"https://dl.xiaotu.online/{expected}".encode()
+with zipfile.ZipFile(zip_path) as z:
+    names = [n for n in z.namelist()
+             if n.replace("\\", "/").endswith("xiaotu-shell.exe")]
+    if not names:
+        sys.exit("  ✗ 绿色包内没有 xiaotu-shell.exe，拒绝发布")
+    data = z.read(names[0])
+if url not in data:
+    sys.exit(f"  ✗ 壳内未找到清单地址 {url.decode()}\n"
+             "    这是旧构建产物；请用当前源码重建服务端与壳后再打包")
+print(f"  ✓ 壳内清单地址正确：{url.decode()}")
+PY_EOF
+fi
+
 # ---- OSS 凭据：环境变量优先，其次仓库外 600 权限的凭据文件 ----
 OSS_CRED_FILE="${OSS_CRED_FILE:-$HOME/.config/xiaotu-updates/oss-credentials.env}"
+# 兼容只有 .env 的环境（内容为 export KEY=VALUE）
+if [ ! -f "$OSS_CRED_FILE" ] && [ -f "$HOME/.config/xiaotu-updates/.env" ]; then
+  OSS_CRED_FILE="$HOME/.config/xiaotu-updates/.env"
+fi
 
 cred_value() {  # cred_value <文件> <键名>
-  sed -n "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
+  sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
     | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
 }
 
@@ -151,14 +182,14 @@ load_oss_credentials() {
   else
     if [ ! -f "$OSS_CRED_FILE" ]; then
       echo "缺少 OSS 凭据：请设置 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET，" >&2
-      echo "或写入仓库外的 $OSS_CRED_FILE（权限 600）。" >&2
+      echo "或写入仓库外的 ${OSS_CRED_FILE}（权限 600）。" >&2
       exit 1
     fi
     local perm
     perm="$(stat -c %a "$OSS_CRED_FILE" 2>/dev/null || stat -f %Lp "$OSS_CRED_FILE" 2>/dev/null || echo unknown)"
     case "$perm" in
       600|400) ;;
-      *) echo "凭据文件权限过宽（$perm）：先 chmod 600 $OSS_CRED_FILE 再重试。" >&2; exit 1 ;;
+      *) echo "凭据文件权限过宽（${perm}）：先 chmod 600 $OSS_CRED_FILE 再重试。" >&2; exit 1 ;;
     esac
     OSS_ACCESS_KEY_ID="$(cred_value "$OSS_CRED_FILE" OSS_ACCESS_KEY_ID)"
     OSS_ACCESS_KEY_SECRET="$(cred_value "$OSS_CRED_FILE" OSS_ACCESS_KEY_SECRET)"
@@ -288,7 +319,7 @@ echo "===== ③ 本地验签"
 
 MANIFEST_BUILD="$("$VENV_PY" -c "import json;print(json.load(open('$MANIFEST_LOCAL'))['build'])")"
 [ "$MANIFEST_BUILD" = "$BUILD" ] || {
-  echo "清单 build（$MANIFEST_BUILD）与 BUILD（$BUILD）不一致" >&2; exit 1; }
+  echo "清单 build（${MANIFEST_BUILD}）与 BUILD（${BUILD}）不一致" >&2; exit 1; }
 
 # ---- ④ 上传 windows.json ----
 if [ "$OSS_SKIP" != "true" ]; then
@@ -312,7 +343,7 @@ if [ "$OSS_SKIP" != "true" ] && [ "$PURGE" = "true" ]; then
       if aliyun cdn RefreshObjectCaches --ObjectPath "$url" >/dev/null 2>&1; then
         echo "  ✓ $url"
       else
-        echo "  ✗ purge 失败：$url（手动 purge）"
+        echo "  ✗ purge 失败：${url}（手动 purge）"
       fi
     else
       echo "  (手动 purge：$url)"
