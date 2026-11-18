@@ -66,6 +66,27 @@ bool state_changing(const std::string& method) {
   return method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH";
 }
 
+// 登录前就放行的本机端点只应由本机页面调用：Origin/Referer 若存在必须指向当前服务，
+// 否则任意网页都能跨站关掉口令门禁或抢先设置口令。两个头都缺失时按非浏览器客户端放行。
+bool local_page_request(const httplib::Request& req, int port, const std::string& mode) {
+  if (mode != "local") {
+    return true;
+  }
+  if (!is_loopback_address(req.remote_addr)) {
+    return false;
+  }
+  const std::string self = "http://127.0.0.1:" + std::to_string(port);
+  const std::string origin = req.get_header_value("Origin");
+  if (!origin.empty()) {
+    return origin == self;
+  }
+  const std::string referer = req.get_header_value("Referer");
+  if (!referer.empty()) {
+    return referer.rfind(self + "/", 0) == 0;
+  }
+  return true;
+}
+
 // 单机版本机口令开关：键不存在=从未询问，'1'=已启用门禁，'0'=已选择跳过。
 constexpr const char* kLocalPasswordSettingKey = "local_password_enabled";
 
@@ -422,9 +443,14 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         if (path == "/api/session" && req.method == "POST") {
           return httplib::Server::HandlerResponse::Unhandled;
         }
-        // 单机版本机口令的设置与跳过发生在登录之前，按路径放行，具体判定在路由内。
+        // 单机版本机口令的设置与跳过发生在登录之前，按路径放行，
+        // 但必须确认请求来自本机页面，否则可被跨站改写门禁。
         if ((path == "/api/local/password" || path == "/api/local/password/skip") &&
             req.method == "POST") {
+          if (!local_page_request(req, port_, info_.mode)) {
+            json_error(res, 403, "FORBIDDEN", "仅允许本机页面调用");
+            return httplib::Server::HandlerResponse::Handled;
+          }
           return httplib::Server::HandlerResponse::Unhandled;
         }
         // 用钥匙串里的长期凭据换会话同样发生在登录之前。

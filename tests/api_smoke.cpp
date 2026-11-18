@@ -1179,6 +1179,16 @@ void run_local_mode(const std::filesystem::path& dir) {
     check(!data.value("listen", "").empty(), "单机版诊断信息应包含自动分配的监听地址");
   }
 
+  // 本机口令端点只接受本机页面：跨站 Origin 必须拒绝，否则可被关掉口令门禁。
+  {
+    httplib::Client cross_site("127.0.0.1", port);
+    cross_site.set_default_headers({{"Origin", "https://evil.example"}});
+    const auto blocked = cross_site.Post("/api/local/password/skip", "", "text/plain");
+    check(blocked && blocked->status == 403, "跨站 Origin 不应能跳过本机口令");
+  }
+  const auto skip = client.Post("/api/local/password/skip", "", "text/plain");
+  check(skip && skip->status == 200, "本机客户端应能跳过口令设置");
+
   http.stop();
 }
 
