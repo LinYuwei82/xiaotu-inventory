@@ -102,13 +102,16 @@ std::vector<ZipEntry> read_central_directory(std::string_view bytes) {
 std::string ZipArchive::extract(const ZipEntry& entry) const {
   const auto* data = reinterpret_cast<const unsigned char*>(bytes.data());
   if ((entry.flags & 0x0001u) != 0) invalid("xlsx 已加密，无法读取");
-  if (entry.local_offset + 30 > bytes.size() ||
-      le32(data + entry.local_offset) != 0x04034b50u) {
+  // local_offset 来自文件内容（uint32），必须先转成 size_t 再参与比较，
+  // 否则 0xFFFFFFFF + 30 会在 32 位无符号里回绕成 29，绕过边界检查后越界读。
+  const std::size_t local_offset = static_cast<std::size_t>(entry.local_offset);
+  if (bytes.size() < 30 || local_offset > bytes.size() - 30 ||
+      le32(data + local_offset) != 0x04034b50u) {
     invalid("xlsx 的 ZIP 数据头损坏");
   }
-  const std::uint16_t name_length = le16(data + entry.local_offset + 26);
-  const std::uint16_t extra_length = le16(data + entry.local_offset + 28);
-  const std::size_t start = entry.local_offset + 30 + static_cast<std::size_t>(name_length) +
+  const std::uint16_t name_length = le16(data + local_offset + 26);
+  const std::uint16_t extra_length = le16(data + local_offset + 28);
+  const std::size_t start = local_offset + 30 + static_cast<std::size_t>(name_length) +
                             extra_length;
   if (start + entry.compressed > bytes.size()) invalid("xlsx 的 ZIP 数据越界");
   if (entry.uncompressed > kMaxEntryBytes) invalid("xlsx 内容过大，请拆分后再导入");

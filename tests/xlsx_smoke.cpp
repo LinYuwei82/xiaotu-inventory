@@ -1,4 +1,5 @@
 // xlsx 读取器冒烟：deflate + sharedStrings、store、合并单元格拒绝、表头映射。
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -92,6 +93,42 @@ int main(int argc, char** argv) {
           "合并单元格应被拒绝");
     check(message.find("合并") != std::string::npos, "合并单元格错误应说明原因");
     check(rejected("not a zip file", &message), "非 ZIP 内容应被拒绝");
+
+    // 中央目录里的 local header 偏移若为 0xFFFFFFFF，uint32 相加会回绕，
+    // 必须按 size_t 判断越界并拒绝，而不是越界读。
+    std::string bad_offset = stored;
+    const std::string cd_sig("PK\x01\x02", 4);
+    const std::size_t eocd = stored.rfind(std::string("PK\x05\x06", 4));
+    check(eocd != std::string::npos, "store 样本应含 ZIP 尾部目录");
+    if (eocd != std::string::npos && eocd + 22 <= bad_offset.size()) {
+      const auto u16 = [&stored](std::size_t at) {
+        return static_cast<std::uint16_t>(
+            static_cast<unsigned char>(stored[at]) |
+            (static_cast<unsigned char>(stored[at + 1]) << 8));
+      };
+      const auto u32 = [&stored](std::size_t at) {
+        return static_cast<std::uint32_t>(
+            static_cast<unsigned char>(stored[at]) |
+            (static_cast<unsigned char>(stored[at + 1]) << 8) |
+            (static_cast<unsigned char>(stored[at + 2]) << 16) |
+            (static_cast<unsigned char>(stored[at + 3]) << 24));
+      };
+      std::size_t pos = u32(eocd + 16);
+      const std::size_t count = u16(eocd + 10);
+      std::size_t patched = 0;
+      for (std::size_t i = 0; i < count && pos + 46 <= bad_offset.size(); ++i) {
+        if (bad_offset.compare(pos, 4, cd_sig) != 0) break;
+        // 本地头偏移字段位于中央目录项内 +42 处。
+        for (std::size_t b = 0; b < 4; ++b) {
+          bad_offset[pos + 42 + b] = static_cast<char>(0xFF);
+        }
+        ++patched;
+        pos += 46 + u16(pos + 28) + u16(pos + 30) + u16(pos + 32);
+      }
+      check(count > 0 && patched == count, "应改写全部中央目录项的本地头偏移");
+      check(rejected(bad_offset, &message), "本地头偏移越界应被拒绝而不是越界读");
+      check(message.find("损坏") != std::string::npos, "偏移越界错误应说明 ZIP 头损坏");
+    }
 
     const xiaotu::ColumnMap map = xiaotu::map_columns(
         {"商品编码", "商品名称", "规格"}, {"商品编码", "商品名称", "规格", "计量单位"},
