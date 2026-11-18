@@ -44,6 +44,15 @@ if(XIAOTU_SPARKLE_DIR AND EXISTS "${XIAOTU_SPARKLE_DIR}/Sparkle.framework")
   target_compile_definitions(xiaotu-inventory PRIVATE XIAOTU_HAS_SPARKLE=1)
   set_target_properties(xiaotu-inventory PROPERTIES
     MACOSX_BUNDLE_FRAMEWORKS "${XIAOTU_SPARKLE_DIR}/Sparkle.framework")
+  # MACOSX_BUNDLE_FRAMEWORKS 只有 Xcode 生成器会处理；Ninja/Makefiles 需要显式拷贝。
+  # 用 ditto 保留 framework 的 Versions 符号链接，避免 @rpath 解析失败。
+  if(NOT CMAKE_GENERATOR STREQUAL "Xcode")
+    add_custom_command(TARGET xiaotu-inventory POST_BUILD
+      COMMAND /usr/bin/ditto
+        "${XIAOTU_SPARKLE_DIR}/Sparkle.framework"
+        "$<TARGET_BUNDLE_DIR:xiaotu-inventory>/Contents/Frameworks/Sparkle.framework"
+      COMMENT "嵌入 Sparkle.framework 到 .app/Contents/Frameworks")
+  endif()
   message(STATUS "Sparkle: 已嵌入 ${XIAOTU_SPARKLE_DIR}/Sparkle.framework")
 else()
   message(STATUS "Sparkle: 未提供，保留接入点（不自动安装）")
