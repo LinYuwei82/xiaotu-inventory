@@ -31,6 +31,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# Windows 控制台默认 cp1252/GBK，输出 ✓ 会直接抛 UnicodeEncodeError
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 GUARD_VERSION = "1.0.0"
 DEFAULT_BASE = "https://dl.xiaotu.online"
 
