@@ -26,6 +26,93 @@ cmake --build shell\win\build
 
 两条 `cmake --build` 都需在 Developer PowerShell（`cl.exe` 在 PATH）里执行。
 
+## 发布流程（本地 Windows 构建 + Mac 发布）
+
+不依赖 GitHub Actions。分工固定：**Windows 只负责编译与打包，签名和上传都在 Mac 上做**——
+Ed25519 私钥与 OSS 凭据留在 Mac，不拷到 Windows。
+
+### 0. 先定版本与构建号
+
+- 版本：改仓库根 `VERSION`（如 `1.0.1`）。它是唯一真值，CMake、壳、安装包、清单都从这里取。
+- 构建号：纯数字，必须**大于线上 `windows.json` 里的 `build`**（当前 `202611171349`），
+  例如 `202611180930`。
+- 同一个构建号必须同时传给服务端和壳，并且发布时用同一个 `BUILD=`。
+
+### 1. Windows：编译与打包
+
+```powershell
+$BUILD = 202611180930
+$env:XIAOTU_BUILD = $BUILD
+
+# 服务端（必须带 XIAOTU_RELEASE_BUILD，强制显式构建号）
+cmake --preset windows-release -DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=$BUILD
+cmake --build --preset windows-release
+
+# 桌面壳（同一个 BUILD）
+.\shell\win\fetch-webview2.ps1
+cmake -S shell\win -B shell\win\build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build shell\win\build
+
+# 绿色包 → build\package\win\xiaotu-inventory-<版本>-win64.zip
+.\packaging\win\make-zip.ps1
+
+# 安装包 → packaging\win\out\xiaotu-inventory-<版本>-win64-setup.exe
+$version = (Get-Content VERSION -Raw).Trim()
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "packaging\win\xiaotu-inventory.iss"
+```
+
+**打包后先自检壳内清单地址**，这是 1.0.0 包「永远检查不到更新」的根因：
+
+```powershell
+[Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes('shell\win\build\xiaotu-shell.exe')) `
+  -like '*xiaotu/updates/stable/windows.json*'
+```
+
+必须输出 `True`。
+
+产物必须正好是这两个名字，发布脚本会按文件名推导下载地址，改过名会直接拒绝：
+
+```
+packaging\win\out\xiaotu-inventory-<版本>-win64-setup.exe
+build\package\win\xiaotu-inventory-<版本>-win64.zip
+```
+
+### 2. Mac：签名、上传、校验
+
+把上面两个文件按原相对路径放回仓库，然后：
+
+```bash
+cd /Users/lin/Projects/xiaotu-inventory
+
+# 先空跑：本地生成清单并验签，不碰 OSS
+OSS_SKIP=true BUILD=202611180930 tools/package/publish_windows.sh
+
+# 正式发布
+BUILD=202611180930 tools/package/publish_windows.sh
+```
+
+脚本依次完成：guard preflight（命名/版本单调/覆盖风险/壳内地址）→ Ed25519 签名 →
+上传 setup、zip、`xiaotu/updates/stable/windows.json` → 验签 → 线上复核。
+
+**不要在 Windows 上跑这个脚本**：它依赖 `shasum`、`python3` 和
+`~/.config/xiaotu-updates/` 下的私钥与凭据。
+
+### 3. 发布后验证
+
+```bash
+curl -s https://dl.xiaotu.online/xiaotu/updates/stable/windows.json | python3 -m json.tool | head -20
+```
+
+确认 `version`、`build`、`portable_url` 均为本次发布值；打开 `pre.xiaotu.online/download/`，
+1 分钟内 Windows 行的版本号应自动同步（`site.js` 读取清单，无需改 HTML）。
+
+### 注意事项
+
+- **安装包是 immutable 长缓存**：同名覆盖不会生效，改内容必须升版本号，不能复用。
+- 构建号与包不一致时，客户端会反复提示更新；发布脚本只校验清单字段，不校验 exe 内构建号。
+- 想走 CI 时用 `.github/workflows/release-windows.yml`（手动触发，支持 dry-run），
+  但私有仓库会消耗 Actions 额度。
+
 ## Inno Setup 安装包
 
 ### 本地编译
@@ -205,7 +292,8 @@ CI（`.github/workflows/windows-build.yml`）检测到 secret 时先用 `sign.ps
 | `-NoShell` | 关 | 显式跳过桌面壳（与 `-ShellExe` 互斥） |
 | `-NoArchive` | 关 | 不压缩，只生成解压后的目录 |
 
-版本号从根 `CMakeLists.txt` 的 `project(xiaotu_inventory VERSION ...)` 读取，脚本不修改任何文件。
+版本号从仓库根 `VERSION` 文件读取（`CMakeLists.txt` 用 `file(READ ...)` 注入 project 版本），
+脚本不修改任何文件。
 
 ## 包内结构（含壳）
 
