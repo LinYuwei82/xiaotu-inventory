@@ -1,42 +1,27 @@
 @echo off
-chcp 65001 >nul
-setlocal
-rem 小兔进销存 Windows 一键出包入口。
-rem 自动初始化 MSVC 环境（vcvars64），再调用 build-release.ps1。
+setlocal EnableExtensions
+rem xiaotu-inventory Windows release helper.
+rem Initializes the MSVC x64 environment (vcvars64) then calls build-release.ps1.
 rem
-rem 用法：
-rem   build-release.cmd                 :: 构建号取 UTC 时间
-rem   build-release.cmd 202611180930    :: 指定构建号
+rem Usage:
+rem   build-release.cmd                  -- build number from current UTC time
+rem   build-release.cmd 202611180930     -- explicit build number
+rem
+rem Note: keep this file ASCII + CRLF. cmd.exe decodes batch files with the
+rem current console code page, so non-ASCII text breaks parsing on GBK systems.
 
 set "SCRIPT_DIR=%~dp0"
 pushd "%SCRIPT_DIR%..\.." || exit /b 1
 
-rem ---- 1) 定位 Visual Studio C++ 工具链 ----
-set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VSPATH="
-if exist "%VSWHERE%" (
-  for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
-)
-if not defined VSPATH (
-  for %%e in (Community Professional Enterprise BuildTools) do (
-    if exist "%ProgramFiles%\Microsoft Visual Studio\2022\%%e\VC\Auxiliary\Build\vcvars64.bat" (
-      set "VSPATH=%ProgramFiles%\Microsoft Visual Studio\2022\%%e"
-    )
-  )
-)
-if not defined VSPATH (
-  echo [失败] 未找到 Visual Studio 2022 C++ 工具链。
-  echo        请安装 Visual Studio 2022，并勾选「使用 C++ 的桌面开发」。
-  popd ^& exit /b 1
-)
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+if exist "%VSWHERE%" call :use_vswhere
+if not defined VSPATH call :probe_paths
+if not defined VSPATH goto :no_vs
 
 call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" >nul
-if errorlevel 1 (
-  echo [失败] vcvars64.bat 初始化失败：%VSPATH%
-  popd ^& exit /b 1
-)
+if errorlevel 1 goto :vcvars_failed
 
-rem ---- 2) 调用打包脚本 ----
 if "%~1"=="" (
   powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%build-release.ps1"
 ) else (
@@ -46,3 +31,28 @@ set "RC=%ERRORLEVEL%"
 
 popd
 exit /b %RC%
+
+:use_vswhere
+for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+exit /b 0
+
+:probe_paths
+for %%e in (Community Professional Enterprise BuildTools) do call :probe_one "%%e"
+exit /b 0
+
+:probe_one
+if defined VSPATH exit /b 0
+set "CAND=%ProgramFiles%\Microsoft Visual Studio\2022\%~1"
+if exist "%CAND%\VC\Auxiliary\Build\vcvars64.bat" set "VSPATH=%CAND%"
+exit /b 0
+
+:no_vs
+echo [ERROR] Visual Studio 2022 C++ toolchain not found.
+echo         Install Visual Studio 2022 with the "Desktop development with C++" workload.
+popd
+exit /b 1
+
+:vcvars_failed
+echo [ERROR] Failed to initialize MSVC environment: %VSPATH%
+popd
+exit /b 1
