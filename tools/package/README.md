@@ -46,7 +46,7 @@ Windows 两个 exe 与 Inno Setup 安装包都引用同一个 `.ico`；`xiaotu-s
 
 ```bash
 XIAOTU_BUILD=2026111501 \
-XIAOTU_UPDATE_MANIFEST_URL=https://updates.example.com/macos/stable/latest.json \
+XIAOTU_UPDATE_MANIFEST_URL=https://updates.example.com/xiaotu/updates/stable/manifest.json \
 XIAOTU_UPDATE_FEED_URL=https://updates.example.com/macos/stable/appcast.xml \
 XIAOTU_UPDATE_PUBKEY="$(cat ~/keys/update_signing.pub.b64)" \
 tools/package/make_dmg.sh
@@ -105,28 +105,26 @@ scripts/sync-signing-key-to-mac.sh
 "/Volumes/小兔进销存/小兔进销存.app/Contents/MacOS/xiaotu-inventory" --data /tmp/xiaotu-dmg-test
 ```
 
-## 更新清单与 appcast
+## 更新清单与 appcast（Schema v2）
+
+清单统一由三仓库共用的 `tools/release/manifest_v2.py` 生成并签名（纯标准库），
+`publish_oss.sh` 会自动调用；`tools/package/update_manifest.py` 现在只用于生成
+Sparkle appcast，以及服务端验签兼容（同时认 v1 / v2）。
 
 ```bash
-python3 -m venv tools/package/.venv
-tools/package/.venv/bin/pip install -r tools/package/requirements.txt
-
-# 生成并签名清单，同时生成 Sparkle appcast
-tools/package/.venv/bin/python tools/package/update_manifest.py generate \
-  --file build/package/xiaotu-inventory-1.0.0.dmg \
-  --version 1.0.0 --build 2026111710 \
-  --url https://dl.xiaotu.online/xiaotu/xiaotu-inventory-1.0.0.dmg \
-  --schema-min 1 --schema-max 39 --api-min 1 --api-max 1 \
-  --key ~/.config/xiaotu-updates/update_signing_2026.pem --key-id 2026-11 \
-  --out build/package/latest.json --appcast build/package/appcast.xml
-
-# 校验清单签名与安装包哈希
-tools/package/.venv/bin/python tools/package/update_manifest.py verify \
-  --manifest build/package/latest.json --pub ~/.config/xiaotu-updates/update_signing_2026.pub.pem \
-  --file build/package/xiaotu-inventory-1.0.0.dmg
+# 手动生成/验签（正常发布不需要单独跑）
+python3 tools/release/manifest_v2.py generate \
+  --product xiaotu --channel stable --platform macos --version 1.0.2 --min-os 13.0 \
+  --artifact dmg=build/package/xiaotu-1.0.2-macos-arm64.dmg \
+  --key ~/.config/xiaotu-updates/update_signing_2026.pem \
+  --out build/package/manifest.json
+python3 tools/release/manifest_v2.py verify \
+  --manifest build/package/manifest.json \
+  --pub ~/.config/xiaotu-updates/update_signing_2026.pub.pem \
+  --artifact dmg=build/package/xiaotu-1.0.2-macos-arm64.dmg
 ```
 
-私钥不进入仓库与构建产物；`--appcast` 生成的是对 dmg 文件字节的 Ed25519 签名，供 Sparkle 校验。
+私钥不进入仓库与构建产物；appcast 的签名覆盖 dmg 文件字节，供 Sparkle 校验。
 
 ## 发布到 OSS
 
@@ -135,34 +133,35 @@ PRODUCT=xiaotu OSS_BUCKET=xiaotu-update OSS_REGION=cn-hongkong \
 tools/package/publish_oss.sh
 ```
 
-一条命令完成：上传 dmg（immutable 长缓存）→ 生成并签 `latest.json` / `appcast.xml` → 本地验签 →
-上传清单（60 秒缓存）→ purge CDN → 下载一次预热 CDN。
+一条命令完成：上传 dmg（immutable 长缓存）→ 用 `manifest_v2.py` 生成并签 `manifest.json` /
+`appcast.xml` → 本地验签 → 上传清单（60 秒缓存）→ purge CDN → 下载一次预热 CDN。
 
 - 凭据：优先读 `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET`；未设置时读仓库外
   `~/.config/xiaotu-updates/oss-credentials.env`，该文件不存在时回退到
   `~/.config/xiaotu-updates/.env`（权限必须 600/400）。
 - 关闭预热：`WARMUP=false`；只本地生成不碰 OSS：`OSS_SKIP=true`。
-- 发布地址：`https://dl.xiaotu.online/xiaotu/updates/stable/latest.json` 与同目录 `appcast.xml`。
+- 发布地址：`https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json` 与同目录 `appcast.xml`。
 
 ## 逐档放量
 
-清单签名后不能直接改 `rollout_percent`。用 `rollout_oss.sh` 按计划重签、上传、purge 并等待 CDN 生效：
+清单签名后不能直接改 `rollout_percent`。用 `rollout_oss.sh` 按计划重签 v2 清单的
+`platforms.<platform>.rollout_percent`、上传、purge 并等待 CDN 生效：
 
 ```bash
 # 取回线上清单（发布脚本的临时目录不保留）
-curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/latest.json \
-  -o build/package/latest.json
+curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
+  -o build/package/manifest.json
 
 # 预览：只重签 + 验签，不上传、不等待
-tools/package/rollout_oss.sh --manifest build/package/latest.json --dry-run
+tools/package/rollout_oss.sh --manifest build/package/manifest.json --dry-run
 
-# 默认 1% → 10% → 50% → 100%，每档 24 小时
+# 默认 1% → 10% → 50% → 100%，每档 24 小时；--platform 默认 all（同时改两平台）
 PRODUCT=xiaotu OSS_BUCKET=xiaotu-update OSS_REGION=cn-hongkong \
-  tools/package/rollout_oss.sh --manifest build/package/latest.json --yes
+  tools/package/rollout_oss.sh --manifest build/package/manifest.json --yes
 ```
 
-- 只改清单；appcast 不随比例变化，不重传。每档归档到 `build/package/rollout/<version>-<build>/`。
-- 每档上传后轮询 CDN，确认 `rollout_percent` 生效才进入下一档；超时即停，当前档保持生效。
+- 只改清单；appcast 不随比例变化，不重传。每档归档到 `build/package/rollout/<product>-<channel>-<时间戳>/`。
+- 每档上传后轮询 CDN，确认目标平台的 `rollout_percent` 生效才进入下一档；超时即停，当前档保持生效。
 - Ctrl-C 停在当前档；重跑时从下一档开始即可。`--interval` 支持 `30s` / `90m` / `12h` / `2d`。
 - 强制更新（`mandatory=true`）不受比例限制；网络版服务端实际比例取 `min(清单 rollout, 配置 rollout_percent)`。
 
@@ -182,7 +181,7 @@ tools/package/cleanup_oss_versions.sh --product xiaotu --keep 1 --force
 ```
 
 - 默认保留最近 **3 个** 版本，`--keep` 可改；永远至少保留 1 个，不会把产品清空。
-- 脚本按各产品的版本号正则匹配安装包文件名（dmg / setup.exe / `-win64.zip` 绿色包），用 `semver` 库做版本号排序；同版本的多个包一起保留或删除。
-- **安全保护**：默认 dry-run 模式；非交互环境（CI / 管道）必须显式 `--force` 才允许真删；latest.json / appcast.xml / windows.json / manual.pdf / index.html / 桶根目录不动；不认识的包（正则不匹配）保守跳过。
+- 脚本按各产品的版本号正则匹配安装包文件名：v2 统一命名（`<product>-<version>-macos-arm64.dmg` / `-win64-setup.exe` / `-win64-portable.zip`）与 v1 旧命名都识别，用 `semver` 库做版本号排序；同版本的新旧多个包一起保留或删除。
+- **安全保护**：默认 dry-run 模式；非交互环境（CI / 管道）必须显式 `--force` 才允许真删；manifest.json / appcast.xml / manual.pdf / index.html / 桶根目录不动；不认识的包（正则不匹配）保守跳过。
 - 凭据加载逻辑与 `publish_oss.sh` 一致：环境变量优先，否则读仓库外 `~/.config/xiaotu-updates/oss-credentials.env`（不存在时回退 `.env`，权限 600）。
 - 依赖：`pip install oss2 semver`（已在 `requirements.txt` 里，首次运行会自动装）。
