@@ -92,8 +92,8 @@ std::string Stmt::text(int column) const {
   return std::string(reinterpret_cast<const char*>(data), static_cast<std::size_t>(size));
 }
 
-Db::Db(std::filesystem::path file, int read_connections, std::chrono::milliseconds pool_wait)
-    : file_(std::move(file)), pool_wait_(pool_wait) {
+Db::Db(std::filesystem::path file, int read_connections, std::chrono::milliseconds wait_timeout)
+    : file_(std::move(file)), wait_timeout_(wait_timeout) {
   if (file_.has_parent_path()) {
     std::filesystem::create_directories(file_.parent_path());
   }
@@ -131,7 +131,12 @@ Db::~Db() {
 }
 
 void Db::write(const std::function<void(sqlite3*)>& fn) {
-  std::lock_guard<std::mutex> lock(write_mutex_);
+  // 写锁不能无限等：一次大导入占住写连接时，其他写请求（保存单据、记审计）
+  // 会全部堆在这里，客户端也拿不到任何反馈。超时让调用方回 503 重试。
+  std::unique_lock<std::timed_mutex> lock(write_mutex_, std::defer_lock);
+  if (!lock.try_lock_for(wait_timeout_)) {
+    throw AppError("DB_BUSY", "数据库繁忙，请稍后重试");
+  }
   exec_sql(write_, "BEGIN IMMEDIATE;");
   try {
     fn(write_);
@@ -146,7 +151,10 @@ void Db::write(const std::function<void(sqlite3*)>& fn) {
 }
 
 void Db::write_raw(const std::function<void(sqlite3*)>& fn) {
-  std::lock_guard<std::mutex> lock(write_mutex_);
+  std::unique_lock<std::timed_mutex> lock(write_mutex_, std::defer_lock);
+  if (!lock.try_lock_for(wait_timeout_)) {
+    throw AppError("DB_BUSY", "数据库繁忙，请稍后重试");
+  }
   fn(write_);
 }
 
@@ -156,7 +164,7 @@ void Db::read(const std::function<void(sqlite3*)>& fn) const {
     std::unique_lock<std::mutex> lock(pool_mutex_);
     // 不能无限等：读连接被长导出占满时，包括会话校验在内的所有读请求都会挂住，
     // 整个服务失去响应。超时后让调用方回 503，由前端重试。
-    const bool acquired = pool_cv_.wait_for(lock, pool_wait_, [this] {
+    const bool acquired = pool_cv_.wait_for(lock, wait_timeout_, [this] {
       return std::any_of(read_busy_.begin(), read_busy_.end(), [](bool busy) { return !busy; });
     });
     if (!acquired) {

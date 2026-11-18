@@ -112,6 +112,24 @@ int main() {
         }
         holder.join();
         check(busy, "读连接占满时应在超时后报 DB_BUSY");
+
+        // 写锁同理：占住写连接时，其他写入不能无限排队。
+        std::latch writing(1);
+        std::thread writer([&] {
+          pool_db.write([&](sqlite3*) {
+            writing.count_down();
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+          });
+        });
+        writing.wait();
+        bool write_busy = false;
+        try {
+          pool_db.write([](sqlite3*) {});
+        } catch (const xiaotu::AppError& error) {
+          write_busy = error.code() == "DB_BUSY";
+        }
+        writer.join();
+        check(write_busy, "写连接占用时应在超时后报 DB_BUSY");
       }
 
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
