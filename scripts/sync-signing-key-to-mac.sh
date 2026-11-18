@@ -100,9 +100,9 @@ publish_oss.sh 默认就找 ~/.config/xiaotu-updates/update_signing_2026.pem，
 
 验证清单验签本地可用：
 
-  python3 tools/package/update_manifest.py verify \\
-    --manifest /tmp/latest.json \\
+  python3 tools/release/manifest_v2.py verify \\
+    --manifest /tmp/manifest.json \\
     --pub "$KEY_DIR/update_signing_2026.pub.pem" \\
-    --file /tmp/xiaotu-inventory-1.0.0.dmg
+    --artifact dmg=/tmp/xiaotu-1.0.2-macos-arm64.dmg
 
 EOF

@@ -1,7 +1,7 @@
 name: Windows 发布
 
 # 手动触发的 Windows 发布流水线：
-#   构建服务端与壳 → 绿色包/安装包 → guard 门禁 → 生成并签名 windows.json
+#   构建服务端与壳 → 绿色包/安装包 → guard 门禁 → 生成并签名 manifest.json（v2）
 #   → 上传 OSS → guard 线上校验。
 #
 # 前置 secrets：
