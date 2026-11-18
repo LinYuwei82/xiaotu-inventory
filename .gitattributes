@@ -34,3 +34,7 @@ CMakeLists.txt text
 # 发布门禁：三仓库共用同一份文件，字节必须跨平台一致（哈希校验依赖 LF）
 tools/release/guard.py text eol=lf
 tools/release/guard.sha256 text eol=lf
+
+# Windows 批处理必须 CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
