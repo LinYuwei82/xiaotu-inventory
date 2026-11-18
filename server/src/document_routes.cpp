@@ -45,6 +45,12 @@ Qty parse_qty_field(const nlohmann::json& value) {
     if (units < 0) {
       throw AppError("INVALID_INPUT", "数量不能为负数");
     }
+    // 整数同样受 100 万单位上限约束：字符串形态已由 parse_qty 拦截，
+    // 这里不拦会让 qty*price 溢出，写出错误的金额与结存。
+    if (units > kQtyLimit / kQtyScale) {
+      throw AppError("INVALID_INPUT",
+                     "数量超出上限（最多 1000000 个单位）：" + std::to_string(units));
+    }
     return qty_from_int(units);
   }
   throw AppError("INVALID_INPUT", "数量请使用十进制字符串，例如 \"1.25\"");

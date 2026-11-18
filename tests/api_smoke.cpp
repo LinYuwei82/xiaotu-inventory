@@ -640,6 +640,22 @@ void run_server_mode(const std::filesystem::path& dir) {
     check(bad_status && bad_status->status == 400, "未知状态筛选应明确拒绝");
   }
 
+  // 整数形态的数量也要受 100 万单位上限约束：否则 qty*price 溢出会写出错误金额。
+  {
+    nlohmann::json huge{
+        {"doc_type", "PUR_IN"},
+        {"warehouse_id", 1},
+        {"doc_date", "2026-03-05"},
+        {"partner", "溢出供应商"},
+        {"save_as_draft", true},
+        {"lines", nlohmann::json::array({{{"item_id", item_body.value("id", 0LL)},
+                                          {"qty", 100000000000000LL},
+                                          {"price_cents", 999999999999LL}}})},
+    };
+    const auto created = client.Post("/api/documents", huge.dump(), "application/json");
+    check(created && created->status == 400, "整数数量超出上限应被拒绝");
+  }
+
   // 单据表头备注：创建 / 详情 / 旧数组响应 / 关键字命中 / 导出列 / 超长拒绝。
   {
     nlohmann::json remark_doc{
