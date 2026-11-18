@@ -509,6 +509,19 @@ void run_server_mode(const std::filesystem::path& dir) {
   check(xlsx && xlsx->status == 200, "主数据导出 XLSX 应返回 200");
   check(audit_count(db, "export") == 2, "两次导出应各写一条审计");
 
+  // CSV 公式注入：= 开头的名称必须转成文本，否则在表格软件里会被当公式执行。
+  {
+    const auto danger = client.Post(
+        "/api/items", R"({"code":"SMOKE3","name":"=1+1","unit_id":1})", "application/json");
+    check(danger && danger->status == 200, "公式样名称应能正常入库");
+    const auto danger_csv = client.Get("/api/items/export?format=csv");
+    check(danger_csv && danger_csv->status == 200, "主数据导出 CSV 应返回 200");
+    if (danger_csv) {
+      check(danger_csv->body.find("'=1+1") != std::string::npos,
+            "CSV 中公式样文本应加前导单引号");
+    }
+  }
+
   // 报表导出流式化：不再有 100000 行截断，导出忽略分页参数并按全量输出。
   {
     xiaotu::DocumentEngine engine(db);

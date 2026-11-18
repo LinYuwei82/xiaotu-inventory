@@ -7,6 +7,7 @@
 #include <string>
 
 #include "xiaotu/audit.h"
+#include "xiaotu/csv.h"
 #include "xiaotu/db.h"
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
@@ -59,17 +60,6 @@ nlohmann::json audit_to_json(const AuditRow& row) {
 }
 
 // ---------- 导出 ----------
-
-std::string csv_escape(const std::string& value) {
-  if (value.find_first_of(",\"\r\n") == std::string::npos) return value;
-  std::string out = "\"";
-  for (const char ch : value) {
-    if (ch == '"') out += "\"\"";
-    else out += ch;
-  }
-  out += '"';
-  return out;
-}
 
 void csv_row(std::string& out, std::initializer_list<std::string> fields) {
   bool first = true;

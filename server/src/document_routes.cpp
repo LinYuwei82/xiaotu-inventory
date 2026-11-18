@@ -9,6 +9,7 @@
 
 #include "xiaotu/document.h"
 #include "xiaotu/context.h"
+#include "xiaotu/csv.h"
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
 #include "xiaotu/permissions.h"
@@ -195,17 +196,6 @@ std::string rate_text(std::int64_t bp) {
     text += fraction;
   }
   return text + "%";
-}
-
-std::string csv_escape(const std::string& value) {
-  if (value.find_first_of(",\"\r\n") == std::string::npos) return value;
-  std::string escaped = "\"";
-  for (const char ch : value) {
-    if (ch == '"') escaped += '"';
-    escaped += ch;
-  }
-  escaped += '"';
-  return escaped;
 }
 
 void append_csv_row(std::string& out, const std::vector<std::string>& fields) {

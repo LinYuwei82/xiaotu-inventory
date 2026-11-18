@@ -6,6 +6,7 @@
 #include <set>
 #include <sstream>
 
+#include "xiaotu/csv.h"
 #include "xiaotu/money.h"
 
 namespace xiaotu {
@@ -161,17 +162,6 @@ std::string json_escape(std::string_view text) {
       default: out.push_back(ch);
     }
   }
-  return out;
-}
-
-std::string csv_escape(std::string_view value) {
-  if (value.find_first_of(",\"\r\n") == std::string::npos) return std::string(value);
-  std::string out = "\"";
-  for (const char ch : value) {
-    if (ch == '"') out += '"';
-    out.push_back(ch);
-  }
-  out += '"';
   return out;
 }
 

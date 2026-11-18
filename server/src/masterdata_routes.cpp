@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "xiaotu/csv.h"
 #include "xiaotu/error.h"
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
@@ -39,17 +40,6 @@ constexpr MasterRoute kRoutes[] = {
     {MasterKind::Customer, "/api/customers", "customer.write", "customer.read", "customers",
      "客户"},
 };
-
-std::string csv_escape(const std::string& value) {
-  if (value.find_first_of(",\"\r\n") == std::string::npos) return value;
-  std::string out = "\"";
-  for (const char ch : value) {
-    if (ch == '"') out += "\"\"";
-    else out += ch;
-  }
-  out += '"';
-  return out;
-}
 
 void csv_row(std::string& out, const std::vector<std::string>& fields) {
   bool first = true;

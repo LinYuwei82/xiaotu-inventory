@@ -14,6 +14,7 @@
 
 #include "xiaotu/edition.h"
 
+#include "xiaotu/csv.h"
 #include "xiaotu/error.h"
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
@@ -93,17 +94,6 @@ bool csv_requested(const httplib::Request& req) {
 
 bool xlsx_requested(const httplib::Request& req) {
   return req.has_param("format") && req.get_param_value("format") == "xlsx";
-}
-
-std::string csv_escape(const std::string& value) {
-  if (value.find_first_of(",\"\r\n") == std::string::npos) return value;
-  std::string out = "\"";
-  for (const char ch : value) {
-    if (ch == '"') out += "\"\"";
-    else out += ch;
-  }
-  out += '"';
-  return out;
 }
 
 void csv_row(std::string& out, std::initializer_list<std::string> fields) {
