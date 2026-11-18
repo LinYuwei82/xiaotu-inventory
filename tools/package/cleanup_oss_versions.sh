@@ -148,8 +148,8 @@ from datetime import datetime
 
 bucket, region, ak, sk, product_arg, keep_s, force_s, dry_s = sys.argv[1:]
 keep = int(keep_s)
-force = force_s == "True"
-dry = dry_s == "True"
+force = force_s.lower() == "true"
+dry = dry_s.lower() == "true"
 
 auth = oss2.Auth(ak, sk)
 bkt = oss2.Bucket(auth, f"https://oss-{region}.aliyuncs.com", bucket)
