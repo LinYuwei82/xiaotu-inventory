@@ -147,11 +147,21 @@ API_MAX="${API_MAX:-1}"
 RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-}"
 PURGE="${PURGE:-true}"
 
-# ---- 依赖：venv + cryptography ----
-VENV_PY="$REPO_ROOT/tools/package/.venv/bin/python"
-if [ ! -x "$VENV_PY" ]; then
-  python3 -m venv "$REPO_ROOT/tools/package/.venv"
-  "$REPO_ROOT/tools/package/.venv/bin/pip" install -q -r "$REPO_ROOT/tools/package/requirements.txt"
+# ---- 依赖：cryptography（优先复用已有的用户级 venv，避免在仓库内建 .venv）----
+resolve_py_with() {  # resolve_py_with <模块名>：找到装了该模块的解释器并打印路径
+  local mod="$1" cand
+  for cand in "${REQ_PY:-}" "$HOME/.venvs/xiaotu-oss/bin/python" "$HOME/.venv-oss/bin/python" \
+              "$REPO_ROOT/tools/package/.venv/bin/python"; do
+    [ -n "$cand" ] && [ -x "$cand" ] && "$cand" -c "import $mod" 2>/dev/null \
+      && { printf '%s' "$cand"; return 0; }
+  done
+  return 1
+}
+VENV_PY="$(resolve_py_with cryptography || true)"
+if [ -z "$VENV_PY" ]; then
+  python3 -m venv "$HOME/.venvs/xiaotu-oss"
+  "$HOME/.venvs/xiaotu-oss/bin/pip" install -q -r "$REPO_ROOT/tools/package/requirements.txt"
+  VENV_PY="$HOME/.venvs/xiaotu-oss/bin/python"
 fi
 command -v shasum >/dev/null 2>&1 || { echo "未找到 shasum" >&2; exit 1; }
 

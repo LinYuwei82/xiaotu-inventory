@@ -86,17 +86,26 @@ if [ ! -f "$OSS_CRED_FILE" ] && [ -f "$HOME/.config/xiaotu-updates/.env" ]; then
 fi
 
 if [ -z "$OSS_BUCKET" ] || [ -z "$OSS_REGION" ]; then
-  echo "缺少必填：OSS_BUCKET / OSS_REGION（或 source ~/.config/xiaotu-updates/.env）" >&2; exit 1
+  if [ -f "$OSS_CRED_FILE" ]; then
+    OSS_BUCKET="${OSS_BUCKET:-$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}OSS_BUCKET[[:space:]]*=[[:space:]]*//p' "$OSS_CRED_FILE" | tail -1 | tr -d '\r' | tr -d "\"'")}"
+    OSS_REGION="${OSS_REGION:-$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}OSS_REGION[[:space:]]*=[[:space:]]*//p' "$OSS_CRED_FILE" | tail -1 | tr -d '\r' | tr -d "\"'")}"
+  fi
+fi
+if [ -z "$OSS_BUCKET" ] || [ -z "$OSS_REGION" ]; then
+  echo "缺少必填：OSS_BUCKET / OSS_REGION（可写入 ~/.config/xiaotu-updates/.env）" >&2; exit 1
 fi
 
-VENV_PY="$REPO_ROOT/tools/package/.venv/bin/python"
-if [ ! -x "$VENV_PY" ]; then
-  python3 -m venv "$REPO_ROOT/tools/package/.venv"
-  "$REPO_ROOT/tools/package/.venv/bin/pip" install -q -r "$REPO_ROOT/tools/package/requirements.txt"
+# 优先复用已有的用户级 venv，避免在仓库内建 .venv
+VENV_PY=""
+for cand in "${OSS_PY:-}" "$HOME/.venvs/xiaotu-oss/bin/python" "$HOME/.venv-oss/bin/python"; do
+  [ -n "$cand" ] && [ -x "$cand" ] && "$cand" -c "import oss2" 2>/dev/null && { VENV_PY="$cand"; break; }
+done
+if [ -z "$VENV_PY" ]; then
+  python3 -m venv "$HOME/.venvs/xiaotu-oss"
+  VENV_PY="$HOME/.venvs/xiaotu-oss/bin/python"
 fi
-if ! "$VENV_PY" -c "import oss2" 2>/dev/null; then
-  "$REPO_ROOT/tools/package/.venv/bin/pip" install -q oss2
-fi
+"$VENV_PY" -c "import oss2" 2>/dev/null || "$VENV_PY" -m pip install -q oss2
+"$VENV_PY" -c "import semver" 2>/dev/null || "$VENV_PY" -m pip install -q semver
 
 cred_value() {
   sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$2[[:space:]]*=[[:space:]]*//p" "$1" | tail -1 \
