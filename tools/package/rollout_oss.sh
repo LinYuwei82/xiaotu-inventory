@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # 小兔在线 · 自动逐档放量脚本
 #
-# 对一份已签名的 latest.json 按计划依次重签 rollout_percent、上传并 purge CDN，
-# 每档停留指定观察时长后自动进入下一档。清单签名不变的部分（版本、build、URL、
-# sha256、强制字段）全部保留；appcast.xml 不随比例变化，脚本不重传。
+# 对一份已签名的 manifest.json（Schema v2）按计划依次重签
+# platforms.<platform>.rollout_percent、上传并 purge CDN，每档停留指定观察时长后
+# 自动进入下一档。清单其余内容（版本、build、URL、sha256、强制字段）全部保留；
+# appcast.xml 不随比例变化，脚本不重传。
 #
 # 默认节奏：1% → 10% → 50% → 100%，每档 24 小时。
 # 放量只改清单；单机版壳与网络版服务端都按安装 ID 稳定分桶，已在 100% 的旧清单
@@ -11,21 +12,25 @@
 #
 # 用法：
 #   # 先用发布脚本产出清单并归档（publish_oss.sh 的临时目录不会保留）
-#   curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/latest.json \
-#     -o build/package/latest.json
+#   curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
+#     -o build/package/manifest.json
 #
 #   # 预览（只本地重签，不上传、不等待）
-#   tools/package/rollout_oss.sh --manifest build/package/latest.json --dry-run
+#   tools/package/rollout_oss.sh --manifest build/package/manifest.json --dry-run
 #
 #   # 正式放量（会要求输入 yes；每档之间自动等待）
 #   OSS_BUCKET=xxx OSS_REGION=cn-hangzhou \
-#     tools/package/rollout_oss.sh --manifest build/package/latest.json --yes
+#     tools/package/rollout_oss.sh --manifest build/package/manifest.json --yes
+#
+#   # 只放量 Windows（默认 all：同时改 macOS 与 Windows 两段）
+#   tools/package/rollout_oss.sh --platform windows --yes
 #
 #   # 自定义节奏
 #   tools/package/rollout_oss.sh --steps 5,20,60,100 --interval 12h --yes
 #
 # 参数：
-#   --manifest PATH     已签名清单（默认 build/package/latest.json）
+#   --manifest PATH     已签名 v2 清单（默认 build/package/manifest.json）
+#   --platform NAME     all / macos / windows（默认 all）
 #   --steps LIST        逗号分隔、递增且以 100 结尾（默认 1,10,50,100）
 #   --interval DUR      每档停留时长，支持 s/m/h/d（默认 24h）
 #   --product NAME      仅支持 xiaotu（默认 xiaotu；DevCard / Mote 已迁出本仓库）
@@ -48,7 +53,8 @@ usage() {
   sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-MANIFEST="${MANIFEST:-$REPO_ROOT/build/package/latest.json}"
+MANIFEST="${MANIFEST:-$REPO_ROOT/build/package/manifest.json}"
+PLATFORM="${PLATFORM:-all}"
 STEPS="1,10,50,100"
 INTERVAL="24h"
 PRODUCT="${PRODUCT:-xiaotu}"
@@ -68,6 +74,7 @@ fi
 while [ $# -gt 0 ]; do
   case "$1" in
     --manifest) MANIFEST="${2:?--manifest 需要路径}"; shift 2 ;;
+    --platform) PLATFORM="${2:?--platform 需要名称}"; shift 2 ;;
     --steps) STEPS="${2:?--steps 需要列表}"; shift 2 ;;
     --interval) INTERVAL="${2:?--interval 需要时长}"; shift 2 ;;
     --product) PRODUCT="${2:?--product 需要名称}"; shift 2 ;;
@@ -94,6 +101,11 @@ case "$CHANNEL" in
   *) echo "CHANNEL 必须是 stable / beta" >&2; exit 1 ;;
 esac
 
+case "$PLATFORM" in
+  all|macos|windows) ;;
+  *) echo "PLATFORM 必须是 all / macos / windows" >&2; exit 1 ;;
+esac
+
 # ---- 依赖 ----
 VENV_PY="$REPO_ROOT/tools/package/.venv/bin/python"
 [ -x "$VENV_PY" ] || {
@@ -103,7 +115,7 @@ VENV_PY="$REPO_ROOT/tools/package/.venv/bin/python"
 [ -f "$MANIFEST" ] || {
   echo "清单不存在：$MANIFEST" >&2
   echo "可先从更新源取回已签名清单：" >&2
-  echo "  curl -fsS $CDN_DOMAIN/$PRODUCT/updates/$CHANNEL/latest.json -o build/package/latest.json" >&2
+  echo "  curl -fsS $CDN_DOMAIN/$PRODUCT/updates/$CHANNEL/manifest.json -o build/package/manifest.json" >&2
   exit 1
 }
 [ -f "$SIGNING_KEY" ] || {
@@ -116,23 +128,37 @@ SIGNING_PUB="${SIGNING_KEY%.pem}.pub.pem"
   exit 1
 }
 
-manifest_field() {  # manifest_field <字段名>
-  "$VENV_PY" - "$MANIFEST" "$1" <<'PY'
+manifest_info() {  # manifest_info -> "<version> <build>"（all 取第一个平台，仅用于展示）
+  "$VENV_PY" - "$MANIFEST" "$PLATFORM" <<'PY'
 import json, sys
-print(json.load(open(sys.argv[1], encoding="utf-8"))[sys.argv[2]])
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+platforms = body.get("platforms") or {}
+name = sys.argv[2]
+if name == "all":
+    name = next(iter(platforms), "")
+section = platforms.get(name) or {}
+print(section.get("version", ""), section.get("build", 0))
 PY
 }
 
-VERSION="$(manifest_field version)"
-BUILD="$(manifest_field build)"
-MANIFEST_CHANNEL="$(manifest_field channel)"
+MANIFEST_CHANNEL="$("$VENV_PY" - "$MANIFEST" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1], encoding="utf-8")).get("channel", ""))
+PY
+)"
 [ "$MANIFEST_CHANNEL" = "$CHANNEL" ] || {
   echo "清单通道是 ${MANIFEST_CHANNEL}，与 --channel ${CHANNEL} 不一致" >&2
   exit 1
 }
+if [ "$PLATFORM" = "all" ]; then
+  VERSION="（全部平台）"
+  BUILD=""
+else
+  read -r VERSION BUILD <<< "$(manifest_info)"
+fi
 
 # 先验原清单签名，避免在损坏或被篡改的清单上放量。
-"$VENV_PY" "$REPO_ROOT/tools/package/update_manifest.py" verify \
+"$VENV_PY" "$REPO_ROOT/tools/release/manifest_v2.py" verify \
   --manifest "$MANIFEST" --pub "$SIGNING_PUB" >/dev/null
 
 # ---- 节奏校验 ----
@@ -171,14 +197,15 @@ done
 [ "${STEP_LIST[${#STEP_LIST[@]}-1]}" = "100" ] || {
   echo "最后一档必须是 100：$STEPS" >&2; exit 1; }
 
-MANIFEST_KEY="$PRODUCT/updates/$CHANNEL/latest.json"
+MANIFEST_KEY="$PRODUCT/updates/$CHANNEL/manifest.json"
 MANIFEST_PUBLIC="$CDN_DOMAIN/$MANIFEST_KEY"
-ARCHIVE_DIR="$REPO_ROOT/build/package/rollout/${VERSION}-${BUILD}"
+ARCHIVE_DIR="$REPO_ROOT/build/package/rollout/${PRODUCT}-${CHANNEL}-$(date +%Y%m%d%H%M%S)"
 mkdir -p "$ARCHIVE_DIR"
 
 echo "===== 自动逐档放量 ====="
 echo "产品 / 通道：   $PRODUCT / $CHANNEL"
-echo "版本 / build：  $VERSION / $BUILD"
+echo "平台：          $PLATFORM"
+echo "版本 / build：  ${VERSION}${BUILD:+ / $BUILD}"
 echo "清单：          $MANIFEST"
 echo "档位：          ${STEPS}（每档 ${INTERVAL}）"
 echo "更新源：        $MANIFEST_PUBLIC"
@@ -262,17 +289,26 @@ purge_manifest() {
 }
 
 poll_manifest() {  # poll_manifest <期望比例>
-  local want="$1" deadline=$((SECONDS + POLL_TIMEOUT)) got=""
+  local want="$1" deadline=$((SECONDS + POLL_TIMEOUT)) state=""
   while [ "$SECONDS" -lt "$deadline" ]; do
-    got="$(curl -fsS --max-time 15 "$MANIFEST_PUBLIC?t=$(date +%s)" 2>/dev/null \
-      | "$VENV_PY" -c 'import json,sys;print(json.load(sys.stdin).get("rollout_percent",""))' 2>/dev/null || true)"
-    if [ "$got" = "$want" ]; then
-      echo "  ✓ CDN 已生效：rollout=${got}%"
+    # 输出各平台当前比例；全部等于期望值时退出码 0。
+    if state="$(curl -fsS --max-time 15 "$MANIFEST_PUBLIC?t=$(date +%s)" 2>/dev/null \
+      | "$VENV_PY" -c 'import json,sys
+body = json.load(sys.stdin)
+platforms = body.get("platforms") or {}
+name, want = sys.argv[1], int(sys.argv[2])
+values = {k: int(v.get("rollout_percent", 100)) for k, v in platforms.items()}
+if name != "all":
+    values = {k: v for k, v in values.items() if k == name}
+print(" ".join(f"{k}={v}%" for k, v in sorted(values.items())) or "<空>")
+sys.exit(0 if values and all(v == want for v in values.values()) else 1)' \
+      "$PLATFORM" "$want" 2>/dev/null)"; then
+      echo "  ✓ CDN 已生效：${state}"
       return 0
     fi
     sleep 5
   done
-  echo "  ✗ 等待 CDN 生效超时（期望 ${want}%，最后拿到 ${got:-<空>}），停止后续放量" >&2
+  echo "  ✗ 等待 CDN 生效超时（期望 ${want}%，最后拿到 ${state:-<空>}），停止后续放量" >&2
   echo "    当前档位保持生效；排查 CDN/purge 后可从该档继续。" >&2
   return 1
 }
@@ -299,12 +335,13 @@ TOTAL="${#STEP_LIST[@]}"
 INDEX=0
 for step in "${STEP_LIST[@]}"; do
   INDEX=$((INDEX + 1))
-  OUT="$ARCHIVE_DIR/latest-${step}.json"
+  OUT="$ARCHIVE_DIR/manifest-${step}.json"
   echo ""
-  echo "===== [$INDEX/$TOTAL] rollout=${step}%"
-  "$VENV_PY" "$REPO_ROOT/tools/package/update_manifest.py" resign \
-    --manifest "$MANIFEST" --key "$SIGNING_KEY" --rollout "$step" --out "$OUT"
-  "$VENV_PY" "$REPO_ROOT/tools/package/update_manifest.py" verify \
+  echo "===== [$INDEX/$TOTAL] rollout=${step}%（${PLATFORM}）"
+  "$VENV_PY" "$REPO_ROOT/tools/release/manifest_v2.py" resign \
+    --manifest "$MANIFEST" --key "$SIGNING_KEY" --rollout "$step" \
+    --platform "$PLATFORM" --out "$OUT"
+  "$VENV_PY" "$REPO_ROOT/tools/release/manifest_v2.py" verify \
     --manifest "$OUT" --pub "$SIGNING_PUB" >/dev/null
   echo "  ✓ 已重签并验签：$OUT"
 
@@ -324,8 +361,8 @@ done
 
 echo ""
 echo "================ 放量完成 ================"
-echo "版本 / build：  $VERSION / $BUILD"
-echo "最终比例：      ${STEP_LIST[${#STEP_LIST[@]}-1]}%"
+echo "版本 / build：  ${VERSION}${BUILD:+ / $BUILD}"
+echo "最终比例：      ${STEP_LIST[${#STEP_LIST[@]}-1]}%（${PLATFORM}）"
 echo "清单：          $MANIFEST_PUBLIC"
 echo "每档归档：      $ARCHIVE_DIR"
-echo "回滚：把上一档 latest-<比例>.json 重新上传并 purge 即可"
+echo "回滚：把上一档 manifest-<比例>.json 重新上传并 purge 即可"

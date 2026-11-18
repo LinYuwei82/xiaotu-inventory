@@ -325,6 +325,51 @@ def verify_manifest(body: Dict[str, Any], pub: bytes) -> None:
         die("清单签名验证失败（公钥不匹配或清单被改动）")
 
 
+def resign_manifest(body: Dict[str, Any], seed: bytes, rollout: int,
+                    platform: str = "all") -> Dict[str, Any]:
+    """只改 platforms.<platform>.rollout_percent 后整体重签。
+
+    灰度放量用：版本、产物 URL、sha256、强制字段等一律保持原样，
+    platform="all" 表示同时改所有平台段。输入必须是已签名的 v2 清单。
+    """
+    if body.get("manifest_version") != SCHEMA_VERSION:
+        die(f"输入清单不是 v2（manifest_version={body.get('manifest_version')}）")
+    if not isinstance(body.get("signature"), str) or not body["signature"]:
+        die("输入清单缺少 signature，拒绝重签")
+    platforms = body.get("platforms")
+    if not isinstance(platforms, dict) or not platforms:
+        die("清单缺少 platforms")
+    if not 1 <= int(rollout) <= 100:
+        die("rollout 必须在 1–100 之间")
+    targets = sorted(platforms) if platform == "all" else [platform]
+    for name in targets:
+        if not isinstance(platforms.get(name), dict):
+            die(f"清单缺少 platforms.{name}")
+
+    updated = json.loads(json.dumps(body))
+    updated.pop("signature", None)
+    for name in targets:
+        updated["platforms"][name]["rollout_percent"] = int(rollout)
+    signed = sign_manifest(updated, seed)
+    verify_manifest(signed, ed25519_pubkey(seed))
+    return signed
+
+
+def command_resign(args: argparse.Namespace) -> int:
+    path = Path(args.manifest)
+    body = json.loads(path.read_text(encoding="utf-8"))
+    signed = resign_manifest(body, load_private_seed(Path(args.key)), args.rollout,
+                             args.platform)
+    out = Path(args.out) if args.out else path
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(
+        json.dumps(signed, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(f"已重签：{out}（rollout={args.rollout}% · {args.platform}）")
+    return 0
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -581,6 +626,16 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         assert m2["platforms"]["macos"]["version"] == "1.0.3"; n += 1
         main(["verify", "--manifest", str(out2), "--pub", str(pub)]); n += 1
 
+        # 6.1) resign：只改指定平台 rollout，产物与其他平台保持不变
+        resigned = resign_manifest(m2, _SELFTEST_SEED, 5, "windows")
+        assert resigned["platforms"]["windows"]["rollout_percent"] == 5; n += 1
+        assert resigned["platforms"]["macos"]["rollout_percent"] == 100; n += 1
+        assert (resigned["platforms"]["macos"]["artifacts"]
+                == m2["platforms"]["macos"]["artifacts"]); n += 1
+        all5 = resign_manifest(m2, _SELFTEST_SEED, 7, "all")
+        assert (all5["platforms"]["macos"]["rollout_percent"] == 7
+                and all5["platforms"]["windows"]["rollout_percent"] == 7); n += 1
+
         # 7) 命名规则
         check_artifact_name(v2_artifact_name("mote", "1.0.3", "setup"),
                             "mote", "1.0.3", "setup"); n += 1
@@ -630,6 +685,14 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--prev", default="", help="已有 v2 清单；本次平台段合并进去后整体重签")
     gen.add_argument("--out", required=True)
     gen.set_defaults(func=command_generate)
+
+    res = sub.add_parser("resign", help="只改 rollout_percent 并重新签名（灰度放量用）")
+    res.add_argument("--manifest", required=True)
+    res.add_argument("--key", required=True, help="Ed25519 私钥（PEM 或 32 字节种子）")
+    res.add_argument("--rollout", required=True, type=int)
+    res.add_argument("--platform", default="all", choices=["all", "macos", "windows"])
+    res.add_argument("--out", default="", help="输出路径；默认覆盖输入清单")
+    res.set_defaults(func=command_resign)
 
     ver = sub.add_parser("verify", help="校验清单签名与结构，可附带产物比对")
     ver.add_argument("--manifest", required=True)
