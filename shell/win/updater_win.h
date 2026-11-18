@@ -49,6 +49,7 @@ struct Status {
   std::string manifest_version;     // 清单里的版本号
   std::string manifest_sha256;      // 清单里的 SHA256（小写）
   int64_t manifest_size = 0;        // 清单里的安装包大小
+  std::string manifest_setup_url;   // 清单里的 artifacts.setup.url（检查时缓存，下载直接复用）
 
   std::string pending_local_path;   // 后台下载到本地的 setup.exe 路径
   int64_t pending_size = 0;         // 待安装包大小
@@ -58,6 +59,9 @@ struct Status {
 
   std::string download_progress;    // "0/1024" 之类
   std::string download_state;       // "IDLE" / "RUNNING" / "DONE" / "FAILED" / "CANCELED" / "NO_PENDING"
+
+  std::string last_result;          // 最近一次动作结果码（UPDATE_AVAILABLE / DOWNLOADED / OPEN_FAILED…）
+  std::string last_error;           // 最近一次失败码:详情，成功时清空
 };
 
 // 异步回调（一律在主线程调）
@@ -107,6 +111,10 @@ class UpdaterWin {
 
   // 用 BCrypt 算 SHA256（返回小写 hex）
   static std::string sha256File(const std::wstring& path);
+
+  // 记录最近一次动作结果并持久化；failure 为真时累加退避计数。
+  // 调用方不得持有 status_mutex_。
+  void recordOutcome(const std::string& code, const std::string& error, bool failure);
 
   // 持久化 status_ 到 %LOCALAPPDATA%\com.simem.xiaotu\updater.json
   void persistStatus();

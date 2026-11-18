@@ -7028,6 +7028,38 @@
     return "CHECK_FAILED";
   }
 
+  // 只有这些码表示「检查结果」；壳在下载/安装时也会改写 last_result，
+  // 不能让它把「检查结果」一栏覆盖成下载状态。
+  function isWinCheckResult(code) {
+    return (
+      code === "UPDATE_AVAILABLE" ||
+      code === "NO_UPDATE" ||
+      code === "NOT_CONFIGURED" ||
+      code === "CHECK_FAILED"
+    );
+  }
+
+  // 壳返回的失败码：统一按失败处理，否则前端会静默吞掉（点下载/安装没反应）。
+  function isWinFailureCode(code) {
+    return /FAILED|INVALID|MISMATCH|PARSE_ERROR|UNAVAILABLE|NO_PENDING_UPDATE|OPEN_FAILED/.test(
+      code || ""
+    );
+  }
+
+  function winFailureText(code) {
+    const map = {
+      NO_PENDING_UPDATE: "没有可用的更新包，请先点「检查更新」",
+      OPEN_FAILED: "安装程序启动失败",
+      DOWNLOAD_FAILED: "安装包下载失败",
+      ALREADY_RUNNING: "下载已在进行中，请稍候",
+      NOT_RUNNING: "当前没有进行中的下载",
+      FETCH_FAILED: "清单获取失败",
+      MANIFEST_INVALID: "清单内容不完整",
+      SIGNATURE_INVALID: "清单签名校验失败",
+    };
+    return map[code] || code || "未知错误";
+  }
+
   function parseWebviewMessage(event) {
     let msg = event && event.data;
     if (typeof msg === "string") {
@@ -7070,6 +7102,11 @@
         parsed = {};
       }
       if (!parsed.last_result && lastCheckResult) parsed.last_result = lastCheckResult;
+      if (!lastCheckResult && isWinCheckResult(parsed.last_result)) {
+        lastCheckResult = parsed.last_result;
+      } else if (lastCheckResult) {
+        parsed.last_result = lastCheckResult;
+      }
       winUpdaterStatusCache = parsed;
       return parsed;
     };
@@ -7093,12 +7130,16 @@
         if (msg.event === "checkNow") {
           lastCheckResult = mapWinCheckResult(msg.code);
           status.last_result = lastCheckResult;
+        } else if (lastCheckResult) {
+          // 非检查事件（下载/安装/设置）的 status 里没有检查结果，
+          // 用 JS 侧记下的一次补上，避免「检查结果」被打回「尚未检查」。
+          status.last_result = lastCheckResult;
         }
-        const failed = /FAILED|INVALID|MISMATCH|PARSE_ERROR|UNAVAILABLE/.test(msg.code || "");
+        const failed = isWinFailureCode(msg.code);
         finish(done, {
           status,
           code: msg.code,
-          ok: msg.event === "checkNow" ? !failed : msg.code !== "FAILED",
+          ok: !failed,
           update_available: status.update_available,
         });
       });
@@ -7157,11 +7198,14 @@
               const onMessage = (event) => {
                 const msg = parseWebviewMessage(event);
                 if (!msg || msg.event !== "downloadUpdate") return;
+                // 已有下载在跑：等它自己的完成事件，这里不提前收尾
+                if (msg.code === "ALREADY_RUNNING") return;
                 window.chrome.webview.removeEventListener("message", onMessage);
                 if (msg.code === "DOWNLOADED") updater.installUpdate();
                 else finish("xiaotuUpdateInstallDone", { ok: false, code: msg.code });
               };
               window.chrome.webview.addEventListener("message", onMessage);
+              showNotice("正在下载安装包，完成后会自动开始安装", "ok");
               updater.downloadUpdate();
             } catch (error) {
               finish("xiaotuUpdateInstallDone", { ok: false, code: "BRIDGE_ERROR" });
@@ -7465,15 +7509,20 @@
         const size = status.pending_size
           ? `约 ${formatBytes(status.pending_size)}`
           : "安装包";
+        const downloaded = status.prefetch_state === "done";
         const confirmed = await askConfirm(
           status.mandatory
             ? `此更新为必须升级（${mandatoryReasonText(status.reason) || "服务端要求"}），不能跳过。` +
-                `安装时会重新下载${size}，随后关闭程序并完成安装。是否继续？`
+                (downloaded
+                  ? "将使用已下载的安装包，随后关闭程序并完成安装。是否继续？"
+                  : `安装时会重新下载${size}，随后关闭程序并完成安装。是否继续？`)
             : `将安装 ${versionWithBuild(
                 status.pending_version,
                 status.pending_build
-              )}。安装时会重新下载${size}（后台预下载只用于提前校验），` +
-                "随后关闭程序并完成安装。是否继续？",
+              )}。` +
+                (downloaded
+                  ? "将使用已下载并校验的安装包，随后关闭程序并完成安装。是否继续？"
+                  : `安装时会重新下载${size}（后台预下载只用于提前校验），随后关闭程序并完成安装。是否继续？`),
           { okText: "安装", cancelText: "取消" }
         );
         if (!confirmed) return;
@@ -7527,9 +7576,9 @@
     };
     window.xiaotuUpdateInstallDone = (payload) => {
       if (payload && payload.ok === false) {
-        showNotice("无法启动安装流程：" + (payload.code || ""), "error");
-      } else if (payload && payload.code === "OPENED") {
-        showNotice(payload.message || "已打开安装包，请退出本程序后完成安装", "ok");
+        showNotice("无法启动安装流程：" + winFailureText(payload.code), "error");
+      } else if (payload && (payload.code === "OPENED" || payload.code === "STARTED")) {
+        showNotice("安装程序已启动，程序会自动关闭并完成安装", "ok");
       }
     };
     window.xiaotuUpdateOptionsDone = (payload) => {
@@ -7542,12 +7591,7 @@
       const status = (payload && payload.status) || {};
       render(status);
       if (payload && payload.ok === false) {
-        showNotice(
-          payload.code === "NO_PENDING_UPDATE"
-            ? "没有可下载的待更新版本"
-            : "下载未能开始：" + (payload.code || ""),
-          "error"
-        );
+        showNotice(winFailureText(payload.code), "error");
       } else if (payload && payload.code === "STARTED") {
         showNotice("已开始下载，完成后会自动校验", "ok");
       }
