@@ -494,6 +494,14 @@ void run_server_mode(const std::filesystem::path& dir) {
             duplicated->body.find("条码重复") != std::string::npos,
         "同一商品重复条码应被拒绝");
 
+  // 非法查询参数应报 400，而不是让 stoll/stoi 抛成 500；limit 溢出也不能回绕成「不限行数」。
+  {
+    const auto bad_id = client.Get("/api/reports/stock-ledger?item_id=abc");
+    check(bad_id && bad_id->status == 400, "非法 item_id 应返回 400");
+    const auto bad_limit = client.Get("/api/reports/stock-ledger?limit=4294967296");
+    check(bad_limit && bad_limit->status == 400, "limit 超出 int 范围应返回 400");
+  }
+
   const auto csv = client.Get("/api/reports/stock-balance?format=csv");
   check(csv && csv->status == 200 && csv->get_header_value("Content-Type").rfind("text/csv", 0) == 0,
         "库存余额导出 CSV 应返回 200");
