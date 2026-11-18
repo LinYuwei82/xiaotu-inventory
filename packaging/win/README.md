@@ -34,7 +34,7 @@ Ed25519 私钥与 OSS 凭据留在 Mac，不拷到 Windows。
 ### 0. 先定版本与构建号
 
 - 版本：改仓库根 `VERSION`（如 `1.0.1`）。它是唯一真值，CMake、壳、安装包、清单都从这里取。
-- 构建号：纯数字，必须**大于线上 `windows.json` 里的 `build`**（当前 `202611171349`），
+- 构建号：纯数字，必须**大于线上 `manifest.json` 的 `platforms.windows.build`**（当前 `202611171349`），
   例如 `202611180930`。
 - 同一个构建号必须同时传给服务端和壳，并且发布时用同一个 `BUILD=`。
 
@@ -82,7 +82,7 @@ $version = (Get-Content VERSION -Raw).Trim()
 
 ```powershell
 [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes('shell\win\build\xiaotu-shell.exe')) `
-  -like '*xiaotu/updates/stable/windows.json*'
+  -like '*xiaotu/updates/stable/manifest.json*'
 ```
 
 必须输出 `True`。
@@ -109,7 +109,7 @@ BUILD=202611180930 tools/package/publish_windows.sh
 ```
 
 脚本依次完成：guard preflight（命名/版本单调/覆盖风险/壳内地址）→ Ed25519 签名 →
-上传 setup、zip、`xiaotu/updates/stable/windows.json` → 验签 → 线上复核。
+上传 setup、zip、并合并 `platforms.windows` 到 `xiaotu/updates/stable/manifest.json` → 验签 → 线上复核。
 
 **不要在 Windows 上跑这个脚本**：它依赖 `shasum`、`python3` 和
 `~/.config/xiaotu-updates/` 下的私钥与凭据。
@@ -117,7 +117,8 @@ BUILD=202611180930 tools/package/publish_windows.sh
 ### 3. 发布后验证
 
 ```bash
-curl -s https://dl.xiaotu.online/xiaotu/updates/stable/windows.json | python3 -m json.tool | head -20
+curl -s https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["platforms"]["windows"])'
 ```
 
 确认 `version`、`build`、`portable_url` 均为本次发布值；打开 `pre.xiaotu.online/download/`，

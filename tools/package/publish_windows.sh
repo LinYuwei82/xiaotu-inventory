@@ -14,7 +14,7 @@
 # 本脚本不再生成 windows.json，旧内测客户端按切换方案重装升级。
 #
 # 重要：BUILD 必须与打包时写进 exe 的构建号完全一致。
-# 壳的更新判定是 `manifest.build <= 当前 build → 无更新`；如果清单里的 build
+# 壳的更新判定是「version 相同且 platforms.windows.build <= 当前 build → 无更新」；如果清单里的 build
 # 与安装包内的 build 不一致，客户端会反复提示更新。打包机在 Windows 上执行
 #   cmake --preset windows-release -DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=<BUILD>
 #   set XIAOTU_BUILD=<BUILD> & cmake -S shell\win -B shell\win\build ...
