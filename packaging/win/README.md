@@ -47,6 +47,14 @@ Ed25519 私钥与 OSS 凭据留在 Mac，不拷到 Windows。
 .\packaging\win\build-release.ps1 -Build 202611180930
 ```
 
+不想开 Developer 窗口、也不想处理执行策略时，用 `cmd` 入口（会自动 `chcp`、调用
+`vcvars64.bat`、并以 `-ExecutionPolicy Bypass` 运行上面的脚本）：
+
+```cmd
+packaging\win\build-release.cmd
+packaging\win\build-release.cmd 202611180930
+```
+
 脚本会依次执行下面的手工步骤，并在最后打印 Mac 上要执行的发布命令。等价的完整手工命令：
 
 ```powershell
