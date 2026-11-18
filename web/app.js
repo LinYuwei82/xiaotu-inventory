@@ -6972,6 +6972,12 @@
     return labels[reason] || "";
   }
 
+  // macOS v2 清单没有构建号（build 固定 0）：没有构建号时只显示版本号。
+  function versionWithBuild(version, build) {
+    const text = version || "新版本";
+    return build ? `${text}（构建 ${build}）` : text;
+  }
+
   // ---------- 桌面壳更新桥 ----------
   // macOS：WKWebView messageHandlers（方法名 xiaotuUpdateXxx，结果由原生调 window.xxxDone）
   // Windows：WebView2 HostObject updater_win（方法名 checkNow/statusJson…，结果走 chrome.webview
@@ -7192,7 +7198,7 @@
     askDialog({
       message:
         `当前版本必须升级${reason ? "（" + reason + "）" : ""}：` +
-        `${status.pending_version || "新版本"}（构建 ${status.pending_build || "—"}）。` +
+        `${versionWithBuild(status.pending_version, status.pending_build)}。` +
         `${deadline}安装时会重新下载${size}并退出程序，升级后才能继续使用。`,
       okText: "立即安装",
       cancelText: null,
@@ -7299,7 +7305,7 @@
         [
           "待安装版本",
           status.update_available
-            ? `${status.pending_version}（构建 ${status.pending_build}）`
+            ? versionWithBuild(status.pending_version, status.pending_build)
             : "—",
         ],
         ["后台下载", prefetchText(status)],
@@ -7463,9 +7469,10 @@
           status.mandatory
             ? `此更新为必须升级（${mandatoryReasonText(status.reason) || "服务端要求"}），不能跳过。` +
                 `安装时会重新下载${size}，随后关闭程序并完成安装。是否继续？`
-            : `将安装 ${status.pending_version || "新版本"}（构建 ${
-                status.pending_build || "—"
-              }）。安装时会重新下载${size}（后台预下载只用于提前校验），` +
+            : `将安装 ${versionWithBuild(
+                status.pending_version,
+                status.pending_build
+              )}。安装时会重新下载${size}（后台预下载只用于提前校验），` +
                 "随后关闭程序并完成安装。是否继续？",
           { okText: "安装", cancelText: "取消" }
         );

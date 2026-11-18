@@ -133,6 +133,16 @@ enum class InstallDecision { kStarted, kUnavailable, kNoPendingUpdate };
 InstallDecision decide_install(bool installer_available, std::int64_t pending_build,
                                std::int64_t current_build);
 
+// v2 清单里 macOS 段没有构建号（build 固定 0），待安装/验证态改用版本号判定。
+// target 严格高于 current 才算有新版本；任一侧无法解析时返回 false。
+bool is_newer_product_version(std::string_view target, std::string_view current);
+// 两个版本号相等（按 SemVer 解析后比较）；任一侧无法解析时返回 false。
+bool is_same_product_version(std::string_view a, std::string_view b);
+
+// decide_install 的版本口径：macOS v2 使用，语义与构建号版本一致。
+InstallDecision decide_install_version(bool installer_available, std::string_view pending_version,
+                                       std::string_view current_version);
+
 // resume 桥方法的结果：RESUMED / NOT_PAUSED。
 enum class ResumeDecision { kResumed, kNotPaused };
 ResumeDecision decide_resume(bool paused);
@@ -143,6 +153,13 @@ ResumeDecision decide_resume(bool paused);
 // 任一情况成立且失败次数达到 threshold 时进入恢复模式，提示回退或继续使用当前版本。
 bool should_enter_recovery(int launch_attempts, int threshold, std::int64_t validating_build,
                            std::int64_t current_build, std::int64_t pending_build);
+
+// should_enter_recovery 的版本口径：macOS v2 使用。validating_version 等于当前版本
+// 表示新版本仍在验证期；pending_version 高于当前版本表示更高版本已下载但还没装上。
+bool should_enter_recovery_version(int launch_attempts, int threshold,
+                                   std::string_view validating_version,
+                                   std::string_view pending_version,
+                                   std::string_view current_version);
 
 // ISO 8601 UTC（YYYY-MM-DDTHH:MM:SSZ）与 epoch 互转；解析失败返回 nullopt。
 std::optional<std::int64_t> parse_iso8601_utc(std::string_view text);

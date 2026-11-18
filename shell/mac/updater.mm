@@ -59,8 +59,9 @@ NSString* const kPrefetchMessageKey = @"XiaotuPrefetchMessage";
 NSString* const kPendingURLKey = @"XiaotuPendingPackageURL";
 NSString* const kPendingSHAKey = @"XiaotuPendingPackageSHA256";
 NSString* const kPendingSizeKey = @"XiaotuPendingPackageSize";
-// 升级验证：安装时记下目标 build，新版本稳定启动 3 次后清理旧包。
-NSString* const kValidatingBuildKey = @"XiaotuValidatingBuild";
+// 升级验证：安装时记下目标版本，新版本稳定启动 3 次后清理旧包。
+// v2 清单的 macOS 没有构建号，验证期只能用版本号表示。
+NSString* const kValidatingVersionKey = @"XiaotuValidatingVersion";
 NSString* const kStableLaunchKey = @"XiaotuStableLaunchCount";
 // 恢复模式：连续启动失败达到阈值后置位，直到用户回退或选择继续使用当前版本。
 NSString* const kRecoveryRequiredKey = @"XiaotuUpdateRecoveryRequired";
@@ -196,10 +197,11 @@ NSString* system_version_string() {
                                     static_cast<long>(version.patchVersion)];
 }
 
-std::int64_t pending_build(NSUserDefaults* defaults) {
-  return [defaults objectForKey:kPendingBuildKey] != nil
-             ? static_cast<std::int64_t>([defaults integerForKey:kPendingBuildKey])
-             : 0;
+// v2 清单的 macOS 段 build 固定为 0：待安装状态一律用版本号判定，
+// 否则 pending_build(0) 永远小于本地日期构建号，界面会一直显示“无更新”。
+std::string pending_version(NSUserDefaults* defaults) {
+  NSString* value = [defaults stringForKey:kPendingVersionKey];
+  return value.length > 0 ? std::string(value.UTF8String) : std::string();
 }
 
 bool auto_check_enabled() {
@@ -464,10 +466,11 @@ didCompleteWithError:(NSError*)error {
     _prefetchTotal = static_cast<long long>([defaults integerForKey:kPrefetchTotalKey]);
     _prefetchReceived =
         static_cast<long long>([defaults integerForKey:kPrefetchBytesKey]);
-    // 上一次安装成功后旧包仍会留在缓存目录：done 且待装 build 不高于当前 build 时，
+    // 上一次安装成功后旧包仍会留在缓存目录：done 且待装版本不高于当前版本时，
     // 说明该版本已装上（或已被更新版本覆盖），删除旧包并回到 idle，避免长期占磁盘。
     if ([_prefetchState isEqualToString:kPrefetchDone] &&
-        pending_build(defaults) <= current_build()) {
+        !xiaotu::is_newer_product_version(pending_version(defaults),
+                                          xiaotu::current_product_version())) {
       [self removePrefetchFilesExcept:nil];
       _prefetchState = kPrefetchIdle;
       _prefetchFile = nil;
@@ -525,11 +528,13 @@ didCompleteWithError:(NSError*)error {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   NSInteger attempts = [defaults integerForKey:kLaunchAttemptsKey] + 1;
   [defaults setInteger:attempts forKey:kLaunchAttemptsKey];
-  const std::int64_t pending = pending_build(defaults);
-  const std::int64_t validating = [defaults integerForKey:kValidatingBuildKey];
+  NSString* validatingVersion = [defaults stringForKey:kValidatingVersionKey];
   // 两种情况都算“更新后不稳定”：新版本仍在验证期，或更高版本已下载但尚未装上。
-  if (xiaotu::should_enter_recovery(static_cast<int>(attempts), kMaxLaunchFailures, validating,
-                                    current_build(), pending)) {
+  // v2 的 macOS 没有构建号，这里按版本号判定（与清单的更新判定同一口径）。
+  if (xiaotu::should_enter_recovery_version(
+          static_cast<int>(attempts), kMaxLaunchFailures,
+          validatingVersion.UTF8String ?: "", pending_version(defaults),
+          xiaotu::current_product_version())) {
     [defaults setBool:YES forKey:kPausedKey];
     [defaults setBool:YES forKey:kRecoveryRequiredKey];
     xiaotu::log_error("更新：连续 " + std::to_string(attempts) +
@@ -549,13 +554,15 @@ didCompleteWithError:(NSError*)error {
       [currentDefaults setBool:NO forKey:kPausedKey];
     }
     // 新版本连续稳定运行 3 次后，安装前保留的旧副本就可以删了。
-    // 恢复模式期间保留副本（用户可能还要回退）；旧版本自身启动时 validating 不等于当前 build，不会误删。
-    const std::int64_t validatingBuild = [currentDefaults integerForKey:kValidatingBuildKey];
-    if (!recovery && validatingBuild != 0 && validatingBuild == current_build()) {
+    // 恢复模式期间保留副本（用户可能还要回退）；旧版本自身启动时 validating 不等于当前版本，不会误删。
+    NSString* validatingVersion = [currentDefaults stringForKey:kValidatingVersionKey];
+    if (!recovery &&
+        xiaotu::is_same_product_version(validatingVersion.UTF8String ?: "",
+                                        xiaotu::current_product_version())) {
       NSInteger stable = [currentDefaults integerForKey:kStableLaunchKey] + 1;
       if (stable >= kStableLaunchesBeforeCleanup) {
         [strongSelf removePreviousBundle];
-        [currentDefaults removeObjectForKey:kValidatingBuildKey];
+        [currentDefaults removeObjectForKey:kValidatingVersionKey];
         stable = 0;
         xiaotu::log_info("更新：新版本已稳定启动 " +
                          std::to_string(kStableLaunchesBeforeCleanup) + " 次，已删除旧版本副本");
@@ -583,9 +590,9 @@ didCompleteWithError:(NSError*)error {
   return previous != nil && [[NSFileManager defaultManager] fileExistsAtPath:previous.path];
 }
 
-// 安装前保留当前 .app：只留最近 1 份，并记下目标 build 进入验证期。
-- (BOOL)preparePreviousBundleWithTargetBuild:(std::int64_t)targetBuild
-                                      error:(NSString**)errorOut {
+// 安装前保留当前 .app：只留最近 1 份，并记下目标版本进入验证期。
+- (BOOL)preparePreviousBundleWithTargetVersion:(NSString*)targetVersion
+                                         error:(NSString**)errorOut {
   NSURL* bundle = [[NSBundle mainBundle] bundleURL];
   NSURL* previous = previous_app_url();
   if (bundle == nil || previous == nil) {
@@ -608,10 +615,10 @@ didCompleteWithError:(NSError*)error {
       [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
   [defaults setObject:version ?: @"" forKey:kPreviousVersionKey];
   [defaults setInteger:current_build() forKey:kPreviousBuildKey];
-  [defaults setInteger:targetBuild forKey:kValidatingBuildKey];
+  [defaults setObject:targetVersion ?: @"" forKey:kValidatingVersionKey];
   [defaults setInteger:0 forKey:kStableLaunchKey];
-  xiaotu::log_info("更新：已保留当前版本副本用于回退，目标 build " +
-                   std::to_string(targetBuild));
+  xiaotu::log_info("更新：已保留当前版本副本用于回退，目标版本 " +
+                   std::string(targetVersion.UTF8String ?: ""));
   return YES;
 }
 
@@ -737,7 +744,7 @@ didCompleteWithError:(NSError*)error {
   [defaults setInteger:0 forKey:kLaunchAttemptsKey];
   [defaults setInteger:0 forKey:kStableLaunchKey];
   [defaults setBool:NO forKey:kPausedKey];
-  [defaults removeObjectForKey:kValidatingBuildKey];
+  [defaults removeObjectForKey:kValidatingVersionKey];
   respond(@{
     @"ok" : @YES,
     @"code" : @"ROLLING_BACK",
@@ -1359,7 +1366,9 @@ didCompleteWithError:(NSError*)error {
   }
   const bool installerAvailable = packageURL != nil;
 #endif
-  switch (xiaotu::decide_install(installerAvailable, pending_build(defaults), current_build())) {
+  // v2 的 macOS 清单没有构建号（build 固定 0），待安装判定同样按版本号比较。
+  switch (xiaotu::decide_install_version(installerAvailable, pending_version(defaults),
+                                         xiaotu::current_product_version())) {
     case xiaotu::InstallDecision::kUnavailable:
       respond(@{
         @"ok" : @NO,
@@ -1379,8 +1388,8 @@ didCompleteWithError:(NSError*)error {
   }
   // 安装前保留当前版本副本，供新版本连续启动失败时一键回退；失败不阻断安装。
   NSString* backupError = nil;
-  if (![self preparePreviousBundleWithTargetBuild:pending_build(defaults)
-                                            error:&backupError]) {
+  if (![self preparePreviousBundleWithTargetVersion:[defaults stringForKey:kPendingVersionKey]
+                                              error:&backupError]) {
     xiaotu::log_warn("更新：未能保留旧版本副本，回退将不可用：" +
                      std::string(backupError.UTF8String ?: "未知原因"));
   }
@@ -1538,8 +1547,9 @@ didCompleteWithError:(NSError*)error {
 
 - (NSDictionary<NSString*, id>*)status {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
-  const std::int64_t pending = pending_build(defaults);
-  const BOOL updateAvailable = pending > current_build();
+  // v2 的 macOS 清单没有构建号（build 固定 0），是否更新只比版本号。
+  const BOOL updateAvailable = xiaotu::is_newer_product_version(
+      pending_version(defaults), xiaotu::current_product_version());
   NSString* pendingVersion = updateAvailable ? [defaults stringForKey:kPendingVersionKey] : nil;
   const BOOL mandatory = updateAvailable && [defaults boolForKey:kMandatoryKey];
   NSString* reason = mandatory ? [defaults stringForKey:kPendingReasonKey] : nil;
@@ -1598,7 +1608,8 @@ didCompleteWithError:(NSError*)error {
     @"last_check_at" : @([defaults doubleForKey:kLastCheckKey]),
     @"last_result" : lastResult ?: [NSNull null],
     @"pending_version" : pendingVersion ?: [NSNull null],
-    @"pending_build" : @(updateAvailable ? pending : 0),
+    // macOS 没有构建号，固定给 0；界面按“无构建号”展示。
+    @"pending_build" : @0,
     // 安装包大小：Sparkle 安装前会重新下载，界面据此提示“将重新下载约 X MB”。
     @"pending_size" : @(updateAvailable ? [defaults integerForKey:kPendingSizeKey] : 0),
     @"pending_deadline" : updateAvailable

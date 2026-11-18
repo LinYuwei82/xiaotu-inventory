@@ -504,6 +504,36 @@ InstallDecision decide_install(bool installer_available, std::int64_t pending_bu
   return InstallDecision::kStarted;
 }
 
+bool is_newer_product_version(std::string_view target, std::string_view current) {
+  ProductVersion target_version{};
+  ProductVersion current_version{};
+  if (!parse_product_version(target, target_version) ||
+      !parse_product_version(current, current_version)) {
+    return false;
+  }
+  return compare_product_version(target_version, current_version) > 0;
+}
+
+bool is_same_product_version(std::string_view a, std::string_view b) {
+  ProductVersion left{};
+  ProductVersion right{};
+  if (!parse_product_version(a, left) || !parse_product_version(b, right)) {
+    return false;
+  }
+  return compare_product_version(left, right) == 0;
+}
+
+InstallDecision decide_install_version(bool installer_available, std::string_view pending_version,
+                                       std::string_view current_version) {
+  if (!installer_available) {
+    return InstallDecision::kUnavailable;
+  }
+  if (!is_newer_product_version(pending_version, current_version)) {
+    return InstallDecision::kNoPendingUpdate;
+  }
+  return InstallDecision::kStarted;
+}
+
 ResumeDecision decide_resume(bool paused) {
   return paused ? ResumeDecision::kResumed : ResumeDecision::kNotPaused;
 }
@@ -516,6 +546,17 @@ bool should_enter_recovery(int launch_attempts, int threshold, std::int64_t vali
   const bool validating = validating_build != 0 && validating_build == current_build;
   const bool pending_update = pending_build != 0 && pending_build != current_build;
   return validating || pending_update;
+}
+
+bool should_enter_recovery_version(int launch_attempts, int threshold,
+                                   std::string_view validating_version,
+                                   std::string_view pending_version,
+                                   std::string_view current_version) {
+  if (threshold <= 0 || launch_attempts < threshold) {
+    return false;
+  }
+  return is_same_product_version(validating_version, current_version) ||
+         is_newer_product_version(pending_version, current_version);
 }
 
 UpdateDecision evaluate_manifest(const UpdateManifest& manifest, const UpdateQuery& query,

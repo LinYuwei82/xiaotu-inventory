@@ -247,6 +247,23 @@ int main() {
   check(xiaotu::decide_install(true, 2026111301, 2026100101) == InstallDecision::kStarted,
         "有待更新且安装器可用时启动");
 
+  // v2 清单的 macOS 段 build 固定为 0：待安装与恢复态改用版本号判定。
+  check(xiaotu::is_newer_product_version("1.0.3", "1.0.2"), "更高版本视为有待更新");
+  check(!xiaotu::is_newer_product_version("1.0.2", "1.0.2"), "同版本不提示更新");
+  check(!xiaotu::is_newer_product_version("1.0.1", "1.0.2"), "更低版本不提示更新");
+  check(!xiaotu::is_newer_product_version("", "1.0.2"), "缺失版本不提示更新");
+  check(!xiaotu::is_newer_product_version("bad", "1.0.2"), "非法版本不提示更新");
+  check(xiaotu::is_same_product_version("1.0.2", "1.0.2"), "版本号相等");
+  check(!xiaotu::is_same_product_version("1.0.2", "1.0.3"), "版本号不等");
+  check(!xiaotu::is_same_product_version("", ""), "空版本不算相等");
+  check(xiaotu::decide_install_version(true, "1.0.3", "1.0.2") == InstallDecision::kStarted,
+        "版本更高且安装器可用时启动");
+  check(xiaotu::decide_install_version(true, "1.0.2", "1.0.2") ==
+            InstallDecision::kNoPendingUpdate,
+        "版本相同拒绝安装");
+  check(xiaotu::decide_install_version(false, "1.0.3", "1.0.2") == InstallDecision::kUnavailable,
+        "无安装器时优先返回不可用");
+
   // 中间版本选择：原生桥与服务端 evaluate_manifest 共用同一条规则。
   const std::vector<xiaotu::UpgradeStep> upgrade_path{
       {28, "1.4.0", 2026100101},
@@ -299,6 +316,18 @@ int main() {
   check(!xiaotu::should_enter_recovery(3, 3, 2026100101, 2026111301, 0),
         "验证期与当前版本不一致且无待装版本时不进入恢复模式");
   check(!xiaotu::should_enter_recovery(3, 3, 0, 2026111301, 2026111301),
+        "待装版本等于当前版本时不进入恢复模式");
+
+  // 同上，版本口径（macOS v2）。
+  check(xiaotu::should_enter_recovery_version(3, 3, "1.0.2", "", "1.0.2"),
+        "版本验证期连续失败 3 次进入恢复模式");
+  check(xiaotu::should_enter_recovery_version(3, 3, "", "1.0.3", "1.0.2"),
+        "待装版本更高时连续失败 3 次进入恢复模式");
+  check(!xiaotu::should_enter_recovery_version(2, 3, "1.0.2", "", "1.0.2"),
+        "失败次数未达阈值不进入恢复模式");
+  check(!xiaotu::should_enter_recovery_version(3, 3, "1.0.1", "", "1.0.2"),
+        "验证版本与当前版本不一致时不进入恢复模式");
+  check(!xiaotu::should_enter_recovery_version(3, 3, "", "1.0.2", "1.0.2"),
         "待装版本等于当前版本时不进入恢复模式");
 
   if (failures == 0) {
