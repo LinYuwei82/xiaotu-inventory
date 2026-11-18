@@ -609,6 +609,19 @@
   function isWinWebview() {
     return !!(window.chrome && window.chrome.webview && window.chrome.webview.hostObjects);
   }
+  // 用系统默认浏览器打开外链：Windows 走壳的 native_io.openUrl，其余用 window.open
+  function openExternalUrl(url) {
+    if (!url) return;
+    try {
+      if (isWinWebview()) {
+        window.chrome.webview.hostObjects.native_io.openUrl(url);
+        return;
+      }
+      window.open(url, "_blank", "noopener");
+    } catch (error) {
+      showNotice("打开链接失败：" + (error && error.message ? error.message : url), "error");
+    }
+  }
   // Blob → base64（UTF-8 safe，替代 btoa）
   function blobToBase64(blob) {
     return new Promise((resolve, reject) => {
@@ -7007,6 +7020,7 @@
       pending_build: s.manifest_build || 0,
       pending_size: s.manifest_size || s.pending_size || 0,
       pending_deadline: s.mandatory_deadline || "",
+      notes_url: s.notes_url || s.release_notes_url || "",
       mandatory: !!s.mandatory,
       reason: s.mandatory_reason || "",
       auto_check: s.auto_check !== false,
@@ -7445,6 +7459,11 @@
               ? `<button class="btn" type="button" data-role="cancel">取消下载</button>`
               : ""
           }
+          ${
+            status.update_available && status.notes_url
+              ? `<button class="btn" type="button" data-role="notes">查看更新详情</button>`
+              : ""
+          }
           <button class="btn primary" type="button" data-role="install" ${
             status.update_available ? "" : "disabled"
           }>安装更新</button>
@@ -7456,6 +7475,10 @@
         checkButton.textContent = "检查中…";
         nativeBridge.xiaotuUpdateCheckNow.postMessage({});
       });
+      const notesButton = card.querySelector('[data-role="notes"]');
+      if (notesButton) {
+        notesButton.addEventListener("click", () => openExternalUrl(status.notes_url));
+      }
       const autoInput = card.querySelector('[data-role="auto-check"]');
       autoInput.addEventListener("change", () => {
         autoInput.disabled = true;

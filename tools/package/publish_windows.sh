@@ -32,6 +32,11 @@
 #
 #   # 安装包不在默认位置时显式指定
 #   SETUP_PATH=/tmp/xiaotu-inventory-1.0.0-win64-setup.exe BUILD=... tools/package/publish_windows.sh
+#
+#   # 发行说明：docs/release-notes-<版本>.html 存在时自动上传并写入 notes_url，
+#   # 也可显式指定文件或直接给外链地址
+#   RELEASE_NOTES_FILE=docs/其他说明.html BUILD=... tools/package/publish_windows.sh
+#   RELEASE_NOTES_URL=https://... BUILD=... tools/package/publish_windows.sh
 
 set -euo pipefail
 
@@ -147,6 +152,7 @@ SIGNING_PUB="${SIGNING_KEY%.pem}.pub.pem"
 KEY_ID="${KEY_ID:-2026-11}"
 MIN_OS="${MIN_OS:-10.0}"
 RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-}"
+RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE:-}"
 # dl.xiaotu.online 是 OSS 自定义域名（CNAME 直连 OSS，无 CDN 层），无需刷新缓存；
 # 保留 PURGE 开关仅备将来接入 CDN（PURGE=true 开启）。
 PURGE="${PURGE:-false}"
@@ -221,6 +227,25 @@ SETUP_PUBLIC_URL="$CDN_DOMAIN/$SETUP_KEY"
 MANIFEST_KEY="$PRODUCT_DIR/updates/$CHANNEL/manifest.json"
 MANIFEST_PUBLIC="$CDN_DOMAIN/$MANIFEST_KEY"
 
+# 发行说明：与 mote / devcard 同一约定——仓库里有 docs/release-notes-<版本>.html
+# 就自动上传并写入清单 notes_url；也可用 RELEASE_NOTES_FILE 显式指定其它文件。
+NOTES_KEY="$PRODUCT_DIR/release-notes-$VERSION.html"
+if [ -z "$RELEASE_NOTES_FILE" ] && [ -z "$RELEASE_NOTES_URL" ] \
+   && [ -f "$REPO_ROOT/docs/release-notes-$VERSION.html" ]; then
+  RELEASE_NOTES_FILE="$REPO_ROOT/docs/release-notes-$VERSION.html"
+fi
+if [ -n "$RELEASE_NOTES_FILE" ]; then
+  [ -f "$RELEASE_NOTES_FILE" ] || { echo "发行说明不存在：$RELEASE_NOTES_FILE" >&2; exit 1; }
+  [ -n "$RELEASE_NOTES_URL" ] || RELEASE_NOTES_URL="$CDN_DOMAIN/$NOTES_KEY"
+fi
+# notes_url 会被客户端直接打开，必须是绝对 http(s) 地址，相对路径会变成死链。
+if [ -n "$RELEASE_NOTES_URL" ]; then
+  case "$RELEASE_NOTES_URL" in
+    http://*|https://*) ;;
+    *) echo "RELEASE_NOTES_URL 必须是绝对 http(s) 地址：$RELEASE_NOTES_URL" >&2; exit 2 ;;
+  esac
+fi
+
 echo "===== OSS 发布 · Windows 安装包 ====="
 echo "版本 / build / channel：  ${VERSION} / ${BUILD} / ${CHANNEL}"
 echo "安装包：                  ${SETUP_PATH} （${SETUP_SIZE} 字节）"
@@ -233,6 +258,7 @@ echo "OSS key："
 echo "  setup.exe：             ${SETUP_KEY}"
 [ -n "$ZIP_KEY" ] && echo "  zip（绿色包）：         ${ZIP_KEY}（${ZIP_SIZE} 字节）"
 echo "  manifest.json：         ${MANIFEST_KEY}"
+[ -n "$RELEASE_NOTES_FILE" ] && echo "  发行说明：              ${NOTES_KEY}（${RELEASE_NOTES_URL}）"
 [ "${OSS_SKIP}" = "true" ] && echo "(dry-run：不上传)"
 
 STAGE="$(mktemp -d -t xiaotu-win-stage)"
@@ -318,6 +344,11 @@ if [ "$OSS_SKIP" != "true" ]; then
     oss_upload "$ZIP_PATH" "$ZIP_KEY" \
       "public, max-age=31536000, immutable" "application/zip"
   fi
+  if [ -n "$RELEASE_NOTES_FILE" ]; then
+    echo "===== ④ 上传发行说明 → $NOTES_KEY"
+    oss_upload "$RELEASE_NOTES_FILE" "$NOTES_KEY" \
+      "public, max-age=3600" "text/html; charset=utf-8"
+  fi
   echo "===== ④ 上传 manifest.json → $MANIFEST_KEY"
   oss_upload "$MANIFEST_LOCAL" "$MANIFEST_KEY" \
     "no-cache, max-age=60" "application/json"
@@ -328,6 +359,7 @@ else
   echo ""
   echo "===== ④ [dry-run] 将上传 $SETUP_KEY + $MANIFEST_KEY"
   [ -n "$ZIP_KEY" ] && echo "===== ④ [dry-run] 将上传 $ZIP_KEY"
+  [ -n "$RELEASE_NOTES_FILE" ] && echo "===== ④ [dry-run] 将上传 $NOTES_KEY"
 fi
 
 # ---- ⑤ purge CDN ----
@@ -336,6 +368,7 @@ if [ "$OSS_SKIP" != "true" ] && [ "$PURGE" = "true" ]; then
   echo "===== ⑤ purge CDN 缓存"
   purge_urls=("$SETUP_PUBLIC_URL" "$MANIFEST_PUBLIC")
   [ -n "$ZIP_KEY" ] && purge_urls+=("$ZIP_PUBLIC_URL")
+  [ -n "$RELEASE_NOTES_FILE" ] && purge_urls+=("$RELEASE_NOTES_URL")
   for url in "${purge_urls[@]}"; do
     if command -v aliyun >/dev/null 2>&1; then
       if aliyun cdn RefreshObjectCaches --ObjectPath "$url" >/dev/null 2>&1; then

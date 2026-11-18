@@ -415,10 +415,10 @@ class NativeIoHost : public IDispatch {
   HRESULT STDMETHODCALLTYPE GetTypeInfoCount(UINT* ctinfo) override { if (!ctinfo) return E_POINTER; *ctinfo = 0; return S_OK; }
   HRESULT STDMETHODCALLTYPE GetTypeInfo(UINT, LCID, ITypeInfo**) override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE GetIDsOfNames(REFIID, LPOLESTR* names, UINT count, LCID, DISPID* ids) override {
-    static const wchar_t* kNames[] = { L"saveFile", L"openFile" };
+    static const wchar_t* kNames[] = { L"saveFile", L"openFile", L"openUrl" };
     for (UINT i = 0; i < count; ++i) {
       ids[i] = DISPID_UNKNOWN;
-      for (UINT j = 0; j < 2; ++j)
+      for (UINT j = 0; j < 3; ++j)
         if (wcscmp(names[i], kNames[j]) == 0) { ids[i] = static_cast<DISPID>(j + 1); break; }
       if (ids[i] == DISPID_UNKNOWN) return DISP_E_UNKNOWNNAME;
     }
@@ -473,6 +473,12 @@ class NativeIoHost : public IDispatch {
           {"size", bytes.size()}
         };
         return set_str(j.dump());
+      }
+      case 3: {  // openUrl(url) → bool：用系统默认浏览器打开（发行说明等外链）
+        const std::string url = arg(0);
+        if (url.rfind("https://", 0) != 0 && url.rfind("http://", 0) != 0) return set_bool(false);
+        HINSTANCE r = ShellExecuteW(nullptr, L"open", u8_to_w(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return set_bool(reinterpret_cast<INT_PTR>(r) > 32);
       }
       default: return DISP_E_MEMBERNOTFOUND;
     }

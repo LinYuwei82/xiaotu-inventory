@@ -50,6 +50,7 @@ struct Status {
   std::string manifest_sha256;      // 清单里的 SHA256（小写）
   int64_t manifest_size = 0;        // 清单里的安装包大小
   std::string manifest_setup_url;   // 清单里的 artifacts.setup.url（检查时缓存，下载直接复用）
+  std::string notes_url;            // 清单里的 platforms.windows.notes_url（发行说明页）
 
   std::string pending_local_path;   // 后台下载到本地的 setup.exe 路径
   int64_t pending_size = 0;         // 待安装包大小

@@ -137,6 +137,7 @@ API_MIN="${API_MIN:-1}"
 API_MAX="${API_MAX:-1}"
 MANDATORY="${MANDATORY:-}"
 RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-}"
+RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE:-}"
 # dl.xiaotu.online 是 OSS 自定义域名（CNAME 直连 OSS，无 CDN 层），源站上传即生效，
 # 无需刷新边缘缓存；保留 PURGE 开关仅备将来接入 CDN（PURGE=true 开启）。
 PURGE="${PURGE:-false}"
@@ -261,6 +262,24 @@ APPCAST_KEY="$PRODUCT_DIR/updates/$CHANNEL/appcast.xml"
 MANIFEST_PUBLIC="$CDN_DOMAIN/$MANIFEST_KEY"
 APPCAST_PUBLIC="$CDN_DOMAIN/$APPCAST_KEY"
 
+# 发行说明：与 Windows 发布同一约定——仓库里有 docs/release-notes-<版本>.html
+# 就自动上传，并把地址写进 manifest 与 appcast；也可用 RELEASE_NOTES_FILE 显式指定。
+NOTES_KEY="$PRODUCT_DIR/release-notes-$VERSION.html"
+if [ -z "$RELEASE_NOTES_FILE" ] && [ -z "$RELEASE_NOTES_URL" ] \
+   && [ -f "$REPO_ROOT/docs/release-notes-$VERSION.html" ]; then
+  RELEASE_NOTES_FILE="$REPO_ROOT/docs/release-notes-$VERSION.html"
+fi
+if [ -n "$RELEASE_NOTES_FILE" ]; then
+  [ -f "$RELEASE_NOTES_FILE" ] || { echo "发行说明不存在：$RELEASE_NOTES_FILE" >&2; exit 1; }
+  [ -n "$RELEASE_NOTES_URL" ] || RELEASE_NOTES_URL="$CDN_DOMAIN/$NOTES_KEY"
+fi
+if [ -n "$RELEASE_NOTES_URL" ]; then
+  case "$RELEASE_NOTES_URL" in
+    http://*|https://*) ;;
+    *) echo "RELEASE_NOTES_URL 必须是绝对 http(s) 地址：$RELEASE_NOTES_URL" >&2; exit 2 ;;
+  esac
+fi
+
 echo "===== OSS 发布 · ${PRODUCT} ====="
 echo "版本 / build / channel：  ${VERSION} / ${BUILD} / ${CHANNEL}"
 echo "dmg：                     ${DMG_PATH}"
@@ -380,6 +399,10 @@ python3 "$GUARD_PY" preflight "${GUARD_ARGS[@]}"
 if [ "$OSS_SKIP" != "true" ]; then
   echo ""
   echo "===== ⑤ 上传"
+  if [ -n "$RELEASE_NOTES_FILE" ]; then
+    oss_upload "$RELEASE_NOTES_FILE" "$NOTES_KEY" \
+      "public, max-age=3600" "text/html; charset=utf-8"
+  fi
   oss_upload "$DMG_PATH" "$DMG_KEY" \
     "public, max-age=31536000, immutable" "application/octet-stream"
   oss_upload "$MANIFEST_LOCAL" "$MANIFEST_KEY" \
@@ -389,6 +412,7 @@ if [ "$OSS_SKIP" != "true" ]; then
 else
   echo ""
   echo "===== ⑤ [dry-run] 将上传 $DMG_KEY + $MANIFEST_KEY + $APPCAST_KEY"
+  [ -n "$RELEASE_NOTES_FILE" ] && echo "===== ⑤ [dry-run] 将上传 $NOTES_KEY"
 fi
 
 # ---- ⑥ purge CDN ----
@@ -396,7 +420,9 @@ if [ "$OSS_SKIP" != "true" ]; then
   if [ "$PURGE" = "true" ]; then
     echo ""
     echo "===== ⑥ purge CDN 缓存"
-    for url in "$DMG_PUBLIC_URL" "$MANIFEST_PUBLIC" "$APPCAST_PUBLIC"; do
+    purge_urls=("$DMG_PUBLIC_URL" "$MANIFEST_PUBLIC" "$APPCAST_PUBLIC")
+    [ -n "$RELEASE_NOTES_FILE" ] && purge_urls+=("$RELEASE_NOTES_URL")
+    for url in "${purge_urls[@]}"; do
       if command -v aliyun >/dev/null 2>&1; then
         if aliyun cdn RefreshObjectCaches --ObjectPath "$url" >/dev/null 2>&1; then
           echo "  ✓ $url"

@@ -245,6 +245,7 @@ struct V2Windows {
   std::string setup_url;
   std::string setup_sha256;
   std::int64_t setup_size = 0;
+  std::string notes_url;             // 发行说明页（可选）
   int rollout_percent = 100;
   bool mandatory = false;
   std::string mandatory_reason;
@@ -311,6 +312,7 @@ bool parse_v2_windows(const nlohmann::json& manifest, V2Windows& out, std::strin
   v2_read_bool(*windows, "mandatory", out.mandatory);
   v2_read_string(*windows, "mandatory_reason", out.mandatory_reason);
   v2_read_string(*windows, "mandatory_deadline", out.mandatory_deadline);
+  v2_read_string(*windows, "notes_url", out.notes_url);
   return true;
 }
 
@@ -354,6 +356,7 @@ void UpdaterWin::persistStatus() {
   j["manifest_sha256"] = status_.manifest_sha256;
   j["manifest_size"] = status_.manifest_size;
   j["manifest_setup_url"] = status_.manifest_setup_url;
+  j["notes_url"] = status_.notes_url;
   j["download_state"] = status_.download_state;
   j["last_result"] = status_.last_result;
   j["last_error"] = status_.last_error;
@@ -396,6 +399,7 @@ void UpdaterWin::loadStatus() {
     if (j.contains("manifest_sha256")) status_.manifest_sha256 = j["manifest_sha256"];
     if (j.contains("manifest_size")) status_.manifest_size = j["manifest_size"];
     if (j.contains("manifest_setup_url")) status_.manifest_setup_url = j["manifest_setup_url"];
+    if (j.contains("notes_url")) status_.notes_url = j["notes_url"];
     if (j.contains("download_state")) status_.download_state = j["download_state"];
     if (j.contains("last_result")) status_.last_result = j["last_result"];
     if (j.contains("last_error")) status_.last_error = j["last_error"];
@@ -420,6 +424,7 @@ std::string UpdaterWin::statusJson() const {
   j["mandatory"] = status_.mandatory;
   j["mandatory_reason"] = status_.mandatory_reason;
   j["mandatory_deadline"] = status_.mandatory_deadline;
+  j["notes_url"] = status_.notes_url;
   j["download_state"] = status_.download_state;
   j["download_progress"] = status_.download_progress;
   j["consecutive_failures"] = status_.consecutive_failures;
@@ -584,6 +589,7 @@ void UpdaterWin::checkNow(Completion cb) {
       status_.manifest_sha256 = pw.setup_sha256;
       status_.manifest_size = pw.setup_size;
       status_.manifest_setup_url = pw.setup_url;
+      status_.notes_url = pw.notes_url;
       status_.mandatory = pw.mandatory;
       status_.mandatory_reason = pw.mandatory_reason;
       status_.mandatory_deadline = pw.mandatory_deadline;
@@ -598,6 +604,7 @@ void UpdaterWin::checkNow(Completion cb) {
       status_.manifest_sha256.clear();
       status_.manifest_size = 0;
       status_.manifest_setup_url.clear();
+      status_.notes_url.clear();
       status_.mandatory = false;
       status_.mandatory_reason.clear();
       status_.mandatory_deadline.clear();
