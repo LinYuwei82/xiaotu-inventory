@@ -9,7 +9,7 @@ tools/package/make_dmg.sh
 产物在 `build/package/`（已在 `.gitignore` 的 `build/` 下，不入库）：
 
 ```text
-build/package/xiaotu-inventory-1.0.0.dmg
+build/package/xiaotu-inventory-1.0.3.dmg
 ```
 
 dmg 内包含：
@@ -114,14 +114,14 @@ Sparkle appcast，以及服务端验签兼容（同时认 v1 / v2）。
 ```bash
 # 手动生成/验签（正常发布不需要单独跑）
 python3 tools/release/manifest_v2.py generate \
-  --product xiaotu --channel stable --platform macos --version 1.0.2 --min-os 13.0 \
-  --artifact dmg=build/package/xiaotu-1.0.2-macos-arm64.dmg \
+  --product xiaotu --channel stable --platform macos --version 1.0.3 --min-os 13.0 \
+  --artifact dmg=build/package/xiaotu-1.0.3-macos-arm64.dmg \
   --key ~/.config/xiaotu-updates/update_signing_2026.pem \
   --out build/package/manifest.json
 python3 tools/release/manifest_v2.py verify \
   --manifest build/package/manifest.json \
   --pub ~/.config/xiaotu-updates/update_signing_2026.pub.pem \
-  --artifact dmg=build/package/xiaotu-1.0.2-macos-arm64.dmg
+  --artifact dmg=build/package/xiaotu-1.0.3-macos-arm64.dmg
 ```
 
 私钥不进入仓库与构建产物；appcast 的签名覆盖 dmg 文件字节，供 Sparkle 校验。

@@ -10,9 +10,9 @@
 # 最简：仓库、安装包都给绝对路径
 .\tools\win\verify.ps1 `
   -Repo C:\src\xiaotu-inventory `
-  -Installer C:\Users\me\Downloads\xiaotu-inventory-1.0.0-win64-setup.exe `
+  -Installer C:\Users\me\Downloads\xiaotu-inventory-1.0.3-win64-setup.exe `
   -DataDir C:\Users\me\AppData\Local\com.simem.xiaotu `
-  -ExpectedVersion 1.0.0
+  -ExpectedVersion 1.0.3
 ```
 
 常用参数：
@@ -21,7 +21,7 @@
 | --- | --- | --- |
 | `-Repo` | `C:\src\xiaotu-inventory` | 仓库根，必须含 `.git` |
 | `-Installer` | 自动在 `build\package\win` 与 `%TEMP%\xiaotu-win-installer` 找 | 安装包路径 |
-| `-ExpectedVersion` | `1.0.0` | 用于校验 `/api/health` 的版本号 |
+| `-ExpectedVersion` | `1.0.3` | 用于校验 `/api/health` 的版本号 |
 | `-DataDir` | `%LOCALAPPDATA%\com.simem.xiaotu` | 测试用数据目录；**不要指向客户真实数据** |
 | `-Port` | `18080` | 保留参数，单机版实际用随机端口 |
 | `-LogDir` | `%TEMP%\xiaotu-verify-<时间>` | 日志、安装日志、备份 |
