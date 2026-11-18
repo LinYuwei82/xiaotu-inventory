@@ -284,6 +284,14 @@ print(f"  ✓ {ok}  ({ct}, {cc})")
 PY_EOF
 }
 
+# ---- ⓪ 发布门禁（三仓库共用 tools/release/guard.py）----
+GUARD_PY="${GUARD_PY:-$REPO_ROOT/tools/release/guard.py}"
+GUARD_ARGS=(--product xiaotu --kind mac --channel "$CHANNEL" --file "$DMG_PATH")
+[ "$OSS_SKIP" = "true" ] && GUARD_ARGS+=(--offline)
+echo ""
+echo "===== ⓪ 发布门禁"
+python3 "$GUARD_PY" preflight "${GUARD_ARGS[@]}"
+
 # ---- ① 上传 dmg（immutable，长缓存）----
 if [ "$OSS_SKIP" != "true" ]; then
   echo ""
@@ -402,7 +410,13 @@ else
   echo "===== ⑥ [跳过] CDN 预热（WARMUP=false 或 dry-run）"
 fi
 
-# ---- ⑦ 完成 ----
+if [ "$OSS_SKIP" != "true" ]; then
+  echo ""
+  echo "===== ⑦ 线上门禁"
+  python3 "$GUARD_PY" verify-live "${GUARD_ARGS[@]}"
+fi
+
+# ---- ⑧ 完成 ----
 echo ""
 echo "================ 发布完成 ================"
 echo "版本 / build / channel：  $VERSION / $BUILD / $CHANNEL"

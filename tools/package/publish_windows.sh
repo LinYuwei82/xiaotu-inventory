@@ -135,29 +135,19 @@ if [ ! -x "$VENV_PY" ]; then
 fi
 command -v shasum >/dev/null 2>&1 || { echo "未找到 shasum" >&2; exit 1; }
 
-# ---- 门禁：绿色包里的壳必须带当前清单地址 ----
-# 壳把清单地址编译进了二进制。旧构建产物会静默指向已下线的地址（如
-# /windows/stable/latest.json），客户端此后永远检查不到更新——上传前必须拦住。
+# ---- ⓪ 发布门禁（三仓库共用 tools/release/guard.py）----
+# 校验命名、版本单调、同名覆盖风险，以及绿色包内壳的清单地址。
+GUARD_PY="${GUARD_PY:-$REPO_ROOT/tools/release/guard.py}"
+GUARD_ARGS=(--product xiaotu --kind win --channel "$CHANNEL")
 if [ -n "$ZIP_KEY" ]; then
-  echo ""
-  echo "===== ⓪ 校验绿色包内的壳使用当前清单地址"
-  "$VENV_PY" - "$ZIP_PATH" "xiaotu/updates/$CHANNEL/windows.json" <<'PY_EOF'
-import sys, zipfile
-
-zip_path, expected = sys.argv[1], sys.argv[2]
-url = f"https://dl.xiaotu.online/{expected}".encode()
-with zipfile.ZipFile(zip_path) as z:
-    names = [n for n in z.namelist()
-             if n.replace("\\", "/").endswith("xiaotu-shell.exe")]
-    if not names:
-        sys.exit("  ✗ 绿色包内没有 xiaotu-shell.exe，拒绝发布")
-    data = z.read(names[0])
-if url not in data:
-    sys.exit(f"  ✗ 壳内未找到清单地址 {url.decode()}\n"
-             "    这是旧构建产物；请用当前源码重建服务端与壳后再打包")
-print(f"  ✓ 壳内清单地址正确：{url.decode()}")
-PY_EOF
+  GUARD_ARGS+=(--file "$SETUP_PATH" --zip "$ZIP_PATH")
+else
+  GUARD_ARGS+=(--file "$SETUP_PATH")
 fi
+[ "$OSS_SKIP" = "true" ] && GUARD_ARGS+=(--offline)
+echo ""
+echo "===== ⓪ 发布门禁"
+python3 "$GUARD_PY" preflight "${GUARD_ARGS[@]}"
 
 # ---- OSS 凭据：环境变量优先，其次仓库外 600 权限的凭据文件 ----
 OSS_CRED_FILE="${OSS_CRED_FILE:-$HOME/.config/xiaotu-updates/oss-credentials.env}"
@@ -327,6 +317,9 @@ if [ "$OSS_SKIP" != "true" ]; then
   echo "===== ④ 上传 windows.json"
   oss_upload "$MANIFEST_LOCAL" "$LATEST_KEY" \
     "no-cache, max-age=60" "application/json"
+  echo ""
+  echo "===== ④b 线上门禁"
+  python3 "$GUARD_PY" verify-live "${GUARD_ARGS[@]}"
 else
   echo ""
   echo "===== ④ [dry-run] 将上传 $LATEST_KEY"

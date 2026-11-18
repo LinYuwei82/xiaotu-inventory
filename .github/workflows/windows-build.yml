@@ -34,6 +34,17 @@ permissions:
   contents: read
 
 jobs:
+  release-guard:
+    name: 发布门禁自检
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # 三仓库共用同一份 guard.py（见 mote/docs/OSS-发布布局.md）。
+      - name: 校验 guard 未被单独改动
+        run: sha256sum -c tools/release/guard.sha256
+      - name: guard selftest
+        run: python3 tools/release/guard.py selftest
+
   windows:
     runs-on: windows-latest
     steps:
