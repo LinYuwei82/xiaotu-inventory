@@ -57,6 +57,46 @@ std::string manifest_json(const std::string& version, long long build, int schem
 })";
 }
 
+// v2 统一清单：两平台同一份；macOS build 固定 0，Windows 带构建号。
+std::string manifest_v2_json(bool include_windows = true) {
+  std::string body = R"({
+  "manifest_version": 2,
+  "product": "xiaotu",
+  "channel": "stable",
+  "key_id": "2026-11",
+  "updated_at": "2026-11-18T04:48:54Z",
+  "platforms": {
+    "macos": {
+      "version": "1.4.2",
+      "build": 0,
+      "min_os": "12.0",
+      "artifacts": {"dmg": {
+        "url": "https://dl.xiaotu.online/xiaotu/xiaotu-1.4.2-macos-arm64.dmg",
+        "size": 1024,
+        "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+      }}
+    })";
+  if (include_windows) {
+    body += R"(,
+    "windows": {
+      "version": "1.4.3",
+      "build": 2026111801,
+      "min_os": "10.0",
+      "rollout_percent": 100,
+      "artifacts": {"setup": {
+        "url": "https://dl.xiaotu.online/xiaotu/xiaotu-1.4.3-win64-setup.exe",
+        "size": 2048,
+        "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+      }}
+    })";
+  }
+  body += R"(
+  },
+  "signature": "c2ln"
+})";
+  return body;
+}
+
 xiaotu::UpdateQuery query() {
   xiaotu::UpdateQuery q;
   q.version = "1.3.0";
@@ -254,6 +294,51 @@ int main() {
   result = xiaotu::check_for_update(no_cache, query(), base + 4000);
   check(!result.manifest_ok && result.error_code == "UPDATE_MANIFEST_UNREACHABLE",
         "无缓存且网络不可用时明确报错");
+
+  // v2 统一清单：按查询平台拍平；v2 不再按 schema / API 区间拦截。
+  xiaotu::UpdateSettings v2_settings = settings;
+  v2_settings.channel = "stable";
+  v2_settings.min_supported_version.clear();
+  v2_settings.rollout_percent = 100;
+  v2_settings.verifier_python = remote.verifier_python;
+  v2_settings.manifest_file = write_manifest("v2.json", manifest_v2_json()).string();
+
+  auto mac_query = query();
+  mac_query.version = "1.4.1";
+  mac_query.build = 2026100101;
+  mac_query.schema_version = 3;  // v2 清单忽略 schema 区间
+  result = xiaotu::check_for_update(v2_settings, mac_query, 0);
+  check(result.manifest_ok && result.manifest.platform == "macos" &&
+            result.manifest.version == "1.4.2" && result.manifest.build == 0,
+        "v2 清单按 macOS 段拍平");
+  check(result.decision.code == "UPDATE_AVAILABLE", "v2 macOS 版本更高时下发更新");
+
+  auto mac_same = mac_query;
+  mac_same.version = "1.4.2";
+  result = xiaotu::check_for_update(v2_settings, mac_same, 0);
+  check(result.decision.code == "NO_UPDATE", "v2 macOS 同版本无更新");
+
+  auto win_query = mac_query;
+  win_query.platform = "windows";
+  win_query.version = "1.4.3";
+  win_query.build = 2026111800;
+  result = xiaotu::check_for_update(v2_settings, win_query, 0);
+  check(result.manifest_ok && result.manifest.platform == "windows" &&
+            result.manifest.build == 2026111801,
+        "v2 清单按 Windows 段拍平");
+  check(result.decision.code == "UPDATE_AVAILABLE", "v2 Windows 同版本更高构建时下发");
+
+  auto linux_query = mac_query;
+  linux_query.platform = "linux";
+  result = xiaotu::check_for_update(v2_settings, linux_query, 0);
+  check(result.manifest_ok && result.decision.code == "PLATFORM_MISMATCH",
+        "非桌面平台结构校验后报 PLATFORM_MISMATCH");
+
+  v2_settings.manifest_file =
+      write_manifest("v2-macos-only.json", manifest_v2_json(false)).string();
+  result = xiaotu::check_for_update(v2_settings, win_query, 0);
+  check(!result.manifest_ok && result.error_code == "MANIFEST_PLATFORM_MISSING",
+        "v2 清单缺少请求平台段时拒绝");
 
   std::filesystem::remove_all(dir);
   if (failures == 0) {
