@@ -22,29 +22,46 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-# icns 内部各尺寸独立抽取不稳定，用最大的那张缩放出所有小尺寸。
-base="$tmp/base.png"
-sips -s format png "$src_icns" --out "$base" >/dev/null
-max_size=$(sips -g pixelWidth "$base" 2>/dev/null | awk '/pixelWidth:/{print $2}')
+# macOS 的 sips 直接用 -s format png 读 .icns 时只会导出其中最小的一档（16×16），
+# 再放大就整片模糊。这里先用 iconutil 解成 iconset，取最大的一档作为母版。
+iconset="$tmp/icon.iconset"
+mkdir -p "$iconset"
+iconutil -c iconset "$src_icns" -o "$iconset"
+
+base=""
+best=0
+for f in "$iconset"/*.png; do
+  [[ -f "$f" ]] || continue
+  w=$(sips -g pixelWidth "$f" 2>/dev/null | awk '/pixelWidth:/{print $2}')
+  if [[ -n "${w:-}" && "$w" -gt "$best" ]]; then
+    best="$w"
+    base="$f"
+  fi
+done
+
+if [[ -z "$base" || "$best" -lt 256 ]]; then
+  echo "无法从 $src_icns 取到 256 以上的图（最大 ${best:-0}px）" >&2
+  exit 1
+fi
+
+echo "母版：$(basename "$base") ${best}×${best}"
 
 python3 - "$base" "$out_ico" <<'PY'
-import os, sys
+import sys
 from PIL import Image
 
 base_path, out_path = sys.argv[1], sys.argv[2]
 sizes = [16, 24, 32, 48, 64, 128, 256]
 
 base = Image.open(base_path).convert('RGBA')
-# 取最长边缩放，保持正方形
 side = min(base.width, base.height)
 left = (base.width - side) // 2
 top = (base.height - side) // 2
 base = base.crop((left, top, left + side, top + side))
 
-imgs = [base.resize((s, s), Image.LANCZOS) for s in sizes]
-imgs[0].save(out_path, format='ICO',
-             sizes=[(s, s) for s in sizes],
-             append_images=imgs[1:])
+# 用最大母版一次性产出所有尺寸，Pillow 会为每个尺寸写入独立帧；
+# 单帧 ICO 在资源管理器/任务栏放大显示时会被拉伸成马赛克。
+base.save(out_path, format='ICO', sizes=[(s, s) for s in sizes])
 print(f'  ✓ {out_path}')
 PY
 
