@@ -53,7 +53,7 @@ int main() {
       "[update]\n"
       "auto_check = false\n"
       "prefetch = true\n"
-      "manifest_url = \"https://dl.xiaotu.online/xiaotu/updates/stable/latest.json\"\n");
+      "manifest_url = \"https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json\"\n");
   const xiaotu::ConfigValues values = xiaotu::load_config_file(valid);
   check(values.listen.has_value() && *values.listen == "127.0.0.1", "读取 server.listen");
   check(values.port.has_value() && *values.port == 18099, "读取 server.port");
@@ -67,7 +67,7 @@ int main() {
         "读取 update.prefetch");
   check(values.update_manifest_url.has_value() &&
             *values.update_manifest_url ==
-                "https://dl.xiaotu.online/xiaotu/updates/stable/latest.json",
+                "https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json",
         "读取 update.manifest_url");
   {
     const xiaotu::ConfigValues empty =

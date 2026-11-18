@@ -199,4 +199,57 @@ echo "$status_json" | grep -q '"build":' || {
   echo "FAIL: 状态接口应返回构建号: $status_json" >&2; exit 1;
 }
 
+# v2 统一清单：线上实际格式，验证 HTTP 层按平台拍平、缺平台与验签失败。
+MANIFEST_V2="$REPO_ROOT/tools/release/manifest_v2.py"
+cp "$TMP/app.dmg" "$TMP/xiaotu-1.4.2-macos-arm64.dmg"
+"$VENV_PY" "$MANIFEST_V2" generate --product xiaotu --platform macos \
+  --version 1.4.2 --build 0 --artifact "dmg=$TMP/xiaotu-1.4.2-macos-arm64.dmg" \
+  --key "$TMP/key.pem" --out "$TMP/manifest.json" >/dev/null
+
+mkdir -p "$TMP/data5"
+cat > "$TMP/config5.toml" <<EOF
+[server]
+listen = "127.0.0.1"
+port = $((PORT + 3))
+[storage]
+data_dir = "$TMP/data5"
+[update]
+manifest_file = "$TMP/manifest.json"
+channel = "stable"
+public_key_file = "$TMP/key.pub.pem"
+verifier_python = "$VENV_PY"
+verifier_script = "$MANIFEST_V2"
+EOF
+
+"$SERVER_BIN" --server --config "$TMP/config5.toml" > "$TMP/server5.log" 2>&1 &
+PID=$!
+for _ in $(seq 1 40); do
+  curl -s -o /dev/null "http://127.0.0.1:$((PORT + 3))/api/health" && break
+  sleep 0.25
+done
+
+v2base="http://127.0.0.1:$((PORT + 3))/api/update/check"
+v2ok="$(curl -s "$v2base?$query&schema_version=30")"
+echo "$v2ok" | grep -q '"update_available":true' || { echo "FAIL: v2 清单应判定可用更新: $v2ok" >&2; exit 1; }
+echo "$v2ok" | grep -q '"version":"1.4.2"' || { echo "FAIL: v2 版本应为 1.4.2: $v2ok" >&2; exit 1; }
+
+# 请求平台在清单里不存在：必须明确报错，不能回落到另一平台。
+v2miss="$(curl -s "$v2base?current_version=1.3.6&build=2026100101&channel=stable&platform=windows&api_version=1&install_id=abc&schema_version=30")"
+echo "$v2miss" | grep -q '"MANIFEST_PLATFORM_MISSING"' || { echo "FAIL: v2 缺平台段应报错: $v2miss" >&2; exit 1; }
+
+# 篡改 v2 清单同样必须验签失败。
+"$VENV_PY" - "$TMP/manifest.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+body = json.load(open(path))
+body["platforms"]["macos"]["version"] = "9.9.9"
+json.dump(body, open(path, "w"), ensure_ascii=False, sort_keys=True)
+PY
+v2tampered="$(curl -s "$v2base?$query&schema_version=30")"
+echo "$v2tampered" | grep -q '"UPDATE_SIGNATURE_INVALID"' || { echo "FAIL: 篡改 v2 清单应验签失败: $v2tampered" >&2; exit 1; }
+
+kill "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true
+PID=""
+
 echo "update_api_test 全部通过"
