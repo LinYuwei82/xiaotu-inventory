@@ -49,6 +49,7 @@ case "${1:-}" in -h|--help) usage; exit 0 ;; "") ;;
 
 # ---- 核心参数 ----
 PRODUCT="${PRODUCT:-xiaotu}"
+PRODUCT_DIR="$PRODUCT"   # OSS 对象键前缀（windows.json 时代沿用名）
 case "$PRODUCT" in
   xiaotu) ;;
   devcard|mote)
@@ -253,6 +254,11 @@ PY_EOF
 MANIFEST_V2_PY="$REPO_ROOT/tools/release/manifest_v2.py"
 MANIFEST_LOCAL="$STAGE/manifest.json"
 
+# 另一平台段可能已在线上：先取线上清单，--prev 合并后整体重签，避免覆盖另一平台段
+if [ ! -s "$MANIFEST_LOCAL" ]; then
+  curl -fsSL "$CDN_DOMAIN/$MANIFEST_KEY" -o "$MANIFEST_LOCAL" 2>/dev/null || rm -f "$MANIFEST_LOCAL"
+fi
+
 # ---- ① 生成并签名 manifest.json（v2）----
 MANIFEST_ARGS=(
   generate
@@ -269,6 +275,7 @@ MANIFEST_ARGS=(
 )
 [ -f "$ZIP_PATH" ] && MANIFEST_ARGS+=(--artifact "portable=$ZIP_PATH")
 [ -n "$RELEASE_NOTES_URL" ] && MANIFEST_ARGS+=(--notes-url "$RELEASE_NOTES_URL")
+[ -s "$MANIFEST_LOCAL" ] && MANIFEST_ARGS+=(--prev "$MANIFEST_LOCAL")
 
 echo ""
 echo "===== ① 生成 manifest.json（v2）"
