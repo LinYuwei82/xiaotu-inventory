@@ -1,0 +1,208 @@
+name: Windows 发布
+
+# 手动触发的 Windows 发布流水线：
+#   构建服务端与壳 → 绿色包/安装包 → guard 门禁 → 生成并签名 windows.json
+#   → 上传 OSS → guard 线上校验。
+#
+# 前置 secrets：
+#   OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET   仅授予 xiaotu/ 前缀 PutObject
+#   XIAOTU_UPDATE_SIGNING_KEY                   Ed25519 私钥 PEM（update_signing_2026.pem 内容）
+#
+# 注意：
+#   - 发布前先改仓库根目录的 VERSION（必须大于线上版本），guard 会拒绝版本回退；
+#   - 安装包 immutable 长缓存，同名覆盖不会生效；
+#   - BUILD 构建号必须大于已发布值，缺省用触发时刻（UTC 分钟级）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: 构建号（缺省 = 触发时刻 UTC，如 202611180930）
+        required: false
+        default: ""
+      channel:
+        description: 发布通道
+        type: choice
+        options: [stable, beta]
+        default: stable
+      dry_run:
+        description: 只构建与 guard，不上传、不写清单
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: 构建 → 门禁 → 签名 → 上传
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验 guard 未被单独改动
+        run: sha256sum -c tools/release/guard.sha256
+      - name: guard selftest
+        shell: pwsh
+        run: python tools/release/guard.py selftest
+
+      # 与 windows-build.yml 相同的构建环境
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install OpenSSL 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install openssl --version=3.6.2 --allow-downgrade --yes --no-progress
+          $root = $null
+          foreach ($p in @("$env:ProgramFiles\OpenSSL-Win64", "$env:ProgramFiles\OpenSSL")) {
+            if (Test-Path (Join-Path $p 'include\openssl\evp.h')) { $root = $p; break }
+          }
+          if (-not $root) { throw '未找到 OpenSSL 安装目录' }
+          "OPENSSL_ROOT_DIR=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Join-Path $root 'bin' | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Fetch WebView2 SDK
+        shell: pwsh
+        run: ./shell/win/fetch-webview2.ps1
+
+      - name: 读版本与构建号
+        shell: bash
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          BUILD="${{ inputs.build }}"
+          if [ -z "$BUILD" ]; then BUILD=$(date -u +%Y%m%d%H%M); fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "BUILD=$BUILD" >> "$GITHUB_ENV"
+          echo "版本 $VERSION，构建号 $BUILD"
+
+      - name: 构建服务端
+        run: |
+          cmake --preset windows-release -DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=${{ env.BUILD }}
+          cmake --build --preset windows-release
+
+      - name: 构建壳
+        run: |
+          cmake -S shell/win -B shell/win/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build shell/win/build
+
+      # 壳内嵌的清单地址必须与本次发布一致；guard 在后面会再验一次
+      - name: 校验壳内清单地址
+        shell: pwsh
+        run: |
+          $exe = 'shell\win\build\xiaotu-shell.exe'
+          if (-not (Test-Path $exe)) { throw "未找到 $exe" }
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $text = [Text.Encoding]::ASCII.GetString($bytes)
+          if ($text -notlike '*xiaotu/updates/${{ inputs.channel }}/windows.json*') {
+            throw 'xiaotu-shell.exe 未包含当前清单地址，请检查源码后重试'
+          }
+
+      - name: 打绿色包
+        shell: pwsh
+        run: ./packaging/win/make-zip.ps1
+
+      - name: 打安装包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install innosetup --yes --no-progress
+          New-Item -ItemType Directory -Force packaging\win\out | Out-Null
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path -LiteralPath $iscc)) { throw "未找到 ISCC：$iscc" }
+          & $iscc "/DAppVersion=${{ env.VERSION }}" 'packaging\win\xiaotu-inventory.iss'
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败（$LASTEXITCODE）" }
+
+      - name: guard preflight
+        shell: pwsh
+        run: |
+          python tools/release/guard.py preflight `
+            --product xiaotu --kind win --channel ${{ inputs.channel }} `
+            --file "packaging/win/out/xiaotu-inventory-${{ env.VERSION }}-win64-setup.exe" `
+            --zip "build/package/win/xiaotu-inventory-${{ env.VERSION }}-win64.zip"
+
+      # ---- 以下为上传段：dry_run 到此为止 ----
+      - name: 生成并签名 windows.json
+        if: ${{ inputs.dry_run != true }}
+        shell: pwsh
+        env:
+          XIAOTU_UPDATE_SIGNING_KEY: ${{ secrets.XIAOTU_UPDATE_SIGNING_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --quiet -r tools/package/requirements.txt
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $keyPath = Join-Path $env:RUNNER_TEMP 'update_signing.pem'
+          [IO.File]::WriteAllText($keyPath, $env:XIAOTU_UPDATE_SIGNING_KEY.Replace("`n", "`r`n"))
+          $v = '${{ env.VERSION }}'; $b = '${{ env.BUILD }}'
+          $base = 'https://dl.xiaotu.online/xiaotu'
+          $pub = "$(Get-Date -AsUtc -Format 'yyyy-MM-ddTHH:mm:ssZ')"
+          python tools/package/update_manifest.py generate `
+            --file "packaging/win/out/xiaotu-inventory-$v-win64-setup.exe" `
+            --version $v --build $b `
+            --url "$base/xiaotu-inventory-$v-win64-setup.exe" `
+            --platform windows --channel ${{ inputs.channel }} `
+            --schema-min 1 --schema-max 39 --api-min 1 --api-max 1 `
+            --rollout 100 --key-id 2026-11 `
+            --key $keyPath --out dist/windows.json --published-at $pub `
+            --portable-file "build/package/win/xiaotu-inventory-$v-win64.zip" `
+            --portable-url "$base/xiaotu-inventory-$v-win64.zip"
+
+      - name: 上传 OSS
+        if: ${{ inputs.dry_run != true }}
+        shell: pwsh
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --quiet oss2
+          $v = '${{ env.VERSION }}'
+          $env:UPLOAD_SETUP = "packaging/win/out/xiaotu-inventory-$v-win64-setup.exe"
+          $env:UPLOAD_ZIP = "build/package/win/xiaotu-inventory-$v-win64.zip"
+          $env:UPLOAD_MANIFEST = 'dist/windows.json'
+          $py = @'
+          import os, oss2
+          ak, sk = os.environ["OSS_ACCESS_KEY_ID"], os.environ["OSS_ACCESS_KEY_SECRET"]
+          endpoint = "https://oss-cn-hongkong.aliyuncs.com"
+          bkt = oss2.Bucket(oss2.Auth(ak, sk), endpoint, "xiaotu-update")
+          jobs = [
+              ("UPLOAD_SETUP", "xiaotu/xiaotu-inventory-{v}-win64-setup.exe",
+               "application/octet-stream", "public, max-age=31536000, immutable"),
+              ("UPLOAD_ZIP", "xiaotu/xiaotu-inventory-{v}-win64.zip",
+               "application/zip", "public, max-age=31536000, immutable"),
+              ("UPLOAD_MANIFEST", "xiaotu/updates/stable/windows.json",
+               "application/json", "no-cache, max-age=60"),
+          ]
+          for env_key, key_tpl, ct, cc in jobs:
+              key = key_tpl.format(v=os.environ["VERSION"])
+              with open(os.environ[env_key], "rb") as f:
+                  bkt.put_object(key, f, headers={"Cache-Control": cc, "Content-Type": ct})
+              print(f"  OK {key}")
+          '@
+          $py | Out-File "$env:RUNNER_TEMP\upload.py" -Encoding utf8
+          python "$env:RUNNER_TEMP\upload.py"
+
+      - name: guard verify-live
+        if: ${{ inputs.dry_run != true }}
+        shell: pwsh
+        run: |
+          python tools/release/guard.py verify-live `
+            --product xiaotu --kind win --channel ${{ inputs.channel }} `
+            --file "packaging/win/out/xiaotu-inventory-${{ env.VERSION }}-win64-setup.exe" `
+            --zip "build/package/win/xiaotu-inventory-${{ env.VERSION }}-win64.zip"
+
+      - name: 上传构建产物（留档）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaotu-windows-release
+          path: |
+            packaging/win/out/*.exe
+            build/package/win/*.zip
+            dist/windows.json
+          if-no-files-found: warn
+          retention-days: 14
