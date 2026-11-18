@@ -1,12 +1,12 @@
 # 更新源 Nginx 示例（放到 /etc/nginx/conf.d/xiaotu-updates.conf 后 reload）
 #
 # 目录约定（见 docs/更新模块技术方案.md 第 8 节）：
-#   /srv/xiaotu-updates/macos/stable/latest.json
-#   /srv/xiaotu-updates/macos/stable/appcast.xml
-#   /srv/xiaotu-releases/macos/1.4.2/xiaotu-1.4.2.dmg
+#   /srv/xiaotu-updates/stable/manifest.json    v2 统一清单（两平台同一份）
+#   /srv/xiaotu-updates/stable/appcast.xml
+#   /srv/xiaotu-releases/1.4.2/xiaotu-1.4.2-macos-arm64.dmg
 #
-# 发布流程：先上传安装包到 releases，再原子替换 latest.json/appcast.xml，
-# 最后 purge CDN。回滚时把 latest.json 指回旧版本并保留回滚包。
+# 发布流程：先上传安装包到 releases，再原子替换 manifest.json/appcast.xml。
+# 回滚时把 manifest.json 指回旧版本并保留回滚包。
 
 server {
     listen 443 ssl;
@@ -19,7 +19,7 @@ server {
     root /srv/xiaotu-updates;
 
     # 清单与 appcast 允许 5 分钟缓存，发布后主动 purge。
-    location ~ ^/(macos|windows)/(stable|beta)/(latest\.json|appcast\.xml)$ {
+    location ~ ^/(stable|beta)/(manifest\.json|appcast\.xml)$ {
         default_type application/json;
         add_header Cache-Control "no-cache, max-age=300";
         add_header X-Content-Type-Options "nosniff";

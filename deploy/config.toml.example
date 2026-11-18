@@ -27,11 +27,12 @@ credit_limit_mode = "warn"
 
 [update]
 # 网络版更新源：manifest_url 直接拉厂商清单；manifest_file 用于内网/离线部署的本地清单。
+# 清单是 v2 统一清单（两平台同一份），服务端按 /api/update/check 的 platform 取对应段。
 # 两者都为空表示不启用自动检查。
 # auto_check = true   # 启动 30 秒后与每 24h±2h 自动检查（改后需重启服务）
 # prefetch = true     # 自动检查命中新版本时后台下载并校验（改后需重启服务）
-# manifest_url = "https://dl.xiaotu.online/xiaotu/updates/stable/latest.json"
-# manifest_file = "/srv/xiaotu-updates/windows/stable/latest.json"
+# manifest_url = "https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json"
+# manifest_file = "/srv/xiaotu-updates/stable/manifest.json"
 # channel = "stable"
 # rollout_percent = 100
 # 安装时由管理员二次确认；服务端退出后由脚本替换程序并按原参数重启，失败自动回滚。

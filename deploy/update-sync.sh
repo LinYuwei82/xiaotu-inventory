@@ -20,7 +20,7 @@ set -euo pipefail
 
 TARGET_DIR="$(dirname "$XIAOTU_UPDATE_TARGET")"
 mkdir -p "$TARGET_DIR"
-TMP="$(mktemp "${TARGET_DIR}/.latest.XXXXXX")"
+TMP="$(mktemp "${TARGET_DIR}/.manifest.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
 
 curl --fail --silent --show-error --location \

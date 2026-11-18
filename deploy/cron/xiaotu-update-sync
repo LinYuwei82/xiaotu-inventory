@@ -3,4 +3,4 @@
 # 与 deploy/systemd/xiaotu-backup.timer 互不影响；不要同时再配一个 systemd timer。
 SHELL=/bin/sh
 PATH=/usr/local/bin:/usr/bin:/bin
-17 4 * * * root XIAOTU_UPDATE_SOURCE=https://updates.example.com/macos/stable/latest.json XIAOTU_UPDATE_TARGET=/srv/xiaotu-updates/macos/stable/latest.json XIAOTU_UPDATE_PUBKEY=/etc/xiaotu/update_signing.pub.pem /opt/xiaotu/deploy/update-sync.sh >> /var/log/xiaotu-update-sync.log 2>&1
+17 4 * * * root XIAOTU_UPDATE_SOURCE=https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json XIAOTU_UPDATE_TARGET=/srv/xiaotu-updates/stable/manifest.json XIAOTU_UPDATE_PUBKEY=/etc/xiaotu/update_signing.pub.pem /opt/xiaotu/deploy/update-sync.sh >> /var/log/xiaotu-update-sync.log 2>&1

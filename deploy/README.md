@@ -78,9 +78,10 @@ python3 -m venv /opt/xiaotu/tools/package/.venv
 ```toml
 [update]
 # 厂商清单地址：服务端拉取、验签后缓存，缓存有效期 10 分钟。
-manifest_url = "https://dl.xiaotu.online/xiaotu/updates/stable/latest.json"
-# 可选：本地/离线清单。manifest_url 不可用且没有缓存时，才使用这里的文件。
-manifest_file = "/srv/xiaotu-updates/windows/stable/latest.json"
+manifest_url = "https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json"
+# 可选：本地/离线清单（v2 统一清单，两平台同一份；服务端按请求平台取对应段）。
+# manifest_url 不可用且没有缓存时，才使用这里的文件。
+manifest_file = "/srv/xiaotu-updates/stable/manifest.json"
 channel = "stable"                  # stable / beta
 min_supported_version = "1.3.0"     # 低于此版本强制升级（理由 MIN_SUPPORTED）
 rollout_percent = 100               # 灰度上限，实际取 min(清单, 本值)
@@ -91,7 +92,8 @@ verifier_python = "/opt/xiaotu/tools/package/.venv/bin/python"
 verifier_script = "/opt/xiaotu/tools/package/update_manifest.py"
 ```
 
-- `manifest_url` 必须是 HTTPS；服务端把清单缓存在 `<data_dir>/updates/manifest/<channel>/latest.json`，有效期内不重复访问外网。
+- `manifest_url` 必须是 HTTPS；服务端把清单缓存在 `<data_dir>/updates/manifest/<channel>/manifest.json`，有效期内不重复访问外网。
+- v2 清单里两个平台共用一份文件；服务端按 `/api/update/check` 的 `platform` 取 `platforms.macos` 或 `platforms.windows`，非桌面平台返回 `PLATFORM_MISMATCH`。
 - 远端拉取失败（超时、5xx、断网）或清单校验失败时，回退到上一次验签通过的缓存，状态接口会带 `manifest_stale=true` 与原因；没有缓存才返回错误。
 - 新拉取的清单必须先通过结构校验与 Ed25519 验签才会替换缓存，损坏或未签名内容不会污染缓存。
 - `manifest_file` 保留给内网/离线部署：不需要访问外网时只配它，每次请求重新读取，替换文件后无需重启。
@@ -135,10 +137,10 @@ PY
 配置 `manifest_url` 时服务端会自行拉取并缓存，不需要本节脚本；只有使用 `manifest_file` 的内网/离线部署才需要同步。同步时不要手工 `cp`：
 
 ```bash
-XIAOTU_UPDATE_SOURCE=https://updates.example.com/macos/stable/latest.json \
-XIAOTU_UPDATE_TARGET=/srv/xiaotu-updates/macos/stable/latest.json \
-XIAOTU_UPDATE_APPCAST_SOURCE=https://updates.example.com/macos/stable/appcast.xml \
-XIAOTU_UPDATE_APPCAST_TARGET=/srv/xiaotu-updates/macos/stable/appcast.xml \
+XIAOTU_UPDATE_SOURCE=https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
+XIAOTU_UPDATE_TARGET=/srv/xiaotu-updates/stable/manifest.json \
+XIAOTU_UPDATE_APPCAST_SOURCE=https://dl.xiaotu.online/xiaotu/updates/stable/appcast.xml \
+XIAOTU_UPDATE_APPCAST_TARGET=/srv/xiaotu-updates/stable/appcast.xml \
 XIAOTU_UPDATE_PUBKEY=/etc/xiaotu/update_signing.pub.pem \
 XIAOTU_UPDATE_PYTHON=/opt/xiaotu/tools/package/.venv/bin/python \
 XIAOTU_UPDATE_TOOL=/opt/xiaotu/tools/package/update_manifest.py \
@@ -148,6 +150,7 @@ XIAOTU_UPDATE_TOOL=/opt/xiaotu/tools/package/update_manifest.py \
 - 脚本先下载到同目录临时文件、验签通过后再原子替换，服务端不会读到半个文件。
 - 定时执行：安装 `deploy/cron/xiaotu-update-sync` 到 `/etc/cron.d/`，或改用 systemd timer，**二选一**。
 - 若 `XIAOTU_UPDATE_PUBKEY` 为空，脚本不验签；生产环境必须配置。
+- 验签工具默认 `tools/package/update_manifest.py`（v1/v2 都认，需要 `cryptography`）；也可以指向纯标准库的 `tools/release/manifest_v2.py`，免装依赖。
 
 ### 4.1 安装与自动替换
 
@@ -168,53 +171,57 @@ XIAOTU_UPDATE_TOOL=/opt/xiaotu/tools/package/update_manifest.py \
 
 ### 5. 灰度放行与回滚
 
-清单是签名的，**不能直接改 `rollout_percent`**（会导致签名失效）。使用 `resign` 只改放量比例并重新签名，其余字段原样保留。
+清单是签名的，**不能直接改 `platforms.<platform>.rollout_percent`**（会导致签名失效）。使用 `manifest_v2.py resign` 只改放量比例并重新签名，其余字段原样保留。
 
 自动逐档放量（默认 1% → 10% → 50% → 100%，每档 24 小时）：
 
 ```bash
 # 0. 取回当前线上清单（publish_oss.sh 的临时目录不会保留）
-curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/latest.json \
-  -o build/package/latest.json
+curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
+  -o build/package/manifest.json
 
 # 1. 预览：只本地重签并验签，不上传、不等待
-tools/package/rollout_oss.sh --manifest build/package/latest.json --dry-run
+tools/package/rollout_oss.sh --manifest build/package/manifest.json --dry-run
 
-# 2. 正式放量：每档自动上传 / purge / 等 CDN 生效，再等观察时长进入下一档
+# 2. 正式放量：每档自动上传并等待源站生效，再等观察时长进入下一档
 OSS_BUCKET=你的bucket OSS_REGION=cn-hangzhou \
-  tools/package/rollout_oss.sh --manifest build/package/latest.json --yes
+  tools/package/rollout_oss.sh --manifest build/package/manifest.json --yes
+
+# 只放量一个平台：--platform all / macos / windows（默认 all）
+tools/package/rollout_oss.sh --manifest build/package/manifest.json --platform windows --yes
 
 # 自定义：每档 12 小时，比例 5% → 20% → 60% → 100%
 tools/package/rollout_oss.sh --steps 5,20,60,100 --interval 12h --yes
 ```
 
-- 脚本只改清单，appcast 不随比例变化，不重传；清单每档归档到 `build/package/rollout/<version>-<build>/latest-<比例>.json`。
-- 每档上传后会用 `?t=` 绕缓存轮询 CDN，确认 `rollout_percent` 已生效才进入下一档；超时则停下，当前档保持生效。
+- 脚本只改清单，appcast 不随比例变化，不重传；清单每档归档到 `build/package/rollout/<product>-<channel>-<时间戳>/manifest-<比例>.json`。
+- 每档上传后轮询各平台 `rollout_percent`，目标平台全部生效才进入下一档；超时则停下，当前档保持生效。
+- `dl.xiaotu.online` 直连 OSS、没有 CDN 层，发布脚本默认不 purge（`PURGE=true` 仅备将来接入 CDN）。
 - Ctrl-C 可随时停在当前档，不会回退比例；要继续时重跑并跳过已完成的档位即可。
 - 依赖 OSS 凭据（同 `publish_oss.sh`）与签名私钥；`--dry-run` 不需要 OSS。
 
-手动重签仍然可用：
+手动重签仍然可用（`manifest_v2.py` 是三仓库共用的纯标准库实现）：
 
 ```bash
-# 只把比例改成 10%，其余字段不动
-tools/package/.venv/bin/python tools/package/update_manifest.py resign \
-  --manifest build/package/latest.json \
+# 只把比例改成 10%，其余字段不动（--platform 默认 all）
+python3 tools/release/manifest_v2.py resign \
+  --manifest build/package/manifest.json \
   --key ~/keys/update_signing.pem \
-  --rollout 10
+  --rollout 10 --platform windows
 ```
 
-- 不加 `--out` 时原地覆盖输入清单；建议先归档原始清单。
-- `resign` 只接受 `--rollout`（1–100）与 `--channel`（stable/beta），版本、构建号、URL、sha256、强制理由等不可在重签时改写。
-- 重签后的清单可直接被 `verify` 与 core 解析器接受；同一输入连续重签同一值输出一致（Ed25519 确定性签名，`published_at` 沿用原值，不参与刷新）。
+- `--out` 缺省时原地覆盖输入清单；建议先归档原始清单。
+- 只接受 1–100 的 `--rollout`；版本、构建号、URL、sha256、强制字段等不可在重签时改写。
+- 重签会重新计算 Ed25519 签名，`updated_at` 沿用原值（不参与刷新），同一输入连续重签输出一致。
 
 放量观察：每档至少 24 小时，确认 `/api/update/check` 返回符合预期，且无启动失败/回退日志后再进入下一档。服务端读取 `min(清单 rollout, 配置 rollout_percent)`；单机版壳按安装 UUID + 目标 build 稳定分桶，强制更新不受比例限制。
 
 回滚：
 
-1. 每次发布保留已签名清单与 appcast 归档（如 `releases/macos/1.4.2/latest.json`）。
-2. 把上一版归档的 `latest.json`、`appcast.xml` 原子替换回更新源并 purge。
+1. 每次发布保留已签名清单与 appcast 归档（如 `releases/1.4.2/manifest.json`）。
+2. 把上一版归档的 `manifest.json`、`appcast.xml` 原子替换回更新源。
 3. 确认 `/api/update/check` 返回上一版本；安装包保留至少 3 个 stable 版本。
-4. 回滚包若重新打包，构建号必须递增，否则客户端会判为“无更新”。
+4. 回滚包若重新打包，构建号必须递增，否则 Windows 同版本会判为“无更新”（macOS 只比 version）。
 
 ### 6. 常见错误码
 
@@ -226,9 +233,11 @@ tools/package/.venv/bin/python tools/package/update_manifest.py resign \
 | `UPDATE_UNVERIFIED` | 未配置 `public_key_file`，服务端拒绝信任清单（503） | 配置公钥并重启 |
 | `UPDATE_VERIFY_UNAVAILABLE` | 公钥/验签脚本路径不存在，或 Python/cryptography 缺失（503） | 安装依赖、修正 `verifier_python` 与 `verifier_script` |
 | `UPDATE_SIGNATURE_INVALID` | 清单被篡改、私钥不匹配、规范化不一致（503） | 用发布工具重新生成并签名；检查 `key_id` 与公钥是否配套 |
-| `MANIFEST_UPGRADE_PATH_INVALID` | `upgrade_path` 元素缺字段、schema/build 非正数、version 非 SemVer（503） | 修正清单的 `upgrade_path` 后重新签名 |
-| `INTERMEDIATE_REQUIRED` | 客户端 schema 低于 `schema_min`，需先升到中间版本（200，`update_available=false`） | 按响应中的 `intermediate.version` 引导用户先升级 |
-| `INCOMPATIBLE_SCHEMA` | 客户端 schema 高于 `schema_max`，或低于 `schema_min` 且无可用升级路径（200） | 检查版本是否过旧/过新；必要时补充 `upgrade_path` 或人工迁移 |
+| `MANIFEST_PLATFORM_MISSING` | v2 清单里没有请求平台的段（503） | 确认清单包含 `platforms.macos` / `platforms.windows` |
+| `MANIFEST_ARTIFACT_MISSING` | v2 平台段缺 `artifacts.dmg`（macOS），或 `setup` / `portable` 都没有（Windows）（503） | 重新发布完整产物并重签 |
+| `MANIFEST_UPGRADE_PATH_INVALID` | 仅 v1：`upgrade_path` 元素缺字段、schema/build 非正数、version 非 SemVer（503） | 修正清单的 `upgrade_path` 后重新签名 |
+| `INTERMEDIATE_REQUIRED` | 仅 v1：客户端 schema 低于 `schema_min`，需先升到中间版本（200，`update_available=false`） | 按响应中的 `intermediate.version` 引导用户先升级 |
+| `INCOMPATIBLE_SCHEMA` | 仅 v1：客户端 schema 高于 `schema_max`，或低于 `schema_min` 且无可用升级路径（200） | v2 已不携带 schema 区间；如仍出现，检查是否误投了 v1 清单 |
 | `UPDATE_PACKAGE_MISSING` | 安装前发现待装包不存在（409） | 重新下载并校验 |
 | `UPDATE_EXTRACT_FAILED` | zip 解压失败（409） | 检查系统 `tar`/`unzip` 是否可用，或改用单文件包 |
 | `UPDATE_PACKAGE_PAYLOAD_MISSING` | zip 内没有与当前程序同名的文件（409） | 打包时保留原程序名 |
@@ -238,4 +247,4 @@ tools/package/.venv/bin/python tools/package/update_manifest.py resign \
 
 ### 7. 发布侧清单生成
 
-清单、appcast 与签名统一由 `tools/package/update_manifest.py` 生成，参数见 `tools/package/README.md`。发布顺序：上传安装包到 CDN → 生成并签名清单/appcast → 原子替换更新源 → purge → 冒烟验证 `/api/update/check`。
+v2 清单由三仓库共用的 `tools/release/manifest_v2.py` 生成并签名；appcast 仍由 `tools/package/update_manifest.py` 生成。`tools/package/publish_oss.sh` 会串起整个流程，参数见 `tools/package/README.md`。发布顺序：上传安装包到 OSS → 生成并签名 `manifest.json` / `appcast.xml` → 上传清单 → 下载预热 → 冒烟验证 `/api/update/check`（无 CDN 层，默认不 purge）。
