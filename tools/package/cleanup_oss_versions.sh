@@ -3,12 +3,12 @@
 #
 # 清理 dl.xiaotu.online 上各产品历史安装包，只保留最近 N 个 stable 版本。
 # 同一版本的 dmg / setup.exe / zip（绿色包）作为一组保留或删除。
-# latest.json / appcast.xml / windows.json 永远只一份（当前索引），manual.pdf 固定名，均不碰。
+# manifest.json / appcast.xml 永远只一份（当前索引），manual.pdf 固定名，均不碰。
 #
-# 三款产品的安装包文件名格式不同，脚本内置各自的版本号正则：
-#   xiaotu:   xiaotu-inventory-1.0.0.dmg / -win64-setup.exe / -win64.zip   → 1.0.0
-#   devcard:  DevCard-1.2.2-macos-arm64.dmg / -setup.exe / -win64-portable.zip → 1.2.2
-#   mote:     Mote-macOS-native-0.3.11.dmg / Mote-Setup-0.3.11.exe / -win64-portable.zip → 0.3.11
+# 同时识别 v2 统一命名与 v1 旧命名（历史包仍可清理）：
+#   v2:  <product>-<version>-macos-arm64.dmg / -win64-setup.exe / -win64-portable.zip
+#   v1:  xiaotu-inventory-1.0.0.dmg、DevCard-1.2.2-macos-arm64.dmg、Mote-Setup-0.3.11.exe 等
+# 同一版本的新旧文件归为一组，按版本整体保留或删除。
 # 这是桶级维护脚本，可一次清理三个产品；发布脚本则只允许各自仓库处理自己的产品。
 #
 # 凭据加载逻辑与 publish_oss.sh / rollout_oss.sh 一致：
@@ -158,16 +158,27 @@ bkt = oss2.Bucket(auth, f"https://oss-{region}.aliyuncs.com", bucket)
 VERSION_RE = r"(?P<v>\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?)"
 PRODUCT_PATTERNS = {
     "xiaotu": [
+        # v2 统一命名
+        ("dmg",   re.compile(rf"^xiaotu-{VERSION_RE}-macos-arm64\.dmg$")),
+        ("setup", re.compile(rf"^xiaotu-{VERSION_RE}-win64-setup\.exe$")),
+        ("zip",   re.compile(rf"^xiaotu-{VERSION_RE}-win64-portable\.zip$")),
+        # v1 旧命名
         ("dmg",   re.compile(rf"^xiaotu-inventory-{VERSION_RE}\.dmg$")),
         ("setup", re.compile(rf"^xiaotu-inventory-{VERSION_RE}-win64-setup\.exe$")),
         ("zip",   re.compile(rf"^xiaotu-inventory-{VERSION_RE}-win64\.zip$")),
     ],
     "devcard": [
+        ("dmg",   re.compile(rf"^devcard-{VERSION_RE}-macos-(?:arm64|x64)\.dmg$")),
+        ("setup", re.compile(rf"^devcard-{VERSION_RE}-win64-setup\.exe$")),
+        ("zip",   re.compile(rf"^devcard-{VERSION_RE}-win64-portable\.zip$")),
         ("dmg",   re.compile(rf"^DevCard-{VERSION_RE}-macos.*\.dmg$")),
         ("setup", re.compile(rf"^DevCard-{VERSION_RE}-setup\.exe$")),
         ("zip",   re.compile(rf"^DevCard-{VERSION_RE}-win64-portable\.zip$")),
     ],
     "mote": [
+        ("dmg",   re.compile(rf"^mote-{VERSION_RE}-macos-arm64\.dmg$")),
+        ("setup", re.compile(rf"^mote-{VERSION_RE}-win64-setup\.exe$")),
+        ("zip",   re.compile(rf"^mote-{VERSION_RE}-win64-portable\.zip$")),
         ("dmg",   re.compile(rf"^Mote-macOS-native-{VERSION_RE}\.dmg$")),
         ("setup", re.compile(rf"^Mote-Setup-{VERSION_RE}\.exe$")),
         ("zip",   re.compile(rf"^Mote-{VERSION_RE}-win64-portable\.zip$")),
