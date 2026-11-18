@@ -16,6 +16,7 @@ macOS / Windows / CI 用同一份代码，避免三套脚本各自漂移。
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import plistlib
@@ -39,7 +40,7 @@ for _stream in (sys.stdout, sys.stderr):
         except Exception:
             pass
 
-GUARD_VERSION = "1.0.0"
+GUARD_VERSION = "1.1.0"
 DEFAULT_BASE = "https://dl.xiaotu.online"
 
 PRODUCTS: Dict[str, Dict[str, Any]] = {
@@ -73,6 +74,7 @@ HEADERS = {
     "zip": ("application/zip", "immutable"),
     "latest.json": ("application/json", "max-age=60"),
     "windows.json": ("application/json", "max-age=60"),
+    "manifest.json": ("application/json", "max-age=60"),
     "appcast.xml": (("application/xml", "application/rss+xml"), "max-age=60"),
     "edSignature": ("text/plain", "max-age=300"),
 }
@@ -138,6 +140,110 @@ def get_text(url: str) -> Optional[str]:
         return resp.read().decode("utf-8", "replace")
 
 
+# ---------------------------------------------------------------- Ed25519 验签（RFC 8032，纯标准库）
+
+# v2 清单签名验证只依赖标准库。与 manifest_v2.py 的实现同源，
+# 双方 selftest 都固化了同一组固定向量（与 cryptography 库交叉验证过），
+# 任何一份漂移都会在 selftest 被发现。
+_ED_P = 2 ** 255 - 19
+_ED_L = 2 ** 252 + 27742317777372353535851937790883648493
+
+
+def _ed_inv(x: int) -> int:
+    return pow(x, _ED_P - 2, _ED_P)
+
+
+_ED_D = -121665 * _ed_inv(121666) % _ED_P
+_ED_I = pow(2, (_ED_P - 1) // 4, _ED_P)
+
+
+def _ed_xrecover(y: int) -> int:
+    xx = (y * y - 1) * _ed_inv(_ED_D * y * y + 1)
+    x = pow(xx, (_ED_P + 3) // 8, _ED_P)
+    if (x * x - xx) % _ED_P != 0:
+        x = (x * _ED_I) % _ED_P
+    if x % 2 != 0:
+        x = _ED_P - x
+    return x
+
+
+_ED_By = 4 * _ed_inv(5) % _ED_P
+_ED_Bx = _ed_xrecover(_ED_By)
+_ED_B = (_ED_Bx % _ED_P, _ED_By % _ED_P, 1, (_ED_Bx * _ED_By) % _ED_P)
+_ED_IDENT = (0, 1, 1, 0)
+
+
+def _ed_add(p1, p2):
+    x1, y1, z1, t1 = p1
+    x2, y2, z2, t2 = p2
+    a = (y1 - x1) * (y2 - x2) % _ED_P
+    b = (y1 + x1) * (y2 + x2) % _ED_P
+    c = 2 * t1 * t2 * _ED_D % _ED_P
+    d = 2 * z1 * z2 % _ED_P
+    e = b - a
+    f = d - c
+    g = d + c
+    h = b + a
+    return (e * f % _ED_P, g * h % _ED_P, f * g % _ED_P, e * h % _ED_P)
+
+
+def _ed_mult(point, e: int):
+    result = _ED_IDENT
+    while e > 0:
+        if e & 1:
+            result = _ed_add(result, point)
+        point = _ed_add(point, point)
+        e >>= 1
+    return result
+
+
+def _ed_compress(point) -> bytes:
+    x, y, z, _ = point
+    zi = _ed_inv(z)
+    x = x * zi % _ED_P
+    y = y * zi % _ED_P
+    return int.to_bytes(y | ((x & 1) << 255), 32, "little")
+
+
+def _ed_decompress(data: bytes):
+    if len(data) != 32:
+        return None
+    y = int.from_bytes(data, "little")
+    sign = y >> 255
+    y &= (1 << 255) - 1
+    if y >= _ED_P:
+        return None
+    xx = (y * y - 1) * _ed_inv(_ED_D * y * y + 1) % _ED_P
+    x = pow(xx, (_ED_P + 3) // 8, _ED_P)
+    if (x * x - xx) % _ED_P != 0:
+        x = (x * _ED_I) % _ED_P
+    if (x * x - xx) % _ED_P != 0:
+        return None
+    if (x & 1) != sign:
+        x = _ED_P - x
+    return (x, y, 1, x * y % _ED_P)
+
+
+def ed25519_verify(pub: bytes, msg: bytes, sig: bytes) -> bool:
+    if len(pub) != 32 or len(sig) != 64:
+        return False
+    a_point = _ed_decompress(pub)
+    if a_point is None:
+        return False
+    r_point = _ed_decompress(sig[:32])
+    if r_point is None:
+        return False
+    s = int.from_bytes(sig[32:], "little")
+    if s >= _ED_L:
+        return False
+    h = int.from_bytes(
+        hashlib.sha512(sig[:32] + pub + msg).digest(), "little"
+    ) % _ED_L
+    left = _ed_mult(_ED_B, s)
+    right = _ed_add(r_point, _ed_mult(a_point, h))
+    return _ed_compress(left) == _ed_compress(right)
+
+
 # ---------------------------------------------------------------- 基础规则
 
 def product_spec(product: str) -> Dict[str, Any]:
@@ -188,6 +294,149 @@ def appcast_key(product: str, channel: str) -> str:
     return f"{product}/updates/{channel}/appcast.xml"
 
 
+# ------------------------------------------------------ Schema v2（更新清单Schema-v2.md）
+
+# v2 安装包命名：<product>-<version>-<os>-<arch>-<type>.<ext>
+V2_ROLE_EXT = {
+    "dmg": "macos-arm64.dmg",
+    "setup": "win64-setup.exe",
+    "portable": "win64-portable.zip",
+}
+# guard 内部 role → v2 artifacts key
+V2_ROLE_MAP = {"dmg": "dmg", "setup": "setup", "zip": "portable"}
+V2_PLATFORM = {"mac": "macos", "win": "windows"}
+V2_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def manifest_v2_key(product: str, channel: str) -> str:
+    return f"{product}/updates/{channel}/manifest.json"
+
+
+def parse_version_v2(filename: str, role: str, product: str) -> str:
+    ext = V2_ROLE_EXT[V2_ROLE_MAP.get(role, role)]
+    m = re.fullmatch(rf"{re.escape(product)}-(\d+\.\d+\.\d+)-{re.escape(ext)}", filename)
+    if not m:
+        die(f"{filename} 不符合 v2 命名规则：{product}-<版本>-{ext}")
+    return m.group(1)
+
+
+def v2_canonical_bytes(body: Dict[str, Any]) -> bytes:
+    payload = {k: v for k, v in body.items() if k != "signature"}
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")
+
+
+def live_version_v2(product: str, channel: str, base: str, kind: str) -> Optional[Tuple[str, int]]:
+    """线上 manifest.json 中本平台当前的 (version, build)；清单不存在返回 None。"""
+    data = get_json(f"{base}/{manifest_v2_key(product, channel)}", bust=True)
+    if not data:
+        return None
+    section = (data.get("platforms") or {}).get(V2_PLATFORM[kind])
+    if not section:
+        return None
+    return (str(section.get("version", "")), int(section.get("build", 0)))
+
+
+def check_manifest_v2(data: Dict[str, Any], product: str, kind: str,
+                      artifacts: List[Artifact], version: str, base: str,
+                      channel: str, build: Optional[int] = None,
+                      pub: Optional[bytes] = None) -> None:
+    if data.get("manifest_version") != 2:
+        die(f"manifest_version={data.get('manifest_version')}，应为 2")
+    if data.get("product") != product:
+        die(f"清单 product={data.get('product')}，应为 {product}")
+    if data.get("channel") != channel:
+        die(f"清单 channel={data.get('channel')}，应为 {channel}")
+    if not data.get("key_id"):
+        die("清单缺少 key_id")
+    if not V2_ISO_RE.fullmatch(str(data.get("updated_at", ""))):
+        die(f"updated_at 不是 ISO 8601 UTC 格式：{data.get('updated_at')!r}")
+    if pub is not None:
+        sig = str(data.get("signature", ""))
+        if not sig:
+            die("清单缺少 signature")
+        try:
+            raw_sig = base64.b64decode(sig)
+        except Exception as e:
+            die(f"signature 不是合法 base64：{e}")
+        if not ed25519_verify(pub, v2_canonical_bytes(data), raw_sig):
+            die("清单签名验证失败（公钥不匹配或清单被改动）")
+        ok("清单签名验证通过")
+    platform = V2_PLATFORM[kind]
+    platforms = data.get("platforms")
+    if not isinstance(platforms, dict) or platform not in platforms:
+        die(f"清单 platforms 缺少 {platform}")
+    section = platforms[platform]
+    if section.get("version") != version:
+        die(f"清单 {platform}.version={section.get('version')} 与产物 {version} 不一致")
+    if build is not None and int(section.get("build", 0)) != build:
+        die(f"清单 {platform}.build={section.get('build')} 与产物构建号 {build} 不一致")
+    arts = section.get("artifacts")
+    if not isinstance(arts, dict) or not arts:
+        die(f"清单 {platform}.artifacts 为空")
+    for art in artifacts:
+        role2 = V2_ROLE_MAP[art.role]
+        entry = arts.get(role2)
+        if not isinstance(entry, dict):
+            die(f"清单 {platform}.artifacts 缺少 {role2}")
+        if entry.get("size") != art.size:
+            die(f"清单 {role2}.size={entry.get('size')}，实际 {art.size}")
+        if entry.get("sha256") != art.sha256:
+            die(f"清单 {role2}.sha256 与本地 SHA256 不一致")
+        url = str(entry.get("url", ""))
+        check_url(url, product, base)
+        remote = f"{product}-{version}-{V2_ROLE_EXT[role2]}"
+        if not url.endswith(f"/{product}/{remote}"):
+            die(f"清单 {role2}.url 与 v2 命名不一致：{url}\n    应为 …/{product}/{remote}")
+    notes = section.get("notes_url")
+    if notes and not str(notes).startswith("https://"):
+        die(f"notes_url 必须是 https：{notes}")
+    ok(f"manifest.json（{platform}）字段与产物一致")
+
+
+def load_pub_bytes_arg(pub_hex: str, pub_path: Optional[str]) -> Optional[bytes]:
+    if pub_hex:
+        try:
+            data = bytes.fromhex(pub_hex)
+        except Exception as e:
+            die(f"--pub-hex 不是合法十六进制：{e}")
+        if len(data) != 32:
+            die(f"--pub-hex 必须是 32 字节公钥，收到 {len(data)} 字节")
+        return data
+    if pub_path:
+        p = Path(pub_path)
+        if not p.is_file():
+            die(f"公钥文件不存在：{p}")
+        raw = p.read_bytes()
+        text = raw.decode("ascii", "ignore").strip()
+        if "-----BEGIN" in text:
+            b64 = "".join(line for line in text.splitlines() if not line.startswith("-----"))
+            try:
+                der = base64.b64decode("".join(b64.split()))
+            except Exception as e:
+                die(f"公钥 PEM 解码失败：{e}")
+            spki = bytes.fromhex("302a300506032b6570032100")
+            if der.startswith(spki) and len(der) == len(spki) + 32:
+                return der[-32:]
+            die("公钥不是 Ed25519 SPKI PEM")
+        if len(raw) == 32:
+            return raw
+        try:
+            data = bytes.fromhex(text)
+            if len(data) == 32:
+                return data
+        except Exception:
+            pass
+        try:
+            data = base64.b64decode(text, validate=True)
+            if len(data) == 32:
+                return data
+        except Exception:
+            pass
+        die(f"公钥格式无法识别（PEM / hex / base64 / 32 字节二进制）：{p}")
+    return None
+
+
 def file_digests(path: Path) -> Tuple[int, str, str]:
     sha, md5 = hashlib.sha256(), hashlib.md5()
     size = 0
@@ -229,7 +478,8 @@ def existing_artifact_ok(url: str, size: int, md5: str) -> None:
             "    安装包是 immutable，请升版本号，不要覆盖同名文件")
 
 
-def check_mac_embed(path: Path, product: str, channel: str, base: str, version: str) -> None:
+def check_mac_embed(path: Path, product: str, channel: str, base: str, version: str,
+                    schema: str = "v1") -> None:
     if sys.platform != "darwin":
         warn("非 macOS 环境，跳过 DMG 内嵌地址检查")
         return
@@ -258,17 +508,18 @@ def check_mac_embed(path: Path, product: str, channel: str, base: str, version: 
         die("DMG 内 App 缺少 SUPublicEDKey")
     spec = product_spec(product)
     if "XiaotuUpdateManifestURL" in spec.get("mac_extra", {}):
-        want = f"{base}/{manifest_key(product, channel, 'mac')}"
+        want = f"{base}/{manifest_v2_key(product, channel) if schema == 'v2' else manifest_key(product, channel, 'mac')}"
         got_url = str(info.get("XiaotuUpdateManifestURL", ""))
         if got_url != want:
             die(f"DMG 内 XiaotuUpdateManifestURL 与发布地址不一致：{got_url or '(空)'} != {want}")
     ok(f"DMG 内嵌地址正确（{feed}）")
 
 
-def check_win_embed(zip_path: Path, product: str, channel: str, base: str) -> None:
+def check_win_embed(zip_path: Path, product: str, channel: str, base: str,
+                    schema: str = "v1") -> None:
     spec = product_spec(product)
     exe_name = spec["win_embed_exe"].lower()
-    url = f"{base}/{manifest_key(product, channel, 'win')}"
+    url = f"{base}/{manifest_v2_key(product, channel) if schema == 'v2' else manifest_key(product, channel, 'win')}"
     # Qt/原生 Windows 程序常用宽字符（UTF-16LE）存 URL，其他用 UTF-8/ASCII。
     needles = (url.encode(), url.encode("utf-16-le"))
     with zipfile.ZipFile(zip_path) as z:
@@ -382,7 +633,8 @@ def check_manifest(data: dict, product: str, kind: str, artifacts: List[Artifact
 # ---------------------------------------------------------------- 子命令
 
 def collect_artifacts(product: str, kind: str, file: Path, zip_file: Optional[Path],
-                      name: Optional[str] = None, zip_name: Optional[str] = None) -> List[Artifact]:
+                      name: Optional[str] = None, zip_name: Optional[str] = None,
+                      schema: str = "v1") -> List[Artifact]:
     if not file.is_file():
         die(f"文件不存在：{file}")
     if kind == "mac":
@@ -400,7 +652,8 @@ def collect_artifacts(product: str, kind: str, file: Path, zip_file: Optional[Pa
         if not path.is_file():
             die(f"文件不存在：{path}")
         display = override or path.name
-        versions.add(parse_version(display, r, product))
+        parse = parse_version_v2 if schema == "v2" else parse_version
+        versions.add(parse(display, r, product))
         size, sha, _ = file_digests(path)
         artifacts.append(Artifact(r, path, display, size, sha))
     if len(versions) != 1:
@@ -411,20 +664,45 @@ def collect_artifacts(product: str, kind: str, file: Path, zip_file: Optional[Pa
 def cmd_preflight(args: argparse.Namespace) -> int:
     check_channel(args.channel)
     base = args.base.rstrip("/")
+    schema = args.schema
     artifacts = collect_artifacts(args.product, args.kind, Path(args.file),
                                   Path(args.zip) if args.zip else None,
-                                  args.name, args.zip_name)
-    version = parse_version(artifacts[0].name, artifacts[0].role, args.product)
+                                  args.name, args.zip_name, schema)
+    parse = parse_version_v2 if schema == "v2" else parse_version
+    version = parse(artifacts[0].name, artifacts[0].role, args.product)
     if args.version and args.version != version:
         die(f"--version {args.version} 与文件名版本 {version} 不一致")
-    print(f"guard preflight · {args.product} / {args.kind} / {version}")
-    current = None if args.offline else live_version(args.product, args.channel, args.kind, base)
-    if current:
-        c = version_cmp(version, current)
-        if c < 0:
-            die(f"版本回退：本地 {version} < 线上 {current}")
-        if c == 0:
-            warn(f"版本与线上相同（{version}），将按幂等重传校验")
+    print(f"guard preflight · {args.product} / {args.kind} / {version}"
+          + (f" · schema={schema}" if schema == "v2" else ""))
+    if schema == "v2":
+        pub = load_pub_bytes_arg(args.pub_hex, args.pub)
+        if args.manifest:
+            mpath = Path(args.manifest)
+            if not mpath.is_file():
+                die(f"清单不存在：{mpath}")
+            data = json.loads(mpath.read_text(encoding="utf-8"))
+            check_manifest_v2(data, args.product, args.kind, artifacts, version,
+                              base, args.channel, build=args.build, pub=pub)
+        elif args.kind == "win" and args.build is None:
+            warn("v2 未提供 --build，跳过构建号相关检查")
+        current = None if args.offline else live_version_v2(args.product, args.channel, base, args.kind)
+        if current:
+            c = version_cmp(version, current[0])
+            if c < 0:
+                die(f"版本回退：本地 {version} < 线上 {current[0]}")
+            if c == 0 and args.kind == "win" and args.build is not None:
+                if args.build < current[1]:
+                    die(f"构建号回退：本地 {args.build} < 线上 {current[1]}")
+            if c == 0:
+                warn(f"版本与线上相同（{version}），将按幂等重传校验")
+    else:
+        current = None if args.offline else live_version(args.product, args.channel, args.kind, base)
+        if current:
+            c = version_cmp(version, current)
+            if c < 0:
+                die(f"版本回退：本地 {version} < 线上 {current}")
+            if c == 0:
+                warn(f"版本与线上相同（{version}），将按幂等重传校验")
     for art in artifacts:
         key = artifact_key(args.product, art.name)
         want_ct, want_cc = HEADERS[art.role]
@@ -432,11 +710,11 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         if not args.offline:
             existing_artifact_ok(f"{base}/{key}", art.size, file_digests(art.path)[2])
     if args.kind == "mac":
-        check_mac_embed(Path(args.file), args.product, args.channel, base, version)
+        check_mac_embed(Path(args.file), args.product, args.channel, base, version, schema)
     else:
         zip_path = Path(args.zip) if args.zip else (Path(args.file) if args.file.lower().endswith(".zip") else None)
         if zip_path:
-            check_win_embed(zip_path, args.product, args.channel, base)
+            check_win_embed(zip_path, args.product, args.channel, base, schema)
         else:
             warn("未提供绿色包，跳过壳内嵌地址检查")
     print("preflight 通过")
@@ -446,16 +724,25 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 def cmd_verify_live(args: argparse.Namespace) -> int:
     check_channel(args.channel)
     base = args.base.rstrip("/")
+    schema = args.schema
     artifacts = collect_artifacts(args.product, args.kind, Path(args.file),
                                   Path(args.zip) if args.zip else None,
-                                  args.name, args.zip_name)
-    version = parse_version(artifacts[0].name, artifacts[0].role, args.product)
-    print(f"guard verify-live · {args.product} / {args.kind} / {version}")
-    mkey = manifest_key(args.product, args.channel, args.kind)
+                                  args.name, args.zip_name, schema)
+    parse = parse_version_v2 if schema == "v2" else parse_version
+    version = parse(artifacts[0].name, artifacts[0].role, args.product)
+    print(f"guard verify-live · {args.product} / {args.kind} / {version}"
+          + (f" · schema={schema}" if schema == "v2" else ""))
+    mkey = manifest_v2_key(args.product, args.channel) if schema == "v2" \
+        else manifest_key(args.product, args.channel, args.kind)
     data = get_json(f"{base}/{mkey}", bust=True)
     if data is None:
         die(f"清单不存在：{base}/{mkey}")
-    check_manifest(data, args.product, args.kind, artifacts, version, base, args.channel)
+    if schema == "v2":
+        pub = load_pub_bytes_arg(args.pub_hex, args.pub)
+        check_manifest_v2(data, args.product, args.kind, artifacts, version,
+                          base, args.channel, build=args.build, pub=pub)
+    else:
+        check_manifest(data, args.product, args.kind, artifacts, version, base, args.channel)
 
     for art in artifacts:
         url = f"{base}/{artifact_key(args.product, art.name)}"
@@ -569,6 +856,73 @@ def cmd_selftest() -> int:
             z.writestr("Mote-Windows/Mote.exe", b"https://dl.xiaotu.online/windows/stable/latest.json")
         _expect_error(lambda: check_win_embed(bad_zip, "mote", "stable", DEFAULT_BASE), "旧构建产物"); n += 1
 
+    # ---- Schema v2 ----
+    # Ed25519 固定向量（与 manifest_v2.py、cryptography 交叉验证后固化）
+    v2pub = bytes.fromhex("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+    v2msg = b"manifest-v2-selftest"
+    v2sig = bytes.fromhex(
+        "e642309f0f791045d3d8e112e507c33f89b5d7b0cb79b4ca58412cc4f58f2c76"
+        "2e2f1cabf5a2fac05e633b5203880ba8a9de7601474722d7e15f31463660860d")
+    assert ed25519_verify(v2pub, v2msg, v2sig); n += 1
+    assert not ed25519_verify(v2pub, v2msg + b"x", v2sig); n += 1
+    bad = bytearray(v2sig); bad[10] ^= 1
+    assert not ed25519_verify(v2pub, v2msg, bytes(bad)); n += 1
+    assert v2_canonical_bytes({"b": 1, "a": "x", "signature": "sig"}) == b'{"a":"x","b":1}'; n += 1
+
+    assert manifest_v2_key("devcard", "beta") == "devcard/updates/beta/manifest.json"; n += 1
+    assert parse_version_v2("mote-1.0.3-macos-arm64.dmg", "dmg", "mote") == "1.0.3"; n += 1
+    assert parse_version_v2("xiaotu-1.0.1-win64-setup.exe", "setup", "xiaotu") == "1.0.1"; n += 1
+    assert parse_version_v2("mote-1.0.3-win64-portable.zip", "zip", "mote") == "1.0.3"; n += 1
+    _expect_error(lambda: parse_version_v2("Mote-Setup-1.0.3.exe", "setup", "mote"), "v2 命名规则"); n += 1
+    _expect_error(lambda: parse_version_v2("devcard-1.2.5-macos-arm64.dmg", "dmg", "xiaotu"), "v2 命名规则"); n += 1
+
+    v2arts = [Artifact("zip", Path("x"), "mote-1.0.3-win64-portable.zip", 7, "d" * 64)]
+    v2good = {
+        "manifest_version": 2, "product": "mote", "channel": "stable",
+        "key_id": "2026-11", "updated_at": "2026-11-18T04:48:54Z",
+        "platforms": {"windows": {"version": "1.0.3", "build": 202611180530,
+                                  "min_os": "10.0",
+                                  "artifacts": {"portable": {
+                                      "url": "https://dl.xiaotu.online/mote/mote-1.0.3-win64-portable.zip",
+                                      "size": 7, "sha256": "d" * 64}}}},
+    }
+    check_manifest_v2(v2good, "mote", "win", v2arts, "1.0.3", DEFAULT_BASE, "stable",
+                      build=202611180530); n += 1
+    bad = json.loads(json.dumps(v2good))
+    bad["platforms"]["windows"]["build"] = 1
+    _expect_error(lambda: check_manifest_v2(bad, "mote", "win", v2arts, "1.0.3", DEFAULT_BASE,
+                                            "stable", build=202611180530), "构建号"); n += 1
+    bad = json.loads(json.dumps(v2good))
+    bad["platforms"]["windows"]["artifacts"]["portable"]["sha256"] = "e" * 64
+    _expect_error(lambda: check_manifest_v2(bad, "mote", "win", v2arts, "1.0.3", DEFAULT_BASE,
+                                            "stable", build=202611180530), "SHA256"); n += 1
+    bad = json.loads(json.dumps(v2good))
+    bad["platforms"] = {"macos": bad["platforms"]["windows"]}
+    _expect_error(lambda: check_manifest_v2(bad, "mote", "win", v2arts, "1.0.3", DEFAULT_BASE,
+                                            "stable", build=202611180530), "缺少 windows"); n += 1
+    bad = json.loads(json.dumps(v2good))
+    bad["updated_at"] = "2026-11-18 04:48:54"
+    _expect_error(lambda: check_manifest_v2(bad, "mote", "win", v2arts, "1.0.3", DEFAULT_BASE,
+                                            "stable", build=202611180530), "updated_at"); n += 1
+    bad = json.loads(json.dumps(v2good))
+    bad["platforms"]["windows"]["artifacts"]["portable"]["url"] = "https://dl.xiaotu.online/mote/Mote-1.0.3.zip"
+    _expect_error(lambda: check_manifest_v2(bad, "mote", "win", v2arts, "1.0.3", DEFAULT_BASE,
+                                            "stable", build=202611180530), "与 v2 命名不一致"); n += 1
+
+    # 绿色包内嵌地址（v2：manifest.json）
+    with tempfile.TemporaryDirectory() as td:
+        zp3 = Path(td) / "mote-1.0.3-win64-portable.zip"
+        with zipfile.ZipFile(zp3, "w") as z:
+            z.writestr("Mote-Windows/Mote.exe",
+                       b"https://dl.xiaotu.online/mote/updates/stable/manifest.json")
+        check_win_embed(zp3, "mote", "stable", DEFAULT_BASE, "v2"); n += 1
+        zp4 = Path(td) / "mote-1.0.4-win64-portable.zip"
+        with zipfile.ZipFile(zp4, "w") as z:
+            z.writestr("Mote-Windows/Mote.exe",
+                       b"https://dl.xiaotu.online/mote/updates/stable/windows.json")
+        _expect_error(lambda: check_win_embed(zp4, "mote", "stable", DEFAULT_BASE, "v2"),
+                      "旧构建产物"); n += 1
+
     print(f"selftest 通过（{n} 项）")
     return 0
 
@@ -595,6 +949,13 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--base", default=DEFAULT_BASE)
         s.add_argument("--version", dest="version", help="断言文件名版本")
         s.add_argument("--offline", action="store_true", help="preflight 跳过线上检查")
+        s.add_argument("--schema", default="v1", choices=["v1", "v2"],
+                       help="v2：manifest.json + 统一命名（见 docs/更新清单Schema-v2.md）")
+        s.add_argument("--manifest", help="v2 preflight：本地已签名 manifest.json 路径")
+        s.add_argument("--build", type=int, default=None,
+                       help="v2：本次发布的 Windows 构建号")
+        s.add_argument("--pub", help="v2：Ed25519 公钥文件（PEM/hex/base64）用于验签")
+        s.add_argument("--pub-hex", help="v2：Ed25519 公钥 hex（与 --pub 二选一）")
     return p
 
 
@@ -614,6 +975,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     except subprocess.CalledProcessError as e:
         print(f"guard: 外部命令失败：{e}", file=sys.stderr)
+        return 1
+    except zipfile.BadZipFile as e:
+        print(f"guard: 不是合法的 zip 文件：{e}", file=sys.stderr)
         return 1
 
 
