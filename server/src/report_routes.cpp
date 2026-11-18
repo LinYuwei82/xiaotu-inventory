@@ -17,6 +17,7 @@
 #include "xiaotu/error.h"
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
+#include "xiaotu/log.h"
 #include "xiaotu/models.h"
 #include "xiaotu/qty.h"
 #include "xiaotu/report_service.h"
@@ -211,7 +212,18 @@ void send_csv_stream(httplib::Response& res, const std::string& filename,
       "text/csv; charset=utf-8",
       [body = std::move(body)](std::size_t, httplib::DataSink& sink) {
         CsvStream out;
-        const bool ok = body(sink, out) && out.flush(sink);
+        bool ok = false;
+        // httplib 只在路由阶段包了 try/catch，provider 里抛出的异常没人接，
+        // 会沿着线程池 worker 逃出去 terminate 整个进程，这里兜住并中断响应。
+        try {
+          ok = body(sink, out) && out.flush(sink);
+        } catch (const std::exception& error) {
+          log_warn(std::string("导出流中断：") + error.what());
+          ok = false;
+        } catch (...) {
+          log_warn("导出流中断：未知异常");
+          ok = false;
+        }
         sink.done();
         return ok;
       });
