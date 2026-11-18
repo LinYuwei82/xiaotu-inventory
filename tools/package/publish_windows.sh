@@ -147,7 +147,9 @@ SIGNING_PUB="${SIGNING_KEY%.pem}.pub.pem"
 KEY_ID="${KEY_ID:-2026-11}"
 MIN_OS="${MIN_OS:-10.0}"
 RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-}"
-PURGE="${PURGE:-true}"
+# dl.xiaotu.online 是 OSS 自定义域名（CNAME 直连 OSS，无 CDN 层），无需刷新缓存；
+# 保留 PURGE 开关仅备将来接入 CDN（PURGE=true 开启）。
+PURGE="${PURGE:-false}"
 
 # ---- 依赖：manifest_v2.py / guard.py 均为纯标准库，python3 即可 ----
 command -v python3 >/dev/null 2>&1 || { echo "未找到 python3" >&2; exit 1; }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 小兔在线 · OSS 发布脚本（自动更新链路，更新清单 Schema v2）
 #
-# 输入 dmg → 生成 Ed25519 签名的 manifest.json（v2）+ appcast.xml → 上传 dl.xiaotu.online → purge CDN。
+# 输入 dmg → 生成 Ed25519 签名的 manifest.json（v2）+ appcast.xml → 上传 dl.xiaotu.online（OSS 直连，无 CDN）。
 # 只负责小兔进销存；DevCard / Mote 各有自己的发布脚本。
 #
 # 目录结构：
@@ -35,7 +35,7 @@
 #   # dry-run：只本地生成 + 验签，不碰 OSS
 #   OSS_SKIP=true PRODUCT=xiaotu tools/package/publish_oss.sh
 #
-#   # 关闭 CDN 预热
+#   # 关闭发布后的下载可达性验证
 #   WARMUP=false PRODUCT=xiaotu tools/package/publish_oss.sh
 
 set -euo pipefail
@@ -120,8 +120,10 @@ API_MIN="${API_MIN:-1}"
 API_MAX="${API_MAX:-1}"
 MANDATORY="${MANDATORY:-}"
 RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-}"
-PURGE="${PURGE:-true}"
-# 发布后下载一次 dmg 预热 CDN 边缘缓存（WARMUP=false 关闭，WARM_TIMEOUT 单位秒）
+# dl.xiaotu.online 是 OSS 自定义域名（CNAME 直连 OSS，无 CDN 层），源站上传即生效，
+# 无需刷新边缘缓存；保留 PURGE 开关仅备将来接入 CDN（PURGE=true 开启）。
+PURGE="${PURGE:-false}"
+# 发布后下载一次 dmg 做可达性验证（WARMUP=false 关闭，WARM_TIMEOUT 单位秒）
 WARMUP="${WARMUP:-true}"
 WARM_TIMEOUT="${WARM_TIMEOUT:-300}"
 
