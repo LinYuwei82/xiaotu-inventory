@@ -769,7 +769,8 @@ def cmd_verify_live(args: argparse.Namespace) -> int:
             die(f"appcast 中未出现版本 {version}")
         ok(f"appcast 已包含 {version}")
 
-    if args.product == "devcard" and args.kind == "mac":
+    # 带 Sparkle EdDSA 旁车签名的产品由 spec 声明，避免再写死产品名。
+    if product_spec(args.product).get("mac_sidecar") and args.kind == "mac":
         sig_url = f"{base}/{artifact_key(args.product, artifacts[0].name)}.edSignature"
         h = head(sig_url)
         if h is None:
