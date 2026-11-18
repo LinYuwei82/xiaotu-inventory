@@ -31,7 +31,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 APP_DISPLAY_NAME="小兔进销存"
-VOLUME_NAME="小兔进销存"
+# dmg 卷名用英文：Finder 挂载路径 /Volumes/<卷名> 对中文卷名在部分环境
+# （TCC 沙箱/自动化）下 hdiutil 会报「操作不被允许」，英文卷名无此问题
+VOLUME_NAME="Xiaotu Inventory"
 BUILD_DIR="$REPO_ROOT/build/release"
 BUILT_APP="$BUILD_DIR/shell/xiaotu-inventory.app"
 OUT_DIR="${XIAOTU_DIST_DIR:-$REPO_ROOT/build/package}"
