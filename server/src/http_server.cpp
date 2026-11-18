@@ -1471,7 +1471,7 @@ UpdateSettings HttpServer::update_settings() const {
         info_.update_channel.empty() ? "stable" : info_.update_channel;
     settings.manifest_cache_file =
         (std::filesystem::path(info_.data_dir) / "updates" / "manifest" / channel /
-         "latest.json")
+         "manifest.json")
             .string();
   }
   settings.channel = info_.update_channel;

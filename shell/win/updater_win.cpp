@@ -1,8 +1,9 @@
 // 小兔进销存 Windows 桌面壳 —— 自动更新桥接层
 //
 // 实现：
-//   WinHTTP 拉 latest.json → nlohmann::json 解析 → Ed25519 验签（OpenSSL）
-//   → xiaotu::evaluate_manifest 判定 → WinHTTP 拉 setup.exe → BCrypt SHA256 校验
+//   WinHTTP 拉 manifest.json（Schema v2 统一清单）→ nlohmann::json 解析
+//   → Ed25519 验签（OpenSSL，覆盖整个清单对象）→ 取 platforms.windows 判定
+//   → WinHTTP 拉 artifacts.setup 安装包 → BCrypt SHA256 校验
 //   → ShellExecute 跑 ISCC /VERYSILENT → ISCC 自动关壳、覆盖、启新壳
 
 #include "updater_win.h"
@@ -218,6 +219,91 @@ std::string UpdaterWin::sha256File(const std::wstring& path) {
   return result;
 }
 
+// ---- v2 统一清单解析 ----
+//
+// manifest.json 是三平台共用的统一清单：签名覆盖整个对象，客户端只取
+// platforms.windows 与其中需要的键；未知字段、未知 artifacts key 一律忽略。
+// 安装版读 artifacts.setup（绿色包 artifacts.portable 由下载页消费）。
+
+namespace {
+
+struct V2Windows {
+  std::string version;
+  std::int64_t build = 0;
+  std::string setup_url;
+  std::string setup_sha256;
+  std::int64_t setup_size = 0;
+  int rollout_percent = 100;
+  bool mandatory = false;
+  std::string mandatory_reason;
+  std::string mandatory_deadline;
+};
+
+// 非抛出的字段读取：类型不对视为缺省（未知/缺省一律忽略）。
+bool v2_read_string(const nlohmann::json& object, const char* key, std::string& out) {
+  const auto it = object.find(key);
+  if (it == object.end() || !it->is_string()) return false;
+  out = it->get<std::string>();
+  return true;
+}
+
+bool v2_read_int(const nlohmann::json& object, const char* key, std::int64_t& out) {
+  const auto it = object.find(key);
+  if (it == object.end() || !it->is_number_integer()) return false;
+  out = it->get<std::int64_t>();
+  return true;
+}
+
+bool v2_read_bool(const nlohmann::json& object, const char* key, bool& out) {
+  const auto it = object.find(key);
+  if (it == object.end() || !it->is_boolean()) return false;
+  out = it->get<bool>();
+  return true;
+}
+
+// 提取 platforms.windows；失败时 err_code 给出稳定错误码。
+bool parse_v2_windows(const nlohmann::json& manifest, V2Windows& out, std::string& err_code) {
+  const auto platforms = manifest.find("platforms");
+  if (platforms == manifest.end() || !platforms->is_object()) {
+    err_code = "PLATFORMS_MISSING";
+    return false;
+  }
+  const auto windows = platforms->find("windows");
+  if (windows == platforms->end() || !windows->is_object()) {
+    err_code = "PLATFORM_WINDOWS_MISSING";
+    return false;
+  }
+  const auto artifacts = windows->find("artifacts");
+  if (artifacts == windows->end() || !artifacts->is_object() ||
+      artifacts->find("setup") == artifacts->end() || !(*artifacts)["setup"].is_object()) {
+    err_code = "ARTIFACT_SETUP_MISSING";
+    return false;
+  }
+  const nlohmann::json& setup = (*artifacts)["setup"];
+
+  // 必填键：version / build / artifacts.setup 的 url、sha256、size。
+  if (!v2_read_string(*windows, "version", out.version) ||
+      !v2_read_int(*windows, "build", out.build) ||
+      !v2_read_string(setup, "url", out.setup_url) ||
+      !v2_read_string(setup, "sha256", out.setup_sha256) ||
+      !v2_read_int(setup, "size", out.setup_size)) {
+    err_code = "FIELD_MISSING_OR_INVALID";
+    return false;
+  }
+  // 可选键：rollout_percent 缺省全量，mandatory 缺省 false。
+  std::int64_t rollout = 100;
+  if (v2_read_int(*windows, "rollout_percent", rollout) &&
+      rollout >= 1 && rollout <= 100) {
+    out.rollout_percent = static_cast<int>(rollout);
+  }
+  v2_read_bool(*windows, "mandatory", out.mandatory);
+  v2_read_string(*windows, "mandatory_reason", out.mandatory_reason);
+  v2_read_string(*windows, "mandatory_deadline", out.mandatory_deadline);
+  return true;
+}
+
+}  // namespace
+
 // ---- UpdaterWin 单例 ----
 
 UpdaterWin::UpdaterWin() {
@@ -393,8 +479,6 @@ void UpdaterWin::checkNow(Completion cb) {
   }
 
   // 解析 + Ed25519 验签（trust anchor 公钥由 CMake 编译期注入 XIAOTU_UPDATE_PUBKEY）
-  UpdateManifest manifest;
-  ManifestError err;
   nlohmann::json j;
   try {
     j = nlohmann::json::parse(body);
@@ -422,45 +506,67 @@ void UpdaterWin::checkNow(Completion cb) {
     log_warn("更新：未配置 XIAOTU_UPDATE_PUBKEY，跳过 Ed25519 验签");
   }
 
-  if (!xiaotu::parse_manifest(j, manifest, err)) {
+  // v2：channel 在顶层；platform 由只取 platforms.windows 隐含，无需再比。
+  std::string manifest_channel;
+  if (!v2_read_string(j, "channel", manifest_channel) || manifest_channel != status_.channel) {
+    if (cb) cb("NO_UPDATE", "channel mismatch");
+    return;
+  }
+
+  V2Windows pw;
+  std::string pw_err;
+  if (!parse_v2_windows(j, pw, pw_err)) {
     {
       std::lock_guard<std::mutex> lock(status_mutex_);
       status_.consecutive_failures++;
       persistStatus();
     }
-    if (cb) cb("MANIFEST_INVALID", err.code + ":" + err.message);
+    if (cb) cb("MANIFEST_INVALID", pw_err);
     return;
   }
 
-  // 只处理 platform=windows + channel 匹配的条目
-  if (manifest.platform != "windows" || manifest.channel != status_.channel) {
-    if (cb) cb("NO_UPDATE", "platform/channel mismatch");
+  // 更新判定（v2 规则）：先比 version；同版本再比 build，build <= 本机 → 无更新。
+  xiaotu::ProductVersion remote_version;
+  xiaotu::ProductVersion local_version;
+  if (!xiaotu::parse_product_version(pw.version, remote_version) ||
+      !xiaotu::parse_product_version(xiaotu::current_product_version(), local_version)) {
+    {
+      std::lock_guard<std::mutex> lock(status_mutex_);
+      status_.consecutive_failures++;
+      persistStatus();
+    }
+    if (cb) cb("MANIFEST_INVALID", "MANIFEST_VERSION_INVALID");
     return;
   }
+  const int version_cmp = xiaotu::compare_product_version(remote_version, local_version);
+  bool update_available =
+      version_cmp > 0 || (version_cmp == 0 && pw.build > current_build_number());
 
-  UpdateQuery query;
-  query.version = current_product_version();
-  query.build = current_build_number();
-  query.channel = status_.channel;
-  query.platform = "windows";
-  query.install_id = status_.install_id;
-
-  UpdateDecision decision = xiaotu::evaluate_manifest(manifest, query, epochNow());
+  if (update_available && !pw.mandatory) {
+    // 灰度分桶与跳过记录沿用 core 同一规则；强制更新不受两者限制。
+    if (!xiaotu::rollout_allows(pw.rollout_percent,
+                                xiaotu::rollout_bucket(status_.install_id, pw.build))) {
+      update_available = false;
+    } else if (status_.skipped_version == pw.version &&
+               epochNow() < status_.skip_until_epoch) {
+      update_available = false;
+    }
+  }
 
   {
     std::lock_guard<std::mutex> lock(status_mutex_);
     status_.consecutive_failures = 0;
     status_.last_check_epoch = epochNow();
-    if (decision.update_available || decision.mandatory) {
-      status_.manifest_version = manifest.version;
-      status_.manifest_build = manifest.build;
-      status_.manifest_sha256 = manifest.sha256;
-      status_.manifest_size = manifest.size;
-      status_.mandatory = decision.mandatory;
-      status_.mandatory_reason = decision.reason;
-      status_.mandatory_deadline = manifest.mandatory_deadline;
+    if (update_available) {
+      status_.manifest_version = pw.version;
+      status_.manifest_build = pw.build;
+      status_.manifest_sha256 = pw.setup_sha256;
+      status_.manifest_size = pw.setup_size;
+      status_.mandatory = pw.mandatory;
+      status_.mandatory_reason = pw.mandatory_reason;
+      status_.mandatory_deadline = pw.mandatory_deadline;
     } else {
-      // 无更新（含已跳过、schema 不匹配、平台/通道不符）：必须清掉上一次的待更新信息，
+      // 无更新（含已跳过、灰度未命中、通道不符）：必须清掉上一次的待更新信息，
       // 否则前端按 manifest_version 判定会把“已是最新”误报成“发现新版本”，
       // 且残留的 mandatory 会让用户反复看到强制升级弹窗。
       status_.manifest_version.clear();
@@ -477,8 +583,8 @@ void UpdaterWin::checkNow(Completion cb) {
     persistStatus();
   }
 
-  if (decision.update_available || decision.mandatory) {
-    if (cb) cb("UPDATE_AVAILABLE", manifest.version);
+  if (update_available) {
+    if (cb) cb("UPDATE_AVAILABLE", pw.version);
   } else {
     if (cb) cb("NO_UPDATE", "");
   }
@@ -513,14 +619,20 @@ void UpdaterWin::downloadUpdate(Completion cb) {
     return;
   }
 
-  UpdateManifest manifest;
-  ManifestError merr;
-  auto j = nlohmann::json::parse(body);
-  if (!xiaotu::parse_manifest(j, manifest, merr)) {
-    if (cb) cb("MANIFEST_INVALID", merr.code);
+  nlohmann::json j;
+  try {
+    j = nlohmann::json::parse(body);
+  } catch (const nlohmann::json::exception& e) {
+    if (cb) cb("MANIFEST_INVALID", e.what());
     return;
   }
-  url = manifest.url;
+  V2Windows pw;
+  std::string pw_err;
+  if (!parse_v2_windows(j, pw, pw_err)) {
+    if (cb) cb("MANIFEST_INVALID", pw_err);
+    return;
+  }
+  url = pw.setup_url;
 
   download_cancel_ = false;
   download_running_ = true;

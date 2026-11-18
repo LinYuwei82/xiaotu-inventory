@@ -101,9 +101,9 @@ $env:XIAOTU_SHELL_STARTUP_TIMEOUT = '60'; .\xiaotu-shell.exe
 
 | 环节 | 实现 |
 | --- | --- |
-| 拉清单 | WinHTTP GET `latest.json` |
+| 拉清单 | WinHTTP GET `manifest.json`（Schema v2 统一清单，只取 `platforms.windows`） |
 | 验签 | `xiaotu::verify_manifest_signature`（OpenSSL Ed25519，trust anchor 编译期注入） |
-| 判定 | 复用 core 层 `parse_manifest` / `evaluate_manifest`：平台、通道、`min_os`、API 区间、schema、灰度分桶、`mandatory` |
+| 判定 | 先比 `version`、同版本再比 `build`；通道匹配、灰度分桶、`mandatory` |
 | 校验包 | BCrypt 计算 SHA256，与清单逐字节比对 |
 | 安装 | `ShellExecute` 跑 Inno Setup `/VERYSILENT /RESTARTAPPLICATIONS`，自动关壳、覆盖、启新壳 |
 | 定时 | 启动 30 秒后首查，之后 24h±2h；失败按 1 分钟 / 10 分钟 / 1 小时退避 |

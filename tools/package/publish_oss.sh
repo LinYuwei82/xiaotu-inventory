@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# 小兔在线 · OSS 发布脚本（自动更新链路）
+# 小兔在线 · OSS 发布脚本（自动更新链路，更新清单 Schema v2）
 #
-# 输入 dmg → 生成 Ed25519 签名的 latest.json + appcast.xml → 上传 dl.xiaotu.online → purge CDN。
+# 输入 dmg → 生成 Ed25519 签名的 manifest.json（v2）+ appcast.xml → 上传 dl.xiaotu.online → purge CDN。
 # 只负责小兔进销存；DevCard / Mote 各有自己的发布脚本。
 #
-#   PRODUCT=xiaotu  → dl.xiaotu.online/xiaotu/
-#
 # 目录结构：
-#   oss://<bucket>/<product>/<app>-<ver>.dmg                ← 长缓存 / immutable
-#   oss://<bucket>/<product>/updates/<channel>/latest.json  ← 60 秒缓存
-#   oss://<bucket>/<product>/updates/<channel>/appcast.xml  ← 60 秒缓存
+#   oss://<bucket>/xiaotu/xiaotu-<ver>-macos-arm64.dmg            ← 长缓存 / immutable（v2 命名）
+#   oss://<bucket>/xiaotu/updates/<channel>/manifest.json         ← 60 秒缓存（v2 清单）
+#   oss://<bucket>/xiaotu/updates/<channel>/appcast.xml           ← 60 秒缓存（Sparkle，不在 v2 范围）
+#
+# 清单生成/签名使用三仓库共用的 tools/release/manifest_v2.py（纯标准库），
+# schema 见 mote/docs/更新清单Schema-v2.md；本脚本不再生成 latest.json，
+# 旧内测客户端按切换方案重装或经 Sparkle（appcast.xml）升级。
 #
 # 下载页（pre.xiaotu.online/download）由 _site 桶的 site.js 读清单自动同步，
 # 本脚本不再改写任何 HTML。
@@ -22,8 +24,8 @@
 #   聊天、命令行历史或日志里，请立即到 RAM 控制台轮换。发布前脚本会检查受版本
 #   控制的文件里是否残留当前 AccessKey，命中即拒绝发布。
 #
-# 依赖：python3 + cryptography / oss2（见 tools/package/requirements.txt）、openssl 3.x、
-#       shasum、PlistBuddy。openssl 会自动找 brew 的 openssl@3（keg-only，不进 PATH），
+# 依赖：python3（manifest_v2.py / guard.py 纯标准库）、cryptography venv（仅 appcast 用）、
+#       openssl 3.x、shasum、PlistBuddy。openssl 会自动找 brew 的 openssl@3（keg-only，不进 PATH），
 #       也可用 OPENSSL_BIN=/path/to/openssl 指定；macOS 自带的 LibreSSL 会被拒绝。
 #
 # 用法：
@@ -91,7 +93,7 @@ SIGNING_KEY="${SIGNING_KEY:-$DEFAULT_KEY}"
 
 # ---- openssl 解析：必须是真 OpenSSL 3.x，不能落到 macOS 自带的 LibreSSL ----
 # Homebrew 的 openssl@3 是 keg-only、不会进 PATH，所以优先用 brew prefix；
-# 也支持 OPENSSL_BIN 显式指定。
+# 也支持 OPENSSL_BIN 显式指定。（openssl 仅 Sparkle 公钥换算等用途；清单签名由 manifest_v2.py 完成）
 resolve_openssl_bin() {
   if [ -n "${OPENSSL_BIN:-}" ]; then printf '%s\n' "$OPENSSL_BIN"; return 0; fi
   if command -v brew >/dev/null 2>&1; then
@@ -208,16 +210,19 @@ if [ "$OSS_SKIP" != "true" ]; then
   assert_cred_not_tracked
 fi
 
-# ---- 元数据：从 dmg 的 Info.plist 读构建号 ----
+# ---- 元数据：从 dmg 的 Info.plist 读构建号与最低系统版本 ----
 DMG_MOUNT="$(mktemp -d -t xiaotu-dmg)"
 hdiutil attach "$DMG_PATH" -mountpoint "$DMG_MOUNT" -nobrowse -readonly >/dev/null 2>&1 || true
 APP_IN_DMG="$(find "$DMG_MOUNT" -name "*.app" -maxdepth 2 2>/dev/null | head -1 || true)"
 BUILD=""
 PLIST_VERSION=""
+MIN_OS=""
 if [ -n "$APP_IN_DMG" ] && [ -f "$APP_IN_DMG/Contents/Info.plist" ]; then
   BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
     "$APP_IN_DMG/Contents/Info.plist" 2>/dev/null || true)"
   PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+    "$APP_IN_DMG/Contents/Info.plist" 2>/dev/null || true)"
+  MIN_OS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' \
     "$APP_IN_DMG/Contents/Info.plist" 2>/dev/null || true)"
   if [ "$PLIST_VERSION" != "$VERSION" ]; then
     echo "警告：dmg 内版本 $PLIST_VERSION ≠ 仓库 VERSION $VERSION" >&2
@@ -233,33 +238,31 @@ if ! [[ "$BUILD" =~ ^[0-9]{4,}$ ]]; then
   [[ "$BUILD" =~ ^[0-9]{4,}$ ]] || { echo "无法从 dmg 推断构建号（${DMG_BASENAME_FN}）" >&2; exit 1; }
 fi
 
-DMG_SIZE="$(stat -f %z "$DMG_PATH")"
-DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
 PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-DMG_BASENAME="$(basename "$DMG_PATH")"
 PUB_BASE64="$("$OPENSSL_BIN" pkey -pubin -in "$SIGNING_PUB" -outform DER 2>/dev/null \
   | tail -c 32 | base64 | tr -d '\n')"
 
 # ---- 路径（纯 object key，不含 bucket/endpoint）----
-PRODUCT_DIR="$PRODUCT"
-DMG_KEY="$PRODUCT_DIR/$DMG_BASENAME"
+# v2 安装包命名：<product>-<version>-<os>-<arch>-<type>.<ext>（见更新清单Schema-v2.md 第七节）
+V2_DMG_NAME="xiaotu-${VERSION}-macos-arm64.dmg"
+DMG_KEY="$PRODUCT_DIR/$V2_DMG_NAME"
 DMG_PUBLIC_URL="$CDN_DOMAIN/$DMG_KEY"
-LATEST_KEY="$PRODUCT_DIR/updates/$CHANNEL/latest.json"
+MANIFEST_KEY="$PRODUCT_DIR/updates/$CHANNEL/manifest.json"
 APPCAST_KEY="$PRODUCT_DIR/updates/$CHANNEL/appcast.xml"
-MANIFEST_PUBLIC="$CDN_DOMAIN/$LATEST_KEY"
+MANIFEST_PUBLIC="$CDN_DOMAIN/$MANIFEST_KEY"
 APPCAST_PUBLIC="$CDN_DOMAIN/$APPCAST_KEY"
 
 echo "===== OSS 发布 · ${PRODUCT} ====="
 echo "版本 / build / channel：  ${VERSION} / ${BUILD} / ${CHANNEL}"
-echo "dmg：                     ${DMG_PATH} （${DMG_SIZE} 字节）"
-echo "sha256：                  ${DMG_SHA256}"
-echo "公钥 base64：             ${PUB_BASE64}"
+echo "dmg：                     ${DMG_PATH}"
+echo "远端文件名（v2）：        ${V2_DMG_NAME}"
+echo "min_os：                  ${MIN_OS:-（空）}"
 echo "bucket / region：         ${OSS_BUCKET:-<dry-run>} / ${OSS_REGION:-<dry-run>}"
 echo "AK / 来源：               ${AK_MASK:-<dry-run>} / ${OSS_CRED_SOURCE:-<dry-run>}"
 echo "域名：                    ${CDN_DOMAIN}"
 echo "OSS key："
 echo "  dmg：                   ${DMG_KEY}"
-echo "  latest.json：           ${LATEST_KEY}"
+echo "  manifest.json：         ${MANIFEST_KEY}"
 echo "  appcast.xml：           ${APPCAST_KEY}"
 [ "${OSS_SKIP}" = "true" ] && echo "(dry-run：不上传)"
 
@@ -284,30 +287,33 @@ print(f"  ✓ {ok}  ({ct}, {cc})")
 PY_EOF
 }
 
-# ---- ⓪ 发布门禁（三仓库共用 tools/release/guard.py）----
-GUARD_PY="${GUARD_PY:-$REPO_ROOT/tools/release/guard.py}"
-GUARD_ARGS=(--product xiaotu --kind mac --channel "$CHANNEL" --file "$DMG_PATH")
-[ "$OSS_SKIP" = "true" ] && GUARD_ARGS+=(--offline)
-echo ""
-echo "===== ⓪ 发布门禁"
-python3 "$GUARD_PY" preflight "${GUARD_ARGS[@]}"
-
-# ---- ① 上传 dmg（immutable，长缓存）----
-if [ "$OSS_SKIP" != "true" ]; then
-  echo ""
-  echo "===== ① 上传 dmg → $DMG_KEY"
-  oss_upload "$DMG_PATH" "$DMG_KEY" \
-    "public, max-age=31536000, immutable" "application/octet-stream"
-else
-  echo ""
-  echo "===== ① [dry-run] 将上传 $DMG_KEY"
-fi
-
-# ---- ② 生成 latest.json + appcast.xml ----
-MANIFEST_LOCAL="$STAGE/latest.json"
+MANIFEST_V2_PY="$REPO_ROOT/tools/release/manifest_v2.py"
+MANIFEST_LOCAL="$STAGE/manifest.json"
 APPCAST_LOCAL="$STAGE/appcast.xml"
 
+# ---- ① 生成 manifest.json（v2，Ed25519 签名）----
 MANIFEST_ARGS=(
+  generate
+  --product "$PRODUCT"
+  --channel "$CHANNEL"
+  --platform macos
+  --version "$VERSION"
+  --min-os "$MIN_OS"
+  --artifact "dmg=$DMG_PATH"
+  --key-id "$KEY_ID"
+  --key "$SIGNING_KEY"
+  --out "$MANIFEST_LOCAL"
+)
+[ -n "$MANDATORY" ] && [ "$MANDATORY" = "true" ] && \
+  MANIFEST_ARGS+=(--mandatory --mandatory-reason MIN_SUPPORTED --mandatory-deadline "$PUBLISHED_AT")
+[ -n "$RELEASE_NOTES_URL" ] && MANIFEST_ARGS+=(--notes-url "$RELEASE_NOTES_URL")
+
+echo ""
+echo "===== ① 生成 manifest.json（v2）"
+python3 "$MANIFEST_V2_PY" "${MANIFEST_ARGS[@]}"
+
+# ---- ② 生成 appcast.xml（Sparkle 专用，不在 v2 范围）----
+APPCAST_ARGS=(
   generate
   --file "$DMG_PATH"
   --version "$VERSION"
@@ -322,46 +328,59 @@ MANIFEST_ARGS=(
   --rollout 100
   --key-id "$KEY_ID"
   --key "$SIGNING_KEY"
-  --out "$MANIFEST_LOCAL"
+  --out "$STAGE/latest.json"
   --appcast "$APPCAST_LOCAL"
   --published-at "$PUBLISHED_AT"
 )
 [ -n "$MANDATORY" ] && [ "$MANDATORY" = "true" ] && \
-  MANIFEST_ARGS+=(--mandatory --reason MIN_SUPPORTED --deadline "$PUBLISHED_AT")
-[ -n "$RELEASE_NOTES_URL" ] && MANIFEST_ARGS+=(--release-notes-url "$RELEASE_NOTES_URL")
+  APPCAST_ARGS+=(--mandatory --reason MIN_SUPPORTED --deadline "$PUBLISHED_AT")
+[ -n "$RELEASE_NOTES_URL" ] && APPCAST_ARGS+=(--release-notes-url "$RELEASE_NOTES_URL")
 
 echo ""
-echo "===== ② 生成 latest.json + appcast.xml"
-"$VENV_PY" "$REPO_ROOT/tools/package/update_manifest.py" "${MANIFEST_ARGS[@]}"
+echo "===== ② 生成 appcast.xml（latest.json 仅为其副产物，不上传）"
+"$VENV_PY" "$REPO_ROOT/tools/package/update_manifest.py" "${APPCAST_ARGS[@]}"
 
 # ---- ③ 本地验签（上传前的双重保险）----
 echo ""
 echo "===== ③ 本地验签"
-"$VENV_PY" "$REPO_ROOT/tools/package/update_manifest.py" verify \
-  --manifest "$MANIFEST_LOCAL" --pub "$SIGNING_PUB" --file "$DMG_PATH"
+python3 "$MANIFEST_V2_PY" verify \
+  --manifest "$MANIFEST_LOCAL" --pub "$SIGNING_PUB" --artifact "dmg=$DMG_PATH"
 
 MANIFEST_KEY_ID="$($VENV_PY -c "import json;print(json.load(open('$MANIFEST_LOCAL'))['key_id'])")"
-MANIFEST_ROLLOUT="$($VENV_PY -c "import json;print(json.load(open('$MANIFEST_LOCAL'))['rollout_percent'])")"
-echo "  key_id=$MANIFEST_KEY_ID  rollout=${MANIFEST_ROLLOUT}%"
+echo "  key_id=$MANIFEST_KEY_ID"
 
-# ---- ④ 上传 latest.json + appcast.xml（短缓存 5 分钟）----
+# ---- ④ 发布门禁（三仓库共用 tools/release/guard.py，v2 规则）----
+GUARD_PY="${GUARD_PY:-$REPO_ROOT/tools/release/guard.py}"
+GUARD_ARGS=(
+  --product xiaotu --kind mac --channel "$CHANNEL"
+  --file "$DMG_PATH" --name "$V2_DMG_NAME"
+  --schema v2 --manifest "$MANIFEST_LOCAL" --pub "$SIGNING_PUB"
+)
+[ "$OSS_SKIP" = "true" ] && GUARD_ARGS+=(--offline)
+echo ""
+echo "===== ④ 发布门禁"
+python3 "$GUARD_PY" preflight "${GUARD_ARGS[@]}"
+
+# ---- ⑤ 上传 dmg + manifest.json + appcast.xml ----
 if [ "$OSS_SKIP" != "true" ]; then
   echo ""
-  echo "===== ④ 上传 latest.json + appcast.xml"
-  oss_upload "$MANIFEST_LOCAL" "$LATEST_KEY" \
+  echo "===== ⑤ 上传"
+  oss_upload "$DMG_PATH" "$DMG_KEY" \
+    "public, max-age=31536000, immutable" "application/octet-stream"
+  oss_upload "$MANIFEST_LOCAL" "$MANIFEST_KEY" \
     "no-cache, max-age=60" "application/json"
   oss_upload "$APPCAST_LOCAL" "$APPCAST_KEY" \
     "no-cache, max-age=60" "application/rss+xml"
 else
   echo ""
-  echo "===== ④ [dry-run] 将上传 $LATEST_KEY + $APPCAST_KEY"
+  echo "===== ⑤ [dry-run] 将上传 $DMG_KEY + $MANIFEST_KEY + $APPCAST_KEY"
 fi
 
-# ---- ⑤ purge CDN ----
+# ---- ⑥ purge CDN ----
 if [ "$OSS_SKIP" != "true" ]; then
   if [ "$PURGE" = "true" ]; then
     echo ""
-    echo "===== ⑤ purge CDN 缓存"
+    echo "===== ⑥ purge CDN 缓存"
     for url in "$DMG_PUBLIC_URL" "$MANIFEST_PUBLIC" "$APPCAST_PUBLIC"; do
       if command -v aliyun >/dev/null 2>&1; then
         if aliyun cdn RefreshObjectCaches --ObjectPath "$url" >/dev/null 2>&1; then
@@ -376,16 +395,16 @@ if [ "$OSS_SKIP" != "true" ]; then
     echo "  CDN purge 完成，1 分钟内全网生效"
   else
     echo ""
-    echo "===== ⑤ 跳过 purge（PURGE=false）"
+    echo "===== ⑥ 跳过 purge（PURGE=false）"
     echo "  提醒：新 manifest 最多 1 分钟后自动生效"
   fi
 fi
 
-# ---- ⑥ 预热 CDN ----
+# ---- ⑦ 预热 CDN ----
 # 发布后主动下载一次新包，让边缘节点先缓存，避免首个用户吃冷启动（香港节点尤其明显）。
 if [ "$OSS_SKIP" != "true" ] && [ "$WARMUP" = "true" ]; then
   echo ""
-  echo "===== ⑥ 预热 CDN（下载一次新包写入边缘缓存）"
+  echo "===== ⑦ 预热 CDN（下载一次新包写入边缘缓存）"
   if command -v curl >/dev/null 2>&1; then
     WARM_ERR="$(mktemp)"
     set +e
@@ -407,25 +426,23 @@ if [ "$OSS_SKIP" != "true" ] && [ "$WARMUP" = "true" ]; then
   fi
 else
   echo ""
-  echo "===== ⑥ [跳过] CDN 预热（WARMUP=false 或 dry-run）"
+  echo "===== ⑦ [跳过] CDN 预热（WARMUP=false 或 dry-run）"
 fi
 
 if [ "$OSS_SKIP" != "true" ]; then
   echo ""
-  echo "===== ⑦ 线上门禁"
+  echo "===== ⑧ 线上门禁"
   python3 "$GUARD_PY" verify-live "${GUARD_ARGS[@]}"
 fi
 
-# ---- ⑧ 完成 ----
+# ---- ⑨ 完成 ----
 echo ""
 echo "================ 发布完成 ================"
 echo "版本 / build / channel：  $VERSION / $BUILD / $CHANNEL"
 echo "dmg 下载地址：           $DMG_PUBLIC_URL"
-echo "  sha256 / size：        $DMG_SHA256 / $DMG_SIZE 字节"
-echo "latest.json：            $MANIFEST_PUBLIC"
+echo "manifest.json：          $MANIFEST_PUBLIC"
 echo "appcast.xml：            $APPCAST_PUBLIC"
-echo "schema / api：           $SCHEMA_MIN ~ $SCHEMA_MAX / $API_MIN ~ $API_MAX"
-echo "key_id / rollout：       $MANIFEST_KEY_ID / ${MANIFEST_ROLLOUT}%"
+echo "key_id：                 $MANIFEST_KEY_ID"
 echo ""
 if [ "${OSS_CRED_SOURCE:-}" = "环境变量" ]; then
   echo "→ 提醒：本次凭据来自环境变量。若曾明文粘贴到聊天、命令行历史或日志，"
@@ -439,8 +456,8 @@ echo "  XIAOTU_UPDATE_PUBKEY=$PUB_BASE64"
 echo ""
 echo "→ 立即验证："
 if [ "$OSS_SKIP" = "true" ]; then
-  echo "  python3 tools/package/update_manifest.py verify --manifest $MANIFEST_LOCAL --pub $SIGNING_PUB --file $DMG_PATH"
+  echo "  python3 tools/release/manifest_v2.py verify --manifest $MANIFEST_LOCAL --pub $SIGNING_PUB --artifact dmg=$DMG_PATH"
 else
   echo "  curl -s $MANIFEST_PUBLIC | python3 -m json.tool | head -15"
-  echo "  python3 tools/package/update_manifest.py verify --manifest <(curl -s $MANIFEST_PUBLIC) --pub $SIGNING_PUB --file $DMG_PATH"
+  echo "  python3 tools/release/guard.py verify-live ${GUARD_ARGS[*]}"
 fi

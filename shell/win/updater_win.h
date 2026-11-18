@@ -2,10 +2,10 @@
 //
 // 架构：
 //   updater_win 负责三件事：
-//     1. 启动后在后台拉取 latest.json（WinHTTP）
-//     2. 调用 core 层纯函数（xiaotu::parse_manifest / evaluate_manifest / update_signature）
-//        做版本判定、强制升级、灰度分桶、Ed25519 验签
-//     3. 下载 setup.exe → SHA256 校验 → 调用 ISCC 静默覆盖重启
+//     1. 启动后在后台拉取 manifest.json（Schema v2 统一清单，WinHTTP）
+//     2. 调用 core 层纯函数（版本比较 / 灰度分桶 / update_signature）
+//        做更新判定、强制升级与 Ed25519 验签；清单只取 platforms.windows
+//     3. 下载 artifacts.setup 安装包 → SHA256 校验 → 调用 ISCC 静默覆盖重启
 //
 //   shell/win/main.cpp 通过 ICoreWebView2::AddHostObjectToScript 把 UpdaterWin 暴露给前端，
 //   前端 JS 用 window.chrome.webview.hostObjects.updater_win.checkNow() 等调用。

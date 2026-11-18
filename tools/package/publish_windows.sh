@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# 小兔在线 · Windows 清单发布脚本
+# 小兔在线 · Windows 清单发布脚本（更新清单 Schema v2）
 #
-# 输入 Windows 安装包（setup.exe）→ 生成 Ed25519 签名的 windows.json → 上传 dl.xiaotu.online → purge CDN。
+# 输入 Windows 安装包（setup.exe）+ 可选绿色包 → 生成 Ed25519 签名的 manifest.json（v2）
+# → 上传 dl.xiaotu.online → purge CDN。
 # macOS 用 publish_oss.sh（dmg + appcast）；Windows 没有 appcast，只发清单。
 #
 # 目录结构（与壳里写死的清单地址一致）：
-#   oss://<bucket>/xiaotu/<setup 文件名>                 ← 长缓存 / immutable（下载页也用这个路径）
-#   oss://<bucket>/xiaotu/<绿色包文件名>                 ← 存在时一并上传；清单写明 portable_*
-#   oss://<bucket>/<product>/updates/<channel>/windows.json ← 60 秒缓存
+#   oss://<bucket>/xiaotu/xiaotu-<ver>-win64-setup.exe            ← 长缓存 / immutable（v2 命名）
+#   oss://<bucket>/xiaotu/xiaotu-<ver>-win64-portable.zip         ← 存在时一并上传
+#   oss://<bucket>/xiaotu/updates/<channel>/manifest.json         ← 60 秒缓存（v2 清单）
+#
+# 本地产物名仍为 Windows 构建输出（xiaotu-inventory-*），上传时按 v2 规则改名。
+# 本脚本不再生成 windows.json，旧内测客户端按切换方案重装升级。
 #
 # 重要：BUILD 必须与打包时写进 exe 的构建号完全一致。
 # 壳的更新判定是 `manifest.build <= 当前 build → 无更新`；如果清单里的 build
@@ -113,23 +117,23 @@ ZIP_PUBLIC_URL=""
 ZIP_SIZE=""
 ZIP_SHA256=""
 if [ -f "$ZIP_PATH" ]; then
-  ZIP_BASENAME="$(basename "$ZIP_PATH")"
-  ZIP_KEY="$PRODUCT/$ZIP_BASENAME"
-  ZIP_PUBLIC_URL="$CDN_DOMAIN/$ZIP_KEY"
   ZIP_SIZE="$(stat -f %z "$ZIP_PATH" 2>/dev/null || stat -c %s "$ZIP_PATH")"
   ZIP_SHA256="$(shasum -a 256 "$ZIP_PATH" | awk '{print $1}')"
 fi
 
-# 清单里的下载地址直接由文件名推导，文件名不规范会写出指向错误对象的 URL
-# （例如从浏览器另存为 win_setup.exe，清单就指向 /xiaotu/win_setup.exe）。
+# 清单里的下载地址由 v2 命名规则推导（本地文件名可以保持构建输出不变，远端按 v2 改名）。
 EXPECTED_NAME="xiaotu-inventory-$VERSION-win64-setup.exe"
 ACTUAL_NAME="$(basename "$SETUP_PATH")"
 if [ "$ACTUAL_NAME" != "$EXPECTED_NAME" ]; then
-  echo "安装包文件名不符合发布规范：$ACTUAL_NAME" >&2
-  echo "必须命名为 ${EXPECTED_NAME}（清单下载地址由它推导）。" >&2
+  echo "安装包文件名不符合构建输出规范：$ACTUAL_NAME" >&2
+  echo "必须命名为 ${EXPECTED_NAME}（版本号从它推导）。" >&2
   echo "可先改名或放到 packaging/win/out/$EXPECTED_NAME 再重试。" >&2
   exit 1
 fi
+
+# v2 安装包命名：<product>-<version>-<os>-<arch>-<type>.<ext>（见更新清单Schema-v2.md 第七节）
+V2_SETUP_NAME="xiaotu-${VERSION}-win64-setup.exe"
+V2_ZIP_NAME="xiaotu-${VERSION}-win64-portable.zip"
 
 DEFAULT_KEY="$HOME/.config/xiaotu-updates/update_signing_2026.pem"
 SIGNING_KEY="${SIGNING_KEY:-$DEFAULT_KEY}"
@@ -140,44 +144,13 @@ SIGNING_PUB="${SIGNING_KEY%.pem}.pub.pem"
 [ -f "$SIGNING_PUB" ] || { echo "公钥不存在：$SIGNING_PUB" >&2; exit 1; }
 
 KEY_ID="${KEY_ID:-2026-11}"
-SCHEMA_MIN="${SCHEMA_MIN:-1}"
-SCHEMA_MAX="${SCHEMA_MAX:-39}"
-API_MIN="${API_MIN:-1}"
-API_MAX="${API_MAX:-1}"
+MIN_OS="${MIN_OS:-10.0}"
 RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-}"
 PURGE="${PURGE:-true}"
 
-# ---- 依赖：cryptography（优先复用已有的用户级 venv，避免在仓库内建 .venv）----
-resolve_py_with() {  # resolve_py_with <模块名>：找到装了该模块的解释器并打印路径
-  local mod="$1" cand
-  for cand in "${REQ_PY:-}" "$HOME/.venvs/xiaotu-oss/bin/python" "$HOME/.venv-oss/bin/python" \
-              "$REPO_ROOT/tools/package/.venv/bin/python"; do
-    [ -n "$cand" ] && [ -x "$cand" ] && "$cand" -c "import $mod" 2>/dev/null \
-      && { printf '%s' "$cand"; return 0; }
-  done
-  return 1
-}
-VENV_PY="$(resolve_py_with cryptography || true)"
-if [ -z "$VENV_PY" ]; then
-  python3 -m venv "$HOME/.venvs/xiaotu-oss"
-  "$HOME/.venvs/xiaotu-oss/bin/pip" install -q -r "$REPO_ROOT/tools/package/requirements.txt"
-  VENV_PY="$HOME/.venvs/xiaotu-oss/bin/python"
-fi
+# ---- 依赖：manifest_v2.py / guard.py 均为纯标准库，python3 即可 ----
+command -v python3 >/dev/null 2>&1 || { echo "未找到 python3" >&2; exit 1; }
 command -v shasum >/dev/null 2>&1 || { echo "未找到 shasum" >&2; exit 1; }
-
-# ---- ⓪ 发布门禁（三仓库共用 tools/release/guard.py）----
-# 校验命名、版本单调、同名覆盖风险，以及绿色包内壳的清单地址。
-GUARD_PY="${GUARD_PY:-$REPO_ROOT/tools/release/guard.py}"
-GUARD_ARGS=(--product xiaotu --kind win --channel "$CHANNEL")
-if [ -n "$ZIP_KEY" ]; then
-  GUARD_ARGS+=(--file "$SETUP_PATH" --zip "$ZIP_PATH")
-else
-  GUARD_ARGS+=(--file "$SETUP_PATH")
-fi
-[ "$OSS_SKIP" = "true" ] && GUARD_ARGS+=(--offline)
-echo ""
-echo "===== ⓪ 发布门禁"
-python3 "$GUARD_PY" preflight "${GUARD_ARGS[@]}"
 
 # ---- 凭据文件路径与解析函数已在脚本开头定义 ----
 mask_ak() {
@@ -235,19 +208,20 @@ if [ "$OSS_SKIP" != "true" ]; then
 fi
 
 # ---- 路径 ----
-SETUP_BASENAME="$(basename "$SETUP_PATH")"
 SETUP_SIZE="$(stat -f %z "$SETUP_PATH" 2>/dev/null || stat -c %s "$SETUP_PATH")"
 SETUP_SHA256="$(shasum -a 256 "$SETUP_PATH" | awk '{print $1}')"
 PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-SETUP_KEY="$PRODUCT/$SETUP_BASENAME"
+SETUP_KEY="$PRODUCT_DIR/$V2_SETUP_NAME"
 SETUP_PUBLIC_URL="$CDN_DOMAIN/$SETUP_KEY"
-LATEST_KEY="$PRODUCT/updates/$CHANNEL/windows.json"
-MANIFEST_PUBLIC="$CDN_DOMAIN/$LATEST_KEY"
+[ -n "$ZIP_SHA256" ] && ZIP_KEY="$PRODUCT_DIR/$V2_ZIP_NAME" && ZIP_PUBLIC_URL="$CDN_DOMAIN/$ZIP_KEY"
+MANIFEST_KEY="$PRODUCT_DIR/updates/$CHANNEL/manifest.json"
+MANIFEST_PUBLIC="$CDN_DOMAIN/$MANIFEST_KEY"
 
 echo "===== OSS 发布 · Windows 安装包 ====="
 echo "版本 / build / channel：  ${VERSION} / ${BUILD} / ${CHANNEL}"
 echo "安装包：                  ${SETUP_PATH} （${SETUP_SIZE} 字节）"
+echo "远端文件名（v2）：        ${V2_SETUP_NAME}"
 echo "sha256：                  ${SETUP_SHA256}"
 echo "bucket / region：         ${OSS_BUCKET:-<dry-run>} / ${OSS_REGION:-<dry-run>}"
 echo "AK / 来源：               ${AK_MASK:-<dry-run>} / ${OSS_CRED_SOURCE:-<dry-run>}"
@@ -255,7 +229,7 @@ echo "域名：                    ${CDN_DOMAIN}"
 echo "OSS key："
 echo "  setup.exe：             ${SETUP_KEY}"
 [ -n "$ZIP_KEY" ] && echo "  zip（绿色包）：         ${ZIP_KEY}（${ZIP_SIZE} 字节）"
-echo "  windows.json：          ${LATEST_KEY}"
+echo "  manifest.json：         ${MANIFEST_KEY}"
 [ "${OSS_SKIP}" = "true" ] && echo "(dry-run：不上传)"
 
 STAGE="$(mktemp -d -t xiaotu-win-stage)"
@@ -276,72 +250,75 @@ print(f"  ✓ {ok}  ({ct}, {cc})")
 PY_EOF
 }
 
-# ---- ① 上传 setup.exe ----
-if [ "$OSS_SKIP" != "true" ]; then
-  echo ""
-  echo "===== ① 上传安装包 → $SETUP_KEY"
-  oss_upload "$SETUP_PATH" "$SETUP_KEY" \
-    "public, max-age=31536000, immutable" "application/octet-stream"
-  if [ -n "$ZIP_KEY" ]; then
-    echo "===== ① 上传绿色包 → $ZIP_KEY"
-    oss_upload "$ZIP_PATH" "$ZIP_KEY" \
-      "public, max-age=31536000, immutable" "application/zip"
-  fi
-else
-  echo ""
-  echo "===== ① [dry-run] 将上传 $SETUP_KEY"
-  [ -n "$ZIP_KEY" ] && echo "===== ① [dry-run] 将上传 $ZIP_KEY"
-fi
+MANIFEST_V2_PY="$REPO_ROOT/tools/release/manifest_v2.py"
+MANIFEST_LOCAL="$STAGE/manifest.json"
 
-# ---- ② 生成并签名 windows.json ----
-MANIFEST_LOCAL="$STAGE/windows.json"
+# ---- ① 生成并签名 manifest.json（v2）----
 MANIFEST_ARGS=(
   generate
-  --file "$SETUP_PATH"
+  --product "$PRODUCT"
+  --channel "$CHANNEL"
+  --platform windows
   --version "$VERSION"
   --build "$BUILD"
-  --url "$SETUP_PUBLIC_URL"
-  --platform windows
-  --channel "$CHANNEL"
-  --schema-min "$SCHEMA_MIN"
-  --schema-max "$SCHEMA_MAX"
-  --api-min "$API_MIN"
-  --api-max "$API_MAX"
-  --rollout 100
+  --min-os "$MIN_OS"
+  --artifact "setup=$SETUP_PATH"
   --key-id "$KEY_ID"
   --key "$SIGNING_KEY"
   --out "$MANIFEST_LOCAL"
-  --published-at "$PUBLISHED_AT"
 )
-[ -n "$RELEASE_NOTES_URL" ] && MANIFEST_ARGS+=(--release-notes-url "$RELEASE_NOTES_URL")
-[ -n "$ZIP_KEY" ] && MANIFEST_ARGS+=(--portable-file "$ZIP_PATH" --portable-url "$ZIP_PUBLIC_URL")
+[ -f "$ZIP_PATH" ] && MANIFEST_ARGS+=(--artifact "portable=$ZIP_PATH")
+[ -n "$RELEASE_NOTES_URL" ] && MANIFEST_ARGS+=(--notes-url "$RELEASE_NOTES_URL")
 
 echo ""
-echo "===== ② 生成 windows.json"
-"$VENV_PY" "$REPO_ROOT/tools/package/update_manifest.py" "${MANIFEST_ARGS[@]}"
+echo "===== ① 生成 manifest.json（v2）"
+python3 "$MANIFEST_V2_PY" "${MANIFEST_ARGS[@]}"
 
-# ---- ③ 本地验签 ----
+# ---- ② 本地验签 ----
 echo ""
-echo "===== ③ 本地验签"
-"$VENV_PY" "$REPO_ROOT/tools/package/update_manifest.py" verify \
-  --manifest "$MANIFEST_LOCAL" --pub "$SIGNING_PUB" --file "$SETUP_PATH"
+echo "===== ② 本地验签"
+VERIFY_ARGS=(--manifest "$MANIFEST_LOCAL" --pub "$SIGNING_PUB" --artifact "setup=$SETUP_PATH")
+[ -f "$ZIP_PATH" ] && VERIFY_ARGS+=(--artifact "portable=$ZIP_PATH")
+python3 "$MANIFEST_V2_PY" verify "${VERIFY_ARGS[@]}"
 
-MANIFEST_BUILD="$("$VENV_PY" -c "import json;print(json.load(open('$MANIFEST_LOCAL'))['build'])")"
-[ "$MANIFEST_BUILD" = "$BUILD" ] || {
-  echo "清单 build（${MANIFEST_BUILD}）与 BUILD（${BUILD}）不一致" >&2; exit 1; }
+# ---- ③ 发布门禁（三仓库共用 tools/release/guard.py，v2 规则）----
+# 校验 v2 命名、版本/构建号单调、同名覆盖风险、manifest.json 签名与产物一致性，
+# 以及绿色包内壳的清单地址（v2 要求指向 manifest.json）。
+GUARD_PY="${GUARD_PY:-$REPO_ROOT/tools/release/guard.py}"
+GUARD_ARGS=(
+  --product xiaotu --kind win --channel "$CHANNEL"
+  --file "$SETUP_PATH" --name "$V2_SETUP_NAME"
+  --schema v2 --manifest "$MANIFEST_LOCAL" --pub "$SIGNING_PUB" --build "$BUILD"
+)
+if [ -f "$ZIP_PATH" ]; then
+  GUARD_ARGS+=(--zip "$ZIP_PATH" --zip-name "$V2_ZIP_NAME")
+fi
+[ "$OSS_SKIP" = "true" ] && GUARD_ARGS+=(--offline)
+echo ""
+echo "===== ③ 发布门禁"
+python3 "$GUARD_PY" preflight "${GUARD_ARGS[@]}"
 
-# ---- ④ 上传 windows.json ----
+# ---- ④ 上传 setup.exe / 绿色包 / manifest.json ----
 if [ "$OSS_SKIP" != "true" ]; then
   echo ""
-  echo "===== ④ 上传 windows.json"
-  oss_upload "$MANIFEST_LOCAL" "$LATEST_KEY" \
+  echo "===== ④ 上传安装包 → $SETUP_KEY"
+  oss_upload "$SETUP_PATH" "$SETUP_KEY" \
+    "public, max-age=31536000, immutable" "application/octet-stream"
+  if [ -n "$ZIP_KEY" ]; then
+    echo "===== ④ 上传绿色包 → $ZIP_KEY"
+    oss_upload "$ZIP_PATH" "$ZIP_KEY" \
+      "public, max-age=31536000, immutable" "application/zip"
+  fi
+  echo "===== ④ 上传 manifest.json → $MANIFEST_KEY"
+  oss_upload "$MANIFEST_LOCAL" "$MANIFEST_KEY" \
     "no-cache, max-age=60" "application/json"
   echo ""
   echo "===== ④b 线上门禁"
   python3 "$GUARD_PY" verify-live "${GUARD_ARGS[@]}"
 else
   echo ""
-  echo "===== ④ [dry-run] 将上传 $LATEST_KEY"
+  echo "===== ④ [dry-run] 将上传 $SETUP_KEY + $MANIFEST_KEY"
+  [ -n "$ZIP_KEY" ] && echo "===== ④ [dry-run] 将上传 $ZIP_KEY"
 fi
 
 # ---- ⑤ purge CDN ----
@@ -374,13 +351,12 @@ echo "安装包下载地址：          $SETUP_PUBLIC_URL"
 echo "  sha256 / size：         $SETUP_SHA256 / $SETUP_SIZE 字节"
 [ -n "$ZIP_KEY" ] && echo "绿色包下载地址：          $ZIP_PUBLIC_URL
   sha256 / size：         $ZIP_SHA256 / $ZIP_SIZE 字节"
-echo "windows.json：             $MANIFEST_PUBLIC"
-echo "schema / api：            $SCHEMA_MIN ~ $SCHEMA_MAX / $API_MIN ~ $API_MAX"
+echo "manifest.json：            $MANIFEST_PUBLIC"
 echo ""
 echo "→ 立即验证："
 if [ "$OSS_SKIP" = "true" ]; then
-  echo "  python3 tools/package/update_manifest.py verify --manifest $MANIFEST_LOCAL --pub $SIGNING_PUB --file $SETUP_PATH"
+  echo "  python3 tools/release/manifest_v2.py verify --manifest $MANIFEST_LOCAL --pub $SIGNING_PUB --artifact setup=$SETUP_PATH"
 else
   echo "  curl -s $MANIFEST_PUBLIC | python3 -m json.tool | head -15"
-  echo "  python3 tools/package/update_manifest.py verify --manifest <(curl -s $MANIFEST_PUBLIC) --pub $SIGNING_PUB --file $SETUP_PATH"
+  echo "  python3 tools/release/guard.py verify-live ${GUARD_ARGS[*]}"
 fi

@@ -14,7 +14,7 @@
 
 .PARAMETER Build
   构建号（纯数字）。缺省取当前 UTC 时间 yyyyMMddHHmm。
-  必须大于线上 windows.json 的 build，且会同时写入服务端与壳。
+  必须大于线上 manifest.json 的 build，且会同时写入服务端与壳。
 
 .EXAMPLE
   .\packaging\win\build-release.ps1
@@ -61,7 +61,7 @@ if (-not $Build) { $Build = [DateTime]::UtcNow.ToString('yyyyMMddHHmm') }
 if ($Build -notmatch '^\d{4,}$') { Fail "构建号必须是纯数字：$Build" }
 
 Write-Host "版本：$version   构建号：$Build"
-Write-Host "提示：构建号必须大于线上 windows.json 的 build，否则 guard 会拒绝发布。"
+Write-Host "提示：构建号必须大于线上 manifest.json 里 platforms.windows 的 build，否则 guard 会拒绝发布。"
 
 $env:XIAOTU_BUILD = $Build
 
@@ -84,8 +84,8 @@ if (-not (Test-Path -LiteralPath $shellExe)) { Fail "未找到壳产物：$shell
 
 # 1.0.0 的包就是这里漏了：壳内清单地址必须与本次发布一致
 $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($shellExe))
-if ($text -notlike '*xiaotu/updates/stable/windows.json*') {
-  Fail "壳内未包含 xiaotu/updates/stable/windows.json，发布后会永远检查不到更新。请检查 shell/win 源码后重试。"
+if ($text -notlike '*xiaotu/updates/stable/manifest.json*') {
+  Fail "壳内未包含 xiaotu/updates/stable/manifest.json，发布后会永远检查不到更新。请检查 shell/win 源码后重试。"
 }
 Write-Host "  ✓ 壳内清单地址正确"
 

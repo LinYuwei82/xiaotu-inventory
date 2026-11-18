@@ -41,12 +41,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 校验 guard 未被单独改动
+      - name: 校验 guard / manifest_v2 未被单独改动
         shell: bash
-        run: tr -d '\r' < tools/release/guard.sha256 | sha256sum -c -
-      - name: guard selftest
+        run: |
+          tr -d '\r' < tools/release/guard.sha256 | sha256sum -c -
+          tr -d '\r' < tools/release/manifest_v2.sha256 | sha256sum -c -
+      - name: guard / manifest_v2 selftest
         shell: pwsh
-        run: python tools/release/guard.py selftest
+        run: |
+          python tools/release/guard.py selftest
+          python tools/release/manifest_v2.py selftest
 
       # 与 windows-build.yml 相同的构建环境
       - name: Setup MSVC
@@ -99,7 +103,7 @@ jobs:
           if (-not (Test-Path $exe)) { throw "未找到 $exe" }
           $bytes = [IO.File]::ReadAllBytes($exe)
           $text = [Text.Encoding]::ASCII.GetString($bytes)
-          if ($text -notlike '*xiaotu/updates/${{ inputs.channel }}/windows.json*') {
+          if ($text -notlike '*xiaotu/updates/${{ inputs.channel }}/manifest.json*') {
             throw 'xiaotu-shell.exe 未包含当前清单地址，请检查源码后重试'
           }
 
@@ -118,40 +122,42 @@ jobs:
           & $iscc "/DAppVersion=${{ env.VERSION }}" 'packaging\win\xiaotu-inventory.iss'
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败（$LASTEXITCODE）" }
 
-      - name: guard preflight
-        shell: pwsh
-        run: |
-          python tools/release/guard.py preflight `
-            --product xiaotu --kind win --channel ${{ inputs.channel }} `
-            --file "packaging/win/out/xiaotu-inventory-${{ env.VERSION }}-win64-setup.exe" `
-            --zip "build/package/win/xiaotu-inventory-${{ env.VERSION }}-win64.zip"
-
-      # ---- 以下为上传段：dry_run 到此为止 ----
-      - name: 生成并签名 windows.json
-        if: ${{ inputs.dry_run != true }}
+      - name: 生成并签名 manifest.json（v2）
         shell: pwsh
         env:
           XIAOTU_UPDATE_SIGNING_KEY: ${{ secrets.XIAOTU_UPDATE_SIGNING_KEY }}
         run: |
           $ErrorActionPreference = 'Stop'
-          python -m pip install --quiet -r tools/package/requirements.txt
           New-Item -ItemType Directory -Force dist | Out-Null
           $keyPath = Join-Path $env:RUNNER_TEMP 'update_signing.pem'
           [IO.File]::WriteAllText($keyPath, $env:XIAOTU_UPDATE_SIGNING_KEY.Replace("`n", "`r`n"))
           $v = '${{ env.VERSION }}'; $b = '${{ env.BUILD }}'
-          $base = 'https://dl.xiaotu.online/xiaotu'
-          $pub = "$(Get-Date -AsUtc -Format 'yyyy-MM-ddTHH:mm:ssZ')"
-          python tools/package/update_manifest.py generate `
-            --file "packaging/win/out/xiaotu-inventory-$v-win64-setup.exe" `
-            --version $v --build $b `
-            --url "$base/xiaotu-inventory-$v-win64-setup.exe" `
-            --platform windows --channel ${{ inputs.channel }} `
-            --schema-min 1 --schema-max 39 --api-min 1 --api-max 1 `
-            --rollout 100 --key-id 2026-11 `
-            --key $keyPath --out dist/windows.json --published-at $pub `
-            --portable-file "build/package/win/xiaotu-inventory-$v-win64.zip" `
-            --portable-url "$base/xiaotu-inventory-$v-win64.zip"
+          python tools/release/manifest_v2.py generate `
+            --product xiaotu --channel ${{ inputs.channel }} --platform windows `
+            --version $v --build $b --min-os 10.0 --key-id 2026-11 `
+            --artifact "setup=packaging/win/out/xiaotu-inventory-$v-win64-setup.exe" `
+            --artifact "portable=build/package/win/xiaotu-inventory-$v-win64.zip" `
+            --key $keyPath --out dist/manifest.json
+          python tools/release/manifest_v2.py verify `
+            --manifest dist/manifest.json --key $keyPath `
+            --artifact "setup=packaging/win/out/xiaotu-inventory-$v-win64-setup.exe" `
+            --artifact "portable=build/package/win/xiaotu-inventory-$v-win64.zip"
+          $pubHex = (python tools/release/manifest_v2.py pubkey --key $keyPath) -replace '.*：', ''
+          "PUB_HEX=$pubHex" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      - name: guard preflight（v2）
+        shell: pwsh
+        run: |
+          $v = '${{ env.VERSION }}'; $b = '${{ env.BUILD }}'
+          python tools/release/guard.py preflight `
+            --product xiaotu --kind win --channel ${{ inputs.channel }} `
+            --file "packaging/win/out/xiaotu-inventory-$v-win64-setup.exe" `
+            --name "xiaotu-$v-win64-setup.exe" `
+            --zip "build/package/win/xiaotu-inventory-$v-win64.zip" `
+            --zip-name "xiaotu-$v-win64-portable.zip" `
+            --schema v2 --manifest dist/manifest.json --pub-hex ${{ env.PUB_HEX }} --build $b
+
+      # ---- 以下为上传段：dry_run 到此为止 ----
       - name: 上传 OSS
         if: ${{ inputs.dry_run != true }}
         shell: pwsh
@@ -164,7 +170,7 @@ jobs:
           $v = '${{ env.VERSION }}'
           $env:UPLOAD_SETUP = "packaging/win/out/xiaotu-inventory-$v-win64-setup.exe"
           $env:UPLOAD_ZIP = "build/package/win/xiaotu-inventory-$v-win64.zip"
-          $env:UPLOAD_MANIFEST = 'dist/windows.json'
+          $env:UPLOAD_MANIFEST = 'dist/manifest.json'
           $env:CHANNEL = '${{ inputs.channel }}'
           $py = @'
           import os, oss2
@@ -172,11 +178,11 @@ jobs:
           endpoint = "https://oss-cn-hongkong.aliyuncs.com"
           bkt = oss2.Bucket(oss2.Auth(ak, sk), endpoint, "xiaotu-update")
           jobs = [
-              ("UPLOAD_SETUP", "xiaotu/xiaotu-inventory-{v}-win64-setup.exe",
+              ("UPLOAD_SETUP", "xiaotu/xiaotu-{v}-win64-setup.exe",
                "application/octet-stream", "public, max-age=31536000, immutable"),
-              ("UPLOAD_ZIP", "xiaotu/xiaotu-inventory-{v}-win64.zip",
+              ("UPLOAD_ZIP", "xiaotu/xiaotu-{v}-win64-portable.zip",
                "application/zip", "public, max-age=31536000, immutable"),
-              ("UPLOAD_MANIFEST", "xiaotu/updates/{ch}/windows.json",
+              ("UPLOAD_MANIFEST", "xiaotu/updates/{ch}/manifest.json",
                "application/json", "no-cache, max-age=60"),
           ]
           for env_key, key_tpl, ct, cc in jobs:
@@ -188,14 +194,18 @@ jobs:
           $py | Out-File "$env:RUNNER_TEMP\upload.py" -Encoding utf8
           python "$env:RUNNER_TEMP\upload.py"
 
-      - name: guard verify-live
+      - name: guard verify-live（v2）
         if: ${{ inputs.dry_run != true }}
         shell: pwsh
         run: |
+          $v = '${{ env.VERSION }}'; $b = '${{ env.BUILD }}'
           python tools/release/guard.py verify-live `
             --product xiaotu --kind win --channel ${{ inputs.channel }} `
-            --file "packaging/win/out/xiaotu-inventory-${{ env.VERSION }}-win64-setup.exe" `
-            --zip "build/package/win/xiaotu-inventory-${{ env.VERSION }}-win64.zip"
+            --file "packaging/win/out/xiaotu-inventory-$v-win64-setup.exe" `
+            --name "xiaotu-$v-win64-setup.exe" `
+            --zip "build/package/win/xiaotu-inventory-$v-win64.zip" `
+            --zip-name "xiaotu-$v-win64-portable.zip" `
+            --schema v2 --pub-hex ${{ env.PUB_HEX }} --build $b
 
       - name: 上传构建产物（留档）
         if: always()
@@ -205,6 +215,6 @@ jobs:
           path: |
             packaging/win/out/*.exe
             build/package/win/*.zip
-            dist/windows.json
+            dist/manifest.json
           if-no-files-found: warn
           retention-days: 14

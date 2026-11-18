@@ -324,30 +324,6 @@ NSString* sha256_of_file(NSURL* url) {
   return hex;
 }
 
-// 只把 upgrade_path 交给 core 解析与选择，避免在 Objective-C++ 里重写字段规则；
-// 清单其余字段仍按原有流程判定，不因 upgrade_path 引入额外前置条件。
-std::optional<xiaotu::UpgradeStep> intermediate_step(NSDictionary* manifest, int local_schema) {
-  id path = manifest[@"upgrade_path"];
-  if (path == nil || [path isKindOfClass:[NSNull class]]) {
-    return std::nullopt;
-  }
-  NSData* data = [NSJSONSerialization dataWithJSONObject:path options:0 error:nil];
-  if (data == nil || data.length == 0) {
-    return std::nullopt;
-  }
-  const auto* begin = static_cast<const char*>(data.bytes);
-  nlohmann::json array = nlohmann::json::parse(begin, begin + data.length, nullptr, false);
-  if (array.is_discarded()) {
-    return std::nullopt;
-  }
-  std::vector<xiaotu::UpgradeStep> steps;
-  xiaotu::ManifestError error;
-  if (!xiaotu::parse_upgrade_path(array, steps, error)) {
-    xiaotu::log_warn("更新：清单 upgrade_path 非法（" + error.code + "），本次不提供中间版本");
-    return std::nullopt;
-  }
-  return xiaotu::select_intermediate_step(steps, local_schema);
-}
 }  // namespace
 
 // 后台预下载：URLSession 的下载任务在完成回调里文件只在本次回调内有效，
@@ -1784,14 +1760,48 @@ didCompleteWithError:(NSError*)error {
     xiaotu::log_warn("更新：Info.plist 未配置 SUPublicEDKey，跳过 C++ 侧验签");
   }
 
-  NSString* platform = manifest[@"platform"];
-  NSString* channel = manifest[@"channel"];
-  if (![platform isEqualToString:@"macos"] || ![channel isEqualToString:self.channel]) {
-    xiaotu::log_warn("更新：清单的平台或通道与当前构建不匹配，本次不提示");
+  // ---- v2 统一清单：取 platforms.macos 拍平成原有字段，后续判定与预下载不变 ----
+  // 未知字段与未知 artifacts key 一律忽略，只取需要的键。
+  id platforms = manifest[@"platforms"];
+  id macPlatform = [platforms isKindOfClass:[NSDictionary class]] ? platforms[@"macos"] : nil;
+  if (![macPlatform isKindOfClass:[NSDictionary class]]) {
+    xiaotu::log_warn("更新：清单缺少 platforms.macos，本次不提示");
     [self clearPending];
     finish(kResultNoUpdate);
     return;
   }
+  NSString* channel = json_string(manifest, @"channel");
+  if (![channel isEqualToString:self.channel]) {
+    xiaotu::log_warn("更新：清单的通道与当前构建不匹配，本次不提示");
+    [self clearPending];
+    finish(kResultNoUpdate);
+    return;
+  }
+  id artifacts = macPlatform[@"artifacts"];
+  id dmg = [artifacts isKindOfClass:[NSDictionary class]] ? artifacts[@"dmg"] : nil;
+  NSString* dmgURL = json_string(dmg, @"url");
+  NSString* dmgSHA256 = json_string(dmg, @"sha256");
+  const long long dmgSize = json_long(dmg, @"size");
+  if (dmgURL.length == 0 || dmgSHA256.length == 0 || dmgSize <= 0) {
+    xiaotu::log_warn("更新：清单缺少可用的 dmg 产物，本次检查按失败处理");
+    finish(kResultCheckFailed);
+    return;
+  }
+  // 拍平（只取需要的键）：下游预下载与待安装状态继续按原字段消费；
+  // notes_url 映射为原 release_notes_url 字段。
+  manifest = @{
+    @"version" : json_string(macPlatform, @"version") ?: @"",
+    @"build" : @(json_long(macPlatform, @"build")),
+    @"min_os" : json_string(macPlatform, @"min_os") ?: @"",
+    @"release_notes_url" : json_string(macPlatform, @"notes_url") ?: @"",
+    @"rollout_percent" : @(json_long(macPlatform, @"rollout_percent")),
+    @"mandatory" : @(json_bool(macPlatform, @"mandatory")),
+    @"mandatory_reason" : json_string(macPlatform, @"mandatory_reason") ?: @"",
+    @"mandatory_deadline" : json_string(macPlatform, @"mandatory_deadline") ?: @"",
+    @"url" : dmgURL,
+    @"sha256" : dmgSHA256,
+    @"size" : @(dmgSize),
+  };
   // 清单声明的最低系统版本：与 core 的 evaluate_manifest 同一口径。
   NSString* minOS = json_string(manifest, @"min_os");
   if (minOS.length > 0) {
@@ -1804,20 +1814,29 @@ didCompleteWithError:(NSError*)error {
       return;
     }
   }
-  const std::int64_t remoteBuild = json_long(manifest, @"build");
-  if (remoteBuild <= current_build()) {
+  // v2：macOS 无构建号（build 固定 0），更新判定只比 version。
+  NSString* remoteVersionText = json_string(manifest, @"version");
+  xiaotu::ProductVersion remoteVersion{};
+  xiaotu::ProductVersion localVersion{};
+  if (remoteVersionText.length == 0 ||
+      !xiaotu::parse_product_version(remoteVersionText.UTF8String, remoteVersion) ||
+      !xiaotu::parse_product_version(xiaotu::current_product_version(), localVersion)) {
+    xiaotu::log_warn("更新：清单 version 缺失或非法，本次检查按失败处理");
+    finish(kResultCheckFailed);
+    return;
+  }
+  if (xiaotu::compare_product_version(remoteVersion, localVersion) <= 0) {
     [self clearPending];
     finish(kResultNoUpdate);
     return;
   }
+  const std::int64_t remoteBuild = json_long(manifest, @"build");
 
-  int localSchema = 0;
   if (self.healthBase.length > 0) {
     NSString* healthError = nil;
     NSDictionary* health = fetch_json([NSURL URLWithString:
                                            [self.healthBase stringByAppendingString:@"/api/health"]],
                                        &healthError);
-    localSchema = static_cast<int>(json_long(health, @"schema_version"));
     // 轻量握手：服务端可要求最低客户端版本。这里只记录与告警，
     // 启动时的阻塞页由 webview 在加载前单独检查，避免等待 30 秒后的首轮检查。
     NSString* minimum = json_string(health, @"min_supported_version");
@@ -1834,50 +1853,8 @@ didCompleteWithError:(NSError*)error {
       }
     }
   }
-  const long long schemaMin = json_long(manifest, @"schema_min");
-  const long long schemaMax = json_long(manifest, @"schema_max");
-  if (localSchema <= 0) {
-    xiaotu::log_warn("更新：无法读取本地 schema，本次检查按失败处理");
-    finish(kResultCheckFailed);
-    return;
-  }
-  if (localSchema < schemaMin) {
-    // 与服务端同一条规则：从清单 upgrade_path 选出最接近的更大 schema 作为中间版本。
-    const std::optional<xiaotu::UpgradeStep> step = intermediate_step(manifest, localSchema);
-    [self clearPending];
-    if (!step.has_value()) {
-      xiaotu::log_warn("更新：目标版本与当前数据版本不兼容，且清单未给出中间版本");
-      finish(kResultIncompatible);
-      return;
-    }
-    NSUserDefaults* intermediateDefaults = [NSUserDefaults standardUserDefaults];
-    [intermediateDefaults setObject:[NSString stringWithUTF8String:step->version.c_str()]
-                             forKey:kIntermediateVersionKey];
-    [intermediateDefaults setInteger:step->build forKey:kIntermediateBuildKey];
-    [intermediateDefaults setInteger:step->schema forKey:kIntermediateSchemaKey];
-    xiaotu::log_info("更新：当前数据版本过旧，需先升级到 " + step->version);
-    finish(kResultIntermediate);
-    return;
-  }
-  if (localSchema > schemaMax) {
-    xiaotu::log_warn("更新：目标版本与当前数据版本不兼容，已跳过");
-    [self clearPending];
-    finish(kResultIncompatible);
-    return;
-  }
-
-  // API 版本区间：清单通常必填；缺失或非法时按“未声明”处理，避免误拦。
-  const long long apiMin = json_long(manifest, @"api_min");
-  const long long apiMax = json_long(manifest, @"api_max");
-  const int apiVersion = xiaotu::current_api_version();
-  if (apiMin > 0 && apiMax >= apiMin && apiVersion > 0 &&
-      (apiVersion < apiMin || apiVersion > apiMax)) {
-    xiaotu::log_warn("更新：当前 API v" + std::to_string(apiVersion) + " 不在清单区间 [" +
-                     std::to_string(apiMin) + ", " + std::to_string(apiMax) + "]，本次不提示");
-    [self clearPending];
-    finish(kResultIncompatibleApi);
-    return;
-  }
+  // v2 清单不再携带 schema/api 区间与 upgrade_path：数据版本兼容性由安装器
+  // 与服务端握手把关，这里不做 schema/api 拦截。
 
   const bool mandatory = json_bool(manifest, @"mandatory");
   NSString* version = json_string(manifest, @"version");
