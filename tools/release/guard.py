@@ -749,7 +749,7 @@ def collect_artifacts(product: str, kind: str, file: Path, zip_file: Optional[Pa
 def cmd_preflight(args: argparse.Namespace) -> int:
     check_channel(args.channel)
     base = args.base.rstrip("/")
-    schema = args.schema
+    schema = "v2"  # v1 清单已于 2026-11-18 全量删除，强制 v2
     artifacts = collect_artifacts(args.product, args.kind, Path(args.file),
                                   Path(args.zip) if args.zip else None,
                                   args.name, args.zip_name, schema)
@@ -815,7 +815,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 def cmd_verify_live(args: argparse.Namespace) -> int:
     check_channel(args.channel)
     base = args.base.rstrip("/")
-    schema = args.schema
+    schema = "v2"  # v1 清单已于 2026-11-18 全量删除，强制 v2
     artifacts = collect_artifacts(args.product, args.kind, Path(args.file),
                                   Path(args.zip) if args.zip else None,
                                   args.name, args.zip_name, schema)
@@ -1196,8 +1196,6 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--base", default=DEFAULT_BASE)
         s.add_argument("--version", dest="version", help="断言文件名版本")
         s.add_argument("--offline", action="store_true", help="preflight 跳过线上检查")
-        s.add_argument("--schema", default="v2", choices=["v1", "v2"],
-                       help="v2（默认）：manifest.json + 统一命名（见 docs/更新清单Schema-v2.md）")
         s.add_argument("--manifest", help="v2 preflight：本地已签名 manifest.json 路径")
         s.add_argument("--build", type=int, default=None,
                        help="v2：本次发布的 Windows 构建号")
