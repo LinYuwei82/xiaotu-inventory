@@ -229,16 +229,16 @@ if [ "$OSS_SKIP" != "true" ]; then
 fi
 
 # ---- 元数据：从 dmg 的 Info.plist 读构建号与最低系统版本 ----
+BUILD="${BUILD:-}"   # 用户可显式传 BUILD（macOS 固定 0 时必须传，否则正则 ^[0-9]{4,}$ 过不了）
 DMG_MOUNT="$(mktemp -d -t xiaotu-dmg)"
 # 仅补发说明页时不需要 dmg，跳过挂载与元数据提取。
 if [ "$NOTES_ONLY" != "true" ]; then
 hdiutil attach "$DMG_PATH" -mountpoint "$DMG_MOUNT" -nobrowse -readonly >/dev/null 2>&1 || true
 APP_IN_DMG="$(find "$DMG_MOUNT" -name "*.app" -maxdepth 2 2>/dev/null | head -1 || true)"
-BUILD=""
 PLIST_VERSION=""
 MIN_OS=""
 if [ -n "$APP_IN_DMG" ] && [ -f "$APP_IN_DMG/Contents/Info.plist" ]; then
-  BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+  [ -z "$BUILD" ] && BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
     "$APP_IN_DMG/Contents/Info.plist" 2>/dev/null || true)"
   PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
     "$APP_IN_DMG/Contents/Info.plist" 2>/dev/null || true)"
@@ -252,10 +252,10 @@ hdiutil detach "$DMG_MOUNT" >/dev/null 2>&1 || true
 rm -rf "$DMG_MOUNT"
 
 # 从文件名推断 build 号
-if ! [[ "$BUILD" =~ ^[0-9]{4,}$ ]]; then
+if ! [[ "$BUILD" =~ ^[0-9]{1,}$ ]]; then
   DMG_BASENAME_FN="$(basename "$DMG_PATH")"
   BUILD="$(echo "$DMG_BASENAME_FN" | sed -E 's/.*-([0-9]{6,})\.dmg$/\1/')"
-  [[ "$BUILD" =~ ^[0-9]{4,}$ ]] || { echo "无法从 dmg 推断构建号（${DMG_BASENAME_FN}）" >&2; exit 1; }
+  [[ "$BUILD" =~ ^[0-9]{1,}$ ]] || { echo "无法从 dmg 推断构建号（${DMG_BASENAME_FN}）" >&2; exit 1; }
 fi
 fi
 
