@@ -581,7 +581,12 @@ def _extract_build_from_bytes(data: bytes, product: str) -> Optional[str]:
 
 
 def _read_exe_bytes(artifact_path: Path, win_exe_name: str) -> bytes:
-    """Windows 产物可能是绿色包 zip（Mote.exe 在里面）或 setup.exe 本身。"""
+    """Windows 产物可能是绿色包 zip（壳 EXE 在里面）或 setup.exe（ISCC 安装包）。
+
+    setup.exe 是 Inno Setup 压缩包，直接读字节找不到内部壳——这里检测 ISCC
+    magic header 后让 setup.exe 静默安装到临时目录，再从里面读出壳 EXE。
+    安装目录最终由调用者清理（check_win_build_stamp 用了 TemporaryDirectory）。
+    """
     if artifact_path.suffix.lower() == ".zip":
         with zipfile.ZipFile(str(artifact_path)) as z:
             names = [n for n in z.namelist()
@@ -590,7 +595,51 @@ def _read_exe_bytes(artifact_path: Path, win_exe_name: str) -> bytes:
             if not names:
                 raise GuardError(f"zip 内没有 {win_exe_name}")
             return z.read(names[0])
+    # setup.exe：ISCC 安装包先尝试静默提取
+    if artifact_path.suffix.lower() == ".exe":
+        # ISCC magic header 位置不固定（可能在文件中间 50-95% 处），
+        # 搜整个文件——安装包通常几 MB，一次 read 可接受。
+        data_head = artifact_path.read_bytes()
+        if b"Inno Setup" in data_head or b"IS7" in data_head:
+            return _extract_shell_from_iscc(artifact_path, win_exe_name)
+        return data_head  # 普通 EXE，直接返回
     return artifact_path.read_bytes()
+
+
+def _extract_shell_from_iscc(setup_path: Path, win_exe_name: str) -> bytes:
+    """让 Inno Setup 安装包静默安装到临时目录，读壳 EXE 字节。
+
+    仅 Windows 可用。临时目录用调用者的上下文管理（TemporaryDirectory）
+    清理——这里只负责安装和读文件，不负责目录删除。
+    """
+    import tempfile as _tf
+    import subprocess as _sp
+
+    if sys.platform != "win32":
+        raise GuardError("setup.exe 是 ISCC 安装包，只能在 Windows 静默解压")
+
+    tmp = Path(_tf.mkdtemp(prefix="guard_iscc_"))
+    try:
+        result = _sp.run(
+            [str(setup_path), "/VERYSILENT", "/SUPPRESSMSGBOXES",
+             "/NORESTART", "/SP-", f"/DIR={tmp}"],
+            capture_output=True, timeout=300)
+        if result.returncode != 0:
+            raise GuardError(
+                f"ISCC 静默安装失败（exit={result.returncode}）："
+                f"{result.stderr.decode('utf-8', errors='replace')[:200]}")
+        # 在临时目录里找壳 EXE
+        candidates = list(tmp.rglob(win_exe_name))
+        if not candidates:
+            raise GuardError(f"ISCC 安装后临时目录里没找到 {win_exe_name}")
+        return candidates[0].read_bytes()
+    finally:
+        # 尽力清理；权限不够就算了
+        import shutil as _sh
+        try:
+            _sh.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def check_win_build_stamp(artifact_path: Path, expected_build: Optional[int],
@@ -813,12 +862,19 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             check_win_embed(zip_path, args.product, args.channel, base, schema)
         else:
             warn("未提供绿色包，跳过壳内嵌地址检查")
-        # 对每个 Windows 产物做 EXE 内 build stamp 二次校验：
-        # 绿色包 / setup.exe 里的 Mote.exe 都应该含 "MOTE_BUILD=<digits>" 字符串
+        # EXE 内 build stamp 二次校验：
+        # 绿色包 zip 和 setup.exe 里的壳是同一份编译产物——zip 里是裸 EXE 好扫，
+        # setup.exe 是 Inno Setup 压缩包，直接扫字节会误报。两者同时存在时
+        # 只扫 zip（结果等价），zip 缺失时再单独扫 setup（会走 ISCC 静默解压）。
         if args.build is not None:
-            for art in artifacts:
-                if art.role in ("zip", "setup"):
-                    check_win_build_stamp(art.path, args.build, args.product)
+            zip_art = next((a for a in artifacts if a.role == "zip"), None)
+            setup_art = next((a for a in artifacts if a.role == "setup"), None)
+            if zip_art:
+                check_win_build_stamp(zip_art.path, args.build, args.product)
+                if setup_art:
+                    ok("setup.exe 同源于已校验的绿色包，跳过 build stamp 扫描")
+            elif setup_art:
+                check_win_build_stamp(setup_art.path, args.build, args.product)
     print("preflight 通过")
     return 0
 
