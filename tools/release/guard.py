@@ -366,6 +366,16 @@ def check_manifest_v2(data: Dict[str, Any], product: str, kind: str,
         if not ed25519_verify(pub, v2_canonical_bytes(data), raw_sig):
             die("清单签名验证失败（公钥不匹配或清单被改动）")
         ok("清单签名验证通过")
+    # DevCard 当前阶段 macOS + Windows 同步发布，v2 manifest.json 必须同时含
+    # platforms.macos + platforms.windows（2026-11-19 补齐）；缺失任一 die 拦截，
+    # 发布脚本应从线上清单 --prev 合并后整体重签。小兔 / Mote 不受影响。
+    if product == "devcard":
+        all_platforms = data.get("platforms")
+        missing = [p for p in ("macos", "windows")
+                   if not (isinstance(all_platforms, dict) and p in all_platforms)]
+        if missing:
+            die(f"DevCard v2 清单 platforms 缺少：{missing}（两平台必须同时存在）")
+        ok("manifest.json 同时含 macos + windows 平台段（DevCard 要求）")
     platform = V2_PLATFORM[kind]
     platforms = data.get("platforms")
     if not isinstance(platforms, dict) or platform not in platforms:
@@ -543,11 +553,12 @@ def check_win_embed(zip_path: Path, product: str, channel: str, base: str,
 # 产品→二进制内可搜索的构建号字符串前缀映射。
 # Mote CMakeLists.txt 同时以数字和字符串形式注入 MOTE_BUILD / MOTE_BUILD_STR，
 # platform/win/updater.cpp 里放了一条静态字符串 "MOTE_BUILD=<digits>"；
-# 小兔同理 XIAOTU_BUILD。DevCard 无本机构建号，跳过。
+# 小兔同理 XIAOTU_BUILD；DevCard 2026-11-19 补齐 CMake 注入（DEVCARD_BUILD_STAMP），
+# 二进制里含 "DEVCARD_BUILD_STAMP=<digits>"。
 _BUILD_STAMP_PREFIX: Dict[str, Optional[bytes]] = {
     "mote": b"MOTE_BUILD=",
     "xiaotu": b"XIAOTU_BUILD=",
-    "devcard": None,
+    "devcard": b"DEVCARD_BUILD_STAMP=",
 }
 
 
