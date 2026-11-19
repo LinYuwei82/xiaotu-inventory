@@ -52,7 +52,7 @@ XIAOTU_UPDATE_PUBKEY="$(cat ~/keys/update_signing.pub.b64)" \
 tools/package/make_dmg.sh
 ```
 
-- `XIAOTU_BUILD` 必填：纯数字且单调递增，缺失或非数字时脚本直接退出 1，不再沿用 CMake 缓存默认值。构建号不变时 Sparkle 会判为“没有更新”。
+- `XIAOTU_BUILD` 必填：纯数字且单调递增，缺失或非数字时脚本直接退出 1，不再沿用 CMake 缓存默认值。构建号写入 `Info.plist` 并供 Sparkle appcast 比较；构建号不变时 Sparkle 会判为“没有更新”。v2 清单的 macOS 段 `build` 固定为 `0`，应用内“是否有更新/待安装/恢复模式”按 `version` 判定，发布时 `VERSION` 必须递增。
 - 更新三项（`XIAOTU_UPDATE_MANIFEST_URL` / `XIAOTU_UPDATE_FEED_URL` / `XIAOTU_UPDATE_PUBKEY`）必须同时提供或同时留空：
   - 全部留空：脚本打印“更新功能关闭”警告，应用内 `status.enabled=false`，仍会正常出包；
   - 只给一部分：直接报错退出，不猜测意图。
