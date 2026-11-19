@@ -584,8 +584,8 @@ def _read_exe_bytes(artifact_path: Path, win_exe_name: str) -> bytes:
     """Windows 产物可能是绿色包 zip（壳 EXE 在里面）或 setup.exe（ISCC 安装包）。
 
     setup.exe 是 Inno Setup 压缩包，直接读字节找不到内部壳——这里检测 ISCC
-    magic header 后让 setup.exe 静默安装到临时目录，再从里面读出壳 EXE。
-    安装目录最终由调用者清理（check_win_build_stamp 用了 TemporaryDirectory）。
+    magic header 后用 innounp 解包工具提取。innounp 是 Inno Setup 官方维护的
+    解包程序（innounp.sourceforge.net，v2 fork 支持 ISCC 6.1+）。
     """
     if artifact_path.suffix.lower() == ".zip":
         with zipfile.ZipFile(str(artifact_path)) as z:
@@ -595,47 +595,68 @@ def _read_exe_bytes(artifact_path: Path, win_exe_name: str) -> bytes:
             if not names:
                 raise GuardError(f"zip 内没有 {win_exe_name}")
             return z.read(names[0])
-    # setup.exe：ISCC 安装包先尝试静默提取
+    # setup.exe：ISCC 安装包用 innounp 解包
     if artifact_path.suffix.lower() == ".exe":
-        # ISCC magic header 位置不固定（可能在文件中间 50-95% 处），
-        # 搜整个文件——安装包通常几 MB，一次 read 可接受。
         data_head = artifact_path.read_bytes()
         if b"Inno Setup" in data_head or b"IS7" in data_head:
-            return _extract_shell_from_iscc(artifact_path, win_exe_name)
+            return _extract_shell_from_iscc_with_innounp(artifact_path, win_exe_name)
         return data_head  # 普通 EXE，直接返回
     return artifact_path.read_bytes()
 
 
-def _extract_shell_from_iscc(setup_path: Path, win_exe_name: str) -> bytes:
-    """让 Inno Setup 安装包静默安装到临时目录，读壳 EXE 字节。
+def _find_innounp() -> Optional[str]:
+    """找 innounp.exe：PATH → ~/.local-bin → guard.py 同目录 → Inno Setup 安装目录。"""
+    import shutil as _sh
+    found = _sh.which("innounp")
+    if found:
+        return found
+    candidates = [
+        Path.home() / ".local-bin" / "innounp.exe",
+        Path(__file__).parent / "innounp.exe",
+        Path("C:/Program Files (x86)/Inno Setup 6/innounp.exe"),
+        Path("C:/Program Files/Inno Setup 6/innounp.exe"),
+    ]
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+    return None
 
-    仅 Windows 可用。临时目录用调用者的上下文管理（TemporaryDirectory）
-    清理——这里只负责安装和读文件，不负责目录删除。
+
+def _extract_shell_from_iscc_with_innounp(setup_path: Path, win_exe_name: str) -> bytes:
+    """用 innounp 解包 Inno Setup 安装包，读出壳 EXE 字节。
+
+    innounp 解包后文件路径保留 ISCC 占位符（如 {app}\\xiaotu-shell.exe），
+    所以用 rglob 搜目标文件名而不是精确拼接路径。
     """
     import tempfile as _tf
     import subprocess as _sp
+    import shutil as _sh
 
-    if sys.platform != "win32":
-        raise GuardError("setup.exe 是 ISCC 安装包，只能在 Windows 静默解压")
+    innounp = _find_innounp()
+    if not innounp:
+        raise GuardError(
+            f"setup.exe 是 Inno Setup 安装包，需要 innounp 解包工具。\n"
+            f"下载：https://innounp.sourceforge.net（原 v0.50 支持 ISCC ≤ 6.1）\n"
+            f"或 v2 fork：https://github.com/jrathlev/InnoUnpacker-Windows-GUI（支持 ISCC 6.7）\n"
+            f"放到 PATH / ~/.local-bin / guard.py 同目录均可。")
 
     tmp = Path(_tf.mkdtemp(prefix="guard_iscc_"))
     try:
         result = _sp.run(
-            [str(setup_path), "/VERYSILENT", "/SUPPRESSMSGBOXES",
-             "/NORESTART", "/SP-", f"/DIR={tmp}"],
-            capture_output=True, timeout=300)
+            [innounp, "-x", "-y", f"-d{tmp}", str(setup_path)],
+            capture_output=True, timeout=60)
         if result.returncode != 0:
             raise GuardError(
-                f"ISCC 静默安装失败（exit={result.returncode}）："
+                f"innounp 解包失败（exit={result.returncode}）："
                 f"{result.stderr.decode('utf-8', errors='replace')[:200]}")
-        # 在临时目录里找壳 EXE
+        # innounp 保留 ISCC 占位符如 {app}\xiaotu-shell.exe，rglob 模糊匹配
         candidates = list(tmp.rglob(win_exe_name))
         if not candidates:
-            raise GuardError(f"ISCC 安装后临时目录里没找到 {win_exe_name}")
+            raise GuardError(
+                f"innounp 解包后没找到 {win_exe_name}。解包内容：\n"
+                + "\n".join(str(p.relative_to(tmp)) for p in tmp.rglob("*") if p.is_file())[:500])
         return candidates[0].read_bytes()
     finally:
-        # 尽力清理；权限不够就算了
-        import shutil as _sh
         try:
             _sh.rmtree(tmp, ignore_errors=True)
         except Exception:
