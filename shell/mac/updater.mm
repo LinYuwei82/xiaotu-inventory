@@ -410,7 +410,7 @@ didCompleteWithError:(NSError*)error {
 
 @end
 
-@interface XiaotuUpdater ()
+@interface XiaotuUpdater () <SPUUpdaterDelegate>
 @property(nonatomic, strong) dispatch_queue_t queue;
 @property(nonatomic, copy, nullable) NSString* manifestURL;
 @property(nonatomic, copy, nullable) NSString* healthBase;
@@ -1938,11 +1938,32 @@ didCompleteWithError:(NSError*)error {
   if (_sparkleController == nil) {
     _sparkleController =
         [[SPUStandardUpdaterController alloc] initWithStartingUpdater:YES
-                                                    updaterDelegate:nil
+                                                    updaterDelegate:self
                                                  userDriverDelegate:nil];
   }
   return _sparkleController;
 }
+
+// MARK: - SPUUpdaterDelegate — 拦截 Sparkle 默认弹窗
+//
+// 根因（2026-11-19 用户截图）：壳层有两条独立更新链路：
+//   ① 自研 manifest_v2（XiaotuUpdater 读清单 → 自定义 UI → 前端 showNotice）
+//   ② Sparkle（SPUStandardUpdaterController 自己拉 appcast.xml 自己弹默认窗）
+// 两者并行时，Sparkle 不管 manifest_v2 的 pending_version 状态，按自己的版本比较
+// 弹一个"您使用的就是最新版！"的默认 NSAlert，与自研链路的"发现新版本"UI 打架。
+// 注册 updaterDelegate 为 self 后，下面三个空实现会让 Sparkle 完全哑巴——
+// 它只负责下载和安装，UI 控制权全部交还给自研 manifest_v2 链路。
+
+// Sparkle 检查后没发现新版本 → 拦截默认"已是最新"弹窗。
+- (void)updater:(SPUUpdater*)updater didNotFindUpdate:(NSError* _Nullable)error {}
+
+// 用户在 Sparkle 默认面板里取消检查 → 静默忽略。
+- (void)updaterUserDidCancel:(SPUUpdater*)updater error:(NSError* _Nullable)error {}
+
+// Sparkle 完成一次检查循环（无论结果）→ 拦截结束时的状态弹窗。
+- (void)updater:(SPUUpdater*)updater
+    didFinishUpdateCycleForUpdate:(SPUStandardUpdaterController*)updaterController
+                            error:(NSError* _Nullable)error {}
 #endif
 
 @end
