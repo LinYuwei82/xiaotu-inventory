@@ -11,7 +11,10 @@
 #   XIAOTU_UPDATE_APPCAST_TARGET  可选，appcast 落盘路径（与 SOURCE 同时提供）
 #   XIAOTU_UPDATE_PUBKEY          可选，Ed25519 公钥 PEM；提供时调用 Python 工具验签清单
 #   XIAOTU_UPDATE_PYTHON          可选，Python 解释器（默认 python3）
-#   XIAOTU_UPDATE_TOOL            可选，update_manifest.py 路径
+#   XIAOTU_UPDATE_TOOL            可选，清单验签工具路径
+#                                 默认：tools/release/manifest_v2.py（纯标准库，无额外依赖）
+#                                 也可用 tools/package/update_manifest.py（依赖 cryptography，同时支持 v1 latest.json）
+#                                 两者 verify 接口一致：verify --manifest <文件> --pub <公钥 PEM>
 
 set -euo pipefail
 
@@ -31,7 +34,7 @@ curl --fail --silent --show-error --location \
 
 if [ -n "${XIAOTU_UPDATE_PUBKEY:-}" ]; then
   PYTHON_BIN="${XIAOTU_UPDATE_PYTHON:-python3}"
-  TOOL="${XIAOTU_UPDATE_TOOL:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/package/update_manifest.py}"
+  TOOL="${XIAOTU_UPDATE_TOOL:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/release/manifest_v2.py}"
   "$PYTHON_BIN" "$TOOL" verify --manifest "$TMP" --pub "$XIAOTU_UPDATE_PUBKEY" >/dev/null
 fi
 

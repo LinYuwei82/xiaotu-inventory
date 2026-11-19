@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # 更新检查接口正反例：验签通过、签名缺失/错误、公钥缺失、中间版本、参数错误。
+#
+# 前半段（行 1-107）用 v1 格式 latest.json 测服务端向后兼容解析与验签（update_manifest.py 生成）；
+# 后半段（行 202-253）用 v2 格式 manifest.json 测主路径（manifest_v2.py 生成）。
+# 两段的 verifier_script / tool 不同，由 server config 指向。
 set -euo pipefail
 
 SERVER_BIN="${1:?用法: update_api_test.sh <xiaotu-server>}"

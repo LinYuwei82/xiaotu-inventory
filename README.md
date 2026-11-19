@@ -715,7 +715,7 @@ XIAOTU_UPDATE_PUBKEY=<Ed25519 公钥 base64> \
 tools/package/make_dmg.sh
 ```
 
-**发布**：`PRODUCT=xiaotu tools/package/publish_oss.sh` 一条命令完成上传 dmg、用 `tools/release/manifest_v2.py` 生成并签 `manifest.json` / `appcast.xml`、本地验签、上传清单、purge CDN 与预热 CDN；下载页由 `site.js` 读取清单自动同步，脚本不改写 HTML；OSS 凭据只从环境变量或仓库外 600 权限文件读取。已发版本补/改发行说明用 `NOTES_ONLY=true tools/package/publish_oss.sh`，只上传说明页并重签清单，不重出包。详见 [tools/package/README.md](tools/package/README.md)。
+**发布**：`PRODUCT=xiaotu tools/package/publish_oss.sh` 一条命令完成上传 dmg、用 `tools/release/manifest_v2.py` 生成并签 `manifest.json` / `appcast.xml`、本地验签、上传清单；下载页由 `site.js` 读取清单自动同步，脚本不改写 HTML；OSS 凭据只从环境变量或仓库外 600 权限文件读取。`dl.xiaotu.online` 直连 OSS 无 CDN 层，默认不 purge（将来接入 CDN 时 `PURGE=true` 开启）。已发版本补/改发行说明用 `NOTES_ONLY=true tools/package/publish_oss.sh`，只上传说明页并重签清单，不重出包。详见 [tools/package/README.md](tools/package/README.md)。
 
 用户侧放行方式见 [docs/发行与安装说明.md](docs/发行与安装说明.md)。
 
