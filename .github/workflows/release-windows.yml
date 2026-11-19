@@ -122,6 +122,29 @@ jobs:
           & $iscc "/DAppVersion=${{ env.VERSION }}" 'packaging\win\xiaotu-inventory.iss'
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败（$LASTEXITCODE）" }
 
+      # guard.py 需要 innounp 解包 setup.exe 做 build stamp 校验
+      # 原版 innounp 0.50 只支持 ISCC ≤ 6.1，innounp-2 fork 支持 6.7+
+      - name: 安装 innounp
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '2026-07-21'
+          $url = "https://raw.githubusercontent.com/jrathlev/InnoUnpacker-Windows-GUI/$tag/innounp-2/bin/innounp-270.zip"
+          $dest = Join-Path $env:RUNNER_TEMP 'innounp'
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          $zip = Join-Path $dest 'innounp.zip'
+          Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          $exe = Join-Path $dest 'innounp.exe'
+          if (-not (Test-Path $exe)) { throw "innounp 解包后未找到 innounp.exe" }
+          # 放到 ~/.local-bin（guard.py _find_innounp 候选位置之一）
+          $localBin = Join-Path $HOME '.local-bin'
+          New-Item -ItemType Directory -Force $localBin | Out-Null
+          Copy-Item $exe $localBin
+          $localBin | Out-File -FilePath $env:GITHUB_PATH -Append
+          & $exe 2>&1 | Select-Object -First 1
+          Write-Host "innounp 已部署到 $localBin"
+
       - name: 生成并签名 manifest.json（v2）
         shell: pwsh
         env:
