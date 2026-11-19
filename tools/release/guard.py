@@ -534,6 +534,87 @@ def check_win_embed(zip_path: Path, product: str, channel: str, base: str,
     ok(f"绿色包内嵌地址正确（{url}）")
 
 
+# ---------------------------------------------------------------- Windows build 二次校验（防清单/编译值漂移）
+
+# 产品→二进制内可搜索的构建号字符串前缀映射。
+# Mote CMakeLists.txt 同时以数字和字符串形式注入 MOTE_BUILD / MOTE_BUILD_STR，
+# platform/win/updater.cpp 里放了一条静态字符串 "MOTE_BUILD=<digits>"；
+# 小兔同理 XIAOTU_BUILD。DevCard 无本机构建号，跳过。
+_BUILD_STAMP_PREFIX: Dict[str, Optional[bytes]] = {
+    "mote": b"MOTE_BUILD=",
+    "xiaotu": b"XIAOTU_BUILD=",
+    "devcard": None,
+}
+
+
+def _extract_build_from_bytes(data: bytes, product: str) -> Optional[str]:
+    """在二进制数据里搜 "<PREFIX><digits>"，返回数字部分。"""
+    prefix = _BUILD_STAMP_PREFIX.get(product)
+    if not prefix:
+        return None
+    # UTF-8：直接搜 b'PREFIX\\d+'
+    match = re.search(re.escape(prefix) + rb'(\d{4,})', data)
+    if match:
+        return match.group(1).decode("ascii")
+    # UTF-16LE：每个 ASCII 字符后跟 \\x00
+    utf16_prefix = prefix.decode("ascii").encode("utf-16-le")
+    match = re.search(re.escape(utf16_prefix) + rb'(\d\x00){4,}', data)
+    if match:
+        raw = match.group(0)[len(utf16_prefix):]
+        return bytes(b for i, b in enumerate(raw) if i % 2 == 0 and b != 0).decode("ascii")
+    return None
+
+
+def _read_exe_bytes(artifact_path: Path, win_exe_name: str) -> bytes:
+    """Windows 产物可能是绿色包 zip（Mote.exe 在里面）或 setup.exe 本身。"""
+    if artifact_path.suffix.lower() == ".zip":
+        with zipfile.ZipFile(str(artifact_path)) as z:
+            names = [n for n in z.namelist()
+                     if n.replace("\\", "/").lower().endswith("/" + win_exe_name) or
+                     n.lower().endswith(win_exe_name)]
+            if not names:
+                raise GuardError(f"zip 内没有 {win_exe_name}")
+            return z.read(names[0])
+    return artifact_path.read_bytes()
+
+
+def check_win_build_stamp(artifact_path: Path, expected_build: Optional[int],
+                          product: str) -> None:
+    """从绿色包 zip 或 setup.exe 里读出编译时的构建号，与参数 --build 比对。
+
+    防止 publish_windows.ps1 的 MOTE_BUILD_STAMP / CMakeCache 读取出错导致
+    清单 build 与编译值不一致——客户端同版本反复提示同一版本
+    （2026-11-19 mote 1.0.4 即因此重发）。
+    """
+    if expected_build is None:
+        warn("未提供 --build，跳过 EXE 内构建号校验")
+        return
+    prefix = _BUILD_STAMP_PREFIX.get(product)
+    if not prefix:
+        return  # devcard 等无本机构建号，跳过
+
+    spec = product_spec(product)
+    win_exe_name = spec["win_embed_exe"].lower()
+    try:
+        exe_data = _read_exe_bytes(artifact_path, win_exe_name)
+    except (zipfile.BadZipFile, GuardError) as exc:
+        warn(f"无法从 {artifact_path.name} 提取 {win_exe_name}：{exc}，跳过 build 校验")
+        return
+
+    found = _extract_build_from_bytes(exe_data, product)
+    if found is None:
+        warn(f"二进制内未找到 {prefix.decode()}<digits> 标记，跳过 build 二次校验"
+             f"（可能是旧构建产物或未启用 MOTE_BUILD_STR）")
+        return
+
+    found_int = int(found)
+    if found_int != expected_build:
+        die(f"EXE 内构建号 {found_int} 与 --build {expected_build} 不一致！\n"
+            f"    清单 build 大于编译值会让客户端反复提示同一版本"
+            f"（2026-11-19 mote 1.0.4 即因此重发）")
+    ok(f"EXE 内构建号与参数一致：{found_int}")
+
+
 # ---------------------------------------------------------------- 清单校验
 
 @dataclass
@@ -717,6 +798,12 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             check_win_embed(zip_path, args.product, args.channel, base, schema)
         else:
             warn("未提供绿色包，跳过壳内嵌地址检查")
+        # 对每个 Windows 产物做 EXE 内 build stamp 二次校验：
+        # 绿色包 / setup.exe 里的 Mote.exe 都应该含 "MOTE_BUILD=<digits>" 字符串
+        if args.build is not None:
+            for art in artifacts:
+                if art.role in ("zip", "setup"):
+                    check_win_build_stamp(art.path, args.build, args.product)
     print("preflight 通过")
     return 0
 
@@ -923,6 +1010,35 @@ def cmd_selftest() -> int:
                        b"https://dl.xiaotu.online/mote/updates/stable/windows.json")
         _expect_error(lambda: check_win_embed(zp4, "mote", "stable", DEFAULT_BASE, "v2"),
                       "旧构建产物"); n += 1
+
+    # ---- EXE 内 build stamp 二次校验 ----
+    with tempfile.TemporaryDirectory() as td:
+        # 1) 绿色包内 Mote.exe 含正确 build（UTF-8）→ 通过
+        zp5 = Path(td) / "mote-1.0.3-win64-portable.zip"
+        with zipfile.ZipFile(zp5, "w") as z:
+            z.writestr("Mote.exe", b"junk MOTE_BUILD=202611181542 end")
+        check_win_build_stamp(zp5, 202611181542, "mote"); n += 1
+
+        # 2) 绿色包内 Mote.exe 含正确 build（UTF-16LE）→ 通过
+        zp6 = Path(td) / "mote-1.0.3-win64-portable.zip"
+        with zipfile.ZipFile(zp6, "w") as z:
+            stamp16 = b'M\x00O\x00T\x00E\x00_\x00B\x00U\x00I\x00L\x00D\x00=\x00' \
+                      b'2\x000\x002\x006\x001\x001\x001\x008\x001\x005\x004\x002\x00'
+            z.writestr("Mote.exe", stamp16 + b"junk")
+        check_win_build_stamp(zp6, 202611181542, "mote"); n += 1
+
+        # 3) build 不一致 → die
+        _expect_error(lambda: check_win_build_stamp(zp5, 999999999999, "mote"),
+                      "EXE 内构建号"); n += 1
+
+        # 4) 缺少 build stamp → warn 跳过（不 die，兼容旧产物）
+        zp_nobuild = Path(td) / "nobuild.zip"
+        with zipfile.ZipFile(zp_nobuild, "w") as z:
+            z.writestr("Mote.exe", b"no build stamp here")
+        check_win_build_stamp(zp_nobuild, 202611181542, "mote"); n += 1  # 只是 warn，不抛错
+
+        # 5) DevCard 跳过（_BUILD_STAMP_PREFIX 为 None）
+        assert _extract_build_from_bytes(b"anything", "devcard") is None; n += 1
 
     print(f"selftest 通过（{n} 项）")
     return 0
