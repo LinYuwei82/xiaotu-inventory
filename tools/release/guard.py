@@ -6,6 +6,7 @@ macOS / Windows / CI 用同一份代码，避免三套脚本各自漂移。
 
 子命令：
   selftest       离线自检（CI 每次跑）
+  doctor         检查发布凭据/密钥/工具是否就绪
   preflight      上传前：文件名、版本、目标键、覆盖风险、内嵌地址
   verify-live    上传后：清单字段、大小、SHA256、Content-Type
   version        打印 GUARD_VERSION
@@ -17,10 +18,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+import glob
 import hashlib
 import json
+import os
 import plistlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,7 +44,7 @@ for _stream in (sys.stdout, sys.stderr):
         except Exception:
             pass
 
-GUARD_VERSION = "1.1.0"
+GUARD_VERSION = "1.2.0"  # +doctor 子命令, +glob/shutil/os imports
 DEFAULT_BASE = "https://dl.xiaotu.online"
 
 PRODUCTS: Dict[str, Dict[str, Any]] = {
@@ -1044,6 +1048,127 @@ def cmd_selftest() -> int:
     return 0
 
 
+# ---------------------------------------------------------------- doctor
+
+def _doctor_check_file(path_str: str, desc: str, *, required: bool = True) -> Tuple[str, str]:
+    """检查某个文件/工具路径是否存在。返回 (图标, 状态行)。"""
+    p = Path(path_str).expanduser()
+    if p.is_file() or p.is_dir():
+        return "✓", f"{desc}\n    {p}"
+    # 环境变量形式 —— 如果 path_str 是 $VAR 引用，查 env
+    env_match = re.match(r'^\$(\w+)', path_str)
+    if env_match:
+        val = os.environ.get(env_match.group(1))
+        if val:
+            return "✓", f"{desc}（环境变量 {env_match.group(1)}）\n    {val}"
+    if required:
+        return "✗", f"{desc} 缺失\n    {p}"
+    return "!", f"{desc}（可选，未配置）\n    {p}"
+
+
+def _doctor_check_cmd(cmd: str, desc: str) -> Tuple[str, str]:
+    """检查某个 shell 命令是否可用（which）。"""
+    import shutil
+    found = shutil.which(cmd)
+    if found:
+        return "✓", f"{desc}\n    {found}"
+    return "✗", f"{desc}（未在 PATH 中找到 {cmd}）"
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """检查发布环境所需的凭据、密钥、工具是否就绪。"""
+    product = args.product
+    plat = args.platform
+
+    # 凭据/密钥默认路径表（与 publish_macos.sh / publish_windows.sh 保持同步）
+    # key: (product, 类别) → 默认路径
+    # 类别: sign_key, sparkle_key, oss_env, oss_py, sparkle_bin
+    CONFIG_DIRS = {
+        "mote": {
+            "sign_key": "~/.config/mote-updates/ed25519_seed.b64",
+            "sparkle_key": "~/.config/mote-updates/sparkle_ed25519_seed.b64",
+        },
+        "xiaotu": {
+            "sign_key": "~/.config/xiaotu-updates/update_signing_2026.pem",
+        },
+        "devcard": {
+            "sign_key": "~/.config/devcard/manifest-keys/ed25519_seed.b64",
+            "sparkle_key": "~/.config/devcard/sparkle-keys/private_key.pem",
+        },
+    }
+    OSS_ENV = "~/.config/xiaotu-updates/.env"  # 三产品共用
+    OSS_PY = "~/.venv-oss/bin/python"          # oss2 虚拟环境
+
+    checks: List[Tuple[str, str]] = []  # (icon, desc)
+
+    print(f"guard doctor — {product} 发布环境检查（platform={plat}）\n")
+
+    # ---- 签名密钥 ----
+    keys = CONFIG_DIRS.get(product, {})
+    if "sign_key" in keys:
+        icon, line = _doctor_check_file(keys["sign_key"], "v2 清单 Ed25519 签名种子")
+        checks.append((icon, line))
+        print(f"  {icon} {line}")
+    if plat in ("mac", "both") and "sparkle_key" in keys:
+        icon, line = _doctor_check_file(keys["sparkle_key"], "Sparkle Ed25519 签名私钥", required=False)
+        checks.append((icon, line))
+        print(f"  {icon} {line}")
+
+    # ---- OSS 凭据 ----
+    icon, line = _doctor_check_file(OSS_ENV, "OSS 凭据文件（三产品共用）", required=False)
+    checks.append((icon, line))
+    print(f"  {icon} {line}")
+
+    # ---- oss2 Python 环境 ----
+    icon, line = _doctor_check_file(OSS_PY, "oss2 虚拟环境（.venv-oss/bin/python）", required=False)
+    checks.append((icon, line))
+    print(f"  {icon} {line}")
+
+    # ---- Sparkle sign_update（macOS only）----
+    if plat in ("mac", "both"):
+        found = False
+        sparkle_bin = os.environ.get("SPARKLE_BIN")
+        if sparkle_bin and Path(f"{sparkle_bin}/sign_update").is_file():
+            print(f"  ✓ Sparkle sign_update（SPARKLE_BIN）\n    {sparkle_bin}/sign_update")
+            checks.append(("✓", f"SPARKLE_BIN={sparkle_bin}"))
+            found = True
+        else:
+            # 搜索 ~/Downloads/Sparkle-*/bin/sign_update
+            hits = glob.glob(str(Path.home() / "Downloads/Sparkle-*/bin/sign_update"))
+            if hits:
+                print(f"  ✓ Sparkle sign_update（自动探测）\n    {hits[0]}")
+                checks.append(("✓", hits[0]))
+                found = True
+        if not found:
+            print(f"  ! Sparkle sign_update（macOS 自动更新需要，未找到）\n    设置 SPARKLE_BIN 指向 Sparkle 发行包的 bin 目录")
+            checks.append(("!", "SPARKLE_BIN 未设置"))
+
+    # ---- 系统工具 ----
+    print()
+    for cmd in ("cmake", "git"):
+        icon, line = _doctor_check_cmd(cmd, f"系统命令 {cmd}")
+        checks.append((icon, line))
+        print(f"  {icon} {line}")
+    if plat in ("mac", "both"):
+        for cmd in ("spctl", "codesign", "hdiutil", "xcrun"):
+            icon, line = _doctor_check_cmd(cmd, f"macOS 工具 {cmd}")
+            checks.append((icon, line))
+            print(f"  {icon} {line}")
+
+    # ---- 汇总 ----
+    ok = sum(1 for c in checks if c[0] == "✓")
+    warn = sum(1 for c in checks if c[0] == "!")
+    fail = sum(1 for c in checks if c[0] == "✗")
+    print()
+    print(f"总计：{ok} ✓ / {warn} ! / {fail} ✗")
+    if fail:
+        print("有必需项缺失，补齐后才能发布。")
+        return 1
+    if warn:
+        print("有可选项未配置（如 Sparkle / oss2），某些发布步骤会跳过。")
+    return 0
+
+
 # ---------------------------------------------------------------- CLI
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1053,6 +1178,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("selftest", help="离线自检")
     sub.add_parser("version", help="打印版本")
+    for name in ("doctor",):
+        s = sub.add_parser(name, help="检查发布凭据/密钥/工具是否就绪")
+        s.add_argument("--product", required=True, choices=sorted(PRODUCTS))
+        s.add_argument("--platform", default="mac", choices=["mac", "win", "both"],
+                       help="要发布的目标平台（默认 mac）")
 
     for name in ("preflight", "verify-live"):
         s = sub.add_parser(name)
@@ -1084,6 +1214,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.cmd == "version":
             print(GUARD_VERSION)
             return 0
+        if args.cmd == "doctor":
+            return cmd_doctor(args)
         if args.cmd == "preflight":
             return cmd_preflight(args)
         return cmd_verify_live(args)
