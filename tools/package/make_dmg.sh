@@ -200,16 +200,50 @@ if [ -n "$XIAOTU_SPARKLE_DIR_VAL" ]; then
   echo "已嵌入：Contents/Frameworks/Sparkle.framework"
 fi
 
-echo "===== 签名"
-if [ -n "${XIAOTU_SIGN_IDENTITY:-}" ]; then
-  echo "使用证书：$XIAOTU_SIGN_IDENTITY"
-  codesign --force --deep --options runtime --timestamp \
-    --sign "$XIAOTU_SIGN_IDENTITY" "$STAGE/$APP_DISPLAY_NAME.app"
+# 签名配置：entitlements plist（禁用 sandbox，Sparkle 更新要求 bundle 可写）
+ENTITLEMENTS="$REPO_ROOT/tools/package/entitlements.plist"
+if [ ! -f "$ENTITLEMENTS" ]; then
+  echo "entitlements plist 不存在：$ENTITLEMENTS" >&2
+  exit 1
+fi
+
+# 新版 macOS codesign 不再推荐 --deep 一把梭：子框架如果自己已签，--deep 重签会产生冲突。
+# 正确顺序：先签所有子 framework / dylib（嵌套签名），再签 .app 主体。
+echo "===== 签名（分步嵌套签名）"
+APP_PATH="$STAGE/$APP_DISPLAY_NAME.app"
+
+# 签名前先去掉扩展属性（FinderInfo 会导致 codesign 报 "resource fork" 拒绝）
+xattr -cr "$APP_PATH"
+xattr -d com.apple.FinderInfo "$APP_PATH" 2>/dev/null || true
+xattr -d "com.apple.fileprovider.fpfs#P" "$APP_PATH" 2>/dev/null || true
+
+sign_identity="${XIAOTU_SIGN_IDENTITY:-}"
+if [ -n "$sign_identity" ]; then
+  echo "使用证书：$sign_identity"
+  sign_mode="Developer ID"
 else
   echo "未提供 XIAOTU_SIGN_IDENTITY，使用 ad-hoc 签名（不满足 Gatekeeper 与公证要求）"
-  codesign --force --deep --sign - "$STAGE/$APP_DISPLAY_NAME.app"
+  sign_identity="-"
+  sign_mode="ad-hoc"
 fi
-codesign --verify --deep --strict "$STAGE/$APP_DISPLAY_NAME.app"
+
+# Step 1: 签 Sparkle.framework（用 --deep 覆盖内部 Updater.app、XPCServices 等嵌套 bundle）
+SPARKLE_FW="$APP_PATH/Contents/Frameworks/Sparkle.framework"
+if [ -d "$SPARKLE_FW" ]; then
+  echo "  签 Sparkle.framework（--deep 覆盖嵌套 bundle）..."
+  codesign --force --sign "$sign_identity" --options runtime --timestamp \
+    --entitlements "$ENTITLEMENTS" --deep "$SPARKLE_FW"
+  codesign --verify --deep --strict "$SPARKLE_FW" || { echo "Sparkle.framework 签名验证失败"; exit 1; }
+fi
+
+# Step 2: 签 .app 主体（不使用 --deep，避免重签已签过的子框架）
+echo "  签 .app 主体..."
+codesign --force --sign "$sign_identity" --options runtime --timestamp \
+  --entitlements "$ENTITLEMENTS" "$APP_PATH"
+
+# 整体验证
+codesign --verify --deep --strict "$APP_PATH"
+spctl --assess --type execute -vv "$APP_PATH" >/dev/null 2>&1 && echo "  spctl 预检：accepted ✓" || echo "  spctl 预检：$(spctl --assess --type execute -vv "$APP_PATH" 2>&1 || true)"
 
 echo "===== 生成 dmg"
 mkdir -p "$OUT_DIR"
@@ -217,19 +251,40 @@ rm -f "$DMG"
 hdiutil create -volname "$VOLUME_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 hdiutil verify "$DMG"
 
+# DMG 也签名（Developer ID 签名的 DMG 让 mount 过程更顺畅）
+if [ -n "${XIAOTU_SIGN_IDENTITY:-}" ]; then
+  codesign --force --sign "$sign_identity" --timestamp "$DMG"
+fi
+
 echo "===== 公证"
 NOTARIZED=0
-if [ -n "${XIAOTU_NOTARY_PROFILE:-}" ]; then
-  echo "使用 notarytool 凭据：$XIAOTU_NOTARY_PROFILE"
-  xcrun notarytool submit "$DMG" --keychain-profile "$XIAOTU_NOTARY_PROFILE" --wait
+NOTARY_PROFILE="${XIAOTU_NOTARY_PROFILE:-}"
+if [ -n "$NOTARY_PROFILE" ]; then
+  # 提前检测 profile 是否在 Keychain 中存在
+  if xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" 2>&1 | head -1 | grep -qi "error"; then
+    echo "错误：notarytool keychain profile '$NOTARY_PROFILE' 不存在" >&2
+    echo "      需要先运行：" >&2
+    echo "        xcrun notarytool store-credentials '$NOTARY_PROFILE' \\" >&2
+    echo "          --apple-id <your@appleid.com> \\" >&2
+    echo "          --team-id BMCUC4B6XX \\" >&2
+    echo "          --password <app-specific-password>" >&2
+    exit 1
+  fi
+  echo "使用 notarytool 凭据：$NOTARY_PROFILE"
+  xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait \
+    || { echo "notarytool submit 失败"; exit 1; }
   xcrun stapler staple "$DMG"
   NOTARIZED=1
 else
   echo "跳过：未提供 XIAOTU_NOTARY_PROFILE（notarytool 凭据），dmg 未公证"
+  echo "      要开启公证，先在 Keychain 存一次凭据："
+  echo "        xcrun notarytool store-credentials 'xiaotu-notary' \\"
+  echo "          --apple-id <your@appleid.com> --team-id BMCUC4B6XX --password <app-specific-password>"
+  echo "      然后重新跑：XIAOTU_NOTARY_PROFILE=xiaotu-notary tools/package/make_dmg.sh"
 fi
 
 if [ -z "${XIAOTU_SIGN_IDENTITY:-}" ]; then
-  echo "警告：当前产物为未签名（ad-hoc），distributable 需 Developer ID 签名并公证。" >&2
+  echo "警告：当前产物为 ad-hoc 签名，distributable 需 Developer ID 签名并公证。" >&2
 fi
 
 SIZE_BYTES="$(stat -f %z "$DMG")"
