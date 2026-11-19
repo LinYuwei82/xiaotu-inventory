@@ -676,7 +676,7 @@ def check_win_build_stamp(artifact_path: Path, expected_build: Optional[int],
         return
     prefix = _BUILD_STAMP_PREFIX.get(product)
     if not prefix:
-        return  # devcard 等无本机构建号，跳过
+        return  # prefix 为 None 的产品跳过（当前三产品都有 prefix，此分支预留）
 
     spec = product_spec(product)
     win_exe_name = spec["win_embed_exe"].lower()
@@ -1130,8 +1130,11 @@ def cmd_selftest() -> int:
             z.writestr("Mote.exe", b"no build stamp here")
         check_win_build_stamp(zp_nobuild, 202611181542, "mote"); n += 1  # 只是 warn，不抛错
 
-        # 5) DevCard 跳过（_BUILD_STAMP_PREFIX 为 None）
-        assert _extract_build_from_bytes(b"anything", "devcard") is None; n += 1
+        # 5) DevCard：绿色包内 DevCard.exe 含 DEVCARD_BUILD_STAMP=<digits> → 通过
+        zp_dc = Path(td) / "devcard-1.2.8-win64-portable.zip"
+        with zipfile.ZipFile(zp_dc, "w") as z:
+            z.writestr("DevCard.exe", b"junk DEVCARD_BUILD_STAMP=202611181646 end")
+        check_win_build_stamp(zp_dc, 202611181646, "devcard"); n += 1
 
     print(f"selftest 通过（{n} 项）")
     return 0
