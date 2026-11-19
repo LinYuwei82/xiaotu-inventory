@@ -387,7 +387,8 @@ GUARD_PY="${GUARD_PY:-$REPO_ROOT/tools/release/guard.py}"
 GUARD_ARGS=(
   --product xiaotu --kind win --channel "$CHANNEL"
   --file "$SETUP_PATH" --name "$V2_SETUP_NAME"
-  --schema v2 --manifest "$MANIFEST_LOCAL" --pub "$SIGNING_PUB" --build "$BUILD"
+  --manifest "$MANIFEST_LOCAL" --pub "$SIGNING_PUB" --build "$BUILD"
+# 注：不再传 --schema v2；guard.py 已硬编码 schema=v2（v1 清单 2026-11-18 全量删除）
 )
 if [ -f "$ZIP_PATH" ]; then
   GUARD_ARGS+=(--zip "$ZIP_PATH" --zip-name "$V2_ZIP_NAME")

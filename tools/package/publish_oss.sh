@@ -448,7 +448,8 @@ GUARD_PY="${GUARD_PY:-$REPO_ROOT/tools/release/guard.py}"
 GUARD_ARGS=(
   --product xiaotu --kind mac --channel "$CHANNEL"
   --file "$DMG_PATH" --name "$V2_DMG_NAME"
-  --schema v2 --manifest "$MANIFEST_LOCAL" --pub "$SIGNING_PUB"
+  --manifest "$MANIFEST_LOCAL" --pub "$SIGNING_PUB"
+# 注：不再传 --schema v2；guard.py 已硬编码 schema=v2（v1 清单 2026-11-18 全量删除）
 )
 [ "$OSS_SKIP" = "true" ] && GUARD_ARGS+=(--offline)
 echo ""
