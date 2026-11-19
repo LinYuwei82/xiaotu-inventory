@@ -468,9 +468,17 @@ didCompleteWithError:(NSError*)error {
         static_cast<long long>([defaults integerForKey:kPrefetchBytesKey]);
     // 上一次安装成功后旧包仍会留在缓存目录：done 且待装版本不高于当前版本时，
     // 说明该版本已装上（或已被更新版本覆盖），删除旧包并回到 idle，避免长期占磁盘。
-    if ([_prefetchState isEqualToString:kPrefetchDone] &&
+    // 同时：pending_version 若已被安装覆盖也必须清掉，否则前端 status 里
+    // is_newer_product_version(pending, current) 虽然动态返回 false，
+    // 但 last_result 还留着 UPDATE_AVAILABLE 会让"结果文案"一直显示"发现新版本"。
+    // 2026-11-19 用户从 1.0.3 在线更新到 1.0.4 后仍显示"待安装版本 1.0.4"即因此。
+    const bool pendingStale =
         !xiaotu::is_newer_product_version(pending_version(defaults),
-                                          xiaotu::current_product_version())) {
+                                          xiaotu::current_product_version());
+    if (pendingStale && [defaults stringForKey:kPendingVersionKey].length > 0) {
+      [self clearPending];
+    }
+    if ([_prefetchState isEqualToString:kPrefetchDone] && pendingStale) {
       [self removePrefetchFilesExcept:nil];
       _prefetchState = kPrefetchIdle;
       _prefetchFile = nil;
@@ -810,6 +818,10 @@ didCompleteWithError:(NSError*)error {
   [defaults removeObjectForKey:kIntermediateVersionKey];
   [defaults removeObjectForKey:kIntermediateBuildKey];
   [defaults removeObjectForKey:kIntermediateSchemaKey];
+  // 同步把 last_result 置为 NO_UPDATE，否则前端 resultText 还会显示"发现新版本"——
+  // 即使 update_available 已经变成 false、pending_version 已清空，文案会误导用户。
+  // 2026-11-19 在线更新 1.0.3→1.0.4 后仍显示"发现新版本"即因此。
+  [defaults setObject:@"NO_UPDATE" forKey:kLastResultKey];
   // 调用方可能来自主线程（跳过版本），统一回到串行队列里改预下载状态。
   dispatch_async(self.queue, ^{
     [self resetPrefetchOnQueue];

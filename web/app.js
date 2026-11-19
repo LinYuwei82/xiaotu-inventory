@@ -7299,6 +7299,13 @@
         NOT_CONFIGURED: "未配置更新源",
       };
       const last = status && status.last_result;
+      // 防御：后端已明确 update_available=false（pending_version ≤ current_version），
+      // 但 last_result 还留着上次的 UPDATE_AVAILABLE——这种安装后残留状态会让
+      // "结果文案"一直显示"发现新版本"，必须按当前状态覆盖修正。
+      // 2026-11-19 在线更新 1.0.3→1.0.4 后仍显示"发现新版本"即因此。
+      if (!status || status.update_available === false) {
+        if (last === "UPDATE_AVAILABLE") return labels["NO_UPDATE"];
+      }
       return last ? labels[last] || last : "尚未检查";
     };
 

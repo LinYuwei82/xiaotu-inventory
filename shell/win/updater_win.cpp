@@ -340,6 +340,32 @@ UpdaterWin::UpdaterWin() {
   loadStatus();
   if (status_.install_id.empty()) status_.install_id = generateUuid();
   if (status_.channel.empty()) status_.channel = "stable";
+  // 安装更新后新版本启动时，旧 pending 状态（manifest_version 等）仍留在磁盘上，
+  // 前端只看 manifest_version 是否非空来判定 update_available，必须在启动时对比版本号
+  // 主动清掉已被安装覆盖的 pending，否则会一直提示"待安装 1.0.4"。
+  // 2026-11-19 用户从 1.0.3 在线更新到 1.0.4 后仍显示"待安装版本 1.0.4"即因此。
+  if (!status_.manifest_version.empty()) {
+    xiaotu::ProductVersion remote{}, local{};
+    if (xiaotu::parse_product_version(status_.manifest_version, remote) &&
+        xiaotu::parse_product_version(xiaotu::current_product_version(), local)) {
+      const int cmp = xiaotu::compare_product_version(remote, local);
+      if (cmp <= 0 || (cmp == 0 && status_.manifest_build <= xiaotu::current_build_number())) {
+        status_.manifest_version.clear();
+        status_.manifest_build = 0;
+        status_.manifest_sha256.clear();
+        status_.manifest_size = 0;
+        status_.manifest_setup_url.clear();
+        status_.notes_url.clear();
+        status_.mandatory = false;
+        status_.mandatory_reason.clear();
+        status_.mandatory_deadline.clear();
+        status_.pending_local_path.clear();
+        status_.pending_size = 0;
+        // 版本比较清残留只影响显示状态，不改变 last_result（那是上次检查的事实）。
+        persistStatus();
+      }
+    }
+  }
 }
 
 UpdaterWin::~UpdaterWin() {
