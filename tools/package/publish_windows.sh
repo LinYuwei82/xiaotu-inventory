@@ -37,6 +37,9 @@
 #   # 也可显式指定文件或直接给外链地址
 #   RELEASE_NOTES_FILE=docs/其他说明.html BUILD=... tools/package/publish_windows.sh
 #   RELEASE_NOTES_URL=https://... BUILD=... tools/package/publish_windows.sh
+#
+#   # 只补发说明页并重签清单：不需要安装包与 BUILD（可用 NOTES_VERSION 指定历史版本）
+#   NOTES_ONLY=true tools/package/publish_windows.sh
 
 set -euo pipefail
 
@@ -67,6 +70,8 @@ OSS_BUCKET="${OSS_BUCKET:-}"
 OSS_REGION="${OSS_REGION:-}"
 CDN_DOMAIN="${CDN_DOMAIN:-https://dl.xiaotu.online}"
 OSS_SKIP="${OSS_SKIP:-false}"
+# 只补发发行说明并重签清单：不要求安装包、BUILD 与绿色包。
+NOTES_ONLY="${NOTES_ONLY:-false}"
 
 # ---- OSS 凭据文件：环境变量优先，其次仓库外 600 权限的凭据文件 ----
 OSS_CRED_FILE="${OSS_CRED_FILE:-$HOME/.config/xiaotu-updates/oss-credentials.env}"
@@ -105,14 +110,18 @@ CHANNEL="${CHANNEL:-stable}"
 case "$CHANNEL" in stable|beta) ;; *) echo "CHANNEL 必须是 stable/beta" >&2; exit 1 ;; esac
 
 BUILD="${BUILD:-}"
+if [ "$NOTES_ONLY" != "true" ]; then
 [[ "$BUILD" =~ ^[0-9]{4,}$ ]] || {
   echo "缺少或非法的 BUILD：需要与打包时 XIAOTU_BUILD 相同的纯数字构建号（例：BUILD=202611171349）" >&2
   exit 1
 }
+fi
 
 DEFAULT_SETUP="$REPO_ROOT/packaging/win/out/xiaotu-inventory-$VERSION-win64-setup.exe"
 SETUP_PATH="${SETUP_PATH:-$DEFAULT_SETUP}"
-[ -f "$SETUP_PATH" ] || { echo "安装包不存在：$SETUP_PATH" >&2; exit 1; }
+if [ "$NOTES_ONLY" != "true" ]; then
+  [ -f "$SETUP_PATH" ] || { echo "安装包不存在：$SETUP_PATH" >&2; exit 1; }
+fi
 
 # 绿色包（zip）由 Windows 构建产出；存在就一并发布并写进清单，
 # 下载页的绿色包行才有数据可同步（没有时清单只描述安装包）。
@@ -129,12 +138,14 @@ fi
 
 # 清单里的下载地址由 v2 命名规则推导（本地文件名可以保持构建输出不变，远端按 v2 改名）。
 EXPECTED_NAME="xiaotu-inventory-$VERSION-win64-setup.exe"
+if [ "$NOTES_ONLY" != "true" ]; then
 ACTUAL_NAME="$(basename "$SETUP_PATH")"
 if [ "$ACTUAL_NAME" != "$EXPECTED_NAME" ]; then
   echo "安装包文件名不符合构建输出规范：$ACTUAL_NAME" >&2
   echo "必须命名为 ${EXPECTED_NAME}（版本号从它推导）。" >&2
   echo "可先改名或放到 packaging/win/out/$EXPECTED_NAME 再重试。" >&2
   exit 1
+fi
 fi
 
 # v2 安装包命名：<product>-<version>-<os>-<arch>-<type>.<ext>（见更新清单Schema-v2.md 第七节）
@@ -217,8 +228,12 @@ if [ "$OSS_SKIP" != "true" ]; then
 fi
 
 # ---- 路径 ----
-SETUP_SIZE="$(stat -f %z "$SETUP_PATH" 2>/dev/null || stat -c %s "$SETUP_PATH")"
-SETUP_SHA256="$(shasum -a 256 "$SETUP_PATH" | awk '{print $1}')"
+SETUP_SIZE=""
+SETUP_SHA256=""
+if [ -f "$SETUP_PATH" ]; then
+  SETUP_SIZE="$(stat -f %z "$SETUP_PATH" 2>/dev/null || stat -c %s "$SETUP_PATH")"
+  SETUP_SHA256="$(shasum -a 256 "$SETUP_PATH" | awk '{print $1}')"
+fi
 PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 SETUP_KEY="$PRODUCT_DIR/$V2_SETUP_NAME"
@@ -247,16 +262,19 @@ if [ -n "$RELEASE_NOTES_URL" ]; then
 fi
 
 echo "===== OSS 发布 · Windows 安装包 ====="
-echo "版本 / build / channel：  ${VERSION} / ${BUILD} / ${CHANNEL}"
+echo "版本 / channel：          ${VERSION} / ${CHANNEL}"
+if [ "$NOTES_ONLY" != "true" ]; then
+echo "build：                   ${BUILD}"
 echo "安装包：                  ${SETUP_PATH} （${SETUP_SIZE} 字节）"
 echo "远端文件名（v2）：        ${V2_SETUP_NAME}"
 echo "sha256：                  ${SETUP_SHA256}"
+fi
 echo "bucket / region：         ${OSS_BUCKET:-<dry-run>} / ${OSS_REGION:-<dry-run>}"
 echo "AK / 来源：               ${AK_MASK:-<dry-run>} / ${OSS_CRED_SOURCE:-<dry-run>}"
 echo "域名：                    ${CDN_DOMAIN}"
 echo "OSS key："
-echo "  setup.exe：             ${SETUP_KEY}"
-[ -n "$ZIP_KEY" ] && echo "  zip（绿色包）：         ${ZIP_KEY}（${ZIP_SIZE} 字节）"
+[ "$NOTES_ONLY" != "true" ] && echo "  setup.exe：             ${SETUP_KEY}"
+[ "$NOTES_ONLY" != "true" ] && [ -n "$ZIP_KEY" ] && echo "  zip（绿色包）：         ${ZIP_KEY}（${ZIP_SIZE} 字节）"
 echo "  manifest.json：         ${MANIFEST_KEY}"
 [ -n "$RELEASE_NOTES_FILE" ] && echo "  发行说明：              ${NOTES_KEY}（${RELEASE_NOTES_URL}）"
 [ "${OSS_SKIP}" = "true" ] && echo "(dry-run：不上传)"
@@ -278,6 +296,52 @@ with open(lp, "rb") as f:
 print(f"  ✓ {ok}  ({ct}, {cc})")
 PY_EOF
 }
+
+# ---- 仅补发说明页：上传 notes + resign 重签清单，不碰安装包 / 绿色包 ----
+if [ "$NOTES_ONLY" = "true" ]; then
+  echo ""
+  echo "===== 仅补发说明页"
+  NOTES_VERSION="${NOTES_VERSION:-$VERSION}"
+  NOTES_FILE="${RELEASE_NOTES_FILE:-$REPO_ROOT/docs/release-notes-$NOTES_VERSION.html}"
+  [ -f "$NOTES_FILE" ] || { echo "发行说明不存在：$NOTES_FILE" >&2; exit 1; }
+  NOTES_URL="${RELEASE_NOTES_URL:-$CDN_DOMAIN/$PRODUCT_DIR/release-notes-$NOTES_VERSION.html}"
+  case "$NOTES_URL" in
+    http://*|https://*) ;;
+    *) echo "RELEASE_NOTES_URL 必须是绝对 http(s) 地址：$NOTES_URL" >&2; exit 2 ;;
+  esac
+
+  LIVE="$STAGE/manifest-live.json"
+  echo "拉取线上清单：$CDN_DOMAIN/$MANIFEST_KEY"
+  curl -fsSL "$CDN_DOMAIN/$MANIFEST_KEY" -o "$LIVE" \
+    || { echo "拉取线上清单失败：$CDN_DOMAIN/$MANIFEST_KEY" >&2; exit 1; }
+  python3 - "$LIVE" "$NOTES_VERSION" <<'PY_CHECK_EOF'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+want = sys.argv[2]
+versions = {k: v.get("version") for k, v in body.get("platforms", {}).items()}
+if not versions or set(versions.values()) != {want}:
+    sys.exit(f"线上清单版本 {versions} 与 NOTES_VERSION={want} 不一致，已中止")
+print(f"  线上清单版本：{want}（{', '.join(sorted(versions))}）")
+PY_CHECK_EOF
+
+  SIGNED="$STAGE/manifest.json"
+  echo "重签清单：notes_url=${NOTES_URL}（platform=all）"
+  python3 "$REPO_ROOT/tools/release/manifest_v2.py" resign --manifest "$LIVE" \
+    --key "$SIGNING_KEY" --notes-url "$NOTES_URL" --platform all --out "$SIGNED"
+  python3 "$REPO_ROOT/tools/release/manifest_v2.py" verify --manifest "$SIGNED" --pub "$SIGNING_PUB"
+
+  if [ "$OSS_SKIP" != "true" ]; then
+    echo "上传发行说明 → ${PRODUCT_DIR}/release-notes-${NOTES_VERSION}.html"
+    oss_upload "$NOTES_FILE" "${PRODUCT_DIR}/release-notes-${NOTES_VERSION}.html" \
+      "public, max-age=3600" "text/html; charset=utf-8"
+    echo "上传 manifest.json → $MANIFEST_KEY"
+    oss_upload "$SIGNED" "$MANIFEST_KEY" "no-cache, max-age=60" "application/json"
+  else
+    echo "[dry-run] 未上传；已生成 $SIGNED"
+  fi
+  echo "完成：仅补发说明页，安装包 / 绿色包未改动"
+  exit 0
+fi
 
 MANIFEST_V2_PY="$REPO_ROOT/tools/release/manifest_v2.py"
 MANIFEST_LOCAL="$STAGE/manifest.json"

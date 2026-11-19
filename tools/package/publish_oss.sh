@@ -35,6 +35,10 @@
 #   # dry-run：只本地生成 + 验签，不碰 OSS
 #   OSS_SKIP=true PRODUCT=xiaotu tools/package/publish_oss.sh
 #
+#   # 只补发说明页：上传 docs/release-notes-<版本>.html，并用 resign 重签线上清单
+#   # （不重出包、不改版本与 dmg；可用 NOTES_VERSION 指定历史版本）
+#   NOTES_ONLY=true tools/package/publish_oss.sh
+#
 #   # 关闭发布后的下载可达性验证
 #   WARMUP=false PRODUCT=xiaotu tools/package/publish_oss.sh
 
@@ -84,6 +88,8 @@ if [ -f "$OSS_CRED_FILE" ]; then
 fi
 CDN_DOMAIN="${CDN_DOMAIN:-https://dl.xiaotu.online}"
 OSS_SKIP="${OSS_SKIP:-false}"
+# 只补发发行说明并重签清单：不要求 dmg，也不改版本、产物与 appcast。
+NOTES_ONLY="${NOTES_ONLY:-false}"
 
 if [ "$OSS_SKIP" != "true" ]; then
   if [ -z "$OSS_BUCKET" ] || [ -z "$OSS_REGION" ]; then
@@ -104,7 +110,9 @@ case "$CHANNEL" in stable|beta) ;; *) echo "CHANNEL 必须是 stable/beta" >&2; 
 
 DEFAULT_DMG="$REPO_ROOT/build/package/xiaotu-inventory-$VERSION.dmg"
 DMG_PATH="${DMG_PATH:-$DEFAULT_DMG}"
-[ -f "$DMG_PATH" ] || { echo "dmg 不存在：$DMG_PATH" >&2; exit 1; }
+if [ "$NOTES_ONLY" != "true" ]; then
+  [ -f "$DMG_PATH" ] || { echo "dmg 不存在：$DMG_PATH" >&2; exit 1; }
+fi
 
 DEFAULT_KEY="$HOME/.config/xiaotu-updates/update_signing_2026.pem"
 SIGNING_KEY="${SIGNING_KEY:-$DEFAULT_KEY}"
@@ -222,6 +230,8 @@ fi
 
 # ---- 元数据：从 dmg 的 Info.plist 读构建号与最低系统版本 ----
 DMG_MOUNT="$(mktemp -d -t xiaotu-dmg)"
+# 仅补发说明页时不需要 dmg，跳过挂载与元数据提取。
+if [ "$NOTES_ONLY" != "true" ]; then
 hdiutil attach "$DMG_PATH" -mountpoint "$DMG_MOUNT" -nobrowse -readonly >/dev/null 2>&1 || true
 APP_IN_DMG="$(find "$DMG_MOUNT" -name "*.app" -maxdepth 2 2>/dev/null | head -1 || true)"
 BUILD=""
@@ -246,6 +256,7 @@ if ! [[ "$BUILD" =~ ^[0-9]{4,}$ ]]; then
   DMG_BASENAME_FN="$(basename "$DMG_PATH")"
   BUILD="$(echo "$DMG_BASENAME_FN" | sed -E 's/.*-([0-9]{6,})\.dmg$/\1/')"
   [[ "$BUILD" =~ ^[0-9]{4,}$ ]] || { echo "无法从 dmg 推断构建号（${DMG_BASENAME_FN}）" >&2; exit 1; }
+fi
 fi
 
 PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -281,17 +292,20 @@ if [ -n "$RELEASE_NOTES_URL" ]; then
 fi
 
 echo "===== OSS 发布 · ${PRODUCT} ====="
-echo "版本 / build / channel：  ${VERSION} / ${BUILD} / ${CHANNEL}"
+echo "版本 / channel：          ${VERSION} / ${CHANNEL}"
+if [ "$NOTES_ONLY" != "true" ]; then
+echo "build：                   ${BUILD}"
 echo "dmg：                     ${DMG_PATH}"
 echo "远端文件名（v2）：        ${V2_DMG_NAME}"
 echo "min_os：                  ${MIN_OS:-（空）}"
+fi
 echo "bucket / region：         ${OSS_BUCKET:-<dry-run>} / ${OSS_REGION:-<dry-run>}"
 echo "AK / 来源：               ${AK_MASK:-<dry-run>} / ${OSS_CRED_SOURCE:-<dry-run>}"
 echo "域名：                    ${CDN_DOMAIN}"
 echo "OSS key："
-echo "  dmg：                   ${DMG_KEY}"
+[ "$NOTES_ONLY" != "true" ] && echo "  dmg：                   ${DMG_KEY}"
 echo "  manifest.json：         ${MANIFEST_KEY}"
-echo "  appcast.xml：           ${APPCAST_KEY}"
+[ "$NOTES_ONLY" != "true" ] && echo "  appcast.xml：           ${APPCAST_KEY}"
 [ "${OSS_SKIP}" = "true" ] && echo "(dry-run：不上传)"
 
 STAGE="$(mktemp -d -t xiaotu-oss-stage)"
@@ -316,6 +330,52 @@ PY_EOF
 }
 
 MANIFEST_V2_PY="$REPO_ROOT/tools/release/manifest_v2.py"
+
+# ---- 仅补发说明页：上传 notes + resign 重签清单，不碰 dmg / appcast ----
+if [ "$NOTES_ONLY" = "true" ]; then
+  echo ""
+  echo "===== 仅补发说明页"
+  NOTES_VERSION="${NOTES_VERSION:-$VERSION}"
+  NOTES_FILE="${RELEASE_NOTES_FILE:-$REPO_ROOT/docs/release-notes-$NOTES_VERSION.html}"
+  [ -f "$NOTES_FILE" ] || { echo "发行说明不存在：$NOTES_FILE" >&2; exit 1; }
+  NOTES_URL="${RELEASE_NOTES_URL:-$CDN_DOMAIN/$PRODUCT_DIR/release-notes-$NOTES_VERSION.html}"
+  case "$NOTES_URL" in
+    http://*|https://*) ;;
+    *) echo "RELEASE_NOTES_URL 必须是绝对 http(s) 地址：$NOTES_URL" >&2; exit 2 ;;
+  esac
+
+  LIVE="$STAGE/manifest-live.json"
+  echo "拉取线上清单：$CDN_DOMAIN/$MANIFEST_KEY"
+  curl -fsSL "$CDN_DOMAIN/$MANIFEST_KEY" -o "$LIVE" \
+    || { echo "拉取线上清单失败：$CDN_DOMAIN/$MANIFEST_KEY" >&2; exit 1; }
+  python3 - "$LIVE" "$NOTES_VERSION" <<'PY_CHECK_EOF'
+import json, sys
+body = json.load(open(sys.argv[1], encoding="utf-8"))
+want = sys.argv[2]
+versions = {k: v.get("version") for k, v in body.get("platforms", {}).items()}
+if not versions or set(versions.values()) != {want}:
+    sys.exit(f"线上清单版本 {versions} 与 NOTES_VERSION={want} 不一致，已中止")
+print(f"  线上清单版本：{want}（{', '.join(sorted(versions))}）")
+PY_CHECK_EOF
+
+  SIGNED="$STAGE/manifest.json"
+  echo "重签清单：notes_url=${NOTES_URL}（platform=all）"
+  python3 "$MANIFEST_V2_PY" resign --manifest "$LIVE" --key "$SIGNING_KEY" \
+    --notes-url "$NOTES_URL" --platform all --out "$SIGNED"
+  python3 "$MANIFEST_V2_PY" verify --manifest "$SIGNED" --pub "$SIGNING_PUB"
+
+  if [ "$OSS_SKIP" != "true" ]; then
+    echo "上传发行说明 → ${PRODUCT_DIR}/release-notes-${NOTES_VERSION}.html"
+    oss_upload "$NOTES_FILE" "${PRODUCT_DIR}/release-notes-${NOTES_VERSION}.html" \
+      "public, max-age=3600" "text/html; charset=utf-8"
+    echo "上传 manifest.json → $MANIFEST_KEY"
+    oss_upload "$SIGNED" "$MANIFEST_KEY" "no-cache, max-age=60" "application/json"
+  else
+    echo "[dry-run] 未上传；已生成 $SIGNED"
+  fi
+  echo "完成：仅补发说明页，dmg / appcast 未改动"
+  exit 0
+fi
 MANIFEST_LOCAL="$STAGE/manifest.json"
 APPCAST_LOCAL="$STAGE/appcast.xml"
 

@@ -142,6 +142,22 @@ tools/package/publish_oss.sh
 - 关闭预热：`WARMUP=false`；只本地生成不碰 OSS：`OSS_SKIP=true`。
 - 发布地址：`https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json` 与同目录 `appcast.xml`。
 
+### 只补发发行说明
+
+发版后补或改 `docs/release-notes-<版本>.html`，不需要重新出包：
+
+```bash
+NOTES_ONLY=true tools/package/publish_oss.sh
+# Windows 清单入口效果相同（同一份 manifest.json）
+NOTES_ONLY=true tools/package/publish_windows.sh
+```
+
+- 只上传说明页（`public, max-age=3600`），并用 `manifest_v2.py resign --notes-url`
+  重签清单，把 `notes_url` 写进全部平台段；版本、dmg/exe 与 appcast 均不变。
+- 默认取 `docs/release-notes-<VERSION>.html`，并要求线上清单版本与 `VERSION` 一致；
+  补历史版本用 `NOTES_VERSION=1.0.2`，自定地址用 `RELEASE_NOTES_URL=…`。
+- 加 `OSS_SKIP=true` 只本地生成并验签，不上传。
+
 ## 逐档放量
 
 清单签名后不能直接改 `rollout_percent`。用 `rollout_oss.sh` 按计划重签 v2 清单的
