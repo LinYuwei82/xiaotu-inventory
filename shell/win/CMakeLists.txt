@@ -72,9 +72,12 @@ else()
       "未设置 XIAOTU_BUILD，壳的 build 号回退为 ${_build_epoch}（仅适合本地开发）。"
       "发布包请与服务端使用同一个 XIAOTU_BUILD。")
   endif()
+  # 让下面的壳目标 compile_definitions 也能拿到
+  set(XIAOTU_BUILD "${_build_epoch}")
   target_compile_definitions(xiaotu_core_updater PUBLIC
     XIAOTU_VERSION="${XIAOTU_VERSION_STRING}"
     XIAOTU_BUILD=${_build_epoch}
+    XIAOTU_BUILD_STR="${_build_epoch}"
     XIAOTU_API_VERSION=1
     XIAOTU_EDITION_CODE="full")
   target_compile_options(xiaotu_core_updater PUBLIC /utf-8)
@@ -129,7 +132,8 @@ target_link_directories(xiaotu-shell PRIVATE "${XIAOTU_WEBVIEW2_DIR}/build/nativ
 # 源码含中文字面量，MSVC 默认按系统代码页解析会出错。
 target_compile_options(xiaotu-shell PRIVATE /utf-8 /W4 /EHsc)
 target_compile_definitions(xiaotu-shell PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
-                                       XIAOTU_UPDATE_PUBKEY="${XIAOTU_UPDATE_PUBKEY}")
+                                       XIAOTU_UPDATE_PUBKEY="${XIAOTU_UPDATE_PUBKEY}"
+                                       XIAOTU_BUILD_STR="${XIAOTU_BUILD}")
 
 target_link_libraries(xiaotu-shell PRIVATE
   WebView2LoaderStatic

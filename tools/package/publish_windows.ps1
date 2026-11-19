@@ -352,7 +352,7 @@ Write-Host ""
 Write-Host "===== ② 发布门禁"
 $guardArgs = @(
     "--product", $ProductDir, "--kind", "win", "--channel", $Channel,
-    "--schema", "v2", "--manifest", $manifestPath,
+    "--manifest", $manifestPath,
     "--pub-hex", $PubHex, "--build", $Build,
     "--file", $SetupFull, "--name", $V2SetupName
 )

@@ -31,6 +31,22 @@ namespace fs = std::filesystem;
 
 namespace xiaotu::updater {
 
+// ---- 二进制内构建号标记（供 guard.py 二次校验）
+//
+// 发布脚本 publish_windows.ps1 从 CMakeCache 读出 XIAOTU_BUILD 写入清单，
+// guard.py 上传前扫描绿色包 / setup.exe 里的 EXE 字节，比对清单 build 与
+// 本机构建号一致——防止脚本读错 CMakeCache 导致同版本反复提示。
+// 这里放一条不会被 LTO 扔掉的静态字符串 "XIAOTU_BUILD=<digits>"。
+#ifndef XIAOTU_BUILD_STR
+#define STRINGIFY_(x) #x
+#define STRINGIFY(x) STRINGIFY_(x)
+#define XIAOTU_BUILD_STR STRINGIFY(XIAOTU_BUILD)
+#endif
+namespace {
+constexpr const char kBuildStamp[] = "XIAOTU_BUILD=" XIAOTU_BUILD_STR;
+constexpr const char *const kBuildStampRef = kBuildStamp;  // 防优化器丢弃
+}
+
 // ---- 辅助工具 ----
 
 static std::wstring exeDirectory() {
