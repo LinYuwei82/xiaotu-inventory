@@ -688,8 +688,9 @@ def check_win_build_stamp(artifact_path: Path, expected_build: Optional[int],
 
     found = _extract_build_from_bytes(exe_data, product)
     if found is None:
-        warn(f"二进制内未找到 {prefix.decode()}<digits> 标记，跳过 build 二次校验"
-             f"（可能是旧构建产物或未启用 MOTE_BUILD_STR）")
+        prefix_name = prefix.decode() if prefix else product + "_BUILD="
+        warn(f"二进制内未找到 {prefix_name}<digits> 标记，跳过 build 二次校验"
+             f"（可能是旧构建产物或未启用 BUILD_STR）")
         return
 
     found_int = int(found)
