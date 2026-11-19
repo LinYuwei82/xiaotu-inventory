@@ -40,3 +40,8 @@ tools/release/manifest_v2.sha256 text eol=lf
 # Windows 批处理必须 CRLF
 *.cmd text eol=crlf
 *.bat text eol=crlf
+# PowerShell 5 在 Windows 上只正确识别 UTF-8 + BOM 的 .ps1；
+# UTF-8 无 BOM 会被当 GBK 读，中文字面量断裂导致脚本崩溃。
+# 规则：统一用 UTF-8 + BOM，行尾 CRLF（PowerShell 习惯）。
+# 真正的 BOM 门禁在 tools/hooks/pre-commit 里（提交即阻断）。
+*.ps1 text eol=crlf working-tree-encoding=UTF-8
