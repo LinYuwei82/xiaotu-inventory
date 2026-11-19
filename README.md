@@ -406,7 +406,8 @@ xiaotu-inventory/
     ├── ci/                        # check.sh 与平台代码泄漏检查
     ├── loadtest/mixed_load.py     # 并发压测脚本
     ├── nightly/                   # 定时任务（nightly.sh 与 launchd plist）
-    └── package/                   # macOS .dmg 打包
+    ├── release/                   # 三仓库共享：manifest_v2.py（v2 清单生成 + Ed25519 签名）+ guard.py（发布门禁）+ .sha256 哈希校验
+    └── package/                   # 发布入口 + 打包 + selftest：publish_oss.sh（macOS 完整发布）、publish_windows.sh / .ps1（Windows 发布）、make_dmg.sh（只出 DMG）、cleanup_oss_versions.sh、rollout_oss.sh、test_release_scripts.py、test_update_manifest.py
 ```
 
 ## 6. 代码生成器
