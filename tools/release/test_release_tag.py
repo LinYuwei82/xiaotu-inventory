@@ -22,7 +22,7 @@ class ParseTest(unittest.TestCase):
     def test_build_is_base_plus_seq(self) -> None:
         result = self.run_parse("v1.3.2+240")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("build=202700000240", result.stdout)
+        self.assertIn("build=240", result.stdout)
 
     def test_sh_output(self) -> None:
         result = subprocess.run(
@@ -32,7 +32,7 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("VERSION=1.3.2", result.stdout)
         self.assertIn("RELEASE_SEQ=7", result.stdout)
-        self.assertIn("BUILD=202700000007", result.stdout)
+        self.assertIn("BUILD=7", result.stdout)
 
     def test_version_mismatch_rejected(self) -> None:
         self.assertEqual(self.run_parse("v1.3.2+10", version="1.3.1").returncode, 2)

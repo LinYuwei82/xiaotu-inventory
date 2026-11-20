@@ -605,7 +605,7 @@ def _extract_build_from_bytes(data: bytes, product: str) -> Optional[str]:
     if not prefix:
         return None
     # UTF-8：直接搜 b'PREFIX\\d+'
-    match = re.search(re.escape(prefix) + rb'(\d{4,})', data)
+    match = re.search(re.escape(prefix) + rb'(\d+)', data)
     if match:
         return match.group(1).decode("ascii")
     # UTF-16LE：每个 ASCII 字符后跟 \\x00

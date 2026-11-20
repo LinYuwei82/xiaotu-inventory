@@ -4,8 +4,8 @@
 约定（2026-11 起）：
 - 正式发布只从 annotated tag `v1.3.2+240` 触发；
 - tag 里的 semver 必须等于 VERSION.txt，序号只增不减，tag 不可删除重打；
-- 构建号 = 固定基数 + 序号（基数默认 202700000000，保证大于历史 2026… 构建号，
-  已安装客户端不会把新版本判成更旧）。
+- 构建号 = tag 序号（内测阶段无历史包袱，旧构建号作废）；首次切换请同时 bump
+  VERSION，让版本比较自然通过，之后的同版本重发再靠序号递增。
 
 用法：
   python3 tools/release/release_tag.py parse --tag v1.3.2+240
@@ -20,7 +20,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_BASE = 202700000000
 TAG_RE = re.compile(r"^v(\d+\.\d+\.\d+)\+(\d{1,6})$")
 MAX_SEQ = 999999
 
@@ -71,7 +70,7 @@ def cmd_parse(args: argparse.Namespace) -> int:
         print(f"error: tag 版本 {version} 与 VERSION.txt {local_version} 不一致",
               file=sys.stderr)
         return 2
-    build = args.base + seq
+    build = seq
     if args.ensure_latest:
         max_other = existing_seq(Path(args.repo_root), exclude=args.tag)
         if seq <= max_other:
@@ -110,7 +109,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    build = args.base + seq
+    build = seq
     message = f"发布 {tag}（build {build}）"
     print(f"tag={tag} build={build}")
     if args.dry_run:
@@ -142,7 +141,6 @@ def main() -> int:
     p_parse.add_argument("--tag", required=True)
     p_parse.add_argument("--version", default="", help="覆盖 VERSION.txt")
     p_parse.add_argument("--version-file", default=str(repo_root() / "VERSION.txt"))
-    p_parse.add_argument("--base", type=int, default=DEFAULT_BASE, help="构建号基数")
     p_parse.add_argument("--repo-root", default=str(repo_root()))
     p_parse.add_argument("--ensure-latest", action="store_true",
                          help="要求序号大于仓库内其它发布 tag（CI 使用，需 fetch 全部 tag）")
@@ -153,7 +151,6 @@ def main() -> int:
     p_create.add_argument("--repo-root", default=str(repo_root()))
     p_create.add_argument("--version", default="", help="默认读 VERSION.txt")
     p_create.add_argument("--seq", type=int, default=None, help="显式序号（默认最大 +1）")
-    p_create.add_argument("--base", type=int, default=DEFAULT_BASE)
     p_create.add_argument("--dry-run", action="store_true")
     p_create.add_argument("--push", action="store_true", help="创建后推送到 origin")
     p_create.set_defaults(func=cmd_create)
