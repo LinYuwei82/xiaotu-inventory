@@ -41,6 +41,11 @@
 #
 #   # 关闭发布后的下载可达性验证
 #   WARMUP=false PRODUCT=xiaotu tools/package/publish_oss.sh
+#
+#   # 灰度 / 强制更新（可选，默认全量 + 非强制；与 Mote / DevCard 同一口径）
+#   ROLLOUT_PERCENT=10 tools/package/publish_oss.sh
+#   MANDATORY=true MANDATORY_REASON=SECURITY MANDATORY_DEADLINE=2026-12-01T00:00:00Z \
+#     tools/package/publish_oss.sh
 
 set -euo pipefail
 
@@ -421,6 +426,37 @@ if [ ! -s "$MANIFEST_LOCAL" ]; then
   curl -fsSL "$MANIFEST_PUBLIC" -o "$MANIFEST_LOCAL" 2>/dev/null || rm -f "$MANIFEST_LOCAL"
 fi
 
+# ---- 灰度与强制更新（与 Mote / DevCard 同一口径，默认全量 + 非强制）----
+ROLLOUT_PERCENT="${ROLLOUT_PERCENT:-100}"
+case "$MANDATORY" in
+  ""|false|0) MANDATORY_ON=0 ;;
+  true|1) MANDATORY_ON=1 ;;
+  *) echo "MANDATORY 只能是 true/false（或 1/0）：$MANDATORY" >&2; exit 2 ;;
+esac
+if ! [[ "$ROLLOUT_PERCENT" =~ ^[0-9]+$ ]] \
+   || (( ROLLOUT_PERCENT < 1 || ROLLOUT_PERCENT > 100 )); then
+  echo "ROLLOUT_PERCENT 必须是 1–100 的整数：$ROLLOUT_PERCENT" >&2; exit 2
+fi
+MANDATORY_REASON="${MANDATORY_REASON:-}"
+MANDATORY_DEADLINE="${MANDATORY_DEADLINE:-}"
+if [ "$MANDATORY_ON" = "1" ]; then
+  # 兼容历史用法：只传 MANDATORY=true 时沿用 MIN_SUPPORTED + 发布日期
+  MANDATORY_REASON="${MANDATORY_REASON:-MIN_SUPPORTED}"
+  case "$MANDATORY_REASON" in
+    SECURITY|PROTOCOL|REGULATORY|MIN_SUPPORTED) ;;
+    *) echo "MANDATORY_REASON 必须是 SECURITY/PROTOCOL/REGULATORY/MIN_SUPPORTED 之一：$MANDATORY_REASON" >&2; exit 2 ;;
+  esac
+  MANDATORY_DEADLINE="${MANDATORY_DEADLINE:-$PUBLISHED_AT}"
+  if ! [[ "$MANDATORY_DEADLINE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    echo "MANDATORY_DEADLINE 必须是 ISO 8601 UTC（如 2026-12-01T00:00:00Z）：$MANDATORY_DEADLINE" >&2; exit 2
+  fi
+  echo "更新策略：灰度 ${ROLLOUT_PERCENT}% · 强制更新（${MANDATORY_REASON}，截止 ${MANDATORY_DEADLINE}）"
+else
+  [ -z "$MANDATORY_REASON$MANDATORY_DEADLINE" ] || {
+    echo "MANDATORY_REASON / MANDATORY_DEADLINE 只在 MANDATORY=true 时有效" >&2; exit 2; }
+  echo "更新策略：灰度 ${ROLLOUT_PERCENT}% · 非强制"
+fi
+
 # ---- ① 生成 manifest.json（v2，Ed25519 签名）----
 MANIFEST_ARGS=(
   generate
@@ -435,8 +471,11 @@ MANIFEST_ARGS=(
   --key "$SIGNING_KEY"
   --out "$MANIFEST_LOCAL"
 )
-[ -n "$MANDATORY" ] && [ "$MANDATORY" = "true" ] && \
-  MANIFEST_ARGS+=(--mandatory --mandatory-reason MIN_SUPPORTED --mandatory-deadline "$PUBLISHED_AT")
+if [ "$MANDATORY_ON" = "1" ]; then
+  MANIFEST_ARGS+=(--mandatory --mandatory-reason "$MANDATORY_REASON" \
+    --mandatory-deadline "$MANDATORY_DEADLINE")
+fi
+MANIFEST_ARGS+=(--rollout "$ROLLOUT_PERCENT")
 [ -n "$RELEASE_NOTES_URL" ] && MANIFEST_ARGS+=(--notes-url "$RELEASE_NOTES_URL")
 [ -s "$MANIFEST_LOCAL" ] && MANIFEST_ARGS+=(--prev "$MANIFEST_LOCAL")
 
@@ -464,8 +503,9 @@ APPCAST_ARGS=(
   --appcast "$APPCAST_LOCAL"
   --published-at "$PUBLISHED_AT"
 )
-[ -n "$MANDATORY" ] && [ "$MANDATORY" = "true" ] && \
-  APPCAST_ARGS+=(--mandatory --reason MIN_SUPPORTED --deadline "$PUBLISHED_AT")
+if [ "$MANDATORY_ON" = "1" ]; then
+  APPCAST_ARGS+=(--mandatory --reason "$MANDATORY_REASON" --deadline "$MANDATORY_DEADLINE")
+fi
 [ -n "$RELEASE_NOTES_URL" ] && APPCAST_ARGS+=(--release-notes-url "$RELEASE_NOTES_URL")
 
 echo ""

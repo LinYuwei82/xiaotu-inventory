@@ -41,6 +41,10 @@
 #
 #   # 只补发说明页并重签清单：不需要安装包与 BUILD（可用 NOTES_VERSION 指定历史版本）
 #   NOTES_ONLY=true tools/package/publish_windows.sh
+#
+#   # 灰度 / 强制更新（可选，默认全量 + 非强制；与 Mote / DevCard 同一口径）
+#   ROLLOUT_PERCENT=10 BUILD=... tools/package/publish_windows.sh
+#   MANDATORY=true MANDATORY_REASON=SECURITY BUILD=... tools/package/publish_windows.sh
 
 set -euo pipefail
 
@@ -351,6 +355,35 @@ fi
 MANIFEST_V2_PY="$REPO_ROOT/tools/release/manifest_v2.py"
 MANIFEST_LOCAL="$STAGE/manifest.json"
 
+# ---- 灰度与强制更新（与 Mote / DevCard 同一口径，默认全量 + 非强制）----
+ROLLOUT_PERCENT="${ROLLOUT_PERCENT:-100}"
+case "$MANDATORY" in
+  ""|false|0) MANDATORY_ON=0 ;;
+  true|1) MANDATORY_ON=1 ;;
+  *) echo "MANDATORY 只能是 true/false（或 1/0）：$MANDATORY" >&2; exit 2 ;;
+esac
+if ! [[ "$ROLLOUT_PERCENT" =~ ^[0-9]+$ ]] \
+   || (( ROLLOUT_PERCENT < 1 || ROLLOUT_PERCENT > 100 )); then
+  echo "ROLLOUT_PERCENT 必须是 1–100 的整数：$ROLLOUT_PERCENT" >&2; exit 2
+fi
+MANDATORY_REASON="${MANDATORY_REASON:-}"
+MANDATORY_DEADLINE="${MANDATORY_DEADLINE:-}"
+if [ "$MANDATORY_ON" = "1" ]; then
+  case "$MANDATORY_REASON" in
+    SECURITY|PROTOCOL|REGULATORY|MIN_SUPPORTED) ;;
+    *) echo "MANDATORY_REASON 必须是 SECURITY/PROTOCOL/REGULATORY/MIN_SUPPORTED 之一：$MANDATORY_REASON" >&2; exit 2 ;;
+  esac
+  if [ -n "$MANDATORY_DEADLINE" ] \
+     && ! [[ "$MANDATORY_DEADLINE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    echo "MANDATORY_DEADLINE 必须是 ISO 8601 UTC（如 2026-12-01T00:00:00Z）：$MANDATORY_DEADLINE" >&2; exit 2
+  fi
+  echo "更新策略：灰度 ${ROLLOUT_PERCENT}% · 强制更新（${MANDATORY_REASON}${MANDATORY_DEADLINE:+，截止 ${MANDATORY_DEADLINE}}）"
+else
+  [ -z "$MANDATORY_REASON$MANDATORY_DEADLINE" ] || {
+    echo "MANDATORY_REASON / MANDATORY_DEADLINE 只在 MANDATORY=true 时有效" >&2; exit 2; }
+  echo "更新策略：灰度 ${ROLLOUT_PERCENT}% · 非强制"
+fi
+
 # 另一平台段可能已在线上：先取线上清单，--prev 合并后整体重签，避免覆盖另一平台段
 if [ ! -s "$MANIFEST_LOCAL" ]; then
   curl -fsSL "$CDN_DOMAIN/$MANIFEST_KEY" -o "$MANIFEST_LOCAL" 2>/dev/null || rm -f "$MANIFEST_LOCAL"
@@ -371,6 +404,11 @@ MANIFEST_ARGS=(
   --out "$MANIFEST_LOCAL"
 )
 [ -f "$ZIP_PATH" ] && MANIFEST_ARGS+=(--artifact "portable=$ZIP_PATH")
+MANIFEST_ARGS+=(--rollout "$ROLLOUT_PERCENT")
+if [ "$MANDATORY_ON" = "1" ]; then
+  MANIFEST_ARGS+=(--mandatory --mandatory-reason "$MANDATORY_REASON")
+  [ -n "$MANDATORY_DEADLINE" ] && MANIFEST_ARGS+=(--mandatory-deadline "$MANDATORY_DEADLINE")
+fi
 [ -n "$RELEASE_NOTES_URL" ] && MANIFEST_ARGS+=(--notes-url "$RELEASE_NOTES_URL")
 [ -s "$MANIFEST_LOCAL" ] && MANIFEST_ARGS+=(--prev "$MANIFEST_LOCAL")
 

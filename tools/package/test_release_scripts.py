@@ -28,7 +28,7 @@ PKG = REPO / "tools" / "package"
 # 小兔 Ed25519 测试种子（RFC 8032 固定向量）
 TEST_SEED_HEX = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
 TEST_SEED = bytes.fromhex(TEST_SEED_HEX)
-VERSION = (REPO / "VERSION").read_text().strip()
+VERSION = (REPO / "VERSION.txt").read_text().strip()
 
 
 # --------------------------------------------------------------------------- 辅助工具
@@ -204,9 +204,7 @@ class TestPublishWindows(unittest.TestCase):
                    expect_stderr_contains="未知参数")
 
     def test_build_required_and_numeric(self):
-        """BUILD 必须非空、纯数字、≥4 位。"""
-        self.r.run(self.script, env_override={"BUILD": ""},
-                   expect_code=1, expect_stderr_contains="BUILD")
+        """BUILD 可省略（自动 gen_build）；显式传入时必须纯数字、≥4 位。"""
         self.r.run(self.script, env_override={"BUILD": "12"},
                    expect_code=1, expect_stderr_contains="BUILD")  # 长度不够
         self.r.run(self.script, env_override={"BUILD": "20261119xx"},

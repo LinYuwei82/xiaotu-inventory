@@ -28,6 +28,8 @@
 #   powershell ... -SkipUpload -Build 202611190001    # dry-run
 #   powershell ... -NotesOnly                         # 只补发说明页，不需要 setup / zip / Build
 #   powershell ... -SetupPath ... -ZipPath ... -Build 202611190001
+#   powershell ... -Rollout 10 -Build 202611190001     # 灰度 10%
+#   powershell ... -Mandatory -MandatoryReason SECURITY -MandatoryDeadline 2026-12-01T00:00:00Z
 
 param(
     [string]$SetupPath = "",
@@ -41,7 +43,11 @@ param(
     [string]$SignKeyPath = "",
     [string]$KeyId = "2026-11",
     [switch]$SkipUpload,
-    [switch]$NotesOnly
+    [switch]$NotesOnly,
+    [ValidateRange(1, 100)][int]$Rollout = 100,
+    [switch]$Mandatory,
+    [ValidateSet("SECURITY", "PROTOCOL", "REGULATORY", "MIN_SUPPORTED")][string]$MandatoryReason = "",
+    [string]$MandatoryDeadline = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -49,6 +55,17 @@ $ErrorActionPreference = "Stop"
 function Fail([string]$message) {
     Write-Host "[失败] $message" -ForegroundColor Red
     exit 1
+}
+
+# 灰度 / 强制更新参数校验（与 Mote / DevCard 同一口径）
+if ($Mandatory -and -not $MandatoryReason) {
+    Fail "强制更新必须用 -MandatoryReason 指定 SECURITY/PROTOCOL/REGULATORY/MIN_SUPPORTED 之一"
+}
+if (-not $Mandatory -and ($MandatoryReason -or $MandatoryDeadline)) {
+    Fail "-MandatoryReason / -MandatoryDeadline 只在 -Mandatory 时有效"
+}
+if ($MandatoryDeadline -and $MandatoryDeadline -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$') {
+    Fail "-MandatoryDeadline 必须是 ISO 8601 UTC（如 2026-12-01T00:00:00Z）"
 }
 
 # ---- 仓库根 ----
@@ -324,6 +341,14 @@ $manifestArgs = @(
     "--key", $SignKeyPath, "--out", $manifestPath
 )
 if ($ZipFull) { $manifestArgs += @("--artifact", "portable=$ZipFull") }
+$manifestArgs += @("--rollout", "$Rollout")
+if ($Mandatory) {
+    $manifestArgs += @("--mandatory", "--mandatory-reason", $MandatoryReason)
+    if ($MandatoryDeadline) { $manifestArgs += @("--mandatory-deadline", $MandatoryDeadline) }
+    Write-Host "  更新策略：灰度 $Rollout% · 强制更新（$MandatoryReason$(if ($MandatoryDeadline) { "，截止 $MandatoryDeadline" })）"
+} else {
+    Write-Host "  更新策略：灰度 $Rollout% · 非强制"
+}
 if ($NotesUrl) { $manifestArgs += @("--notes-url", $NotesUrl) }
 if (Test-Path -LiteralPath $manifestPath) { $manifestArgs += @("--prev", $manifestPath) }
 
