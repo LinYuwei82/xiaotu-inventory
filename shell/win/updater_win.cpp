@@ -22,6 +22,7 @@
 #include "xiaotu/update.h"
 #include "xiaotu/update_signature.h"
 #include "xiaotu/log.h"
+#include "win_encoding/encoding.h"
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "bcrypt.lib")
@@ -802,12 +803,7 @@ void UpdaterWin::downloadUpdate(Completion cb) {
       download_running_ = false;
       if (ok) {
         status_.download_state = "DONE";
-        status_.pending_local_path = [&]() -> std::string {
-          int n = WideCharToMultiByte(CP_UTF8, 0, final_name.c_str(), -1, nullptr, 0, nullptr, nullptr);
-          std::string s(static_cast<size_t>(n > 0 ? n - 1 : 0), '\0');
-          if (n > 0) WideCharToMultiByte(CP_UTF8, 0, final_name.c_str(), -1, s.data(), n, nullptr, nullptr);
-          return s;
-        }();
+        status_.pending_local_path = win_encoding::wide_to_utf8(final_name);
         status_.pending_size = downloaded;
         status_.last_result = "DOWNLOADED";
         status_.last_error.clear();
@@ -846,8 +842,7 @@ void UpdaterWin::installUpdate(Completion cb) {
   {
     std::lock_guard<std::mutex> lock(status_mutex_);
     std::string utf8 = status_.pending_local_path;
-    int n = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-    if (n > 0) { path.resize(n); MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, path.data(), n); }
+    path = win_encoding::utf8_to_wide(utf8);
   }
   if (path.empty() || GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
     recordOutcome("NO_PENDING_UPDATE", "没有已下载的安装包", false);

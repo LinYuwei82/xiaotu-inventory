@@ -1,5 +1,11 @@
 find_package(Threads REQUIRED)
 
+# UTF-8 边界模块：严格校验、宽窄往返、ACP 兜底、路径往返、系统错误文本。
+add_executable(xiaotu_win_encoding_tests "${CMAKE_CURRENT_SOURCE_DIR}/win_encoding_tests.cpp")
+target_link_libraries(xiaotu_win_encoding_tests PRIVATE win_encoding)
+
+add_test(NAME win_encoding_smoke COMMAND xiaotu_win_encoding_tests)
+
 add_executable(xiaotu_core_smoke "${CMAKE_CURRENT_SOURCE_DIR}/core_smoke.cpp")
 target_link_libraries(xiaotu_core_smoke PRIVATE xiaotu_core Threads::Threads)
 

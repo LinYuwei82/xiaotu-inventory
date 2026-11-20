@@ -91,6 +91,7 @@ if(XIAOTU_BUILD_SHELL AND NOT APPLE)
 endif()
 message(STATUS "单机版壳：${XIAOTU_BUILD_SHELL}")
 
+add_subdirectory(modules/win_encoding)
 add_subdirectory(core)
 add_subdirectory(server)
 if(XIAOTU_BUILD_SHELL)

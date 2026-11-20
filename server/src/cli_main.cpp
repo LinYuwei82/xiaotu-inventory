@@ -30,6 +30,7 @@
 #include "xiaotu/platform_paths.h"
 #include "xiaotu/restore_wizard.h"
 #include "xiaotu/services.h"
+#include "win_encoding/encoding.h"
 
 #if defined(__APPLE__) && defined(XIAOTU_WEBVIEW_SHELL)
 #include "webview.h"
@@ -43,16 +44,10 @@
 namespace {
 
 // Windows 控制台默认使用系统代码页（简体中文为 936），而日志与提示按 UTF-8 输出，
-// 不切代码页会在 cmd 里显示成「灏忓厰…」这类乱码。仅在存在可见控制台时切换，
-// 重定向到文件或管道的场景（壳拉起服务端）不受影响，字节仍是 UTF-8。
+// 不切代码页会在 cmd 里显示成「灏忓厰…」这类乱码。实现收敛在 modules/win_encoding：
+// 仅在 stdout 真的是控制台时切换，重定向到文件或管道时字节保持 UTF-8 不变。
 void configure_console_encoding() {
-#if defined(_WIN32)
-  if (GetConsoleWindow() == nullptr) {
-    return;
-  }
-  SetConsoleOutputCP(CP_UTF8);
-  SetConsoleCP(CP_UTF8);
-#endif
+  win_encoding::init_console();
 }
 
 std::atomic<bool> g_stop{false};

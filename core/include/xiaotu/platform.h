@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <string>
 
+#include "win_encoding/encoding.h"
+
 namespace xiaotu {
 
 // core 里唯一允许出现编译器/操作系统差异的边界：只补齐标准库在不同实现上的能力差异，
@@ -22,9 +24,9 @@ inline std::tm local_time(std::time_t seconds) {
 
 // std::filesystem::path → UTF-8 窄串。SQLite 的 sqlite3_open* 只接受 UTF-8；
 // Windows 上 path 内部是 wchar_t，直接 .string() 会按 ANSI 代码页转换，中文路径会打不开。
+// 实现收敛在 modules/win_encoding，这里只保留调用点常用的名字。
 inline std::string path_to_utf8(const std::filesystem::path& path) {
-  const std::u8string utf8 = path.u8string();
-  return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+  return win_encoding::path_to_utf8(path);
 }
 
 }  // namespace xiaotu

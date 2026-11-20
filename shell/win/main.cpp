@@ -28,6 +28,7 @@
 
 #include "WebView2.h"
 #include "updater_win.h"
+#include "win_encoding/encoding.h"
 #include "nlohmann/json.hpp"
 
 // OpenSSL base64 编解码 —— shell 已链接 OpenSSL::SSL OpenSSL::Crypto
@@ -93,12 +94,7 @@ std::mutex g_webview_mutex;
 // UTF-8 → UTF-16。不能用 std::wstring(json.begin(), json.end())：
 // 那样是把每个字节当成一个 wchar_t，中文会变成乱码（PostWebMessageAsJson 按 UTF-16 解析）。
 static std::wstring utf8_to_wide(const std::string& s) {
-  if (s.empty()) return L"";
-  int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-  if (n <= 0) return L"";
-  std::wstring out(static_cast<size_t>(n), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
-  return out;
+  return win_encoding::utf8_to_wide(s);
 }
 
 static void post_web_message_json(const std::string& json) {
@@ -221,16 +217,11 @@ class UpdaterHost : public IDispatch {
 HWND g_shell_hwnd = nullptr;  // 主窗口句柄，供文件对话框用
 
 std::wstring u8_to_w(const std::string& s) {
-  return utf8_to_wide(s);
+  return win_encoding::utf8_to_wide(s);
 }
 
 std::string w_to_u8(const std::wstring& s) {
-  if (s.empty()) return "";
-  int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
-  if (n <= 0) return "";
-  std::string out(static_cast<size_t>(n), '\0');
-  WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n, nullptr, nullptr);
-  return out;
+  return win_encoding::wide_to_utf8(s);
 }
 
 // OpenSSL base64 解码（无换行）
@@ -590,18 +581,7 @@ HANDLE g_instance_mutex = nullptr;
 
 // 服务端可能输出 UTF-8 或 GBK：先按 UTF-8 严格解码，失败再按系统代码页。
 std::wstring decode_output(const std::string& bytes) {
-  if (bytes.empty()) return std::wstring();
-  int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
-                              static_cast<int>(bytes.size()), nullptr, 0);
-  UINT cp = CP_UTF8;
-  if (n <= 0) {
-    n = MultiByteToWideChar(CP_ACP, 0, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
-    cp = CP_ACP;
-  }
-  if (n <= 0) return std::wstring();
-  std::wstring out(static_cast<size_t>(n), L'\0');
-  MultiByteToWideChar(cp, 0, bytes.data(), static_cast<int>(bytes.size()), out.data(), n);
-  return out;
+  return win_encoding::utf8_to_wide(win_encoding::decode_strict_utf8_or_acp(bytes));
 }
 
 std::wstring exe_directory() {
@@ -837,10 +817,7 @@ bool extract_url(const std::string& data, std::wstring* url) {
   while (end < data.size() && isxdigit(static_cast<unsigned char>(data[end]))) ++end;
   if (end == marker_pos + marker.size()) return false;  // token 为空，继续等
   std::string ascii = data.substr(start, end - start);
-  int n = MultiByteToWideChar(CP_ACP, 0, ascii.data(), static_cast<int>(ascii.size()), nullptr, 0);
-  std::wstring wide(static_cast<size_t>(n), L'\0');
-  MultiByteToWideChar(CP_ACP, 0, ascii.data(), static_cast<int>(ascii.size()), wide.data(), n);
-  *url = wide;
+  *url = win_encoding::utf8_to_wide(ascii);
   return true;
 }
 

@@ -122,7 +122,7 @@ else()
   message(STATUS "更新公钥：未配置（将跳过 C++ 侧验签）")
 endif()
 
-add_executable(xiaotu-shell WIN32 main.cpp updater_win.cpp)
+add_executable(xiaotu-shell WIN32 main.cpp updater_win.cpp app.manifest)
 
 # 版本与图标资源：产品版本来自根 VERSION，图标与 macOS 同为候选 A。
 set(XIAOTU_WIN_ICON "${CMAKE_CURRENT_SOURCE_DIR}/../../packaging/win/xiaotu.ico")

@@ -121,6 +121,8 @@ target_include_directories(xiaotu_core
 
 find_package(Threads REQUIRED)
 target_link_libraries(xiaotu_core PRIVATE Threads::Threads)
+# UTF-8 边界（路径 ↔ UTF-8、宽窄转换、控制台代码页）：PUBLIC 让 server/shell 直接用。
+target_link_libraries(xiaotu_core PUBLIC win_encoding)
 if(WIN32)
   target_link_libraries(xiaotu_core PRIVATE bcrypt)
 endif()
