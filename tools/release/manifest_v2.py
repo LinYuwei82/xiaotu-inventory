@@ -10,7 +10,7 @@ Ed25519 为内嵌的 RFC 8032 纯 Python 实现（签名约 0.1s，发布场景�
 
 用法：
   python manifest_v2.py generate --product mote --channel stable \
-      --platform windows --version 1.0.2 --build 202611180530 --min-os 10.0 \
+      --platform windows --version 1.0.2 --build 42 --min-os 10.0 \
       --artifact portable=build/.../mote-1.0.2-win64-portable.zip \
       --artifact setup=build/.../mote-1.0.2-win64-setup.exe \
       --notes-url https://dl.xiaotu.online/mote/release-notes-1.0.2.html \
