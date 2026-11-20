@@ -62,14 +62,19 @@ function Fail([string]$message) {
 
 # 灰度 / 强制更新参数校验：唯一实现在 tools/release/publish_args.py（三仓库共享）。
 # 非 0 退出直接 exit 2，脚本里不再重复 if 校验。
-$pyArgs = Get-Command python3 -ErrorAction SilentlyContinue
-if (-not $pyArgs) { $pyArgs = Get-Command python -ErrorAction SilentlyContinue }
+# Windows 上 python3 常是 Microsoft Store 的占位程序（退出码 9009），优先用 python
+$pyArgs = Get-Command python -ErrorAction SilentlyContinue
+if (-not $pyArgs) { $pyArgs = Get-Command python3 -ErrorAction SilentlyContinue }
 if (-not $pyArgs) { Fail "找不到 python（publish_args / manifest_v2 需要）" }
 $mandatoryArg = if ($Mandatory) { "1" } else { "0" }
 $argsOutput = & $pyArgs.Source (Join-Path $root "tools\release\publish_args.py") validate `
     "--product=xiaotu" "--rollout=$Rollout" "--mandatory=$mandatoryArg" `
     "--mandatory-reason=$MandatoryReason" "--mandatory-deadline=$MandatoryDeadline" --emit sh
-if ($LASTEXITCODE -ne 0) { exit 2 }
+if ($LASTEXITCODE -ne 0) {
+    $argsOutput | Out-Host
+    Write-Host "[失败] 发布参数校验失败（publish_args.py 退出码 $LASTEXITCODE）"
+    exit 2
+}
 foreach ($line in @($argsOutput)) {
     if ($line -notmatch "^([A-Z_]+)='(.*)'$") { continue }
     $key = $Matches[1]
