@@ -875,9 +875,11 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             c = version_cmp(version, current[0])
             if c < 0:
                 die(f"版本回退：本地 {version} < 线上 {current[0]}")
-            if c == 0 and args.kind == "win" and args.build is not None:
-                if args.build < current[1]:
-                    die(f"构建号回退：本地 {args.build} < 线上 {current[1]}")
+            # build 递增校验：macOS + Windows 都必须严格递增（Sparkle / manifest schema 要求）
+            if c == 0 and args.build is not None:
+                if args.build <= current[1]:
+                    die(f"构建号回退或相等：本地 {args.build} ≤ 线上 {current[1]} "
+                        f"(platform={args.kind})。请跑 gen_build.py 取新 build。")
             if c == 0:
                 warn(f"版本与线上相同（{version}），将按幂等重传校验")
     else:
