@@ -271,7 +271,7 @@ int current_api_version() { return XIAOTU_API_VERSION; }
 namespace {
 
 // v1 / v2 共用的字段校验。v2 没有 schema/api 区间，平台与构建号规则也不同：
-// macOS 的 build 固定 0，所以只要求非负。
+// 构建号允许为 0（本机未注入时按 0 处理），但不得为负。
 bool validate_manifest_fields(UpdateManifest& parsed, bool v2, ManifestError& error) {
   if (parsed.key_id.empty()) {
     set_error(error, "MANIFEST_KEY_ID_EMPTY", "key_id 不能为空");
@@ -645,6 +645,24 @@ bool is_newer_product_version(std::string_view target, std::string_view current)
   return compare_product_version(target_version, current_version) > 0;
 }
 
+bool is_update_newer(std::string_view remote_version, std::int64_t remote_build,
+                     std::string_view local_version, std::int64_t local_build) {
+  ProductVersion remote{};
+  ProductVersion local{};
+  if (!parse_product_version(remote_version, remote) ||
+      !parse_product_version(local_version, local)) {
+    return false;
+  }
+  const int order = compare_product_version(remote, local);
+  if (order != 0) {
+    return order > 0;
+  }
+  if (local_build <= 0) {
+    return false;
+  }
+  return remote_build > local_build;
+}
+
 bool is_same_product_version(std::string_view a, std::string_view b) {
   ProductVersion left{};
   ProductVersion right{};
@@ -652,17 +670,6 @@ bool is_same_product_version(std::string_view a, std::string_view b) {
     return false;
   }
   return compare_product_version(left, right) == 0;
-}
-
-InstallDecision decide_install_version(bool installer_available, std::string_view pending_version,
-                                       std::string_view current_version) {
-  if (!installer_available) {
-    return InstallDecision::kUnavailable;
-  }
-  if (!is_newer_product_version(pending_version, current_version)) {
-    return InstallDecision::kNoPendingUpdate;
-  }
-  return InstallDecision::kStarted;
 }
 
 ResumeDecision decide_resume(bool paused) {
@@ -736,7 +743,8 @@ UpdateDecision evaluate_manifest(const UpdateManifest& manifest, const UpdateQue
     }
   } else {
     // v2 不携带 schema/api 区间与 upgrade_path，数据兼容性由客户端与服务端握手把关。
-    // 更新判定：macOS 只比 version；Windows 先比 version，同版本再比 build。
+    // 更新判定（macOS / Windows 同一口径）：先比 version，同版本再比 build；
+    // 本机 build 未知（<= 0）时同版本不比 build。
     ProductVersion remote{};
     ProductVersion local{};
     if (!parse_product_version(manifest.version, remote) ||

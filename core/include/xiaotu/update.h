@@ -141,15 +141,21 @@ enum class InstallDecision { kStarted, kUnavailable, kNoPendingUpdate };
 InstallDecision decide_install(bool installer_available, std::int64_t pending_build,
                                std::int64_t current_build);
 
-// v2 清单里 macOS 段没有构建号（build 固定 0），待安装/验证态改用版本号判定。
+// 清单是否比本机新（三仓统一口径）：
+//   version 更高，或 version 相同且远端 build > 本地 build；
+//   本地 build <= 0（未注入构建号）时同版本不比 build。
+bool is_update_newer(std::string_view remote_version, std::int64_t remote_build,
+                     std::string_view local_version, std::int64_t local_build);
+
 // target 严格高于 current 才算有新版本；任一侧无法解析时返回 false。
 bool is_newer_product_version(std::string_view target, std::string_view current);
+
 // 两个版本号相等（按 SemVer 解析后比较）；任一侧无法解析时返回 false。
 bool is_same_product_version(std::string_view a, std::string_view b);
 
-// decide_install 的版本口径：macOS v2 使用，语义与构建号版本一致。
-InstallDecision decide_install_version(bool installer_available, std::string_view pending_version,
-                                       std::string_view current_version);
+// 安装待处理版本的判定：按构建号比较（Windows / macOS 同一口径）。
+InstallDecision decide_install(bool installer_available, std::int64_t pending_build,
+                               std::int64_t current_build);
 
 // resume 桥方法的结果：RESUMED / NOT_PAUSED。
 enum class ResumeDecision { kResumed, kNotPaused };

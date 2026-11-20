@@ -1,0 +1,15 @@
+{
+  "comment": "macOS / Windows 同版本重发判定向量：远端 version 更高，或 version 相同且远端 build 更大即视为更新；本机 build <= 0 时同版本不比 build。三仓单测共用，由 sync_guard.sh 同步。",
+  "cases": [
+    { "remote_version": "1.2.4", "remote_build": 100, "local_version": "1.2.3", "local_build": 99, "newer": true },
+    { "remote_version": "1.2.3", "remote_build": 100, "local_version": "1.2.3", "local_build": 99, "newer": true },
+    { "remote_version": "1.2.3", "remote_build": 99, "local_version": "1.2.3", "local_build": 99, "newer": false },
+    { "remote_version": "1.2.3", "remote_build": 98, "local_version": "1.2.3", "local_build": 99, "newer": false },
+    { "remote_version": "1.2.2", "remote_build": 1000, "local_version": "1.2.3", "local_build": 1, "newer": false },
+    { "remote_version": "1.2.3", "remote_build": 5, "local_version": "1.2.3", "local_build": 0, "newer": false },
+    { "remote_version": "1.2.3", "remote_build": 5, "local_version": "1.2.3", "local_build": -1, "newer": false },
+    { "remote_version": "2.0.0", "remote_build": 1, "local_version": "1.9.9", "local_build": 999999, "newer": true },
+    { "remote_version": "1.10.0", "remote_build": 1, "local_version": "1.9.0", "local_build": 1, "newer": true },
+    { "remote_version": "1.0.0", "remote_build": 1, "local_version": "1.0.0", "local_build": 1, "newer": false }
+  ]
+}

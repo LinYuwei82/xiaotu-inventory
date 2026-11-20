@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -336,7 +337,7 @@ int main() {
   check(xiaotu::decide_install(true, 2026111301, 2026100101) == InstallDecision::kStarted,
         "有待更新且安装器可用时启动");
 
-  // v2 清单的 macOS 段 build 固定为 0：待安装与恢复态改用版本号判定。
+  // macOS 也按 build 判定（三仓统一口径）；向量表由 sync_guard 同步。
   check(xiaotu::is_newer_product_version("1.0.3", "1.0.2"), "更高版本视为有待更新");
   check(!xiaotu::is_newer_product_version("1.0.2", "1.0.2"), "同版本不提示更新");
   check(!xiaotu::is_newer_product_version("1.0.1", "1.0.2"), "更低版本不提示更新");
@@ -345,13 +346,34 @@ int main() {
   check(xiaotu::is_same_product_version("1.0.2", "1.0.2"), "版本号相等");
   check(!xiaotu::is_same_product_version("1.0.2", "1.0.3"), "版本号不等");
   check(!xiaotu::is_same_product_version("", ""), "空版本不算相等");
-  check(xiaotu::decide_install_version(true, "1.0.3", "1.0.2") == InstallDecision::kStarted,
-        "版本更高且安装器可用时启动");
-  check(xiaotu::decide_install_version(true, "1.0.2", "1.0.2") ==
-            InstallDecision::kNoPendingUpdate,
-        "版本相同拒绝安装");
-  check(xiaotu::decide_install_version(false, "1.0.3", "1.0.2") == InstallDecision::kUnavailable,
-        "无安装器时优先返回不可用");
+
+  check(xiaotu::is_update_newer("1.0.3", 1, "1.0.2", 999),
+        "版本更高时忽略 build");
+  check(xiaotu::is_update_newer("1.0.2", 2026112002, "1.0.2", 2026112001),
+        "同版本 build 更大视为更新");
+  check(!xiaotu::is_update_newer("1.0.2", 2026112001, "1.0.2", 2026112001),
+        "同版本 build 相同不更新");
+  check(!xiaotu::is_update_newer("1.0.2", 1, "1.0.2", 0),
+        "本机 build 未知时同版本不比 build");
+#ifdef XIAOTU_UPDATE_VECTORS
+  {
+    std::ifstream in(XIAOTU_UPDATE_VECTORS);
+    check(in.good(), "无法打开共享判定向量表");
+    if (in.good()) {
+      const nlohmann::json vectors = nlohmann::json::parse(in, nullptr, false);
+      check(!vectors.is_discarded() && vectors.contains("cases"), "向量表格式非法");
+      for (const auto& item : vectors["cases"]) {
+        const bool expected = item.value("newer", false);
+        const bool actual = xiaotu::is_update_newer(
+            item.value("remote_version", std::string()),
+            item.value("remote_build", std::int64_t{0}),
+            item.value("local_version", std::string()),
+            item.value("local_build", std::int64_t{0}));
+        check(actual == expected, ("共享向量不符：" + item.dump()).c_str());
+      }
+    }
+  }
+#endif
 
   // 中间版本选择：原生桥与服务端 evaluate_manifest 共用同一条规则。
   const std::vector<xiaotu::UpgradeStep> upgrade_path{

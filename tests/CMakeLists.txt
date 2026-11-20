@@ -65,6 +65,8 @@ add_test(NAME print_paper_smoke COMMAND xiaotu_print_paper_smoke)
 
 add_executable(xiaotu_update_smoke "${CMAKE_CURRENT_SOURCE_DIR}/update_smoke.cpp")
 target_link_libraries(xiaotu_update_smoke PRIVATE xiaotu_core)
+target_compile_definitions(xiaotu_update_smoke PRIVATE
+  XIAOTU_UPDATE_VECTORS="${CMAKE_SOURCE_DIR}/tools/release/update_compare_vectors.json")
 
 add_test(NAME update_smoke COMMAND xiaotu_update_smoke)
 

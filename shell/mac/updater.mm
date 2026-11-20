@@ -1383,8 +1383,9 @@ didCompleteWithError:(NSError*)error {
   const bool installerAvailable = packageURL != nil;
 #endif
   // v2 的 macOS 清单没有构建号（build 固定 0），待安装判定同样按版本号比较。
-  switch (xiaotu::decide_install_version(installerAvailable, pending_version(defaults),
-                                         xiaotu::current_product_version())) {
+  switch (xiaotu::decide_install(installerAvailable,
+                                 [defaults integerForKey:kPendingBuildKey],
+                                 current_build())) {
     case xiaotu::InstallDecision::kUnavailable:
       respond(@{
         @"ok" : @NO,
@@ -1566,15 +1567,9 @@ didCompleteWithError:(NSError*)error {
   // 与检查链路同一口径：版本更高，或同版本但待安装构建号更大。
   const std::string statusPendingVersion = pending_version(defaults);
   const std::int64_t statusPendingBuild = [defaults integerForKey:kPendingBuildKey];
-  xiaotu::ProductVersion statusRemote{};
-  xiaotu::ProductVersion statusLocal{};
-  BOOL updateAvailable = NO;
-  if (!statusPendingVersion.empty() &&
-      xiaotu::parse_product_version(statusPendingVersion, statusRemote) &&
-      xiaotu::parse_product_version(xiaotu::current_product_version(), statusLocal)) {
-    const int statusOrder = xiaotu::compare_product_version(statusRemote, statusLocal);
-    updateAvailable = statusOrder > 0 || (statusOrder == 0 && statusPendingBuild > current_build());
-  }
+  const BOOL updateAvailable = !statusPendingVersion.empty() &&
+      xiaotu::is_update_newer(statusPendingVersion, statusPendingBuild,
+                              xiaotu::current_product_version(), current_build());
   NSString* pendingVersion = updateAvailable ? [defaults stringForKey:kPendingVersionKey] : nil;
   const BOOL mandatory = updateAvailable && [defaults boolForKey:kMandatoryKey];
   NSString* reason = mandatory ? [defaults stringForKey:kPendingReasonKey] : nil;
@@ -1863,9 +1858,8 @@ didCompleteWithError:(NSError*)error {
     return;
   }
   const std::int64_t remoteBuild = json_long(manifest, @"build");
-  const int versionOrder = xiaotu::compare_product_version(remoteVersion, localVersion);
-  if (versionOrder < 0 ||
-      (versionOrder == 0 && remoteBuild <= current_build())) {
+  if (!xiaotu::is_update_newer(remoteVersionText.UTF8String, remoteBuild,
+                               xiaotu::current_product_version(), current_build())) {
     [self clearPending];
     finish(kResultNoUpdate);
     return;

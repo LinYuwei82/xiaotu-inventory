@@ -221,7 +221,7 @@ python3 tools/release/manifest_v2.py resign \
 1. 每次发布保留已签名清单与 appcast 归档（如 `releases/1.4.2/manifest.json`）。
 2. 把上一版归档的 `manifest.json`、`appcast.xml` 原子替换回更新源。
 3. 确认 `/api/update/check` 返回上一版本；安装包保留至少 3 个 stable 版本。
-4. 回滚包若重新打包，构建号必须递增，否则 Windows 同版本会判为“无更新”（macOS 只比 version）。
+4. 回滚包若重新打包，构建号必须递增，否则三仓同版本都会判为“无更新”。
 
 ### 6. 常见错误码
 
