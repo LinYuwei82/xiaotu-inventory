@@ -327,13 +327,15 @@ def verify_manifest(body: Dict[str, Any], pub: bytes) -> None:
 
 def resign_manifest(body: Dict[str, Any], seed: bytes, rollout=None,
                     platform: str = "all",
-                    notes_url=None) -> Dict[str, Any]:
-    """改 rollout_percent 和/或 notes_url 后整体重签。
+                    notes_url=None, clear_mandatory: bool = False) -> Dict[str, Any]:
+    """改 rollout_percent / notes_url / 撤回强制更新后整体重签。
 
     灰度放量：只改 platforms.<platform>.rollout_percent；
-    补发说明页：只改 platforms.<platform>.notes_url（绝对 http(s) 地址）。
+    补发说明页：只改 platforms.<platform>.notes_url（绝对 http(s) 地址）；
+    撤回强制更新：移除 mandatory / mandatory_reason / mandatory_deadline，
+    客户端重新按普通更新处理。
     platform="all" 表示同时改所有平台段。版本、产物 URL / size / sha256
-    与其他字段一律保持原样；输入必须是已签名的 v2 清单。
+    与其余字段一律保持原样；输入必须是已签名的 v2 清单。
     """
     if body.get("manifest_version") != SCHEMA_VERSION:
         die(f"输入清单不是 v2（manifest_version={body.get('manifest_version')}）")
@@ -342,8 +344,8 @@ def resign_manifest(body: Dict[str, Any], seed: bytes, rollout=None,
     platforms = body.get("platforms")
     if not isinstance(platforms, dict) or not platforms:
         die("清单缺少 platforms")
-    if rollout is None and notes_url is None:
-        die("resign 至少需要 --rollout 或 --notes-url 之一")
+    if rollout is None and notes_url is None and not clear_mandatory:
+        die("resign 至少需要 --rollout / --notes-url / --clear-mandatory 之一")
     if rollout is not None and not 1 <= int(rollout) <= 100:
         die("rollout 必须在 1–100 之间")
     if notes_url is not None and not re.match(r"^https?://", str(notes_url)):
@@ -360,7 +362,10 @@ def resign_manifest(body: Dict[str, Any], seed: bytes, rollout=None,
             updated["platforms"][name]["rollout_percent"] = int(rollout)
         if notes_url is not None:
             updated["platforms"][name]["notes_url"] = str(notes_url)
-    if notes_url is not None:
+        if clear_mandatory:
+            for key in ("mandatory", "mandatory_reason", "mandatory_deadline"):
+                updated["platforms"][name].pop(key, None)
+    if notes_url is not None or clear_mandatory:
         # 清单内容变了，时间戳随之更新；rollout 放量不算内容变化，保持原值
         updated["updated_at"] = now_iso()
     signed = sign_manifest(updated, seed)
@@ -372,7 +377,7 @@ def command_resign(args: argparse.Namespace) -> int:
     path = Path(args.manifest)
     body = json.loads(path.read_text(encoding="utf-8"))
     signed = resign_manifest(body, load_private_seed(Path(args.key)), args.rollout,
-                             args.platform, args.notes_url)
+                             args.platform, args.notes_url, args.clear_mandatory)
     out = Path(args.out) if args.out else path
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
@@ -384,6 +389,8 @@ def command_resign(args: argparse.Namespace) -> int:
         changes.append(f"rollout={args.rollout}%")
     if args.notes_url is not None:
         changes.append(f"notes_url={args.notes_url}")
+    if args.clear_mandatory:
+        changes.append("已撤回强制更新")
     print(f"已重签：{out}（{' · '.join(changes)} · {args.platform}）")
     return 0
 
@@ -661,6 +668,24 @@ def cmd_selftest(args: argparse.Namespace) -> int:
                 == m2["platforms"]["windows"]["artifacts"]); n += 1
         verify_manifest(noted, ed25519_pubkey(_SELFTEST_SEED)); n += 1
 
+        # 6.3) resign --clear-mandatory：撤回强制更新，移除三字段并重签
+        out3 = Path(td) / "m3.json"
+        main(["generate", "--product", "mote", "--channel", "stable",
+              "--platform", "windows", "--version", "1.0.4", "--build", "202611180002",
+              "--artifact", f"portable={zipf}", "--key", str(key),
+              "--mandatory", "--mandatory-reason", "SECURITY",
+              "--mandatory-deadline", "2026-12-01T00:00:00Z",
+              "--out", str(out3)])
+        m3 = json.loads(out3.read_text(encoding="utf-8"))
+        win3 = m3["platforms"]["windows"]
+        assert win3.get("mandatory") is True and win3["mandatory_reason"] == "SECURITY"; n += 1
+        cleared = resign_manifest(m3, _SELFTEST_SEED, None, "all", None, True)
+        win3c = cleared["platforms"]["windows"]
+        assert not any(k in win3c for k in
+                       ("mandatory", "mandatory_reason", "mandatory_deadline")); n += 1
+        assert win3c["artifacts"] == win3["artifacts"]; n += 1
+        verify_manifest(cleared, ed25519_pubkey(_SELFTEST_SEED)); n += 1
+
         # 7) 命名规则
         check_artifact_name(v2_artifact_name("mote", "1.0.3", "setup"),
                             "mote", "1.0.3", "setup"); n += 1
@@ -711,12 +736,14 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--out", required=True)
     gen.set_defaults(func=command_generate)
 
-    res = sub.add_parser("resign", help="改 rollout_percent / notes_url 后重新签名")
+    res = sub.add_parser("resign", help="改 rollout_percent / notes_url / 撤回强制更新后重新签名")
     res.add_argument("--manifest", required=True)
     res.add_argument("--key", required=True, help="Ed25519 私钥（PEM 或 32 字节种子）")
     res.add_argument("--rollout", type=int, default=None, help="1–100；不改则不传")
     res.add_argument("--notes-url", default=None,
                      help="发布说明页绝对地址；补发说明页时使用")
+    res.add_argument("--clear-mandatory", action="store_true",
+                     help="撤回强制更新：移除 mandatory* 三字段后重签")
     res.add_argument("--platform", default="all", choices=["all", "macos", "windows"])
     res.add_argument("--out", default="", help="输出路径；默认覆盖输入清单")
     res.set_defaults(func=command_resign)
