@@ -565,7 +565,50 @@ if [ "$OSS_SKIP" != "true" ]; then
   python3 "$GUARD_PY" verify-live "${GUARD_ARGS[@]}"
 fi
 
-# ---- ⑨ 完成 ----
+# ---- ⑨ docs 自检：包体实测 + 实现状态巡检 ----
+# 教训：设计文档会随时间漂移——包体数值偏离实际、实现状态写着「未实现」但代码早已完成。
+# 这一节在发布脚本末尾打印两类提示，提醒发布者核对 docs/。
+DOCS_ROOT="$REPO_ROOT/docs"
+if [ -d "$DOCS_ROOT" ]; then
+  echo ""
+  echo "===== ⑨ docs 自检（包体实测 + 实现状态）"
+
+  # 9.1 包体实测
+  TECH_DOC="$DOCS_ROOT/进销存技术方案.md"
+  if [ -f "$TECH_DOC" ]; then
+    DMG_SIZE=$(stat -f%z "$DMG_PATH" 2>/dev/null || stat -c%s "$DMG_PATH" 2>/dev/null || echo "?")
+    DMG_MIB=$(python3 -c "print(f'{int($DMG_SIZE)/1024/1024:.2f}')" 2>/dev/null || echo "?")
+    TODAY=$(date '+%Y-%m-%d')
+    echo "  📦 包体实测（版本 $VERSION / $TODAY）"
+    echo "     DMG: ${DMG_SIZE}B (${DMG_MIB} MiB)"
+    echo "     → 核对 docs/进销存技术方案.md §2.6「当前实测」表是否需要追加新行"
+  fi
+
+  # 9.2 实现状态巡检：扫描 docs/ 里出现的「未实现 / 待补 / 缺口 / TODO」字样
+  # 这些是技术方案文档里最容易漂移的部分——代码写完了但文档没跟进。
+  WATCH_WORDS="未实现|待补|待处理|TODO|FIXME|缺口|缺失|尚未|计划实现"
+  HITS=$(grep -rnE "$WATCH_WORDS" "$DOCS_ROOT" \
+    --include="*.md" \
+    -l 2>/dev/null || true)
+  if [ -n "$HITS" ]; then
+    echo ""
+    echo "  🔍 实现状态巡检（docs/ 中含「未实现/待补/TODO」等字样）"
+    while IFS= read -r f; do
+      COUNT=$(grep -cE "$WATCH_WORDS" "$f" 2>/dev/null || echo 0)
+      REL="${f#$REPO_ROOT/}"
+      echo "     $REL ($COUNT 处)"
+      grep -nE "$WATCH_WORDS" "$f" 2>/dev/null | head -3 | sed 's/^/       L/'
+    done <<< "$HITS"
+    echo ""
+    echo "     → 发布前核对这些条目的代码现状；已实现的及时改掉，"
+    echo "       避免下次再踩「代码写完了文档还说未实现」的坑。"
+  else
+    echo ""
+    echo "  🔍 实现状态巡检：docs/ 未发现待补标记 ✓"
+  fi
+fi
+
+# ---- ⑩ 完成 ----
 echo ""
 echo "================ 发布完成 ================"
 echo "版本 / build / channel：  $VERSION / $BUILD / $CHANNEL"

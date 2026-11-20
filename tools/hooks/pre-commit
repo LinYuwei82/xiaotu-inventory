@@ -1,52 +1,146 @@
 #!/usr/bin/env bash
-# pre-commit hook — PowerShell 5 编码门禁
+# pre-commit hook — 多门禁
 #
-# Windows PowerShell 5 只正确识别 UTF-8 + BOM（EF BB BF）的 .ps1。
-# UTF-8 无 BOM 会被按 GBK 读，中文字面量断裂 → 脚本崩溃。
+# 门禁 1：PowerShell 5 .ps1 必须 UTF-8 + BOM
+#         Windows PowerShell 5 只正确识别带 BOM 的 .ps1；
+#         无 BOM 会被按 GBK 读，中文字面量断裂 → 脚本崩溃。
 #
-# 这个 hook 扫描所有 staged 的 .ps1 文件，前 3 字节不是 EF BB BF 就阻断提交。
+# 门禁 2：Ed25519 公钥硬编码一致性
+#         Sparkle / updater_win 信任锚公钥在多处硬编码（CMakeLists.txt × 2 +
+#         sync-signing-key-to-mac.sh + 发布脚本注释），如果某处被误改会导致
+#         客户端更新验签静默失败。这个 hook 扫描所有含公钥的硬编码，
+#         与 ~/.config/xiaotu-updates/update_signing_2026.pem 实际推导值比对。
+#
 # 用法：git config core.hooksPath tools/hooks（见 setup-hooks.ps1）。
 
 set -u
 
-fail_count=0
-checked=0
+RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'; NC='\033[0m'
+RERUN="${YELLOW}git commit --no-verify${NC}"  # 绕过时要显眼
 
-# 取所有 staged 的 .ps1（新建/修改/重命名都含 --diff-filter=ACM 也够）
-mapfile -t ps1_files < <(git diff --cached --name-only --diff-filter=ACM \
-    | grep -E '\.ps1$' || true)
+exit_code=0
 
-if [ "${#ps1_files[@]}" -eq 0 ]; then
-    exit 0  # 没有 .ps1 变更，放行
+# ============================================================
+# 门禁 1：.ps1 UTF-8 + BOM
+# ============================================================
+fail_count=0; checked=0
+# macOS 默认 bash 3.2 无 mapfile，用 while 兼容
+ps1_list=$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null | grep -E '\.ps1$' || true)
+
+if [ -n "$ps1_list" ]; then
+    echo -e "${YELLOW}[hook] 门禁 1/2：.ps1 UTF-8 + BOM${NC}"
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        bom=$(git show ":$f" 2>/dev/null | head -c 3 | od -An -tx1 | tr -d ' \n')
+        checked=$((checked + 1))
+        if [ "$bom" = "efbbbf" ]; then
+            echo -e "  ${GREEN}✓${NC} $f"
+        else
+            echo -e "  ${RED}✗${NC} $f 缺少 UTF-8 BOM（当前前 3 字节：$bom）"
+            echo -e "     修复：python -c \"p=open('$f','rb'); b=p.read(); p=open('$f','wb'); p.write(b'\\xef\\xbb\\xbf'+b); p.close()\""
+            fail_count=$((fail_count + 1))
+        fi
+    done <<< "$ps1_list"
+    if [ $fail_count -gt 0 ]; then
+        echo -e "${RED}[hook] 阻断：${fail_count}/${checked} 个 .ps1 缺 UTF-8 BOM${NC}"
+        exit 1
+    fi
+    echo -e "  ${GREEN}✓ 通过：${checked} 个 .ps1${NC}\n"
+else
+    echo -e "${GREEN}[hook] 门禁 1/2 跳过（无 .ps1 变更）${NC}"
 fi
 
-RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'; NC='\033[0m'
+# ============================================================
+# 门禁 2：Ed25519 公钥一致性
+# ============================================================
+echo -e "${YELLOW}[hook] 门禁 2/2：Ed25519 公钥一致性${NC}"
 
-echo -e "${YELLOW}[hook] 检查 .ps1 UTF-8 + BOM${NC}"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+KEY_FILE="${XIAOTU_SIGNING_KEY:-$HOME/.config/xiaotu-updates/update_signing_2026.pem}"
 
-for f in "${ps1_files[@]}"; do
-    # 取 staged 版本的前 3 字节（不是工作区的，防止本地有改动没 add）
-    bom=$(git show ":$f" 2>/dev/null | head -c 3 | od -An -tx1 | tr -d ' \n')
-    checked=$((checked + 1))
+if [ ! -f "$KEY_FILE" ]; then
+    echo -e "  ${YELLOW}⚠ 跳过：密钥文件不存在 $KEY_FILE${NC}"
+    echo -e "     设置 XIAOTU_SIGNING_KEY=/path/to/pem 或确保默认位置存在。"
+    exit 0  # 没密钥就不阻断提交（CI 环境可能没有）
+fi
 
-    if [ "$bom" = "efbbbf" ]; then
-        echo -e "  ${GREEN}✓${NC} $f （UTF-8 + BOM）"
+# 用 OpenSSL 从私钥推导 32 字节公钥 → base64
+if command -v openssl >/dev/null 2>&1; then
+    DER_HEX=$(openssl pkey -in "$KEY_FILE" -pubout -outform DER 2>/dev/null | tail -c 32 | od -An -tx1 | tr -d ' \n')
+    if [ -n "$DER_HEX" ]; then
+        CORRECT_PUBKEY=$(echo "$DER_HEX" | xxd -r -p | base64 | tr -d '\n')
     else
-        echo -e "  ${RED}✗${NC} $f 缺少 UTF-8 BOM（当前前 3 字节：$bom）"
-        echo -e "     ${YELLOW}修复：${NC} python -c \"p=open('$f','rb'); b=p.read(); p=open('$f','wb'); p.write(b'\xef\xbb\xbf'+b); p.close()\""
-        echo -e "     或：${YELLOW}powershell -Command \"\$b=[IO.File]::ReadAllBytes('$f'); [IO.File]::WriteAllBytes('$f', [byte[]](0xEF,0xBB,0xBF) + \$b)\""
-        fail_count=$((fail_count + 1))
+        echo -e "  ${YELLOW}⚠ 跳过：openssl 推导公钥失败${NC}"
+        exit 0
+    fi
+else
+    echo -e "  ${YELLOW}⚠ 跳过：系统无 openssl${NC}"
+    exit 0
+fi
+
+echo "  正确公钥（从私钥推导）：$CORRECT_PUBKEY"
+
+# 定义需要包含正确公钥的文件（相对仓库根）；公钥被改就阻断
+TARGET_FILES=(
+    "CMakeLists.txt"
+    "shell/win/CMakeLists.txt"
+    "scripts/sync-signing-key-to-mac.sh"
+)
+# 同时扫描 docs/，提示但不阻断（文档可能滞后于代码，但应该追平）
+DOCS_GLOB="docs/*.md docs/**/*.md docs/tools/package/README.md"
+
+# 同时扫描工作区里所有出现的 base64 样式字符串（排除 build/、3rdparty/、vendor/）
+ALL_PUBKEY_HITS=$(git ls-files \
+    | grep -vE '(^|/)(build|3rdparty|vendor|\.git|dist)/' \
+    | grep -E '\.(txt|md|sh|cmake|plist|py|yml|yaml|json)$|^CMakeLists\.txt$' \
+    | xargs grep -lE '[A-Za-z0-9+/]{43}=' 2>/dev/null || true)
+
+target_fail=0
+for f in "${TARGET_FILES[@]}"; do
+    if [ ! -f "$REPO_ROOT/$f" ]; then continue; fi
+    # 取 staged 版本里是否出现正确公钥
+    STAGED=$(git show ":$f" 2>/dev/null || git show "$f" 2>/dev/null || cat "$REPO_ROOT/$f" 2>/dev/null)
+    if echo "$STAGED" | grep -qF "$CORRECT_PUBKEY"; then
+        echo -e "  ${GREEN}✓${NC} $f"
+    else
+        # 有没有出现任何 base64 公钥样式字符串？
+        ANY_KEY=$(echo "$STAGED" | grep -oE '[A-Za-z0-9+/]{43}=' | head -1 || true)
+        if [ -n "$ANY_KEY" ] && [ "$ANY_KEY" != "$CORRECT_PUBKEY" ]; then
+            echo -e "  ${RED}✗${NC} $f 出现公钥但与正确值不一致："
+            echo -e "     正确：$CORRECT_PUBKEY"
+            echo -e "     当前：$ANY_KEY"
+            echo -e "     修复：把 $f 里的公钥改成正确值（密钥文件 $KEY_FILE 实际推导出来的）。"
+            target_fail=$((target_fail + 1))
+        else
+            # 没出现任何公钥，可能是新文件或重构，给黄提示但不阻断
+            echo -e "  ${YELLOW}⚠${NC} $f 未出现任何 Ed25519 公钥（确认是否应包含）"
+        fi
     fi
 done
 
-echo -e ""
-if [ $fail_count -gt 0 ]; then
-    echo -e "${RED}[hook] 阻断：${fail_count}/${checked} 个 .ps1 缺少 UTF-8 BOM${NC}"
-    echo -e "       PowerShell 5 在 Windows 上会把无 BOM 的 UTF-8 当 GBK 读，"
-    echo -e "       中文字面量断裂导致脚本崩溃（本次会话已出现多次）。"
-    echo -e "       如果你确信要绕过，用 ${YELLOW}git commit --no-verify${NC}（不推荐）。"
+# docs 扫描：提示但不阻断
+echo ""
+echo -e "  ${YELLOW}— docs/ 扫描（仅提示，不阻断）—${NC}"
+for pat in $DOCS_GLOB; do
+    for f in $REPO_ROOT/$pat; do
+        [ -f "$f" ] || continue
+        HIT=$(grep -nE '[A-Za-z0-9+/]{43}=' "$f" 2>/dev/null | grep -v "$CORRECT_PUBKEY" | head -3 || true)
+        if [ -n "$HIT" ]; then
+            echo -e "  ${YELLOW}ℹ${NC} $f 里有疑似公钥需要核对："
+            echo "$HIT" | sed 's/^/     /'
+        fi
+    done
+done
+
+if [ $target_fail -gt 0 ]; then
+    echo ""
+    echo -e "${RED}[hook] 阻断：${target_fail} 处硬编码公钥与实际密钥不一致${NC}"
+    echo -e "       错公钥会导致 Sparkle 验签失败 / updater_win 静默拒绝更新。"
+    echo -e "       密钥文件：$KEY_FILE"
+    echo -e "       绕过：$RERUN"
     exit 1
-else
-    echo -e "${GREEN}[hook] 通过：${checked} 个 .ps1 都是 UTF-8 + BOM${NC}"
-    exit 0
 fi
+
+echo ""
+echo -e "${GREEN}[hook] 通过：门禁 1/2 + 门禁 2/2${NC}"
+exit 0
