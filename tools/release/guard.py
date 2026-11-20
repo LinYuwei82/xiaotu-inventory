@@ -526,6 +526,12 @@ def check_mac_embed(path: Path, product: str, channel: str, base: str, version: 
     got = str(info.get("CFBundleShortVersionString", ""))
     if got != version:
         die(f"DMG 内版本 {got} 与文件名版本 {version} 不一致")
+    # CFBundleVersion（构建号）必须是纯数字 > 0（Sparkle 2.7+ 规范：与 ShortVersionString 分离）
+    got_build = str(info.get("CFBundleVersion", ""))
+    if not got_build.isdigit() or int(got_build) <= 0:
+        die(f"DMG 内 CFBundleVersion（{got_build}）必须是纯数字 > 0；"
+            "CMake 需传 -DMOTE_BUILD=<数字>（package_macos.sh 已强制）")
+    ok(f"DMG 内嵌版本/build：{got} / {got_build}")
     feed = str(info.get("SUFeedURL", ""))
     want_feed = f"{base}/{appcast_key(product, channel)}"
     if feed != want_feed:
