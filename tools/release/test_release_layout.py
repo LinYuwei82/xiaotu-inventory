@@ -8,6 +8,7 @@
 - 根 CMakeLists 的严格开关、开发占位值与 unset 语义；
 - 三仓共享的 gen_build.py 哈希一致（与 sync_guard.sh 对齐）；
 - 共享脚本的 .sha256 台账与仓库内文件哈希一致；
+- 更新判定向量 update_compare_vectors.json 与参考判定逐条一致；
 - CMake preset 的发布配置统一：macos-release→build/release、windows-release→build/windows；
 - 本地产物/清单统一落 dist/，打包与发布脚本不再引用旧构建目录；
 - CI / 打包入口统一走 macos-release / windows-release 预设。
@@ -55,7 +56,13 @@ SHARED_HASH_FILES = [
     "manifest_v2.sha256",
     "release_tag.sha256",
     "publish_release.sha256",
+    "gen_build.sha256",
+    "publish_args.sha256",
+    "update_compare_vectors.sha256",
 ]
+UPDATE_VECTORS_FILE = "tools/release/update_compare_vectors.json"
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+VECTOR_FIELDS = ("remote_version", "remote_build", "local_version", "local_build", "newer")
 PRESETS_FILE = "CMakePresets.json"
 # 目录统一后，打包 / 发布脚本里不应再出现的旧目录
 LEGACY_DIR_PATTERNS = [r"build/package", r"packaging/win/out"]
@@ -157,6 +164,102 @@ def test_shared_hashes() -> None:
                 target.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
             check(actual == expected,
                   f"{name}: {rel} SHA-256 不一致（期望 {expected}，实际 {actual}）")
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def _reference_newer(remote_version: str, remote_build: int,
+                     local_version: str, local_build: int) -> bool:
+    """参考判定：版本按数字逐段比较；同版本且本机 build <= 0 时不算更新。"""
+    remote = _version_tuple(remote_version)
+    local = _version_tuple(local_version)
+    if remote > local:
+        return True
+    if remote < local:
+        return False
+    if local_build <= 0:
+        return False
+    return remote_build > local_build
+
+
+def test_update_vectors() -> None:
+    path = REPO / UPDATE_VECTORS_FILE
+    if not path.is_file():
+        check(False, f"缺少 {UPDATE_VECTORS_FILE}")
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        check(False, f"{UPDATE_VECTORS_FILE} 不是合法 JSON：{exc}")
+        return
+    cases = data.get("cases") if isinstance(data, dict) else None
+    if not isinstance(cases, list):
+        check(False, f"{UPDATE_VECTORS_FILE} 缺少 cases 列表")
+        return
+    check(len(cases) >= 8, f"cases 至少 8 条，实际 {len(cases)}")
+
+    scenes: set[str] = set()
+    for index, case in enumerate(cases):
+        where = f"case[{index}]"
+        if not isinstance(case, dict):
+            check(False, f"{where} 不是对象")
+            continue
+        missing = [field for field in VECTOR_FIELDS if field not in case]
+        if missing:
+            check(False, f"{where} 缺少字段：{', '.join(missing)}")
+            continue
+        remote_version = case["remote_version"]
+        remote_build = case["remote_build"]
+        local_version = case["local_version"]
+        local_build = case["local_build"]
+        newer = case["newer"]
+        valid = True
+        if not (isinstance(remote_version, str) and VERSION_RE.fullmatch(remote_version)):
+            check(False, f"{where} remote_version 应为 x.y.z，实际 {remote_version!r}")
+            valid = False
+        if not (isinstance(local_version, str) and VERSION_RE.fullmatch(local_version)):
+            check(False, f"{where} local_version 应为 x.y.z，实际 {local_version!r}")
+            valid = False
+        if not isinstance(remote_build, int) or isinstance(remote_build, bool):
+            check(False, f"{where} remote_build 应为 int，实际 {remote_build!r}")
+            valid = False
+        if not isinstance(local_build, int) or isinstance(local_build, bool):
+            check(False, f"{where} local_build 应为 int，实际 {local_build!r}")
+            valid = False
+        if not isinstance(newer, bool):
+            check(False, f"{where} newer 应为 bool，实际 {newer!r}")
+            valid = False
+        if not valid:
+            continue
+
+        expected = _reference_newer(remote_version, remote_build,
+                                    local_version, local_build)
+        check(newer == expected,
+              f"{where} 判定不符：期望 newer={expected}，向量为 {newer}"
+              f"（remote {remote_version}/{remote_build}，"
+              f"local {local_version}/{local_build}）")
+
+        # 场景覆盖只能按精确条件归类，避免 build 更低等其它向量被算进目标场景
+        remote_t, local_t = _version_tuple(remote_version), _version_tuple(local_version)
+        if remote_t > local_t:
+            scenes.add("版本更高")
+        elif remote_t < local_t:
+            scenes.add("版本更低")
+        else:
+            if local_build == 0:
+                scenes.add("local_build=0")
+            elif local_build == -1:
+                scenes.add("local_build=-1")
+            elif local_build > 0 and remote_build > local_build:
+                scenes.add("同版本 build 更高")
+            elif local_build > 0 and remote_build == local_build:
+                scenes.add("同版本 build 相等")
+
+    for scene in ("版本更高", "同版本 build 更高", "同版本 build 相等",
+                  "版本更低", "local_build=0", "local_build=-1"):
+        check(scene in scenes, f"cases 未覆盖场景：{scene}")
 
 
 def _normalize_binary_dir(raw: str) -> str:
@@ -261,7 +364,8 @@ def test_release_attachments() -> None:
 
 for test in (test_layout, test_no_legacy_references, test_packaging,
              test_publish_chain, test_cmake_strict_switch, test_gen_build_synced,
-             test_shared_hashes, test_presets, test_artifact_dirs,
+             test_shared_hashes, test_update_vectors, test_presets,
+             test_artifact_dirs,
              test_build_entry_uses_presets,
              test_release_attachments):
     test()
