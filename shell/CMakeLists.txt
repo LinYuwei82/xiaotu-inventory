@@ -11,7 +11,7 @@ foreach(_update_var XIAOTU_UPDATE_MANIFEST_URL XIAOTU_UPDATE_FEED_URL XIAOTU_UPD
   string(REPLACE "<" "&lt;" ${_update_var}_XML "${${_update_var}_XML}")
 endforeach()
 
-# Info.plist 里的版本与构建号由根 VERSION 文件和 XIAOTU_BUILD 注入，
+# Info.plist 里的版本与构建号由根 VERSION.txt 和 PRODUCT_BUILD 注入，
 # 不再在 plist 里手写，避免与二进制 / 诊断接口不一致。
 set(XIAOTU_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/mac/Info.plist" "${XIAOTU_INFO_PLIST}" @ONLY)

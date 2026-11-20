@@ -100,7 +100,7 @@ if xcrun notarytool history --keychain-profile "$XIAOTU_NOTARY_PROFILE" 2>&1 | h
 fi
 echo "公证 profile：${XIAOTU_NOTARY_PROFILE} ✓"
 
-VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION" 2>/dev/null)"
+VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION.txt" 2>/dev/null)"
 if [ -z "$VERSION" ]; then
   echo "无法从仓库根 VERSION 文件读取版本号。" >&2
   exit 1

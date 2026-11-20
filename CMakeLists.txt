@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.25)
 
-# 产品版本的唯一来源：仓库根 VERSION 文件。macOS 壳、Windows 壳与二进制
+# 产品版本的唯一来源：仓库根 VERSION.txt。macOS 壳、Windows 壳与二进制
 # 都从这里取值，避免 CMakeLists、Info.plist、资源文件各写一份。
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" XIAOTU_VERSION_STRING)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION.txt" XIAOTU_VERSION_STRING)
 string(STRIP "${XIAOTU_VERSION_STRING}" XIAOTU_VERSION_STRING)
 project(xiaotu_inventory VERSION ${XIAOTU_VERSION_STRING} LANGUAGES C CXX)
 

@@ -84,9 +84,9 @@ if ($NoShell) {
   }
 }
 
-# 版本号取自仓库根的 VERSION 文件：与 CMakeLists.txt 的 file(READ .../VERSION) 同源，
+# 版本号取自仓库根的 VERSION.txt：与 CMakeLists.txt 的 file(READ .../VERSION.txt) 同源，
 # 不能从 project() 里抓字面值——那里写的是 ${XIAOTU_VERSION_STRING}。
-$versionFile = Join-Path $root 'VERSION'
+$versionFile = Join-Path $root 'VERSION.txt'
 if (-not (Test-Path -LiteralPath $versionFile -PathType Leaf)) {
   throw "未找到版本文件：$versionFile"
 }

@@ -11,8 +11,8 @@
 # 产物：xiaotu-shell.exe（需与 xiaotu-server.exe 同目录运行）
 cmake_minimum_required(VERSION 3.25)
 
-# 产品版本沿用仓库根 VERSION 文件，避免 Windows 壳另写一份。
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../VERSION" XIAOTU_VERSION_STRING)
+# 产品版本沿用仓库根 VERSION.txt，避免 Windows 壳另写一份。
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../../VERSION.txt" XIAOTU_VERSION_STRING)
 string(STRIP "${XIAOTU_VERSION_STRING}" XIAOTU_VERSION_STRING)
 
 # 作为顶层工程的子目录时不重复 project()，沿用父工程的编译器、标准与运行库设置。

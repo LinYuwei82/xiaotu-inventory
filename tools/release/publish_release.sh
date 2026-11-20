@@ -27,7 +27,7 @@ case "$PRODUCT_KEY" in
     PRODUCT_NAME="小兔进销存"
     GH_REPO="LinYuwei82/xiaotu-inventory"
     GITEE_OWNER="lin-yuwei168"; GITEE_REPO="xiaotu-inventory"
-    VERSION_FILE="VERSION"
+    VERSION_FILE="VERSION.txt"
     ATT_SRC=(
       "build/package/xiaotu-inventory-{V}.dmg"
       "dist/xiaotu-inventory-{V}-win64-setup.exe"

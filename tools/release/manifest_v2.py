@@ -430,10 +430,8 @@ def build_platform_section(args: argparse.Namespace) -> Dict[str, Any]:
     if not VERSION_RE.fullmatch(version):
         die(f"版本号必须是 x.y.z：{version}")
     build = int(args.build)
-    if args.platform == "windows" and build <= 0:
-        die("windows 平台必须提供 --build（>0）")
-    if args.platform == "macos" and build != 0:
-        die("macos 平台 build 必须为 0（无构建号）")
+    if build <= 0:
+        die(f"{args.platform} 平台必须提供 --build（>0，纯数字单调递增）")
 
     artifacts: Dict[str, Any] = {}
     for item in args.artifact or []:
@@ -627,7 +625,8 @@ def cmd_selftest(args: argparse.Namespace) -> int:
         key.write_text(priv.read_text(), encoding="ascii")
         out1 = Path(td) / "m1.json"
         main(["generate", "--product", "mote", "--channel", "stable",
-              "--platform", "macos", "--version", "1.0.3", "--min-os", "14.0",
+              "--platform", "macos", "--version", "1.0.3", "--build", "202611180001",
+              "--min-os", "14.0",
               "--artifact", f"dmg={dmg}", "--key", str(key), "--out", str(out1)])
         m1 = json.loads(out1.read_text(encoding="utf-8"))
         got_sha = m1["platforms"]["macos"]["artifacts"]["dmg"]["sha256"]
@@ -695,7 +694,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--channel", default="stable", choices=["stable", "beta"])
     gen.add_argument("--platform", required=True, choices=["macos", "windows"])
     gen.add_argument("--version", required=True)
-    gen.add_argument("--build", default=0, type=int, help="Windows 构建号；macOS 必须为 0")
+    gen.add_argument("--build", required=True, type=int, help="构建号（纯数字、单调递增，macOS/Windows 都必填）")
     gen.add_argument("--min-os", default="")
     gen.add_argument("--artifact", action="append", default=[],
                      help="产物，格式 role=path，role ∈ dmg/setup/portable，可重复")
