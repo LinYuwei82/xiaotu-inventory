@@ -152,7 +152,9 @@ def test_shared_hashes() -> None:
             if not target.is_file():
                 check(False, f"{name} 指向的文件不存在：{rel}")
                 continue
-            actual = hashlib.sha256(target.read_bytes()).hexdigest()
+            # Windows 检出会把文本转成 CRLF；哈希按 LF 归一化后比对
+            actual = hashlib.sha256(
+                target.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
             check(actual == expected,
                   f"{name}: {rel} SHA-256 不一致（期望 {expected}，实际 {actual}）")
 
