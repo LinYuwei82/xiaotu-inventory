@@ -29,6 +29,7 @@ REL = REPO / "tools" / "release"
 # 小兔 Ed25519 测试种子（RFC 8032 固定向量）
 TEST_SEED_HEX = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
 TEST_SEED = bytes.fromhex(TEST_SEED_HEX)
+IS_DARWIN = sys.platform == "darwin"
 VERSION = (REPO / "VERSION.txt").read_text().strip()
 
 
@@ -117,6 +118,7 @@ class Runner:
 
 # --------------------------------------------------------------------------- 测试类
 
+@unittest.skipUnless(IS_DARWIN, "发布 shell 脚本测试仅在 macOS 运行")
 class TestPublishOss(unittest.TestCase):
     """publish_macos.sh：小兔 macOS 发布脚本的拒绝路径 + NOTES_ONLY 行为。"""
 
@@ -189,6 +191,7 @@ class TestPublishOss(unittest.TestCase):
         return target
 
 
+@unittest.skipUnless(IS_DARWIN, "发布 shell 脚本测试仅在 macOS 运行")
 class TestPublishWindows(unittest.TestCase):
     """publish_windows.sh：小兔 Windows 发布脚本的拒绝路径。"""
 
@@ -271,6 +274,7 @@ class TestPublishWindows(unittest.TestCase):
         return setup, zipp
 
 
+@unittest.skipUnless(IS_DARWIN, "发布 shell 脚本测试仅在 macOS 运行")
 class TestMakeDmg(unittest.TestCase):
     """package_macos.sh：小兔 dmg 打包脚本的参数校验。"""
 
@@ -343,6 +347,7 @@ class TestMakeDmg(unittest.TestCase):
         }, expect_code=1, expect_stderr_contains="Sparkle.framework")
 
 
+@unittest.skipUnless(IS_DARWIN, "发布 shell 脚本测试仅在 macOS 运行")
 class TestCleanupOssParams(unittest.TestCase):
     """cleanup_oss_versions.sh：清理脚本的参数校验（纯本地不碰 OSS）。"""
 
@@ -371,12 +376,12 @@ def main() -> int:
     # 先跑共享脚本的 selftest（Python 标准库，纯离线）
     print("\n=== manifest_v2 selftest ===")
     r1 = subprocess.run(
-        ["python3", str(REPO / "tools" / "release" / "manifest_v2.py"), "selftest"],
+        [sys.executable, str(REPO / "tools" / "release" / "manifest_v2.py"), "selftest"],
         check=False,
     )
     print(f"\n=== guard selftest ===")
     r2 = subprocess.run(
-        ["python3", str(REPO / "tools" / "release" / "guard.py"), "selftest"],
+        [sys.executable, str(REPO / "tools" / "release" / "guard.py"), "selftest"],
         check=False,
     )
     print(f"\n=== update_manifest (v1) unittest ===")

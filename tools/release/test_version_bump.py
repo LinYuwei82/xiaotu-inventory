@@ -42,6 +42,7 @@ class VersionBumpTest(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--version-file", str(self.version_file),
              "--build", build, *extra],
             capture_output=True, text=True, check=False,
+            encoding="utf-8", errors="replace",
         )
 
     def test_new_version_passes(self) -> None:
