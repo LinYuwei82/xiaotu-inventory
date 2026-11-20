@@ -47,6 +47,8 @@ class CreateTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
         self.git("init", "-q")
+        self.git("config", "user.email", "t@t")
+        self.git("config", "user.name", "t")
         (self.repo / "VERSION.txt").write_text("1.0.1\n", encoding="utf-8")
         self.git("add", ".")
         self.git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init")
