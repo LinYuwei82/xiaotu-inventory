@@ -39,7 +39,7 @@ $ErrorActionPreference = 'Stop'
 # packaging\win\make-zip.ps1 -> 仓库根
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 if (-not $BuildDir) { $BuildDir = Join-Path $root 'build\windows' }
-if (-not $OutDir) { $OutDir = Join-Path $root 'build\package\win' }
+if (-not $OutDir) { $OutDir = Join-Path $root 'dist' }
 
 $serverExe = Join-Path $BuildDir 'server\xiaotu-server.exe'
 if (-not (Test-Path -LiteralPath $serverExe)) {
@@ -96,8 +96,12 @@ if ($version -notmatch '^[0-9]+(\.[0-9]+)+$') {
 }
 
 if (-not $Name) { $Name = "xiaotu-inventory-$version-win64" }
-$stage = Join-Path $OutDir $Name
+# 解压目录只是中间产物，放系统临时目录；dist 只留最终 zip（-NoArchive 时保留该目录便于试跑）
+# 临时父目录 + 固定子目录名，保证 zip 内仍是单层 xiaotu-inventory-<版本>-win64\
+$stageRoot = Join-Path ([IO.Path]::GetTempPath()) ("xiaotu-zip-" + [guid]::NewGuid().ToString("N"))
+$stage = Join-Path $stageRoot $Name
 $zipPath = Join-Path $OutDir ($Name + '.zip')
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
@@ -171,5 +175,6 @@ if (-not $NoArchive) {
   Write-Host "分发包：$($zip.FullName)"
   Write-Host ("大小：{0:N2} MB" -f ($zip.Length / 1MB))
   Write-Host "SHA256：$hash"
-  Write-Host "已解压目录：$stage"
+  # 临时解压目录用完即删，避免残留在 dist/ 或临时目录
+  Remove-Item -LiteralPath $stageRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

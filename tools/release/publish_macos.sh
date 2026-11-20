@@ -52,6 +52,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# 本地产物与清单统一落在仓库根 dist/
+DIST_DIR="$REPO_ROOT/dist"
+mkdir -p "$DIST_DIR"
+
 VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION.txt" 2>/dev/null)"
 [ -n "$VERSION" ] || { echo "无法从仓库根 VERSION.txt 读取版本号。" >&2; exit 1; }
 
@@ -113,7 +117,7 @@ fi
 CHANNEL="${CHANNEL:-stable}"
 case "$CHANNEL" in stable|beta) ;; *) echo "CHANNEL 必须是 stable/beta" >&2; exit 1 ;; esac
 
-DEFAULT_DMG="$REPO_ROOT/build/package/xiaotu-inventory-$VERSION.dmg"
+DEFAULT_DMG="$DIST_DIR/xiaotu-inventory-$VERSION.dmg"
 DMG_PATH="${DMG_PATH:-$DEFAULT_DMG}"
 if [ "$NOTES_ONLY" != "true" ]; then
   [ -f "$DMG_PATH" ] || { echo "dmg 不存在：$DMG_PATH" >&2; exit 1; }
@@ -346,6 +350,7 @@ echo "  manifest.json：         ${MANIFEST_KEY}"
 
 STAGE="$(mktemp -d -t xiaotu-oss-stage)"
 trap 'rm -rf "$STAGE"' EXIT
+# 清单直接写 dist/；STAGE 只放 appcast 的 latest.json 副产物与线上清单快照
 
 # ---- Python OSS 上传函数（oss2 SDK）----
 oss_upload() {
@@ -399,7 +404,7 @@ if not versions or set(versions.values()) != {want}:
 print(f"  线上清单版本：{want}（{', '.join(sorted(versions))}）")
 PY_CHECK_EOF
 
-  SIGNED="$STAGE/manifest.json"
+  SIGNED="$DIST_DIR/manifest.json"
   echo "重签清单：notes_url=${NOTES_URL}（platform=all）"
   python3 "$MANIFEST_V2_PY" resign --manifest "$LIVE" --key "$SIGNING_KEY" \
     --notes-url "$NOTES_URL" --platform all --out "$SIGNED"
@@ -417,13 +422,12 @@ PY_CHECK_EOF
   echo "完成：仅补发说明页，dmg / appcast 未改动"
   exit 0
 fi
-MANIFEST_LOCAL="$STAGE/manifest.json"
-APPCAST_LOCAL="$STAGE/appcast.xml"
+MANIFEST_LOCAL="$DIST_DIR/manifest.json"
+APPCAST_LOCAL="$DIST_DIR/appcast.xml"
 
 # 另一平台段可能已在线上：先取线上清单，--prev 合并后整体重签，避免覆盖另一平台段
-if [ ! -s "$MANIFEST_LOCAL" ]; then
-  curl -fsSL "$MANIFEST_PUBLIC" -o "$MANIFEST_LOCAL" 2>/dev/null || rm -f "$MANIFEST_LOCAL"
-fi
+# （dist/manifest.json 是持久文件，每次都先拉线上覆盖，避免拿旧版本当 --prev）
+curl -fsSL "$MANIFEST_PUBLIC" -o "$MANIFEST_LOCAL" 2>/dev/null || rm -f "$MANIFEST_LOCAL"
 
 # ---- 灰度与强制更新（与 Mote / DevCard 同一口径，默认全量 + 非强制）----
 # 校验在 tools/release/publish_args.py（三仓库共享，由 sync_guard.sh 同步），这里只收集参数。

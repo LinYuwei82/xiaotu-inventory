@@ -129,7 +129,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $version = (Get-Content VERSION -Raw).Trim()
-          New-Item -ItemType Directory -Force packaging\win\out | Out-Null
+          New-Item -ItemType Directory -Force dist | Out-Null
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path -LiteralPath $iscc)) {
             throw "未找到 Inno Setup 编译器：$iscc"
@@ -158,11 +158,11 @@ jobs:
             $isccArgs += '/DSign=1'
             $isccArgs += $signCommand
             '已签名：检测到证书 secret，xiaotu-server.exe、xiaotu-shell.exe、安装包与卸载器均由 signtool 签名。' |
-              Out-File packaging\win\out\SIGNING.txt -Encoding utf8
+              Out-File dist\SIGNING.txt -Encoding utf8
             Write-Host '签名：已配置证书 secret，开始签名'
           } else {
             '未签名：未配置 WINDOWS_CERT_PFX_BASE64，本产物为未签名安装包，不可对外分发。' |
-              Out-File packaging\win\out\SIGNING.txt -Encoding utf8
+              Out-File dist\SIGNING.txt -Encoding utf8
             Write-Host '未签名：未配置证书 secret，本次不调用 signtool（产物为未签名安装包）'
           }
 
@@ -171,7 +171,7 @@ jobs:
             throw "Inno Setup 编译失败（退出码 $LASTEXITCODE）"
           }
           if ($env:CERT_PFX_BASE64) {
-            $setup = Get-ChildItem packaging\win\out\*-setup.exe |
+            $setup = Get-ChildItem dist\*-setup.exe |
               Sort-Object LastWriteTime -Descending | Select-Object -First 1
             if (-not $setup) {
               throw '未找到安装包，无法校验签名'
@@ -190,8 +190,8 @@ jobs:
         with:
           name: xiaotu-win-installer
           path: |
-            packaging/win/out/*.exe
-            packaging/win/out/SIGNING.txt
+            dist/*.exe
+            dist/SIGNING.txt
           if-no-files-found: error
           retention-days: 14
 

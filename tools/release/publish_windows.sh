@@ -51,6 +51,10 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
+# 本地产物与清单统一落在仓库根 dist/
+DIST_DIR="$REPO_ROOT/dist"
+mkdir -p "$DIST_DIR"
+
 VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION.txt" 2>/dev/null)"
 [ -n "$VERSION" ] || { echo "无法从仓库根 VERSION 文件读取版本号。" >&2; exit 1; }
 
@@ -127,7 +131,7 @@ if [ "$NOTES_ONLY" != "true" ]; then
   fi
 fi
 
-DEFAULT_SETUP="$REPO_ROOT/packaging/win/out/xiaotu-inventory-$VERSION-win64-setup.exe"
+DEFAULT_SETUP="$DIST_DIR/xiaotu-inventory-$VERSION-win64-setup.exe"
 SETUP_PATH="${SETUP_PATH:-$DEFAULT_SETUP}"
 if [ "$NOTES_ONLY" != "true" ]; then
   [ -f "$SETUP_PATH" ] || { echo "安装包不存在：$SETUP_PATH" >&2; exit 1; }
@@ -135,7 +139,7 @@ fi
 
 # 绿色包（zip）由 Windows 构建产出；存在就一并发布并写进清单，
 # 下载页的绿色包行才有数据可同步（没有时清单只描述安装包）。
-DEFAULT_ZIP="$REPO_ROOT/build/package/win/xiaotu-inventory-$VERSION-win64.zip"
+DEFAULT_ZIP="$DIST_DIR/xiaotu-inventory-$VERSION-win64.zip"
 ZIP_PATH="${ZIP_PATH:-$DEFAULT_ZIP}"
 ZIP_KEY=""
 ZIP_PUBLIC_URL=""
@@ -153,7 +157,7 @@ ACTUAL_NAME="$(basename "$SETUP_PATH")"
 if [ "$ACTUAL_NAME" != "$EXPECTED_NAME" ]; then
   echo "安装包文件名不符合构建输出规范：$ACTUAL_NAME" >&2
   echo "必须命名为 ${EXPECTED_NAME}（版本号从它推导）。" >&2
-  echo "可先改名或放到 packaging/win/out/$EXPECTED_NAME 再重试。" >&2
+  echo "可先改名或放到 dist/$EXPECTED_NAME 再重试。" >&2
   exit 1
 fi
 fi
@@ -291,6 +295,7 @@ echo "  manifest.json：         ${MANIFEST_KEY}"
 
 STAGE="$(mktemp -d -t xiaotu-win-stage)"
 trap 'rm -rf "$STAGE"' EXIT
+# 清单直接写 dist/；STAGE 只放仅补发说明页时的线上清单快照
 
 oss_upload() {
   # oss_upload <local_path> <oss_key> <cache_control> <content_type>
@@ -334,7 +339,7 @@ if not versions or set(versions.values()) != {want}:
 print(f"  线上清单版本：{want}（{', '.join(sorted(versions))}）")
 PY_CHECK_EOF
 
-  SIGNED="$STAGE/manifest.json"
+  SIGNED="$DIST_DIR/manifest.json"
   echo "重签清单：notes_url=${NOTES_URL}（platform=all）"
   python3 "$REPO_ROOT/tools/release/manifest_v2.py" resign --manifest "$LIVE" \
     --key "$SIGNING_KEY" --notes-url "$NOTES_URL" --platform all --out "$SIGNED"
@@ -354,7 +359,7 @@ PY_CHECK_EOF
 fi
 
 MANIFEST_V2_PY="$REPO_ROOT/tools/release/manifest_v2.py"
-MANIFEST_LOCAL="$STAGE/manifest.json"
+MANIFEST_LOCAL="$DIST_DIR/manifest.json"
 
 # ---- 灰度与强制更新（与 Mote / DevCard 同一口径，默认全量 + 非强制）----
 # 校验在 tools/release/publish_args.py（三仓库共享，由 sync_guard.sh 同步），这里只收集参数
@@ -373,9 +378,8 @@ else
 fi
 
 # 另一平台段可能已在线上：先取线上清单，--prev 合并后整体重签，避免覆盖另一平台段
-if [ ! -s "$MANIFEST_LOCAL" ]; then
-  curl -fsSL "$CDN_DOMAIN/$MANIFEST_KEY" -o "$MANIFEST_LOCAL" 2>/dev/null || rm -f "$MANIFEST_LOCAL"
-fi
+# （dist/manifest.json 是持久文件，每次都先拉线上覆盖，避免拿旧版本当 --prev）
+curl -fsSL "$CDN_DOMAIN/$MANIFEST_KEY" -o "$MANIFEST_LOCAL" 2>/dev/null || rm -f "$MANIFEST_LOCAL"
 
 # ---- ① 生成并签名 manifest.json（v2）----
 MANIFEST_ARGS=(

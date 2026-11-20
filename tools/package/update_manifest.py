@@ -6,13 +6,13 @@
 
 用法：
   python update_manifest.py generate \
-      --file build/package/xiaotu-inventory-1.4.2.dmg \
+      --file dist/xiaotu-inventory-1.4.2.dmg \
       --version 1.4.2 --build 2026111301 \
       --url https://cdn.example.com/releases/macos/1.4.2/xiaotu-1.4.2.dmg \
       --key update_signing.pem --out latest.json --appcast appcast.xml
   python update_manifest.py verify --manifest latest.json --pub update_signing.pub.pem
   python update_manifest.py verify --manifest latest.json --pub update_signing.pub.pem \
-      --file build/package/xiaotu-inventory-1.4.2.dmg
+      --file dist/xiaotu-inventory-1.4.2.dmg
 """
 
 from __future__ import annotations

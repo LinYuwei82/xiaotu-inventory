@@ -62,10 +62,10 @@ cmake --build --preset windows-release
 cmake -S shell\win -B shell\win\build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build shell\win\build
 
-# 绿色包 → build\package\win\xiaotu-inventory-<版本>-win64.zip
+# 绿色包 → dist\xiaotu-inventory-<版本>-win64.zip
 .\packaging\win\make-zip.ps1
 
-# 安装包 → packaging\win\out\xiaotu-inventory-<版本>-win64-setup.exe
+# 安装包 → dist\xiaotu-inventory-<版本>-win64-setup.exe
 $version = (Get-Content VERSION -Raw).Trim()
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "packaging\win\xiaotu-inventory.iss"
 ```
@@ -82,8 +82,8 @@ $version = (Get-Content VERSION -Raw).Trim()
 产物必须正好是这两个名字，发布脚本会按文件名推导下载地址，改过名会直接拒绝：
 
 ```
-packaging\win\out\xiaotu-inventory-<版本>-win64-setup.exe
-build\package\win\xiaotu-inventory-<版本>-win64.zip
+dist\xiaotu-inventory-<版本>-win64-setup.exe
+dist\xiaotu-inventory-<版本>-win64.zip
 ```
 
 ### 2. Mac：签名、上传、校验
@@ -139,7 +139,7 @@ $version = (Get-Content VERSION -Raw).Trim()
 壳未按候选路径找到时编译会直接失败并列出查找过的路径；确实要出纯服务端安装包时显式加
 `/DXIAOTU_NO_SHELL=1`，也可用 `/DShellExe=<绝对路径>` 指定壳（指定后必须存在）。
 
-产物：`packaging\win\out\xiaotu-inventory-<版本>-win64-setup.exe`。
+产物：`dist\xiaotu-inventory-<版本>-win64-setup.exe`。
 
 安装包行为：
 
@@ -296,7 +296,7 @@ CI（`.github/workflows/windows-build.yml`）检测到 secret 时先用 `sign.ps
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `-BuildDir` | `<仓库>\build\windows` | 服务端构建目录 |
-| `-OutDir` | `<仓库>\build\package\win` | 输出目录 |
+| `-OutDir` | `<仓库>\dist` | 输出目录 |
 | `-Name` | `xiaotu-inventory-<版本>-win64` | 分发包目录名（zip 同名） |
 | `-ShellExe` | 自动查找 | 显式指定桌面壳；指定后必须存在，不回退 |
 | `-NoShell` | 关 | 显式跳过桌面壳（与 `-ShellExe` 互斥） |

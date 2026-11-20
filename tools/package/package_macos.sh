@@ -4,7 +4,7 @@
 # 一条命令从构建到出 dmg：
 #   tools/package/package_macos.sh
 #
-# 产物：build/package/xiaotu-inventory-<版本>.dmg
+# 产物：dist/xiaotu-inventory-<版本>.dmg
 #   ├── 小兔进销存.app
 #   └── 应用程序 -> /Applications
 #
@@ -17,7 +17,7 @@
 # 环境变量：
 #   XIAOTU_SIGN_IDENTITY  Developer ID Application 证书名称；必填
 #   XIAOTU_NOTARY_PROFILE notarytool keychain profile；必填
-#   XIAOTU_DIST_DIR       产物目录（默认 <repo>/build/package）
+#   XIAOTU_DIST_DIR       产物目录（默认 <repo>/dist）
 #   XIAOTU_BUILD          构建号（纯数字，单调递增）；必填，缺失即失败
 #   XIAOTU_UPDATE_MANIFEST_URL  单机版清单地址（https）
 #   XIAOTU_UPDATE_FEED_URL      Sparkle appcast 地址（https）
@@ -35,7 +35,7 @@ APP_DISPLAY_NAME="小兔进销存"
 VOLUME_NAME="Xiaotu Inventory"
 BUILD_DIR="$REPO_ROOT/build/release"
 BUILT_APP="$BUILD_DIR/shell/xiaotu-inventory.app"
-OUT_DIR="${XIAOTU_DIST_DIR:-$REPO_ROOT/build/package}"
+OUT_DIR="${XIAOTU_DIST_DIR:-$REPO_ROOT/dist}"
 
 usage() {
   cat <<'EOF'
@@ -51,7 +51,7 @@ usage() {
 环境变量：
   XIAOTU_SIGN_IDENTITY  Developer ID Application 证书名称；必填
   XIAOTU_NOTARY_PROFILE notarytool keychain profile；必填
-  XIAOTU_DIST_DIR       产物目录（默认 <repo>/build/package）
+  XIAOTU_DIST_DIR       产物目录（默认 <repo>/dist）
   XIAOTU_BUILD          构建号（纯数字，单调递增）；必填，缺失退出 1
   XIAOTU_UPDATE_MANIFEST_URL  单机版清单地址（https）
   XIAOTU_UPDATE_FEED_URL      Sparkle appcast 地址（https）
@@ -213,11 +213,12 @@ else
   echo "警告：未提供更新配置，打出的包更新功能为关闭状态（应用内 enabled=false）。" >&2
 fi
 
-STAGE="$OUT_DIR/dmg-root"
+# 中间产物放到临时目录：dist/ 里只保留最终 dmg（清单也落在这里）
+STAGE="$(mktemp -d -t xiaotu-dmg-root)"
+trap 'rm -rf "$STAGE"' EXIT
 DMG="$OUT_DIR/xiaotu-inventory-$VERSION.dmg"
 
 echo "===== 准备 dmg 内容"
-rm -rf "$STAGE"
 mkdir -p "$STAGE"
 ditto "$BUILT_APP" "$STAGE/$APP_DISPLAY_NAME.app"
 ln -s /Applications "$STAGE/应用程序"

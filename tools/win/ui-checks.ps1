@@ -7,7 +7,7 @@
   - WebView2 缺失提示
 
   每次都复制一份壳与服务端到独立临时目录，并把 LOCALAPPDATA 指向该目录，
-  不读写真实数据目录，也不写 packaging\win\out。
+  不读写真实数据目录，也不写 dist。
 #>
 [CmdletBinding()]
 param(

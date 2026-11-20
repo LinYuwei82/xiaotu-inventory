@@ -20,10 +20,10 @@ backups/
 # 本地 OSS 凭据（不要提交）
 .config/xiaotu-updates/
 
-# Windows 打包产物（安装包 / 绿色包，不入库）
+# 历史 Windows 产物目录（旧版打包输出，仅用于忽略本地遗留文件）
 packaging/win/out/
 
-# 下载页改写脚本的中间产物（每次 --fetch/--local 生成，不入库）
+# 打包产物与本地清单（dmg / zip / setup.exe / manifest.json / appcast.xml，不入库）
 dist/
 dist/*
 !dist/.gitkeep

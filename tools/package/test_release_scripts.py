@@ -204,10 +204,14 @@ class TestPublishWindows(unittest.TestCase):
         self.r.run(self.script, ["--unknown"], expect_code=2,
                    expect_stderr_contains="未知参数")
 
-    def test_build_required_and_numeric(self):
-        """BUILD 可省略（自动 gen_build）；显式传入时必须纯数字、≥4 位。"""
-        self.r.run(self.script, env_override={"BUILD": "12"},
-                   expect_code=1, expect_stderr_contains="BUILD")  # 长度不够
+    def test_build_must_be_numeric(self):
+        """BUILD 可省略（自动 gen_build）；显式传入时必须纯数字，1 位也合法（tag 序号）。"""
+        setup, _ = self._make_fake_artifacts()
+        self.r.run(self.script, env_override={
+            "BUILD": "12",
+            "SETUP_PATH": str(setup),
+            "OSS_SKIP": "true",
+        }, expect_code=0)
         self.r.run(self.script, env_override={"BUILD": "20261119xx"},
                    expect_code=1, expect_stderr_contains="BUILD")  # 有字母
         self.r.run(self.script, env_override={"BUILD": "abcdefgh"},

@@ -6,10 +6,10 @@
 tools/package/package_macos.sh
 ```
 
-产物在 `build/package/`（已在 `.gitignore` 的 `build/` 下，不入库）：
+产物在仓库根 `dist/`（已在 `.gitignore` 里，不入库）：
 
 ```text
-build/package/xiaotu-inventory-1.0.6.dmg
+dist/xiaotu-inventory-1.0.6.dmg
 ```
 
 dmg 内包含：
@@ -119,13 +119,13 @@ Sparkle appcast，以及服务端验签兼容（同时认 v1 / v2）。
 # 手动生成/验签（正常发布不需要单独跑）
 python3 tools/release/manifest_v2.py generate \
   --product xiaotu --channel stable --platform macos --version 1.0.6 --min-os 13.0 \
-  --artifact dmg=build/package/xiaotu-1.0.6-macos-arm64.dmg \
+  --artifact dmg=dist/xiaotu-1.0.6-macos-arm64.dmg \
   --key ~/.config/xiaotu-updates/update_signing_2026.pem \
-  --out build/package/manifest.json
+  --out dist/manifest.json
 python3 tools/release/manifest_v2.py verify \
-  --manifest build/package/manifest.json \
+  --manifest dist/manifest.json \
   --pub ~/.config/xiaotu-updates/update_signing_2026.pub.pem \
-  --artifact dmg=build/package/xiaotu-1.0.6-macos-arm64.dmg
+  --artifact dmg=dist/xiaotu-1.0.6-macos-arm64.dmg
 ```
 
 私钥不进入仓库与构建产物；appcast 的签名覆盖 dmg 文件字节，供 Sparkle 校验。
@@ -168,19 +168,19 @@ NOTES_ONLY=true tools/release/publish_windows.sh
 `platforms.<platform>.rollout_percent`、上传、purge 并等待 CDN 生效：
 
 ```bash
-# 取回线上清单（发布脚本的临时目录不保留）
+# 取回线上清单（发布脚本产出 / 保留在 dist/manifest.json）
 curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
-  -o build/package/manifest.json
+  -o dist/manifest.json
 
 # 预览：只重签 + 验签，不上传、不等待
-tools/package/rollout_oss.sh --manifest build/package/manifest.json --dry-run
+tools/package/rollout_oss.sh --manifest dist/manifest.json --dry-run
 
 # 默认 1% → 10% → 50% → 100%，每档 24 小时；--platform 默认 all（同时改两平台）
 PRODUCT=xiaotu OSS_BUCKET=xiaotu-update OSS_REGION=cn-hongkong \
-  tools/package/rollout_oss.sh --manifest build/package/manifest.json --yes
+  tools/package/rollout_oss.sh --manifest dist/manifest.json --yes
 ```
 
-- 只改清单；appcast 不随比例变化，不重传。每档归档到 `build/package/rollout/<product>-<channel>-<时间戳>/`。
+- 只改清单；appcast 不随比例变化，不重传。每档归档到 `dist/rollout/<product>-<channel>-<时间戳>/`。
 - 每档上传后轮询 CDN，确认目标平台的 `rollout_percent` 生效才进入下一档；超时即停，当前档保持生效。
 - Ctrl-C 停在当前档；重跑时从下一档开始即可。`--interval` 支持 `30s` / `90m` / `12h` / `2d`。
 - 强制更新（`mandatory=true`）不受比例限制；网络版服务端实际比例取 `min(清单 rollout, 配置 rollout_percent)`。

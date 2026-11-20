@@ -57,6 +57,10 @@ $ErrorActionPreference = "Stop"
 # ---- 仓库根 ----
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
+# 本地产物与清单统一落在仓库根 dist\
+$distDir = Join-Path $root "dist"
+New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+
 function Fail([string]$message) {
     Write-Host "[失败] $message" -ForegroundColor Red
     exit 1
@@ -147,7 +151,7 @@ if ($NotesOnly) {
 
     $manifestUrl = "$CdnDomain/$ProductDir/updates/$Channel/manifest.json"
     $live = Join-Path $env:TEMP "xiaotu-manifest-live-$Version.json"
-    $signed = Join-Path $env:TEMP "xiaotu-manifest-$Version.json"
+    $signed = Join-Path $root "dist\manifest.json"
 
     Write-Host "拉取线上清单：$manifestUrl"
     try {
@@ -261,7 +265,7 @@ if ([string]::IsNullOrWhiteSpace($Build)) {
 if ([string]::IsNullOrWhiteSpace($Build)) {
     # 兜底：直接从绿色包里的 xiaotu-shell.exe 识别（updater_win.cpp 内嵌 "XIAOTU_BUILD=<digits>"）
     if ([string]::IsNullOrWhiteSpace($ZipPath)) {
-        $ZipPath = Join-Path $root "build\package\win\xiaotu-inventory-$Version-win64.zip"
+        $ZipPath = Join-Path $root "dist\xiaotu-inventory-$Version-win64.zip"
     }
     if (Test-Path -LiteralPath $ZipPath) {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -353,7 +357,7 @@ if (-not (Test-Path -LiteralPath $SignKeyPath)) {
 
 # ---- 定位产物（setup.exe 必填，zip 可选）----
 if (-not $SetupPath) {
-    $SetupPath = Join-Path $root "packaging\win\out\xiaotu-inventory-$Version-win64-setup.exe"
+    $SetupPath = Join-Path $root "dist\xiaotu-inventory-$Version-win64-setup.exe"
 }
 if (-not (Test-Path -LiteralPath $SetupPath)) {
     Fail "安装包不存在：$SetupPath（先跑 tools\package\package_windows.ps1）"
@@ -361,7 +365,7 @@ if (-not (Test-Path -LiteralPath $SetupPath)) {
 $SetupFull = (Resolve-Path $SetupPath).Path
 
 if (-not $ZipPath) {
-    $ZipPath = Join-Path $root "build\package\win\xiaotu-inventory-$Version-win64.zip"
+    $ZipPath = Join-Path $root "dist\xiaotu-inventory-$Version-win64.zip"
 }
 $ZipFull = ""
 if (Test-Path -LiteralPath $ZipPath) {
@@ -416,17 +420,14 @@ if (-not $python) { Fail "找不到 python（manifest_v2 / guard / oss2 都需�
 # ---- ① 生成 manifest.json（v2，Ed25519 签名）----
 Write-Host ""
 Write-Host "===== ① 生成 manifest.json（v2）"
-$manifestPath = Join-Path $root "dist\manifest.json"
-$manifestDir = Split-Path -Parent $manifestPath
-if (-not (Test-Path -LiteralPath $manifestDir)) { New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null }
+$manifestPath = Join-Path $distDir "manifest.json"
 
 # 另一平台段可能已在线上：先取线上清单，--prev 合并后整体重签
-if (-not (Test-Path -LiteralPath $manifestPath)) {
-    try {
-        Invoke-WebRequest -Uri $ManifestUrl -OutFile $manifestPath -UseBasicParsing -TimeoutSec 15
-    } catch {
-        Remove-Item -LiteralPath $manifestPath -ErrorAction SilentlyContinue
-    }
+# （dist\manifest.json 是持久文件，每次都先拉线上覆盖，避免拿旧版本当 --prev）
+try {
+    Invoke-WebRequest -Uri $ManifestUrl -OutFile $manifestPath -UseBasicParsing -TimeoutSec 15
+} catch {
+    Remove-Item -LiteralPath $manifestPath -ErrorAction SilentlyContinue
 }
 
 $manifestArgs = @(

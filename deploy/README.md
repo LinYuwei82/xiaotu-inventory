@@ -176,25 +176,25 @@ XIAOTU_UPDATE_TOOL=/opt/xiaotu/tools/package/update_manifest.py \
 自动逐档放量（默认 1% → 10% → 50% → 100%，每档 24 小时）：
 
 ```bash
-# 0. 取回当前线上清单（publish_macos.sh 的临时目录不会保留）
+# 0. 取回当前线上清单（发布脚本产出 / 保留在 dist/manifest.json）
 curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
-  -o build/package/manifest.json
+  -o dist/manifest.json
 
 # 1. 预览：只本地重签并验签，不上传、不等待
-tools/package/rollout_oss.sh --manifest build/package/manifest.json --dry-run
+tools/package/rollout_oss.sh --manifest dist/manifest.json --dry-run
 
 # 2. 正式放量：每档自动上传并等待源站生效，再等观察时长进入下一档
 OSS_BUCKET=你的bucket OSS_REGION=cn-hangzhou \
-  tools/package/rollout_oss.sh --manifest build/package/manifest.json --yes
+  tools/package/rollout_oss.sh --manifest dist/manifest.json --yes
 
 # 只放量一个平台：--platform all / macos / windows（默认 all）
-tools/package/rollout_oss.sh --manifest build/package/manifest.json --platform windows --yes
+tools/package/rollout_oss.sh --manifest dist/manifest.json --platform windows --yes
 
 # 自定义：每档 12 小时，比例 5% → 20% → 60% → 100%
 tools/package/rollout_oss.sh --steps 5,20,60,100 --interval 12h --yes
 ```
 
-- 脚本只改清单，appcast 不随比例变化，不重传；清单每档归档到 `build/package/rollout/<product>-<channel>-<时间戳>/manifest-<比例>.json`。
+- 脚本只改清单，appcast 不随比例变化，不重传；清单每档归档到 `dist/rollout/<product>-<channel>-<时间戳>/manifest-<比例>.json`。
 - 每档上传后轮询各平台 `rollout_percent`，目标平台全部生效才进入下一档；超时则停下，当前档保持生效。
 - `dl.xiaotu.online` 直连 OSS、没有 CDN 层，发布脚本默认不 purge（`PURGE=true` 仅备将来接入 CDN）。
 - Ctrl-C 可随时停在当前档，不会回退比例；要继续时重跑并跳过已完成的档位即可。
@@ -205,7 +205,7 @@ tools/package/rollout_oss.sh --steps 5,20,60,100 --interval 12h --yes
 ```bash
 # 只把比例改成 10%，其余字段不动（--platform 默认 all）
 python3 tools/release/manifest_v2.py resign \
-  --manifest build/package/manifest.json \
+  --manifest dist/manifest.json \
   --key ~/keys/update_signing.pem \
   --rollout 10 --platform windows
 ```

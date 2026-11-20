@@ -697,7 +697,7 @@ struct DocumentDefinition {
 tools/package/package_macos.sh
 ```
 
-产物：`build/package/xiaotu-inventory-1.0.4.dmg`（版本取自仓库根 `VERSION.txt`），内含 `小兔进销存.app`
+产物：`dist/xiaotu-inventory-1.0.4.dmg`（版本取自仓库根 `VERSION.txt`），内含 `小兔进销存.app`
 与指向 `/Applications` 的「应用程序」软链。脚本、签名参数与校验方式见
 [tools/package/README.md](tools/package/README.md)。
 

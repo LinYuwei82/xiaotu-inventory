@@ -136,7 +136,7 @@ function Wait-Server([string]$OutFile, [int]$Seconds) {
 function Find-Installer([string]$Explicit) {
     if ($Explicit -and (Test-Path $Explicit)) { return (Resolve-Path $Explicit).Path }
     $candidates = @()
-    $candidates += Get-ChildItem -Path (Join-Path $Repo "build\package\win") -Filter "*setup*.exe" -ErrorAction SilentlyContinue
+    $candidates += Get-ChildItem -Path (Join-Path $Repo "dist") -Filter "*setup*.exe" -ErrorAction SilentlyContinue
     $candidates += Get-ChildItem -Path (Join-Path $env:TEMP "xiaotu-win-installer") -Filter "*setup*.exe" -Recurse -ErrorAction SilentlyContinue
     if ($candidates.Count -eq 0) { return $null }
     return ($candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName

@@ -20,7 +20,7 @@
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `-Repo` | `C:\src\xiaotu-inventory` | 仓库根，必须含 `.git` |
-| `-Installer` | 自动在 `build\package\win` 与 `%TEMP%\xiaotu-win-installer` 找 | 安装包路径 |
+| `-Installer` | 自动在 `dist` 与 `%TEMP%\xiaotu-win-installer` 找 | 安装包路径 |
 | `-ExpectedVersion` | `1.0.3` | 用于校验 `/api/health` 的版本号 |
 | `-DataDir` | `%LOCALAPPDATA%\com.simem.xiaotu` | 测试用数据目录；**不要指向客户真实数据** |
 | `-Port` | `18080` | 保留参数，单机版实际用随机端口 |
@@ -132,7 +132,7 @@ C7560 指「指定初始化器（designated initializer）顺序与结构体成�
 
 - 需要先构建 Windows 壳与服务端（脚本会在 `%TEMP%\ui-checks-*` 里复制一份，壳与服务端必须能配对启动）；
 - 打印预览需要 WebView2 Runtime，且系统至少有一个打印队列（虚拟打印机即可，例如 Microsoft Print to PDF）；没有打印机时 Edge 打印预览仍会出现，只是没有可用目标；
-- 每次运行使用独立临时 stage 并把 `LOCALAPPDATA` 指向其中，**不读写真实数据目录**，也不写 `packaging\win\out`；
+- 每次运行使用独立临时 stage 并把 `LOCALAPPDATA` 指向其中，**不读写真实数据目录**，也不写 `dist`；
 - 不安装/不卸载 WebView2，不改注册表、不动系统组件；模拟缺失只靠子进程环境变量，退出即还原；
 - 失败不误报：`WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` 未生效（壳正常启动）时该项记 SKIP；本机确实没有 WebView2 Runtime 时，提示项只校验文案与退出码，复原启动记 SKIP，窗口记忆项也记 SKIP；
 - Windows 的系统打印对话框在 WebView2 里是内置打印预览（`edge://print/`），不是 Win32 `#32770`；`#32770` 只在用户在预览里按 Ctrl+Shift+P 时出现，本脚本不覆盖该分支。

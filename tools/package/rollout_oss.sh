@@ -11,16 +11,16 @@
 # 上重签，不会影响已升级用户。
 #
 # 用法：
-#   # 先用发布脚本产出清单并归档（publish_macos.sh 的临时目录不会保留）
+#   # 先用发布脚本产出清单（dist/manifest.json），或从线上取回
 #   curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
-#     -o build/package/manifest.json
+#     -o dist/manifest.json
 #
 #   # 预览（只本地重签，不上传、不等待）
-#   tools/package/rollout_oss.sh --manifest build/package/manifest.json --dry-run
+#   tools/package/rollout_oss.sh --manifest dist/manifest.json --dry-run
 #
 #   # 正式放量（会要求输入 yes；每档之间自动等待）
 #   OSS_BUCKET=xxx OSS_REGION=cn-hangzhou \
-#     tools/package/rollout_oss.sh --manifest build/package/manifest.json --yes
+#     tools/package/rollout_oss.sh --manifest dist/manifest.json --yes
 #
 #   # 只放量 Windows（默认 all：同时改 macOS 与 Windows 两段）
 #   tools/package/rollout_oss.sh --platform windows --yes
@@ -29,7 +29,7 @@
 #   tools/package/rollout_oss.sh --steps 5,20,60,100 --interval 12h --yes
 #
 # 参数：
-#   --manifest PATH     已签名 v2 清单（默认 build/package/manifest.json）
+#   --manifest PATH     已签名 v2 清单（默认 dist/manifest.json）
 #   --platform NAME     all / macos / windows（默认 all）
 #   --steps LIST        逗号分隔、递增且以 100 结尾（默认 1,10,50,100）
 #   --interval DUR      每档停留时长，支持 s/m/h/d（默认 24h）
@@ -53,7 +53,7 @@ usage() {
   sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-MANIFEST="${MANIFEST:-$REPO_ROOT/build/package/manifest.json}"
+MANIFEST="${MANIFEST:-$REPO_ROOT/dist/manifest.json}"
 PLATFORM="${PLATFORM:-all}"
 STEPS="1,10,50,100"
 INTERVAL="24h"
@@ -115,7 +115,7 @@ VENV_PY="$REPO_ROOT/tools/package/.venv/bin/python"
 [ -f "$MANIFEST" ] || {
   echo "清单不存在：$MANIFEST" >&2
   echo "可先从更新源取回已签名清单：" >&2
-  echo "  curl -fsS $CDN_DOMAIN/$PRODUCT/updates/$CHANNEL/manifest.json -o build/package/manifest.json" >&2
+  echo "  curl -fsS $CDN_DOMAIN/$PRODUCT/updates/$CHANNEL/manifest.json -o dist/manifest.json" >&2
   exit 1
 }
 [ -f "$SIGNING_KEY" ] || {
@@ -199,7 +199,7 @@ done
 
 MANIFEST_KEY="$PRODUCT/updates/$CHANNEL/manifest.json"
 MANIFEST_PUBLIC="$CDN_DOMAIN/$MANIFEST_KEY"
-ARCHIVE_DIR="$REPO_ROOT/build/package/rollout/${PRODUCT}-${CHANNEL}-$(date +%Y%m%d%H%M%S)"
+ARCHIVE_DIR="$REPO_ROOT/dist/rollout/${PRODUCT}-${CHANNEL}-$(date +%Y%m%d%H%M%S)"
 mkdir -p "$ARCHIVE_DIR"
 
 echo "===== 自动逐档放量 ====="

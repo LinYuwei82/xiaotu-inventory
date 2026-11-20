@@ -7,7 +7,7 @@
 ;   2. 未指定时依次查找 build\windows\shell\win\、build\windows\shell\win\Release\、
 ;      旧的 shell\win\build\、shell\win\build\Release\；
 ;   3. 都找不到时编译报错，不会静默产出无壳安装包；确实需要请显式 /DXIAOTU_NO_SHELL=1。
-; 产物默认输出到脚本同级的 out\ 目录（可用 /O 覆盖）。
+; 产物默认输出到仓库根 dist\ 目录（可用 /O 覆盖）。
 ; CI 由 .github/workflows/windows-build.yml 调用，版本号取自仓库根 VERSION。
 ;
 ; 签名：只有传入 /DSign=1 且 /Ssigntool=<命令> 时才会签名；
@@ -49,7 +49,7 @@
 #endif
 
 #ifndef OutputDir
-  #define OutputDir AddBackslash(SourcePath) + "out"
+  #define OutputDir RepoRoot + "dist"
 #endif
 
 #define AppName "小兔进销存"

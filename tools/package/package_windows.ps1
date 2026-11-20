@@ -125,7 +125,7 @@ Write-Host "  ✓ 壳内清单地址正确"
 Step "4/5 打绿色包"
 & (Join-Path $root 'packaging\win\make-zip.ps1')
 
-$zip = Join-Path $root "build\package\win\xiaotu-inventory-$version-win64.zip"
+$zip = Join-Path $root "dist\xiaotu-inventory-$version-win64.zip"
 if (-not (Test-Path -LiteralPath $zip)) { Fail "未找到绿色包：$zip" }
 
 Step "5/5 打安装包"
@@ -137,10 +137,10 @@ foreach ($candidate in @(
 }
 if (-not $iscc) { Fail "未找到 ISCC.exe（Inno Setup 6），请先安装" }
 
-New-Item -ItemType Directory -Force (Join-Path $root 'packaging\win\out') | Out-Null
+New-Item -ItemType Directory -Force (Join-Path $root 'dist') | Out-Null
 Invoke-Native $iscc @("/DAppVersion=$version", (Join-Path $root 'packaging\win\xiaotu-inventory.iss'))
 
-$setup = Join-Path $root "packaging\win\out\xiaotu-inventory-$version-win64-setup.exe"
+$setup = Join-Path $root "dist\xiaotu-inventory-$version-win64-setup.exe"
 if (-not (Test-Path -LiteralPath $setup)) { Fail "未找到安装包：$setup" }
 
 Step "产物"

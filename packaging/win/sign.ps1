@@ -8,11 +8,11 @@
     $env:XIAOTU_CERT_PASSWORD = 'pfx 口令'
     .\packaging\win\sign.ps1 -PfxPath D:\certs\xiaotu.pfx `
       -Files build\windows\server\xiaotu-server.exe,shell\win\build\xiaotu-shell.exe
-    .\packaging\win\sign.ps1 -PfxPath D:\certs\xiaotu.pfx          # 默认签 exe 与 out 下最新安装包
+    .\packaging\win\sign.ps1 -PfxPath D:\certs\xiaotu.pfx          # 默认签 exe 与 dist 下最新安装包
     .\packaging\win\sign.ps1 -Thumbprint 0123456789ABCDEF...       # 证书在存储/USB token 中
 
   说明：
-    - 不传 -Files 时，签服务端 exe、按候选顺序找到的壳，以及 out 下最新的 *-setup.exe。
+    - 不传 -Files 时，签服务端 exe、按候选顺序找到的壳，以及 dist 下最新的 *-setup.exe。
     - PFX 口令依次取 -PfxPassword、$env:XIAOTU_CERT_PASSWORD；不写入仓库与 SIGNING.txt。
     - 证书在 USB token / HSM 中时用 -Thumbprint，签名时可能弹出 PIN 输入框。
     - 任一文件签名或验签失败都以非 0 退出，并把「签名失败」写进 SIGNING.txt，绝不写「已签名」。
@@ -33,7 +33,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 if (-not $SigningNote) {
-    $SigningNote = Join-Path $repo "packaging\win\out\SIGNING.txt"
+    $SigningNote = Join-Path $repo "dist\SIGNING.txt"
 }
 
 function Resolve-SignTool {
@@ -75,7 +75,7 @@ try {
             (Join-Path $repo "shell\win\build\Release\xiaotu-shell.exe")
         )
         $Files = @($candidates | Where-Object { Test-Path -LiteralPath $_ })
-        $outDir = Join-Path $repo "packaging\win\out"
+        $outDir = Join-Path $repo "dist"
         $setup = Get-ChildItem $outDir -Filter "*-setup.exe" -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if ($setup) {
