@@ -273,12 +273,35 @@ APPCAST_KEY="$PRODUCT_DIR/updates/$CHANNEL/appcast.xml"
 MANIFEST_PUBLIC="$CDN_DOMAIN/$MANIFEST_KEY"
 APPCAST_PUBLIC="$CDN_DOMAIN/$APPCAST_KEY"
 
-# 发行说明：与 Windows 发布同一约定——仓库里有 docs/release-notes-<版本>.html
-# 就自动上传，并把地址写进 manifest 与 appcast；也可用 RELEASE_NOTES_FILE 显式指定。
+# 发行说明：与 Windows 发布同一约定——优先 docs/release-notes-<版本>.html；
+# 没有 .html 但有 .md 时自动用 Python markdown 转 .html（客户端浏览器需要 html 渲染）。
+# 也可用 RELEASE_NOTES_FILE 显式指定。
 NOTES_KEY="$PRODUCT_DIR/release-notes-$VERSION.html"
-if [ -z "$RELEASE_NOTES_FILE" ] && [ -z "$RELEASE_NOTES_URL" ] \
-   && [ -f "$REPO_ROOT/docs/release-notes-$VERSION.html" ]; then
-  RELEASE_NOTES_FILE="$REPO_ROOT/docs/release-notes-$VERSION.html"
+# 辅助函数：找 .html，没有则从同名 .md 自动转（html 比 md 旧也重转）
+resolve_notes_file() {
+  local ver md html
+  ver="$1"
+  md="$REPO_ROOT/docs/release-notes-$ver.md"
+  html="$REPO_ROOT/docs/release-notes-$ver.html"
+  if [ ! -f "$html" ] || { [ -f "$md" ] && [ "$md" -nt "$html" ]; }; then
+    if [ -f "$md" ]; then
+      if ! python3 -c 'import markdown' 2>/dev/null; then
+        echo "⚠️  有 release-notes-$ver.md 但缺 Python markdown 库，跳过 md→html" >&2; return 1
+      fi
+      python3 - "$md" "$html" <<'PYEOF'
+import markdown, sys
+css = """body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:720px;margin:40px auto;padding:0 20px;line-height:1.7;color:#222}h1{border-bottom:2px solid #eee;padding-bottom:8px}h2{margin-top:1.5em;color:#111}table{border-collapse:collapse;width:100%;margin:1em 0}th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}th{background:#f6f8fa}code{background:#f0f0f0;padding:1px 6px;border-radius:3px;font-size:.9em}pre{background:#f6f8fa;padding:12px 16px;border-radius:6px;overflow-x:auto}pre code{background:none;padding:0}blockquote{border-left:4px solid #ddd;margin:1em 0;padding:0 16px;color:#666}"""
+body = markdown.markdown(open(sys.argv[1],encoding='utf-8').read(), extensions=['tables','fenced_code'])
+open(sys.argv[2],'w',encoding='utf-8').write(f'<!DOCTYPE html><html><head><meta charset="utf-8"><style>{css}</style></head><body>{body}</body></html>')
+PYEOF
+      echo "  (md → html 自动生成 $html)"
+    fi
+  fi
+  [ -f "$html" ] && echo "$html"
+}
+if [ -z "$RELEASE_NOTES_FILE" ] && [ -z "$RELEASE_NOTES_URL" ]; then
+  auto_file="$(resolve_notes_file "$VERSION" || true)"
+  [ -n "$auto_file" ] && RELEASE_NOTES_FILE="$auto_file"
 fi
 if [ -n "$RELEASE_NOTES_FILE" ]; then
   [ -f "$RELEASE_NOTES_FILE" ] || { echo "发行说明不存在：$RELEASE_NOTES_FILE" >&2; exit 1; }
@@ -336,7 +359,12 @@ if [ "$NOTES_ONLY" = "true" ]; then
   echo ""
   echo "===== 仅补发说明页"
   NOTES_VERSION="${NOTES_VERSION:-$VERSION}"
-  NOTES_FILE="${RELEASE_NOTES_FILE:-$REPO_ROOT/docs/release-notes-$NOTES_VERSION.html}"
+  if [ -n "${RELEASE_NOTES_FILE:-}" ]; then
+    NOTES_FILE="$RELEASE_NOTES_FILE"
+  else
+    NOTES_FILE="$(resolve_notes_file "$NOTES_VERSION" || true)"
+    [ -z "$NOTES_FILE" ] && NOTES_FILE="$REPO_ROOT/docs/release-notes-$NOTES_VERSION.html"
+  fi
   [ -f "$NOTES_FILE" ] || { echo "发行说明不存在：$NOTES_FILE" >&2; exit 1; }
   NOTES_URL="${RELEASE_NOTES_URL:-$CDN_DOMAIN/$PRODUCT_DIR/release-notes-$NOTES_VERSION.html}"
   case "$NOTES_URL" in
