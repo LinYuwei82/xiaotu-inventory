@@ -13,8 +13,8 @@
     - WebView2 SDK 由 shell\win\fetch-webview2.ps1 自动获取
 
 .PARAMETER Build
-  构建号（纯数字）。缺省取当前 UTC 时间 yyyyMMddHHmm。
-  必须大于线上 manifest.json 的 build，且会同时写入服务端与壳。
+  构建号（纯数字）。缺省由 tools/release/gen_build.py 生成（自动校验严格大于线上 build）。
+  会同时写入服务端与壳。
 
 .EXAMPLE
   .\packaging\win\build-release.ps1
@@ -57,7 +57,21 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
 $version = (Get-Content (Join-Path $root 'VERSION') -Raw).Trim()
 if (-not $version) { Fail "无法读取 VERSION" }
 
-if (-not $Build) { $Build = [DateTime]::UtcNow.ToString('yyyyMMddHHmm') }
+# 构建号：缺省走 gen_build.py（year*10^12 + git_count，自动校验 > 线上），
+# 三仓库统一口径；不再用 UTC 时间戳，避免与 macOS 各自生成导致撞号。
+if (-not $Build) {
+  $genBuild = Join-Path $root 'tools\release\gen_build.py'
+  if (-not (Test-Path $genBuild)) { Fail "找不到 gen_build.py：$genBuild" }
+  $py = Get-Command python3 -ErrorAction SilentlyContinue
+  if (-not $py) { $py = Get-Command python -ErrorAction SilentlyContinue }
+  if (-not $py) { Fail "找不到 python，无法运行 gen_build.py" }
+  $Build = (& $py.Source $genBuild --product xiaotu --repo-root $root 2>$null | Select-Object -Last 1)
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($Build)) {
+    Fail "gen_build.py 失败，无法生成构建号（可用 -Build 显式指定）"
+  }
+  $Build = $Build.Trim()
+  Write-Host "构建号来源：gen_build.py"
+}
 if ($Build -notmatch '^\d{4,}$') { Fail "构建号必须是纯数字：$Build" }
 
 Write-Host "版本：$version   构建号：$Build"
