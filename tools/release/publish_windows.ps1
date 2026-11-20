@@ -275,7 +275,7 @@ if ([string]::IsNullOrWhiteSpace($Build)) {
                 [IO.Compression.ZipFileExtensions]::ExtractToFile($entryForBuild, $tmpExe)
                 try {
                     $ascii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($tmpExe))
-                    $m = [regex]::Match($ascii, 'XIAOTU_BUILD=(\d{4,})')
+                    $m = [regex]::Match($ascii, 'XIAOTU_BUILD=(\d+)')
                     if ($m.Success) { $Build = $m.Groups[1].Value; $BuildSource = "绿色包内 xiaotu-shell.exe" }
                 } finally {
                     Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue
@@ -297,7 +297,7 @@ if ([string]::IsNullOrWhiteSpace($Build)) {
         $genOutput = & $pyArgs.Source $genBuild --product xiaotu --repo-root $root 2>&1
         $ErrorActionPreference = $prevEap
         $genText = ($genOutput | Out-String).Trim()
-        if ($LASTEXITCODE -eq 0 -and $genText -match '^\d{4,}$') {
+        if ($LASTEXITCODE -eq 0 -and $genText -match '^\d+$') {
             $Build = $genText
             $BuildSource = "gen_build.py"
             Write-Host "[警告] 未找到 CMakeCache / 绿色包构建痕迹，按当前 git 计数生成构建号；如与编译值不一致，请用 -Build 显式指定"
@@ -307,7 +307,7 @@ if ([string]::IsNullOrWhiteSpace($Build)) {
 if ([string]::IsNullOrWhiteSpace($Build)) {
     Fail "未能确定编译时的 XIAOTU_BUILD。请用 -Build <构建号> 显式传入，或先跑 tools\package\package_windows.ps1（会自动生成并写进 CMakeCache）"
 }
-if ($Build -notmatch '^\d{4,}$') { Fail "非法构建号：$Build（应为纯数字，如 202611190001）" }
+if ($Build -notmatch '^\d+$') { Fail "非法构建号：$Build（应为纯数字）" }
 
 # 二次验证：与 CMakeCache 里的 XIAOTU_BUILD 一致（防止 -Build 与编译值不同步）
 if ($BuildSource -ne "CMakeCache") {

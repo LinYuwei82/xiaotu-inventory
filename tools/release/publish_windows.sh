@@ -114,10 +114,11 @@ fi
 CHANNEL="${CHANNEL:-stable}"
 case "$CHANNEL" in stable|beta) ;; *) echo "CHANNEL 必须是 stable/beta" >&2; exit 1 ;; esac
 
-# 构建号：NOTES_ONLY 模式不需要；正常模式从 gen_build.py 自动生成（或用户显式传 BUILD）。
+# 构建号：NOTES_ONLY 模式不需要；CI 由 release tag 解析传入（build = tag 序号，可为 1 位），
+# 本地缺省时用 gen_build.py 生成（仅开发用），也可用户显式传 BUILD。
 if [ "$NOTES_ONLY" != "true" ]; then
   if [ -n "${BUILD:-}" ]; then
-    [[ "$BUILD" =~ ^[0-9]{4,}$ ]] || { echo "用户显式传的 BUILD 非法：$BUILD" >&2; exit 1; }
+    [[ "$BUILD" =~ ^[0-9]+$ ]] || { echo "用户显式传的 BUILD 非法：$BUILD" >&2; exit 1; }
   else
     BUILD="$(python3 "$REPO_ROOT/tools/release/gen_build.py" \
       --product xiaotu --repo-root "$REPO_ROOT")" || {

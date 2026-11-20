@@ -91,7 +91,7 @@ if (-not $Build) {
   $Build = $Build.Trim()
   Write-Host "构建号来源：gen_build.py"
 }
-if ($Build -notmatch '^\d{4,}$') { Fail "构建号必须是纯数字：$Build" }
+if ($Build -notmatch '^\d+$') { Fail "构建号必须是纯数字：$Build" }
 
 Write-Host "版本：$version   构建号：$Build"
 Write-Host "提示：构建号必须大于线上 manifest.json 里 platforms.windows 的 build，否则 guard 会拒绝发布。"
