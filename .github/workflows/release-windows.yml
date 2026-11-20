@@ -98,7 +98,7 @@ jobs:
               exit 2
             fi
           fi
-          CHANNEL="${{ inputs.channel }}"
+          CHANNEL="${{ inputs.channel || 'stable' }}"
           if [ -z "$CHANNEL" ]; then CHANNEL=stable; fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "BUILD=$BUILD" >> "$GITHUB_ENV"
@@ -130,7 +130,7 @@ jobs:
           if (-not (Test-Path $exe)) { throw "未找到 $exe" }
           $bytes = [IO.File]::ReadAllBytes($exe)
           $text = [Text.Encoding]::ASCII.GetString($bytes)
-          if ($text -notlike '*xiaotu/updates/${{ inputs.channel }}/manifest.json*') {
+          if ($text -notlike '*xiaotu/updates/${{ inputs.channel || 'stable' }}/manifest.json*') {
             throw 'xiaotu-shell.exe 未包含当前清单地址，请检查源码后重试'
           }
 
@@ -183,7 +183,7 @@ jobs:
           [IO.File]::WriteAllText($keyPath, $env:XIAOTU_UPDATE_SIGNING_KEY.Replace("`n", "`r`n"))
           $v = '${{ env.VERSION }}'; $b = '${{ env.BUILD }}'
           python tools/release/manifest_v2.py generate `
-            --product xiaotu --channel ${{ inputs.channel }} --platform windows `
+            --product xiaotu --channel ${{ inputs.channel || 'stable' }} --platform windows `
             --version $v --build $b --min-os 10.0 --key-id 2026-11 `
             --artifact "setup=packaging/win/out/xiaotu-inventory-$v-win64-setup.exe" `
             --artifact "portable=build/package/win/xiaotu-inventory-$v-win64.zip" `
@@ -200,7 +200,7 @@ jobs:
         run: |
           $v = '${{ env.VERSION }}'; $b = '${{ env.BUILD }}'
           python tools/release/guard.py preflight `
-            --product xiaotu --kind win --channel ${{ inputs.channel }} `
+            --product xiaotu --kind win --channel ${{ inputs.channel || 'stable' }} `
             --file "packaging/win/out/xiaotu-inventory-$v-win64-setup.exe" `
             --name "xiaotu-$v-win64-setup.exe" `
             --zip "build/package/win/xiaotu-inventory-$v-win64.zip" `
@@ -221,7 +221,7 @@ jobs:
           $env:UPLOAD_SETUP = "packaging/win/out/xiaotu-inventory-$v-win64-setup.exe"
           $env:UPLOAD_ZIP = "build/package/win/xiaotu-inventory-$v-win64.zip"
           $env:UPLOAD_MANIFEST = 'dist/manifest.json'
-          $env:CHANNEL = '${{ inputs.channel }}'
+          $env:CHANNEL = '${{ inputs.channel || 'stable' }}'
           $py = @'
           import os, oss2
           ak, sk = os.environ["OSS_ACCESS_KEY_ID"], os.environ["OSS_ACCESS_KEY_SECRET"]
@@ -250,7 +250,7 @@ jobs:
         run: |
           $v = '${{ env.VERSION }}'; $b = '${{ env.BUILD }}'
           python tools/release/guard.py verify-live `
-            --product xiaotu --kind win --channel ${{ inputs.channel }} `
+            --product xiaotu --kind win --channel ${{ inputs.channel || 'stable' }} `
             --file "packaging/win/out/xiaotu-inventory-$v-win64-setup.exe" `
             --name "xiaotu-$v-win64-setup.exe" `
             --zip "build/package/win/xiaotu-inventory-$v-win64.zip" `
