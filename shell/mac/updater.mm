@@ -410,7 +410,11 @@ didCompleteWithError:(NSError*)error {
 
 @end
 
+#if XIAOTU_HAS_SPARKLE
 @interface XiaotuUpdater () <SPUUpdaterDelegate>
+#else
+@interface XiaotuUpdater ()
+#endif
 @property(nonatomic, strong) dispatch_queue_t queue;
 @property(nonatomic, copy, nullable) NSString* manifestURL;
 @property(nonatomic, copy, nullable) NSString* healthBase;
@@ -1559,9 +1563,18 @@ didCompleteWithError:(NSError*)error {
 
 - (NSDictionary<NSString*, id>*)status {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
-  // v2 的 macOS 清单没有构建号（build 固定 0），是否更新只比版本号。
-  const BOOL updateAvailable = xiaotu::is_newer_product_version(
-      pending_version(defaults), xiaotu::current_product_version());
+  // 与检查链路同一口径：版本更高，或同版本但待安装构建号更大。
+  const std::string statusPendingVersion = pending_version(defaults);
+  const std::int64_t statusPendingBuild = [defaults integerForKey:kPendingBuildKey];
+  xiaotu::ProductVersion statusRemote{};
+  xiaotu::ProductVersion statusLocal{};
+  BOOL updateAvailable = NO;
+  if (!statusPendingVersion.empty() &&
+      xiaotu::parse_product_version(statusPendingVersion, statusRemote) &&
+      xiaotu::parse_product_version(xiaotu::current_product_version(), statusLocal)) {
+    const int statusOrder = xiaotu::compare_product_version(statusRemote, statusLocal);
+    updateAvailable = statusOrder > 0 || (statusOrder == 0 && statusPendingBuild > current_build());
+  }
   NSString* pendingVersion = updateAvailable ? [defaults stringForKey:kPendingVersionKey] : nil;
   const BOOL mandatory = updateAvailable && [defaults boolForKey:kMandatoryKey];
   NSString* reason = mandatory ? [defaults stringForKey:kPendingReasonKey] : nil;
@@ -1837,7 +1850,8 @@ didCompleteWithError:(NSError*)error {
       return;
     }
   }
-  // v2：macOS 无构建号（build 固定 0），更新判定只比 version。
+  // v2：macOS 已带构建号（与 Info.plist CFBundleVersion 同源），同版本重发靠
+  // build 区分，与 Windows / Mote / DevCard 同一口径。
   NSString* remoteVersionText = json_string(manifest, @"version");
   xiaotu::ProductVersion remoteVersion{};
   xiaotu::ProductVersion localVersion{};
@@ -1848,12 +1862,14 @@ didCompleteWithError:(NSError*)error {
     finish(kResultCheckFailed);
     return;
   }
-  if (xiaotu::compare_product_version(remoteVersion, localVersion) <= 0) {
+  const std::int64_t remoteBuild = json_long(manifest, @"build");
+  const int versionOrder = xiaotu::compare_product_version(remoteVersion, localVersion);
+  if (versionOrder < 0 ||
+      (versionOrder == 0 && remoteBuild <= current_build())) {
     [self clearPending];
     finish(kResultNoUpdate);
     return;
   }
-  const std::int64_t remoteBuild = json_long(manifest, @"build");
 
   if (self.healthBase.length > 0) {
     NSString* healthError = nil;

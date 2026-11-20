@@ -14,6 +14,8 @@ name: Windows 发布
 #   - BUILD 构建号必须大于已发布值，缺省用触发时刻（UTC 分钟级）。
 
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       build:
@@ -78,12 +80,22 @@ jobs:
       - name: 读版本与构建号
         shell: bash
         run: |
-          VERSION=$(tr -d '[:space:]' < VERSION)
+          VERSION=$(tr -d '[:space:]' < VERSION.txt)
           BUILD="${{ inputs.build }}"
           if [ -z "$BUILD" ]; then BUILD=$(date -u +%Y%m%d%H%M); fi
+          CHANNEL="${{ inputs.channel }}"
+          if [ -z "$CHANNEL" ]; then CHANNEL=stable; fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "BUILD=$BUILD" >> "$GITHUB_ENV"
-          echo "版本 $VERSION，构建号 $BUILD"
+          echo "CHANNEL=$CHANNEL" >> "$GITHUB_ENV"
+          echo "版本 $VERSION，构建号 $BUILD，通道 $CHANNEL"
+
+      - name: 校验版本 / 构建号递增
+        shell: bash
+        run: |
+          python3 tools/release/check_version_bump.py --product xiaotu \
+            --build "$BUILD" \
+            --manifest-url "https://dl.xiaotu.online/xiaotu/updates/$CHANNEL/manifest.json"
 
       - name: 构建服务端
         run: |
@@ -92,7 +104,7 @@ jobs:
 
       - name: 构建壳
         run: |
-          cmake -S shell/win -B shell/win/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake -S shell/win -B shell/win/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=${{ env.BUILD }}
           cmake --build shell/win/build
 
       # 壳内嵌的清单地址必须与本次发布一致；guard 在后面会再验一次
