@@ -40,19 +40,11 @@ Ed25519 私钥与 OSS 凭据留在 Mac，不拷到 Windows。
 
 ### 1. Windows：编译与打包
 
-在 **Developer PowerShell**（`cl.exe` 在 PATH）里一条命令完成：
+在 PowerShell 里一条命令完成（未在 Developer 环境时会自动加载 `vcvars64`）：
 
 ```powershell
-.\tools\package\package_windows.ps1                  # 构建号自动取 UTC 时间
+.\tools\package\package_windows.ps1                  # 构建号由 gen_build.py 自动生成
 .\tools\package\package_windows.ps1 -Build 202611180930
-```
-
-不想开 Developer 窗口、也不想处理执行策略时，用 `cmd` 入口（会自动 `chcp`、调用
-`vcvars64.bat`、并以 `-ExecutionPolicy Bypass` 运行上面的脚本）：
-
-```cmd
-packaging\win\package_windows.cmd
-packaging\win\package_windows.cmd 202611180930
 ```
 
 脚本会依次执行下面的手工步骤，并在最后打印 Mac 上要执行的发布命令。等价的完整手工命令：

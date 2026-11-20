@@ -37,6 +37,7 @@ LEGACY_PATHS = [
     "tools/package/publish_oss.sh",
     "tools/package/publish_windows.sh",
     "tools/package/publish_windows.ps1",
+    "tools/package/package_windows.cmd",
     "packaging/win/build-release.ps1",
     "packaging/win/build-release.cmd",
 ]

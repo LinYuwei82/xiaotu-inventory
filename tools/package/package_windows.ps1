@@ -8,7 +8,7 @@
   Ed25519 私钥与 OSS 凭据保持在 Mac，不进入 Windows。
 
   前置：
-    - Developer PowerShell（cl.exe 在 PATH），VS2022 + CMake + Ninja
+    - VS2022 + CMake + Ninja（未在 Developer 环境时会自动加载 vcvars64）
     - Inno Setup 6（ISCC.exe）
     - WebView2 SDK 由 shell\win\fetch-webview2.ps1 自动获取
 
@@ -28,6 +28,24 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# 与另两仓一致只保留一个入口脚本：不在 Developer 环境时自动加载 MSVC。
+if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+  $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+  if (Test-Path -LiteralPath $vswhere) {
+    $vsPath = & $vswhere -latest -products * `
+      -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if ($vsPath) {
+      $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
+      if (Test-Path -LiteralPath $vcvars) {
+        Write-Host "加载 MSVC 环境：$vcvars"
+        cmd /c "call `"$vcvars`" >nul 2>&1 && set" | ForEach-Object {
+          if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "Env:$($Matches[1])" -Value $Matches[2] }
+        }
+      }
+    }
+  }
+}
 
 function Step([string]$Message) {
   Write-Host ""
