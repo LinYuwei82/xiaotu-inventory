@@ -589,7 +589,7 @@ def check_win_embed(zip_path: Path, product: str, channel: str, base: str,
 
 # 产品→二进制内可搜索的构建号字符串前缀映射。
 # Mote CMakeLists.txt 同时以数字和字符串形式注入 MOTE_BUILD / MOTE_BUILD_STR，
-# platform/win/updater.cpp 里放了一条静态字符串 "MOTE_BUILD=<digits>"；
+# shell/win/updater_win.cpp 里放了一条静态字符串 "MOTE_BUILD=<digits>"；
 # 小兔同理 XIAOTU_BUILD；DevCard 同为 DEVCARD_BUILD（三仓统一标记）。
 # 二进制里含 "<PRODUCT>_BUILD=<digits>"。
 _BUILD_STAMP_PREFIX: Dict[str, Optional[bytes]] = {
