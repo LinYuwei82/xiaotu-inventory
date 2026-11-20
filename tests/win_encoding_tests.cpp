@@ -6,6 +6,10 @@
 #include <cstdio>
 #include <string>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace {
 
 int g_failures = 0;
@@ -74,8 +78,10 @@ void test_decode_strict_or_acp()
     CHECK(!converted.empty());
     CHECK(win_encoding::is_valid_utf8(converted));
 #if defined(_WIN32)
-    // 中文 Windows 上 ACP 就是 936，兜底后应还原成「中文」。
-    CHECK(converted == "中文");
+    // 仅中文 Windows（ACP=936）能按 GBK 还原；其它代码页只要求是合法 UTF-8。
+    if (GetACP() == 936) {
+        CHECK(converted == "中文");
+    }
 #endif
 }
 
