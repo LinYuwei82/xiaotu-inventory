@@ -610,7 +610,7 @@ def _extract_build_from_bytes(data: bytes, product: str) -> Optional[str]:
         return match.group(1).decode("ascii")
     # UTF-16LE：每个 ASCII 字符后跟 \\x00
     utf16_prefix = prefix.decode("ascii").encode("utf-16-le")
-    match = re.search(re.escape(utf16_prefix) + rb'(\d\x00){4,}', data)
+    match = re.search(re.escape(utf16_prefix) + rb'(\d\x00)+', data)
     if match:
         raw = match.group(0)[len(utf16_prefix):]
         return bytes(b for i, b in enumerate(raw) if i % 2 == 0 and b != 0).decode("ascii")
