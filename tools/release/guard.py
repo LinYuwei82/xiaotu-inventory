@@ -590,12 +590,12 @@ def check_win_embed(zip_path: Path, product: str, channel: str, base: str,
 # 产品→二进制内可搜索的构建号字符串前缀映射。
 # Mote CMakeLists.txt 同时以数字和字符串形式注入 MOTE_BUILD / MOTE_BUILD_STR，
 # platform/win/updater.cpp 里放了一条静态字符串 "MOTE_BUILD=<digits>"；
-# 小兔同理 XIAOTU_BUILD；DevCard 2026-11-19 补齐 CMake 注入（DEVCARD_BUILD_STAMP），
-# 二进制里含 "DEVCARD_BUILD_STAMP=<digits>"。
+# 小兔同理 XIAOTU_BUILD；DevCard 同为 DEVCARD_BUILD（三仓统一标记）。
+# 二进制里含 "<PRODUCT>_BUILD=<digits>"。
 _BUILD_STAMP_PREFIX: Dict[str, Optional[bytes]] = {
     "mote": b"MOTE_BUILD=",
     "xiaotu": b"XIAOTU_BUILD=",
-    "devcard": b"DEVCARD_BUILD_STAMP=",
+    "devcard": b"DEVCARD_BUILD=",
 }
 
 
@@ -1192,10 +1192,10 @@ def cmd_selftest() -> int:
             z.writestr("Mote.exe", b"no build stamp here")
         check_win_build_stamp(zp_nobuild, 202611181542, "mote"); n += 1  # 只是 warn，不抛错
 
-        # 5) DevCard：绿色包内 DevCard.exe 含 DEVCARD_BUILD_STAMP=<digits> → 通过
+        # 5) DevCard：绿色包内 DevCard.exe 含 DEVCARD_BUILD=<digits> → 通过
         zp_dc = Path(td) / "devcard-1.2.8-win64-portable.zip"
         with zipfile.ZipFile(zp_dc, "w") as z:
-            z.writestr("DevCard.exe", b"junk DEVCARD_BUILD_STAMP=202611181646 end")
+            z.writestr("DevCard.exe", b"junk DEVCARD_BUILD=202611181646 end")
         check_win_build_stamp(zp_dc, 202611181646, "devcard"); n += 1
 
     print(f"selftest 通过（{n} 项）")
