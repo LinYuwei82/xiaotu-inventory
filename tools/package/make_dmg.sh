@@ -250,7 +250,7 @@ xattr -d com.apple.FinderInfo "$APP_PATH" 2>/dev/null || true
 xattr -d "com.apple.fileprovider.fpfs#P" "$APP_PATH" 2>/dev/null || true
 
 sign_identity="$XIAOTU_SIGN_IDENTITY"
-echo "使用证书：$sign_identity（硬性前提已前置检查 ✓）"
+echo "使用证书：${sign_identity}（硬性前提已前置检查 ✓）"
 
 # Step 1: 签 Sparkle.framework（用 --deep 覆盖内部 Updater.app、XPCServices 等嵌套 bundle）
 SPARKLE_FW="$APP_PATH/Contents/Frameworks/Sparkle.framework"
@@ -280,7 +280,7 @@ hdiutil verify "$DMG"
 codesign --force --sign "$sign_identity" --timestamp "$DMG"
 
 echo "===== 公证"
-echo "使用 notarytool 凭据：$XIAOTU_NOTARY_PROFILE（硬性前提已前置检查 ✓）"
+echo "使用 notarytool 凭据：${XIAOTU_NOTARY_PROFILE}（硬性前提已前置检查 ✓）"
 xcrun notarytool submit "$DMG" --keychain-profile "$XIAOTU_NOTARY_PROFILE" --wait \
   || { echo "notarytool submit 失败"; exit 1; }
 xcrun stapler staple "$DMG"
@@ -295,8 +295,8 @@ echo "===== 完成"
 echo "产物：$DMG"
 echo "字节数：$SIZE_BYTES"
 echo "SHA256：$SHA256"
-echo "签名：$XIAOTU_SIGN_IDENTITY（Developer ID ✓）"
-echo "公证：$XIAOTU_NOTARY_PROFILE（notarytool 已公证 ✓）"
+echo "签名：${XIAOTU_SIGN_IDENTITY}（Developer ID ✓）"
+echo "公证：${XIAOTU_NOTARY_PROFILE}（notarytool 已公证 ✓）"
 echo "产品版本：$VERSION"
 echo "构建号：$PLIST_BUILD"
 echo "更新配置：$([ "$UPDATE_CONFIG_COUNT" -eq 3 ] && echo "已注入" || echo "未配置（更新功能关闭）")"

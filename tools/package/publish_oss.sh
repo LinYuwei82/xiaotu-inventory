@@ -262,10 +262,11 @@ if [ -n "$APP_IN_DMG" ] && [ -f "$APP_IN_DMG/Contents/Info.plist" ]; then
 fi
 hdiutil detach "$DMG_MOUNT" >/dev/null 2>&1 || true
 rm -rf "$DMG_MOUNT"
+fi
 
 # BUILD 兜底：gen_build.py 已经生成了，不会再为空
-[[ "$BUILD" =~ ^[0-9]{1,}$ ]] || { echo "BUILD 非法（$BUILD_SRC）" >&2; exit 1; }
-echo "build：${BUILD}（来源 $BUILD_SRC）"
+[[ "$BUILD" =~ ^[0-9]{1,}$ ]] || { echo "BUILD 非法（${BUILD_SRC}）" >&2; exit 1; }
+echo "build：${BUILD}（来源 ${BUILD_SRC}）"
 
 PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 PUB_BASE64="$("$OPENSSL_BIN" pkey -pubin -in "$SIGNING_PUB" -outform DER 2>/dev/null \
@@ -427,6 +428,7 @@ MANIFEST_ARGS=(
   --channel "$CHANNEL"
   --platform macos
   --version "$VERSION"
+  --build "$BUILD"
   --min-os "$MIN_OS"
   --artifact "dmg=$DMG_PATH"
   --key-id "$KEY_ID"
@@ -587,7 +589,7 @@ if [ -d "$DOCS_ROOT" ]; then
     DMG_SIZE=$(stat -f%z "$DMG_PATH" 2>/dev/null || stat -c%s "$DMG_PATH" 2>/dev/null || echo "?")
     DMG_MIB=$(python3 -c "print(f'{int($DMG_SIZE)/1024/1024:.2f}')" 2>/dev/null || echo "?")
     TODAY=$(date '+%Y-%m-%d')
-    echo "  📦 包体实测（版本 $VERSION / $TODAY）"
+    echo "  📦 包体实测（版本 $VERSION / ${TODAY}）"
     echo "     DMG: ${DMG_SIZE}B (${DMG_MIB} MiB)"
     echo "     → 核对 docs/进销存技术方案.md §2.6「当前实测」表是否需要追加新行"
   fi
