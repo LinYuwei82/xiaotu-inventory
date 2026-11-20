@@ -42,6 +42,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 校验 guard / manifest_v2 未被单独改动
         shell: bash
@@ -81,8 +83,16 @@ jobs:
         shell: bash
         run: |
           VERSION=$(tr -d '[:space:]' < VERSION.txt)
-          BUILD="${{ inputs.build }}"
-          if [ -z "$BUILD" ]; then BUILD=$(date -u +%Y%m%d%H%M); fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            eval "$(python3 tools/release/release_tag.py parse --ensure-latest --tag "${GITHUB_REF_NAME}" --emit sh)"
+            echo "构建号来自 tag：${GITHUB_REF_NAME} → ${BUILD}"
+          else
+            BUILD="${{ inputs.build }}"
+            if [ -z "$BUILD" ]; then
+              echo "手动触发必须提供 build 参数；正式发布请用 tag v<semver>+<seq>" >&2
+              exit 2
+            fi
+          fi
           CHANNEL="${{ inputs.channel }}"
           if [ -z "$CHANNEL" ]; then CHANNEL=stable; fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
