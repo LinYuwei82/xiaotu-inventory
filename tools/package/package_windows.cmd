@@ -1,11 +1,11 @@
 @echo off
 setlocal EnableExtensions
 rem xiaotu-inventory Windows release helper.
-rem Initializes the MSVC x64 environment (vcvars64) then calls build-release.ps1.
+rem Initializes the MSVC x64 environment (vcvars64) then calls package_windows.ps1.
 rem
 rem Usage:
-rem   build-release.cmd                  -- build number from current UTC time
-rem   build-release.cmd 202611180930     -- explicit build number
+rem   package_windows.cmd                  -- build number from current UTC time
+rem   package_windows.cmd 202611180930     -- explicit build number
 rem
 rem Note: keep this file ASCII + CRLF. cmd.exe decodes batch files with the
 rem current console code page, so non-ASCII text breaks parsing on GBK systems.
@@ -23,9 +23,9 @@ call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" >nul
 if errorlevel 1 goto :vcvars_failed
 
 if "%~1"=="" (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%build-release.ps1"
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%package_windows.ps1"
 ) else (
-  powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%build-release.ps1" -Build "%~1"
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%package_windows.ps1" -Build "%~1"
 )
 set "RC=%ERRORLEVEL%"
 

@@ -1,9 +1,9 @@
 ﻿# 小兔进销存 · Windows 在线更新发布（OSS 清单，更新清单 Schema v2）
 #
-# 输入：packaging\win\build-release.ps1 产出的 setup.exe + 可选绿色包 zip
+# 输入：tools\package\package_windows.ps1 产出的 setup.exe + 可选绿色包 zip
 # 动作：生成 Ed25519 签名的 manifest.json（v2）→ 上传 dl.xiaotu.online → 线上门禁
 #
-# 与 macOS（publish_oss.sh）的分工：
+# 与 macOS（publish_macos.sh）的分工：
 #   macOS   appcast.xml（Sparkle 验签）+ manifest.json（v2）→ .dmg
 #   Windows 没有 Sparkle，只发 manifest.json（v2）→ setup.exe + 可选绿色包 zip
 #   客户端只读 platforms.windows：先比 version、同版本再比 build
@@ -305,7 +305,7 @@ if ([string]::IsNullOrWhiteSpace($Build)) {
     }
 }
 if ([string]::IsNullOrWhiteSpace($Build)) {
-    Fail "未能确定编译时的 XIAOTU_BUILD。请用 -Build <构建号> 显式传入，或先跑 packaging\win\build-release.ps1（会自动生成并写进 CMakeCache）"
+    Fail "未能确定编译时的 XIAOTU_BUILD。请用 -Build <构建号> 显式传入，或先跑 tools\package\package_windows.ps1（会自动生成并写进 CMakeCache）"
 }
 if ($Build -notmatch '^\d{4,}$') { Fail "非法构建号：$Build（应为纯数字，如 202611190001）" }
 
@@ -356,7 +356,7 @@ if (-not $SetupPath) {
     $SetupPath = Join-Path $root "packaging\win\out\xiaotu-inventory-$Version-win64-setup.exe"
 }
 if (-not (Test-Path -LiteralPath $SetupPath)) {
-    Fail "安装包不存在：$SetupPath（先跑 packaging\win\build-release.ps1）"
+    Fail "安装包不存在：$SetupPath（先跑 tools\package\package_windows.ps1）"
 }
 $SetupFull = (Resolve-Path $SetupPath).Path
 

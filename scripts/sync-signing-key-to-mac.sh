@@ -11,7 +11,7 @@
 #   3. ./scripts/sync-signing-key-to-mac.sh
 #
 # 脚本会自动：备份旧密钥 → 拷新密钥 → 验证同源（公钥 base64 必须匹配）
-#              → 输出 publish_oss.sh 调用示例
+#              → 输出 publish_macos.sh 调用示例
 
 set -euo pipefail
 
@@ -89,14 +89,14 @@ cat <<EOF
 === 同步完成 ===
 
 私钥：$KEY_DIR/update_signing_2026.pem  （chmod 600，仅本机可读写）
-公钥：$KEY_DIR/update_signing_2026.pub.pem （publish_oss.sh / verify_manifest 用）
+公钥：$KEY_DIR/update_signing_2026.pub.pem （publish_macos.sh / verify_manifest 用）
 公钥 base64：$MAC_BASE64
 
-publish_oss.sh 默认就找 ~/.config/xiaotu-updates/update_signing_2026.pem，
+publish_macos.sh 默认就找 ~/.config/xiaotu-updates/update_signing_2026.pem，
 直接跑不用设环境变量：
 
   PRODUCT=xiaotu VERSION=1.0.0 BUILD=\$(date +%Y%m%d%H) CHANNEL=stable \\
-    tools/package/publish_oss.sh
+    tools/release/publish_macos.sh
 
 验证清单验签本地可用：
 

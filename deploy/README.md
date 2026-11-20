@@ -176,7 +176,7 @@ XIAOTU_UPDATE_TOOL=/opt/xiaotu/tools/package/update_manifest.py \
 自动逐档放量（默认 1% → 10% → 50% → 100%，每档 24 小时）：
 
 ```bash
-# 0. 取回当前线上清单（publish_oss.sh 的临时目录不会保留）
+# 0. 取回当前线上清单（publish_macos.sh 的临时目录不会保留）
 curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
   -o build/package/manifest.json
 
@@ -198,7 +198,7 @@ tools/package/rollout_oss.sh --steps 5,20,60,100 --interval 12h --yes
 - 每档上传后轮询各平台 `rollout_percent`，目标平台全部生效才进入下一档；超时则停下，当前档保持生效。
 - `dl.xiaotu.online` 直连 OSS、没有 CDN 层，发布脚本默认不 purge（`PURGE=true` 仅备将来接入 CDN）。
 - Ctrl-C 可随时停在当前档，不会回退比例；要继续时重跑并跳过已完成的档位即可。
-- 依赖 OSS 凭据（同 `publish_oss.sh`）与签名私钥；`--dry-run` 不需要 OSS。
+- 依赖 OSS 凭据（同 `publish_macos.sh`）与签名私钥；`--dry-run` 不需要 OSS。
 
 手动重签仍然可用（`manifest_v2.py` 是三仓库共用的纯标准库实现）：
 
@@ -247,4 +247,4 @@ python3 tools/release/manifest_v2.py resign \
 
 ### 7. 发布侧清单生成
 
-v2 清单由三仓库共用的 `tools/release/manifest_v2.py` 生成并签名；appcast 仍由 `tools/package/update_manifest.py` 生成。`tools/package/publish_oss.sh` 会串起整个流程，参数见 `tools/package/README.md`。发布顺序：上传安装包到 OSS → 生成并签名 `manifest.json` / `appcast.xml` → 上传清单 → 下载预热 → 冒烟验证 `/api/update/check`（无 CDN 层，默认不 purge）。
+v2 清单由三仓库共用的 `tools/release/manifest_v2.py` 生成并签名；appcast 仍由 `tools/package/update_manifest.py` 生成。`tools/release/publish_macos.sh` 会串起整个流程，参数见 `tools/package/README.md`。发布顺序：上传安装包到 OSS → 生成并签名 `manifest.json` / `appcast.xml` → 上传清单 → 下载预热 → 冒烟验证 `/api/update/check`（无 CDN 层，默认不 purge）。

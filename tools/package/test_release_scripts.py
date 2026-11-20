@@ -1,6 +1,6 @@
 """发布脚本 shell 层测试。
 
-覆盖：publish_oss.sh / publish_windows.sh / make_dmg.sh / cleanup_oss_versions.sh。
+覆盖：publish_macos.sh / publish_windows.sh / package_macos.sh / cleanup_oss_versions.sh。
 全部用 OSS_SKIP=true（dry-run）或 NOTES_ONLY=true，不碰真实 OSS 凭据、签名、公证、oss2 venv。
 拒绝路径传坏参数，期望脚本以非 0 退出码拒绝并 stderr 含关键字。
 合法路径传正确参数（用最小 mock 产物），期望脚本走完 dry-run 流程。
@@ -25,6 +25,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 PKG = REPO / "tools" / "package"
+REL = REPO / "tools" / "release"
 # 小兔 Ed25519 测试种子（RFC 8032 固定向量）
 TEST_SEED_HEX = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
 TEST_SEED = bytes.fromhex(TEST_SEED_HEX)
@@ -117,12 +118,12 @@ class Runner:
 # --------------------------------------------------------------------------- 测试类
 
 class TestPublishOss(unittest.TestCase):
-    """publish_oss.sh：小兔 macOS 发布脚本的拒绝路径 + NOTES_ONLY 行为。"""
+    """publish_macos.sh：小兔 macOS 发布脚本的拒绝路径 + NOTES_ONLY 行为。"""
 
     @classmethod
     def setUpClass(cls):
         cls.r = Runner()
-        cls.script = str(PKG / "publish_oss.sh")
+        cls.script = str(REL / "publish_macos.sh")
 
     def test_help_zero_exit(self):
         self.r.run(self.script, ["--help"], expect_code=0)
@@ -194,7 +195,7 @@ class TestPublishWindows(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.r = Runner()
-        cls.script = str(PKG / "publish_windows.sh")
+        cls.script = str(REL / "publish_windows.sh")
 
     def test_help_zero_exit(self):
         self.r.run(self.script, ["--help"], expect_code=0)
@@ -267,12 +268,12 @@ class TestPublishWindows(unittest.TestCase):
 
 
 class TestMakeDmg(unittest.TestCase):
-    """make_dmg.sh：小兔 dmg 打包脚本的参数校验。"""
+    """package_macos.sh：小兔 dmg 打包脚本的参数校验。"""
 
     @classmethod
     def setUpClass(cls):
         cls.r = Runner()
-        cls.script = str(PKG / "make_dmg.sh")
+        cls.script = str(PKG / "package_macos.sh")
 
     def _valid_pubkey_b64(self) -> str:
         pub = subprocess.run(

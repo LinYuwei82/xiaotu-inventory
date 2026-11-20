@@ -30,22 +30,22 @@
 #
 # 用法：
 #   # 完整发布（需要 OSS 凭据，见上）
-#   OSS_BUCKET=xxx OSS_REGION=cn-hangzhou PRODUCT=xiaotu tools/package/publish_oss.sh
+#   OSS_BUCKET=xxx OSS_REGION=cn-hangzhou PRODUCT=xiaotu tools/release/publish_macos.sh
 #
 #   # dry-run：只本地生成 + 验签，不碰 OSS
-#   OSS_SKIP=true PRODUCT=xiaotu tools/package/publish_oss.sh
+#   OSS_SKIP=true PRODUCT=xiaotu tools/release/publish_macos.sh
 #
 #   # 只补发说明页：上传 docs/release-notes-<版本>.html，并用 resign 重签线上清单
 #   # （不重出包、不改版本与 dmg；可用 NOTES_VERSION 指定历史版本）
-#   NOTES_ONLY=true tools/package/publish_oss.sh
+#   NOTES_ONLY=true tools/release/publish_macos.sh
 #
 #   # 关闭发布后的下载可达性验证
-#   WARMUP=false PRODUCT=xiaotu tools/package/publish_oss.sh
+#   WARMUP=false PRODUCT=xiaotu tools/release/publish_macos.sh
 #
 #   # 灰度 / 强制更新（可选，默认全量 + 非强制；与 Mote / DevCard 同一口径）
-#   ROLLOUT_PERCENT=10 tools/package/publish_oss.sh
+#   ROLLOUT_PERCENT=10 tools/release/publish_macos.sh
 #   MANDATORY=true MANDATORY_REASON=SECURITY MANDATORY_DEADLINE=2026-12-01T00:00:00Z \
-#     tools/package/publish_oss.sh
+#     tools/release/publish_macos.sh
 
 set -euo pipefail
 
@@ -100,7 +100,7 @@ if [ "$OSS_SKIP" != "true" ]; then
   if [ -z "$OSS_BUCKET" ] || [ -z "$OSS_REGION" ]; then
     echo "缺少必填：OSS_BUCKET / OSS_REGION" >&2
     echo "可用环境变量传入，或写入 ${OSS_CRED_FILE}（OSS_BUCKET= / OSS_REGION=）" >&2
-    echo "如需只跑本地生成验证：OSS_SKIP=true tools/package/publish_oss.sh" >&2
+    echo "如需只跑本地生成验证：OSS_SKIP=true tools/release/publish_macos.sh" >&2
     exit 1
   fi
   case "$CDN_DOMAIN" in https://*|http://*) ;;
@@ -659,7 +659,7 @@ if [ "${OSS_CRED_SOURCE:-}" = "环境变量" ]; then
   echo "  请到 RAM 控制台轮换这对密钥，并改用 ${OSS_CRED_FILE}（chmod 600）。"
   echo ""
 fi
-echo "→ 客户端 Info.plist 注入（make_dmg.sh 参数）："
+echo "→ 客户端 Info.plist 注入（package_macos.sh 参数）："
 echo "  XIAOTU_UPDATE_MANIFEST_URL=$MANIFEST_PUBLIC"
 echo "  XIAOTU_UPDATE_FEED_URL=$APPCAST_PUBLIC"
 echo "  XIAOTU_UPDATE_PUBKEY=$PUB_BASE64"

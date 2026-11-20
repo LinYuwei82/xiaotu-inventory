@@ -11,7 +11,7 @@
 # 同一版本的新旧文件归为一组，按版本整体保留或删除。
 # 这是桶级维护脚本，可一次清理三个产品；发布脚本则只允许各自仓库处理自己的产品。
 #
-# 凭据加载逻辑与 publish_oss.sh / rollout_oss.sh 一致：
+# 凭据加载逻辑与 publish_macos.sh / rollout_oss.sh 一致：
 #   1. 环境变量 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET
 #   2. 否则读 ~/.config/xiaotu-updates/oss-credentials.env（权限 600/400）
 #

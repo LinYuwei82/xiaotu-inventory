@@ -2,7 +2,7 @@
 # 小兔进销存 · macOS 可分发包（.dmg）
 #
 # 一条命令从构建到出 dmg：
-#   tools/package/make_dmg.sh
+#   tools/package/package_macos.sh
 #
 # 产物：build/package/xiaotu-inventory-<版本>.dmg
 #   ├── 小兔进销存.app
@@ -44,7 +44,7 @@ usage() {
 用法：
   XIAOTU_SIGN_IDENTITY="Developer ID Application: <你的名字>" \
   XIAOTU_NOTARY_PROFILE=xiaotu-notary \
-  tools/package/make_dmg.sh
+  tools/package/package_macos.sh
 
 硬性前提（2026-11-20 起生效）：签名证书 + 公证 profile 必须同时提供，缺失则 exit 1。
 

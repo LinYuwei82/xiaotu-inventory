@@ -70,7 +70,7 @@ else()
   # 客户端会每次都提示有新版本、装完仍然提示。
   option(XIAOTU_RELEASE_BUILD "发布/出包构建：XIAOTU_BUILD 必须显式提供（由 gen_build.py 生成）" OFF)
   set(XIAOTU_DEFAULT_BUILD "999999999")
-  # 来源优先级：-DXIAOTU_BUILD → 环境变量 XIAOTU_BUILD（packaging\win\build-release.ps1 用这个）
+  # 来源优先级：-DXIAOTU_BUILD → 环境变量 XIAOTU_BUILD（tools\package\package_windows.ps1 用这个）
   set(_build_epoch "${XIAOTU_BUILD}")
   if (_build_epoch STREQUAL "" AND NOT "$ENV{XIAOTU_BUILD}" STREQUAL "")
     set(_build_epoch "$ENV{XIAOTU_BUILD}")

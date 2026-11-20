@@ -71,9 +71,9 @@ elseif(XIAOTU_BUILD STREQUAL "")
   set(XIAOTU_BUILD "${XIAOTU_DEFAULT_BUILD}" CACHE STRING "" FORCE)
 endif()
 if(XIAOTU_BUILD STREQUAL XIAOTU_DEFAULT_BUILD)
-  message(WARNING "构建号 ${XIAOTU_BUILD} 是开发占位值，此产物不可用于发布；\n  出包请用 tools/package/make_dmg.sh（内部调用 gen_build.py 自动生成）。")
+  message(WARNING "构建号 ${XIAOTU_BUILD} 是开发占位值，此产物不可用于发布；\n  出包请用 tools/package/package_macos.sh（内部调用 gen_build.py 自动生成）。")
 endif()
-# 单机版更新配置：由 tools/package/make_dmg.sh 在打包时注入 Info.plist。
+# 单机版更新配置：由 tools/package/package_macos.sh 在打包时注入 Info.plist。
 # 三者都为空表示更新功能关闭；只提供一部分视为配置错误。
 set(XIAOTU_UPDATE_MANIFEST_URL "" CACHE STRING "单机版清单地址（https）")
 set(XIAOTU_UPDATE_FEED_URL "" CACHE STRING "Sparkle appcast 地址（https）")

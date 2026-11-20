@@ -3,7 +3,7 @@
 #
 # 输入 Windows 安装包（setup.exe）+ 可选绿色包 → 生成 Ed25519 签名的 manifest.json（v2）
 # → 上传 dl.xiaotu.online → purge CDN。
-# macOS 用 publish_oss.sh（dmg + appcast）；Windows 没有 appcast，只发清单。
+# macOS 用 publish_macos.sh（dmg + appcast）；Windows 没有 appcast，只发清单。
 #
 # 目录结构（与壳里写死的清单地址一致）：
 #   oss://<bucket>/xiaotu/xiaotu-<ver>-win64-setup.exe            ← 长缓存 / immutable（v2 命名）
@@ -21,30 +21,30 @@
 #   set XIAOTU_BUILD=<BUILD> & cmake -S shell\win -B shell\win\build -DXIAOTU_RELEASE_BUILD=ON ...
 # 然后从 build.ninja 的 DEFINES 里确认两处都是同一个 <BUILD> 再发布。
 #
-# 凭据与签名私钥：与 publish_oss.sh 相同（私钥只在 Mac 上）：
+# 凭据与签名私钥：与 publish_macos.sh 相同（私钥只在 Mac 上）：
 #   ~/.config/xiaotu-updates/update_signing_2026.pem
 #   ~/.config/xiaotu-updates/oss-credentials.env（600 权限）
 #
 # 用法：
-#   BUILD=202611171349 OSS_BUCKET=xxx OSS_REGION=cn-hangzhou PRODUCT=xiaotu tools/package/publish_windows.sh
+#   BUILD=202611171349 OSS_BUCKET=xxx OSS_REGION=cn-hangzhou PRODUCT=xiaotu tools/release/publish_windows.sh
 #
 #   # 只本地生成 + 验签，不碰 OSS
-#   OSS_SKIP=true BUILD=202611171349 tools/package/publish_windows.sh
+#   OSS_SKIP=true BUILD=202611171349 tools/release/publish_windows.sh
 #
 #   # 安装包不在默认位置时显式指定
-#   SETUP_PATH=/tmp/xiaotu-inventory-1.0.0-win64-setup.exe BUILD=... tools/package/publish_windows.sh
+#   SETUP_PATH=/tmp/xiaotu-inventory-1.0.0-win64-setup.exe BUILD=... tools/release/publish_windows.sh
 #
 #   # 发行说明：docs/release-notes-<版本>.html 存在时自动上传并写入 notes_url，
 #   # 也可显式指定文件或直接给外链地址
-#   RELEASE_NOTES_FILE=docs/其他说明.html BUILD=... tools/package/publish_windows.sh
-#   RELEASE_NOTES_URL=https://... BUILD=... tools/package/publish_windows.sh
+#   RELEASE_NOTES_FILE=docs/其他说明.html BUILD=... tools/release/publish_windows.sh
+#   RELEASE_NOTES_URL=https://... BUILD=... tools/release/publish_windows.sh
 #
 #   # 只补发说明页并重签清单：不需要安装包与 BUILD（可用 NOTES_VERSION 指定历史版本）
-#   NOTES_ONLY=true tools/package/publish_windows.sh
+#   NOTES_ONLY=true tools/release/publish_windows.sh
 #
 #   # 灰度 / 强制更新（可选，默认全量 + 非强制；与 Mote / DevCard 同一口径）
-#   ROLLOUT_PERCENT=10 BUILD=... tools/package/publish_windows.sh
-#   MANDATORY=true MANDATORY_REASON=SECURITY BUILD=... tools/package/publish_windows.sh
+#   ROLLOUT_PERCENT=10 BUILD=... tools/release/publish_windows.sh
+#   MANDATORY=true MANDATORY_REASON=SECURITY BUILD=... tools/release/publish_windows.sh
 
 set -euo pipefail
 
@@ -102,7 +102,7 @@ if [ "$OSS_SKIP" != "true" ]; then
   if [ -z "$OSS_BUCKET" ] || [ -z "$OSS_REGION" ]; then
     echo "缺少必填：OSS_BUCKET / OSS_REGION" >&2
     echo "需要 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET 环境变量" >&2
-    echo "如需只跑本地生成验证：OSS_SKIP=true tools/package/publish_windows.sh" >&2
+    echo "如需只跑本地生成验证：OSS_SKIP=true tools/release/publish_windows.sh" >&2
     exit 1
   fi
   case "$CDN_DOMAIN" in https://*|http://*) ;;

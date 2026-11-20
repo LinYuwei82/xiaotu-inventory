@@ -11,7 +11,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 - 不带参数启动 = **单机版**：内嵌服务只监听 `127.0.0.1` 的随机端口，生成一次性 token，用系统 WKWebView 打开本地页面。
 - `--server` 启动 = **网络版**：监听 `0.0.0.0`，用浏览器访问；使用用户名与口令登录（首次需先给内置管理员设置口令）。
 
-当前版本 1.0.6（唯一来源：仓库根 `VERSION` 文件）。按 [docs/进销存技术方案.md](docs/进销存技术方案.md) 的里程碑口径：M1–M3 与 M5 已完成；M4 除针式套打真机验证外已完成（纸型、边距、缩放与打印列勾选已落地，真机验收仍为阻塞项）；M6 的 macOS `.dmg` 打包脚本与用户手册已完成，Windows 壳已可接入顶层构建，自研更新桥（清单拉取、Ed25519 验签、SHA256 校验、静默安装重启）与前端更新卡片均已接入，一键打包用 `packaging/win/build-release.cmd`，安装/卸载真机验收见 [docs/Windows验收清单.md](docs/Windows验收清单.md)；Windows 代码签名暂不购买证书，签名脚本与 CI 已就绪，详见 [docs/未签名分发注意事项.md](docs/未签名分发注意事项.md)。macOS `.dmg` 已用 Developer ID 签名、公证并 staple。
+当前版本 1.0.6（唯一来源：仓库根 `VERSION` 文件）。按 [docs/进销存技术方案.md](docs/进销存技术方案.md) 的里程碑口径：M1–M3 与 M5 已完成；M4 除针式套打真机验证外已完成（纸型、边距、缩放与打印列勾选已落地，真机验收仍为阻塞项）；M6 的 macOS `.dmg` 打包脚本与用户手册已完成，Windows 壳已可接入顶层构建，自研更新桥（清单拉取、Ed25519 验签、SHA256 校验、静默安装重启）与前端更新卡片均已接入，一键打包用 `packaging/win/package_windows.cmd`，安装/卸载真机验收见 [docs/Windows验收清单.md](docs/Windows验收清单.md)；Windows 代码签名暂不购买证书，签名脚本与 CI 已就绪，详见 [docs/未签名分发注意事项.md](docs/未签名分发注意事项.md)。macOS `.dmg` 已用 Developer ID 签名、公证并 staple。
 
 已打通：**商品（分类 / 条码 / 税率）/ 单位 / 仓库 / 职员 / 客户 / 供应商档案（支持 Excel 批量导入导出，客户供应商已合表到 partner 并支持合并与撤销）→ 库存、应收、应付、资金账户四类期初导入 → 采购入库、销售出库、采购退货、销售退货、其他入库、其他出库、调拨、盘点、成本调整（草稿与反审核）→ 销售订单确认与转出库（可记录业务员）→ 库存余额与流水 → 应收应付台账与核销（按 partner 维度归集）→ 收付款单与资金账户 → 往来对账单 → 15 个报表接口（14 类输出）的导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志（含来源 IP 与请求号）、单据幂等与乐观锁、登录失败锁定与强制改密、成本口径参数（含税价 / 不含税净额，可切换并标注切换日）、前端离线提示与表单草稿、打印纸型 / 边距 / 缩放与 Cmd+P、报表导出流式化（不再有 10 万行上限）与 macOS `.dmg` 打包。桌面壳提供撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选编辑菜单；单据录入时商品下拉显示编码、名称与规格，数量框旁显示单位；桌面版支持直接「导出 PDF」。成本重算保持只读核对，差异通过成本调整单落账。
 
@@ -406,8 +406,8 @@ xiaotu-inventory/
     ├── ci/                        # check.sh 与平台代码泄漏检查
     ├── loadtest/mixed_load.py     # 并发压测脚本
     ├── nightly/                   # 定时任务（nightly.sh 与 launchd plist）
-    ├── release/                   # 三仓库共享：manifest_v2.py（v2 清单生成 + Ed25519 签名）+ guard.py（发布门禁）+ .sha256 哈希校验
-    └── package/                   # 发布入口 + 打包 + selftest：publish_oss.sh（macOS 完整发布）、publish_windows.sh / .ps1（Windows 发布）、make_dmg.sh（只出 DMG）、cleanup_oss_versions.sh、rollout_oss.sh、test_release_scripts.py、test_update_manifest.py
+    ├── release/                   # 发布：publish_macos.sh（macOS 完整发布）、publish_windows.sh / .ps1（Windows 发布）+ 三仓库共享的 manifest_v2.py / guard.py / gen_build.py 及 .sha256
+    └── package/                   # 打包 + selftest：package_macos.sh（只出 DMG）、package_windows.ps1 / .cmd、cleanup_oss_versions.sh、rollout_oss.sh、test_release_scripts.py、test_update_manifest.py
 ```
 
 ## 6. 代码生成器
@@ -694,7 +694,7 @@ struct DocumentDefinition {
 一条命令从构建到出可分发的 dmg：
 
 ```bash
-tools/package/make_dmg.sh
+tools/package/package_macos.sh
 ```
 
 产物：`build/package/xiaotu-inventory-1.0.4.dmg`（版本取自仓库根 `VERSION` 文件），内含 `小兔进销存.app`
@@ -712,10 +712,10 @@ XIAOTU_BUILD=<单调递增构建号> \
 XIAOTU_UPDATE_MANIFEST_URL=https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
 XIAOTU_UPDATE_FEED_URL=https://dl.xiaotu.online/xiaotu/updates/stable/appcast.xml \
 XIAOTU_UPDATE_PUBKEY=<Ed25519 公钥 base64> \
-tools/package/make_dmg.sh
+tools/package/package_macos.sh
 ```
 
-**发布**：`PRODUCT=xiaotu tools/package/publish_oss.sh` 一条命令完成上传 dmg、用 `tools/release/manifest_v2.py` 生成并签 `manifest.json` / `appcast.xml`、本地验签、上传清单；下载页由 `site.js` 读取清单自动同步，脚本不改写 HTML；OSS 凭据只从环境变量或仓库外 600 权限文件读取。`dl.xiaotu.online` 直连 OSS 无 CDN 层，默认不 purge（将来接入 CDN 时 `PURGE=true` 开启）。已发版本补/改发行说明用 `NOTES_ONLY=true tools/package/publish_oss.sh`，只上传说明页并重签清单，不重出包。详见 [tools/package/README.md](tools/package/README.md)。
+**发布**：`PRODUCT=xiaotu tools/release/publish_macos.sh` 一条命令完成上传 dmg、用 `tools/release/manifest_v2.py` 生成并签 `manifest.json` / `appcast.xml`、本地验签、上传清单；下载页由 `site.js` 读取清单自动同步，脚本不改写 HTML；OSS 凭据只从环境变量或仓库外 600 权限文件读取。`dl.xiaotu.online` 直连 OSS 无 CDN 层，默认不 purge（将来接入 CDN 时 `PURGE=true` 开启）。已发版本补/改发行说明用 `NOTES_ONLY=true tools/release/publish_macos.sh`，只上传说明页并重签清单，不重出包。详见 [tools/package/README.md](tools/package/README.md)。
 
 用户侧放行方式见 [docs/发行与安装说明.md](docs/发行与安装说明.md)。
 

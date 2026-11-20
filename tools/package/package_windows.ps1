@@ -17,10 +17,10 @@
   会同时写入服务端与壳。
 
 .EXAMPLE
-  .\packaging\win\build-release.ps1
+  .\tools\package\package_windows.ps1
 
 .EXAMPLE
-  .\packaging\win\build-release.ps1 -Build 202611180930
+  .\tools\package\package_windows.ps1 -Build 202611180930
 #>
 [CmdletBinding()]
 param(
@@ -141,5 +141,5 @@ Write-Host "    powershell -ExecutionPolicy Bypass -File tools\package\publish_w
 Write-Host ""
 Write-Host "  选项 B · 拷回 Mac 执行 .sh（与之前相同）："
 Write-Host "    cd <xiaotu-inventory 仓库>"
-Write-Host "    OSS_SKIP=true BUILD=$Build tools/package/publish_windows.sh   # 先空跑验签"
-Write-Host "    BUILD=$Build tools/package/publish_windows.sh                # 正式上传"
+Write-Host "    OSS_SKIP=true BUILD=$Build tools/release/publish_windows.sh   # 先空跑验签"
+Write-Host "    BUILD=$Build tools/release/publish_windows.sh                # 正式上传"

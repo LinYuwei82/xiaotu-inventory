@@ -3,7 +3,7 @@
 一条命令从 `macos-release` 构建产物生成可分发的 `.dmg`：
 
 ```bash
-tools/package/make_dmg.sh
+tools/package/package_macos.sh
 ```
 
 产物在 `build/package/`（已在 `.gitignore` 的 `build/` 下，不入库）：
@@ -45,11 +45,11 @@ Windows 两个 exe 与 Inno Setup 安装包都引用同一个 `.ico`；`xiaotu-s
 打包时通过环境变量把构建号与更新配置注入 `Info.plist`：
 
 ```bash
-# 构建号可不传：make_dmg.sh 会调 tools/release/gen_build.py 自动取号
+# 构建号可不传：package_macos.sh 会调 tools/release/gen_build.py 自动取号
 XIAOTU_UPDATE_MANIFEST_URL=https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
 XIAOTU_UPDATE_FEED_URL=https://dl.xiaotu.online/xiaotu/updates/stable/appcast.xml \
 XIAOTU_UPDATE_PUBKEY="$(cat ~/keys/update_signing.pub.b64)" \
-tools/package/make_dmg.sh
+tools/package/package_macos.sh
 ```
 
 - `XIAOTU_BUILD` 可选：纯数字且单调递增；不传时由 `tools/release/gen_build.py` 生成
@@ -75,7 +75,7 @@ tools/package/make_dmg.sh
 ```bash
 XIAOTU_SIGN_IDENTITY="Developer ID Application: Yuwei Lin (BMCUC4B6XX)" \
 XIAOTU_NOTARY_PROFILE="notary-shared" \
-tools/package/make_dmg.sh
+tools/package/package_macos.sh
 ```
 
 - 脚本用 `codesign --options runtime`（hardened runtime）签名，再 `notarytool submit --wait`、`stapler staple`，最后用 `spctl -a -vv` 与 `stapler validate` 自检。
@@ -112,7 +112,7 @@ scripts/sync-signing-key-to-mac.sh
 ## 更新清单与 appcast（Schema v2）
 
 清单统一由三仓库共用的 `tools/release/manifest_v2.py` 生成并签名（纯标准库），
-`publish_oss.sh` 会自动调用；`tools/package/update_manifest.py` 现在只用于生成
+`publish_macos.sh` 会自动调用；`tools/package/update_manifest.py` 现在只用于生成
 Sparkle appcast，以及服务端验签兼容（同时认 v1 / v2）。
 
 ```bash
@@ -134,7 +134,7 @@ python3 tools/release/manifest_v2.py verify \
 
 ```bash
 PRODUCT=xiaotu OSS_BUCKET=xiaotu-update OSS_REGION=cn-hongkong \
-tools/package/publish_oss.sh
+tools/release/publish_macos.sh
 ```
 
 一条命令完成：上传 dmg（immutable 长缓存）→ 用 `manifest_v2.py` 生成并签 `manifest.json` /
@@ -151,9 +151,9 @@ tools/package/publish_oss.sh
 发版后补或改 `docs/release-notes-<版本>.html`，不需要重新出包：
 
 ```bash
-NOTES_ONLY=true tools/package/publish_oss.sh
+NOTES_ONLY=true tools/release/publish_macos.sh
 # Windows 清单入口效果相同（同一份 manifest.json）
-NOTES_ONLY=true tools/package/publish_windows.sh
+NOTES_ONLY=true tools/release/publish_windows.sh
 ```
 
 - 只上传说明页（`public, max-age=3600`），并用 `manifest_v2.py resign --notes-url`
@@ -203,5 +203,5 @@ tools/package/cleanup_oss_versions.sh --product xiaotu --keep 1 --force
 - 默认保留最近 **3 个** 版本，`--keep` 可改；永远至少保留 1 个，不会把产品清空。
 - 脚本按各产品的版本号正则匹配安装包文件名：v2 统一命名（`<product>-<version>-macos-arm64.dmg` / `-win64-setup.exe` / `-win64-portable.zip`）与 v1 旧命名都识别，用 `semver` 库做版本号排序；同版本的新旧多个包一起保留或删除。
 - **安全保护**：默认 dry-run 模式；非交互环境（CI / 管道）必须显式 `--force` 才允许真删；manifest.json / appcast.xml / manual.pdf / index.html / 桶根目录不动；不认识的包（正则不匹配）保守跳过。
-- 凭据加载逻辑与 `publish_oss.sh` 一致：环境变量优先，否则读仓库外 `~/.config/xiaotu-updates/oss-credentials.env`（不存在时回退 `.env`，权限 600）。
+- 凭据加载逻辑与 `publish_macos.sh` 一致：环境变量优先，否则读仓库外 `~/.config/xiaotu-updates/oss-credentials.env`（不存在时回退 `.env`，权限 600）。
 - 依赖：`pip install oss2 semver`（已在 `requirements.txt` 里，首次运行会自动装）。

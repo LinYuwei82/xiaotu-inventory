@@ -11,7 +11,7 @@
 # 上重签，不会影响已升级用户。
 #
 # 用法：
-#   # 先用发布脚本产出清单并归档（publish_oss.sh 的临时目录不会保留）
+#   # 先用发布脚本产出清单并归档（publish_macos.sh 的临时目录不会保留）
 #   curl -fsS https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
 #     -o build/package/manifest.json
 #
@@ -40,7 +40,7 @@
 #   --dry-run           只重签并打印计划，不上传、不等待
 #   --yes               跳过开跑确认
 #
-# 凭据：同 publish_oss.sh，优先 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET，
+# 凭据：同 publish_macos.sh，优先 OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET，
 #       否则读 ~/.config/xiaotu-updates/oss-credentials.env（权限 600/400）。
 # 中止：Ctrl-C 随时停止，当前档位保持生效；不会回退比例。
 #
@@ -109,7 +109,7 @@ esac
 # ---- 依赖 ----
 VENV_PY="$REPO_ROOT/tools/package/.venv/bin/python"
 [ -x "$VENV_PY" ] || {
-  echo "缺少 Python 依赖：先执行一次 tools/package/publish_oss.sh（或创建 .venv 并安装 requirements.txt）" >&2
+  echo "缺少 Python 依赖：先执行一次 tools/release/publish_macos.sh（或创建 .venv 并安装 requirements.txt）" >&2
   exit 1
 }
 [ -f "$MANIFEST" ] || {

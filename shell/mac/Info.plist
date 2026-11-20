@@ -35,7 +35,7 @@
     <key>NSAllowsLocalNetworking</key>
     <true/>
   </dict>
-  <!-- 更新：以下键由 tools/package/make_dmg.sh 通过 CMake 变量注入，仓库内保持为空；
+  <!-- 更新：以下键由 tools/package/package_macos.sh 通过 CMake 变量注入，仓库内保持为空；
        为空表示更新功能关闭。定时检查由 XiaotuUpdater 负责（24h±2h）。
        这些 Sparkle 键只被 Sparkle 读取，本仓库代码不读取；未链接 Sparkle 时它们是
        占位、不生效。Q25 口径：允许自动检查与后台预下载，但安装必须由用户显式点击、
