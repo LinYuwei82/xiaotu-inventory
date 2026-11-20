@@ -7,6 +7,7 @@
 - 发布脚本按约定链路确定构建号（CMakeCache / 绿色包 exe / gen_build.py）；
 - 根 CMakeLists 的严格开关、开发占位值与 unset 语义；
 - 三仓共享的 gen_build.py 哈希一致（与 sync_guard.sh 对齐）；
+- 共享脚本的 .sha256 台账与仓库内文件哈希一致；
 - CMake preset 的发布配置统一：macos-release→build/release、windows-release→build/windows；
 - 本地产物/清单统一落 dist/，打包与发布脚本不再引用旧构建目录；
 - CI / 打包入口统一走 macos-release / windows-release 预设。
@@ -48,6 +49,13 @@ LEGACY_PATHS = [
 ]
 LEGACY_NAMES = ["publish_oss.sh", "make_dmg.sh", "build-release.ps1", "build-release.cmd"]
 GEN_BUILD_MD5 = "fa077f04f9dd8d7e2f05692178e1ed02"
+# 共享脚本的哈希台账：每行 `<sha256>  <repo 相对路径>`
+SHARED_HASH_FILES = [
+    "guard.sha256",
+    "manifest_v2.sha256",
+    "release_tag.sha256",
+    "publish_release.sha256",
+]
 PRESETS_FILE = "CMakePresets.json"
 # 目录统一后，打包 / 发布脚本里不应再出现的旧目录
 LEGACY_DIR_PATTERNS = [r"build/package", r"packaging/win/out"]
@@ -123,6 +131,30 @@ def test_gen_build_synced() -> None:
     digest = hashlib.md5(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     check(digest == GEN_BUILD_MD5,
           f"gen_build.py 与三仓同步版本不一致（{digest}，期望 {GEN_BUILD_MD5}）")
+
+
+def test_shared_hashes() -> None:
+    for name in SHARED_HASH_FILES:
+        path = REPO / "tools" / "release" / name
+        if not path.is_file():
+            check(False, f"缺少 tools/release/{name}")
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                check(False, f"{name} 行格式错误：{line!r}")
+                continue
+            expected, rel = parts[0].lower(), parts[1].strip()
+            target = REPO / rel
+            if not target.is_file():
+                check(False, f"{name} 指向的文件不存在：{rel}")
+                continue
+            actual = hashlib.sha256(target.read_bytes()).hexdigest()
+            check(actual == expected,
+                  f"{name}: {rel} SHA-256 不一致（期望 {expected}，实际 {actual}）")
 
 
 def _normalize_binary_dir(raw: str) -> str:
@@ -227,7 +259,8 @@ def test_release_attachments() -> None:
 
 for test in (test_layout, test_no_legacy_references, test_packaging,
              test_publish_chain, test_cmake_strict_switch, test_gen_build_synced,
-             test_presets, test_artifact_dirs, test_build_entry_uses_presets,
+             test_shared_hashes, test_presets, test_artifact_dirs,
+             test_build_entry_uses_presets,
              test_release_attachments):
     test()
 

@@ -46,6 +46,11 @@ jobs:
         run: python3 tools/release/guard.py selftest
       - name: 发布脚本布局检查
         run: python3 tools/release/test_release_layout.py
+      - name: 发布/门禁单元测试
+        run: |
+          for t in test_release_tag test_version_bump test_guard test_publish_release; do
+            python3 tools/release/$t.py
+          done
 
   windows:
     runs-on: windows-latest
