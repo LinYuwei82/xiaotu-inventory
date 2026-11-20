@@ -449,7 +449,7 @@ GUARD_ARGS=(
   --product xiaotu --kind mac --channel "$CHANNEL"
   --file "$DMG_PATH" --name "$V2_DMG_NAME"
   --manifest "$MANIFEST_LOCAL" --pub "$SIGNING_PUB"
-# 注：不再传 --schema v2；guard.py 已硬编码 schema=v2（v1 清单 2026-11-18 全量删除）
+# 注：guard.py 已移除 --schema 参数（argparse 无此选项），强制 v2
 )
 [ "$OSS_SKIP" = "true" ] && GUARD_ARGS+=(--offline)
 echo ""

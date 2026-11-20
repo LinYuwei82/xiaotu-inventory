@@ -11,7 +11,8 @@
 #   oss://<bucket>/xiaotu/updates/<channel>/manifest.json         ← 60 秒缓存（v2 清单）
 #
 # 本地产物名仍为 Windows 构建输出（xiaotu-inventory-*），上传时按 v2 规则改名。
-# 本脚本不再生成 windows.json，旧内测客户端按切换方案重装升级。
+# v1 清单（latest.json / windows.json）已于 2026-11-18 全量删除；
+# 本脚本只生成 manifest.json（v2）。
 #
 # 重要：BUILD 必须与打包时写进 exe 的构建号完全一致。
 # 壳的更新判定是「version 相同且 platforms.windows.build <= 当前 build → 无更新」；如果清单里的 build
@@ -388,7 +389,7 @@ GUARD_ARGS=(
   --product xiaotu --kind win --channel "$CHANNEL"
   --file "$SETUP_PATH" --name "$V2_SETUP_NAME"
   --manifest "$MANIFEST_LOCAL" --pub "$SIGNING_PUB" --build "$BUILD"
-# 注：不再传 --schema v2；guard.py 已硬编码 schema=v2（v1 清单 2026-11-18 全量删除）
+# 注：guard.py 已移除 --schema 参数（argparse 无此选项），强制 v2
 )
 if [ -f "$ZIP_PATH" ]; then
   GUARD_ARGS+=(--zip "$ZIP_PATH" --zip-name "$V2_ZIP_NAME")

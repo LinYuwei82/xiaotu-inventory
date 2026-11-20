@@ -76,8 +76,6 @@ HEADERS = {
     "dmg": ("application/octet-stream", "immutable"),
     "setup": ("application/octet-stream", "immutable"),
     "zip": ("application/zip", "immutable"),
-    "latest.json": ("application/json", "max-age=60"),
-    "windows.json": ("application/json", "max-age=60"),
     "manifest.json": ("application/json", "max-age=60"),
     "appcast.xml": (("application/xml", "application/rss+xml"), "max-age=60"),
     "edSignature": ("text/plain", "max-age=300"),
@@ -493,7 +491,7 @@ def existing_artifact_ok(url: str, size: int, md5: str) -> None:
 
 
 def check_mac_embed(path: Path, product: str, channel: str, base: str, version: str,
-                    schema: str = "v1") -> None:
+                    schema: str) -> None:
     if sys.platform != "darwin":
         warn("非 macOS 环境，跳过 DMG 内嵌地址检查")
         return
@@ -530,7 +528,7 @@ def check_mac_embed(path: Path, product: str, channel: str, base: str, version: 
 
 
 def check_win_embed(zip_path: Path, product: str, channel: str, base: str,
-                    schema: str = "v1") -> None:
+                    schema: str) -> None:
     spec = product_spec(product)
     exe_name = spec["win_embed_exe"].lower()
     url = f"{base}/{manifest_v2_key(product, channel) if schema == 'v2' else manifest_key(product, channel, 'win')}"
@@ -1027,15 +1025,15 @@ def cmd_selftest() -> int:
         with zipfile.ZipFile(zp, "w") as z:
             z.writestr("Mote-Windows/Mote.exe",
                        "junk https://dl.xiaotu.online/mote/updates/stable/windows.json junk".encode("utf-16-le"))
-        check_win_embed(zp, "mote", "stable", DEFAULT_BASE); n += 1
+        check_win_embed(zp, "mote", "stable", DEFAULT_BASE, "v1"); n += 1
         zp2 = Path(td) / "Mote-1.0.2-win64-portable.zip"
         with zipfile.ZipFile(zp2, "w") as z:
             z.writestr("Mote-Windows/Mote.exe", b"ascii https://dl.xiaotu.online/mote/updates/stable/windows.json")
-        check_win_embed(zp2, "mote", "stable", DEFAULT_BASE); n += 1
+        check_win_embed(zp2, "mote", "stable", DEFAULT_BASE, "v1"); n += 1
         bad_zip = Path(td) / "bad.zip"
         with zipfile.ZipFile(bad_zip, "w") as z:
             z.writestr("Mote-Windows/Mote.exe", b"https://dl.xiaotu.online/windows/stable/latest.json")
-        _expect_error(lambda: check_win_embed(bad_zip, "mote", "stable", DEFAULT_BASE), "旧构建产物"); n += 1
+        _expect_error(lambda: check_win_embed(bad_zip, "mote", "stable", DEFAULT_BASE, "v1"), "旧构建产物"); n += 1
 
     # ---- Schema v2 ----
     # Ed25519 固定向量（与 manifest_v2.py、cryptography 交叉验证后固化）
