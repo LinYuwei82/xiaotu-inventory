@@ -9,9 +9,9 @@ name: Windows 发布
 #   XIAOTU_UPDATE_SIGNING_KEY                   Ed25519 私钥 PEM（update_signing_2026.pem 内容）
 #
 # 注意：
-#   - 发布前先改仓库根目录的 VERSION（必须大于线上版本），guard 会拒绝版本回退；
+#   - 发布前先改仓库根目录的 VERSION.txt（必须大于线上版本），guard 会拒绝版本回退；
 #   - 安装包 immutable 长缓存，同名覆盖不会生效；
-#   - BUILD 构建号必须大于已发布值，缺省用触发时刻（UTC 分钟级）。
+#   - tag 触发时 build = tag 序号（必须大于已发布值）；手动触发必须显式填写 build。
 
 on:
   push:
@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       build:
-        description: 构建号（缺省 = 触发时刻 UTC，如 202611180930）
+        description: 构建号（手动触发必填，等于发布 tag 序号；正式发布请用 tag v<semver>+<seq>）
         required: false
         default: ""
       channel:

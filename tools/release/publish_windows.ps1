@@ -25,12 +25,11 @@
 #             或 CI 环境变量 XIAOTU_UPDATE_SIGNING_KEY（PEM 内容）
 #
 # 用法：
-#   powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1 `
-#     -Build 202611190001
+#   powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1 -Build <tag 序号>
 #   powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1 -SkipUpload   # 构建号自动识别
 #   powershell ... -NotesOnly                         # 只补发说明页，不需要 setup / zip / Build
-#   powershell ... -SetupPath ... -ZipPath ... -Build 202611190001
-#   powershell ... -Rollout 10 -Build 202611190001     # 灰度 10%
+#   powershell ... -SetupPath ... -ZipPath ... -Build <tag 序号>
+#   powershell ... -Rollout 10 -Build <tag 序号>       # 灰度 10%
 #   powershell ... -Mandatory -MandatoryReason SECURITY -MandatoryDeadline 2026-12-01T00:00:00Z
 
 param(

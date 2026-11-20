@@ -28,14 +28,12 @@ cmake --build shell\win\build
 
 ## 发布流程（本地 Windows 构建 + Mac 发布）
 
-不依赖 GitHub Actions。分工固定：**Windows 只负责编译与打包，签名和上传都在 Mac 上做**——
-Ed25519 私钥与 OSS 凭据留在 Mac，不拷到 Windows。
+不依赖 GitHub Actions 也能发布（也可用 `release-windows.yml` 的 tag / 手动发布）。本地流程分工固定：**Windows 只负责编译与打包，签名和上传在 Mac 上做**——Ed25519 私钥与 OSS 凭据留在 Mac，不拷到 Windows。
 
 ### 0. 先定版本与构建号
 
-- 版本：改仓库根 `VERSION`（如 `1.0.1`）。它是唯一真值，CMake、壳、安装包、清单都从这里取。
-- 构建号：纯数字，必须**大于线上 `manifest.json` 的 `platforms.windows.build`**（当前 `202611171349`），
-  例如 `202611180930`。
+- 版本：改仓库根 `VERSION.txt`（如 `1.0.7`）。它是唯一真值，CMake、壳、安装包、清单都从这里取。
+- 构建号：发布时等于 annotated tag 序号（`v<semver>+<seq>`，`build = seq`），先用 `python3 tools/release/release_tag.py create --push` 取下一个序号；不要再手拍日期型构建号。
 - 同一个构建号必须同时传给服务端和壳，并且发布时用同一个 `BUILD=`。
 
 ### 1. Windows：编译与打包
@@ -43,14 +41,14 @@ Ed25519 私钥与 OSS 凭据留在 Mac，不拷到 Windows。
 在 PowerShell 里一条命令完成（未在 Developer 环境时会自动加载 `vcvars64`）：
 
 ```powershell
-.\tools\package\package_windows.ps1                  # 构建号由 gen_build.py 自动生成
-.\tools\package\package_windows.ps1 -Build 202611180930
+.\tools\package\package_windows.ps1                  # 未传 -Build 时回退 gen_build.py（仅本地验证）
+.\tools\package\package_windows.ps1 -Build <tag 序号>
 ```
 
 脚本会依次执行下面的手工步骤，并在最后打印 Mac 上要执行的发布命令。等价的完整手工命令：
 
 ```powershell
-$BUILD = 202611180930
+$BUILD = <tag 序号>
 $env:XIAOTU_BUILD = $BUILD
 
 # 服务端（必须带 XIAOTU_RELEASE_BUILD，强制显式构建号）
@@ -66,7 +64,7 @@ cmake --build shell\win\build
 .\packaging\win\make-zip.ps1
 
 # 安装包 → dist\xiaotu-inventory-<版本>-win64-setup.exe
-$version = (Get-Content VERSION -Raw).Trim()
+$version = (Get-Content VERSION.txt -Raw).Trim()
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "packaging\win\xiaotu-inventory.iss"
 ```
 
@@ -94,17 +92,17 @@ dist\xiaotu-inventory-<版本>-win64.zip
 cd /Users/lin/Projects/xiaotu-inventory
 
 # 先空跑：本地生成清单并验签，不碰 OSS
-OSS_SKIP=true BUILD=202611180930 tools/release/publish_windows.sh
+OSS_SKIP=true BUILD=<tag 序号> tools/release/publish_windows.sh
 
 # 正式发布
-BUILD=202611180930 tools/release/publish_windows.sh
+BUILD=<tag 序号> tools/release/publish_windows.sh
 ```
 
 脚本依次完成：guard preflight（命名/版本单调/覆盖风险/壳内地址）→ Ed25519 签名 →
 上传 setup、zip、并合并 `platforms.windows` 到 `xiaotu/updates/stable/manifest.json` → 验签 → 线上复核。
 
-**不要在 Windows 上跑这个脚本**：它依赖 `shasum`、`python3` 和
-`~/.config/xiaotu-updates/` 下的私钥与凭据。
+**Mac 上可直接跑 `publish_windows.sh`**（依赖 `shasum`、`python3` 和
+`~/.config/xiaotu-updates/` 下的私钥与凭据）；Windows 上改用 `tools\release\publish_windows.ps1 -Build <tag 序号>`，并自备私钥与 OSS 凭据。
 
 ### 3. 发布后验证
 
@@ -120,7 +118,7 @@ curl -s https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
 
 - **安装包是 immutable 长缓存**：同名覆盖不会生效，改内容必须升版本号，不能复用。
 - 构建号与包不一致时，客户端会反复提示更新；发布脚本只校验清单字段，不校验 exe 内构建号。
-- 想走 CI 时用 `.github/workflows/release-windows.yml`（手动触发，支持 dry-run），
+- 想走 CI 时用 `.github/workflows/release-windows.yml`（推送 `v*` tag 或手动触发，支持 dry-run），
   但私有仓库会消耗 Actions 额度。
 
 ## Inno Setup 安装包
@@ -130,7 +128,7 @@ curl -s https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
 在 Windows + Inno Setup 6 环境，先构建服务端与壳（见上文「前置」），然后：
 
 ```powershell
-$version = (Get-Content VERSION -Raw).Trim()
+$version = (Get-Content VERSION.txt -Raw).Trim()
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
   "/DAppVersion=$version" `
   "packaging\win\xiaotu-inventory.iss"
@@ -185,12 +183,12 @@ $env:XIAOTU_CERT_PASSWORD = '换成口令'   # 只放当前会话，不进仓库
   -Files build\windows\server\xiaotu-server.exe,shell\win\build\xiaotu-shell.exe
 
 # 2. 打包；ISCC 用同一份证书签安装包与卸载器
-$version = (Get-Content VERSION -Raw).Trim()
+$version = (Get-Content VERSION.txt -Raw).Trim()
 & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" /DSign=1 `
   '/Ssigntool=C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe sign /fd SHA256 /f D:\certs\xiaotu.pfx /p <口令> /tr http://timestamp.digicert.com /td SHA256 $f' `
   packaging\win\xiaotu-inventory.iss
 
-# 3. 复验安装包并写 out\SIGNING.txt
+# 3. 复验安装包并写 dist\SIGNING.txt
 .\packaging\win\sign.ps1 -PfxPath D:\certs\xiaotu.pfx
 ```
 
@@ -202,7 +200,7 @@ $version = (Get-Content VERSION -Raw).Trim()
 ```
 
 `sign.ps1` 对每个文件执行 `signtool verify /pa /v`；任一失败即以非 0 退出，并在
-`out\SIGNING.txt` 写「签名失败」，不会写成「已签名」。
+`dist\SIGNING.txt` 写「签名失败」，不会写成「已签名」。
 
 CI（`.github/workflows/windows-build.yml`）检测到 secret 时先用 `sign.ps1` 签两个 exe，
 再由 ISCC 签安装包与卸载器，最后对安装包跑 `verify /pa /v`：
@@ -302,7 +300,7 @@ CI（`.github/workflows/windows-build.yml`）检测到 secret 时先用 `sign.ps
 | `-NoShell` | 关 | 显式跳过桌面壳（与 `-ShellExe` 互斥） |
 | `-NoArchive` | 关 | 不压缩，只生成解压后的目录 |
 
-版本号从仓库根 `VERSION` 文件读取（`CMakeLists.txt` 用 `file(READ ...)` 注入 project 版本），
+版本号从仓库根 `VERSION.txt` 文件读取（`CMakeLists.txt` 用 `file(READ ...)` 注入 project 版本），
 脚本不修改任何文件。
 
 ## 包内结构（含壳）

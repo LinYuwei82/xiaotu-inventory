@@ -7,9 +7,9 @@
 - 线上清单不可读时默认失败；`--allow-missing` 仅用于首次发布。
 
 用法：
-  python3 tools/release/check_version_bump.py --build 20261120123000 \
+  python3 tools/release/check_version_bump.py --build <tag 序号> \
       --manifest-url https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json
-  python3 tools/release/check_version_bump.py --build 20261120123000 \
+  python3 tools/release/check_version_bump.py --build <tag 序号> \
       --manifest-file /tmp/manifest.json
 """
 from __future__ import annotations

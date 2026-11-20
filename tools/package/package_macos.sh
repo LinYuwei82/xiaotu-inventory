@@ -18,7 +18,7 @@
 #   XIAOTU_SIGN_IDENTITY  Developer ID Application 证书名称；必填
 #   XIAOTU_NOTARY_PROFILE notarytool keychain profile；必填
 #   XIAOTU_DIST_DIR       产物目录（默认 <repo>/dist）
-#   XIAOTU_BUILD          构建号（纯数字，单调递增）；必填，缺失即失败
+#   XIAOTU_BUILD          构建号（纯数字）；发布时传 tag 序号，未传回退 gen_build.py
 #   XIAOTU_UPDATE_MANIFEST_URL  单机版清单地址（https）
 #   XIAOTU_UPDATE_FEED_URL      Sparkle appcast 地址（https）
 #   XIAOTU_UPDATE_PUBKEY        Sparkle 公钥（Ed25519，base64，32 字节）
@@ -52,7 +52,7 @@ usage() {
   XIAOTU_SIGN_IDENTITY  Developer ID Application 证书名称；必填
   XIAOTU_NOTARY_PROFILE notarytool keychain profile；必填
   XIAOTU_DIST_DIR       产物目录（默认 <repo>/dist）
-  XIAOTU_BUILD          构建号（纯数字，单调递增）；必填，缺失退出 1
+  XIAOTU_BUILD          构建号（纯数字）；发布时传 tag 序号，未传回退 gen_build.py
   XIAOTU_UPDATE_MANIFEST_URL  单机版清单地址（https）
   XIAOTU_UPDATE_FEED_URL      Sparkle appcast 地址（https）
   XIAOTU_UPDATE_PUBKEY        Sparkle 公钥（base64，解码后 32 字节）
@@ -76,7 +76,7 @@ fi
 
 VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION.txt" 2>/dev/null)"
 if [ -z "$VERSION" ]; then
-  echo "无法从仓库根 VERSION 文件读取版本号。" >&2
+  echo "无法从仓库根 VERSION.txt 读取版本号。" >&2
   exit 1
 fi
 
@@ -119,8 +119,8 @@ if [ "$UPDATE_CONFIG_COUNT" -eq 3 ]; then
   fi
 fi
 
-# 构建号：自动从 gen_build.py 生成（year*10^12 + git_count，单调递增，自动校验 > 线上）。
-# 用户显式传 XIAOTU_BUILD 时优先使用（兼容手动指定场景）。
+# 构建号：正式发布传 tag 序号（build = seq，见 tools/release/release_tag.py）。
+# 未传时回退 gen_build.py 生成的内测构建号，仅用于本地验证。
 if [ -n "${XIAOTU_BUILD:-}" ]; then
   BUILD_NUMBER="$XIAOTU_BUILD"
   case "$BUILD_NUMBER" in
@@ -173,7 +173,7 @@ CMAKE_ARGS=(
   "-DXIAOTU_SPARKLE_DIR=$XIAOTU_SPARKLE_DIR_VAL"
 )
 echo "===== 构建（macos-release，版本 ${VERSION}）"
-echo "构建号：${BUILD_NUMBER}（来自 XIAOTU_BUILD）"
+echo "构建号：${BUILD_NUMBER}（本次使用）"
 cmake "${CMAKE_ARGS[@]}"
 cmake --build --preset release
 

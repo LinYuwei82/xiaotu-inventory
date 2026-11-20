@@ -1,6 +1,6 @@
 # Windows 验收清单（12600k 实机）
 
-适用版本：1.0.6。目标：确认 MSVC 构建、未签名安装包、安装/启动/业务/升级/卸载全链路在真实 Windows 上可用。
+适用版本：1.0.7。目标：确认 MSVC 构建、未签名安装包、安装/启动/业务/升级/卸载全链路在真实 Windows 上可用。
 
 用法：逐条执行，在「结果」列填 **通过 / 不通过 / 未测**，附截图或命令输出；失败项贴完整报错原文，不要概括。
 
@@ -19,11 +19,11 @@
 - [ ] 拉取 `main`，记录 commit：`git rev-parse --short HEAD`。
 - [ ] 配置：`cmake --preset windows-release`
 - [ ] 构建：`cmake --build --preset windows-release`
-- [ ] 测试：`ctest --preset windows-release --output-on-failure`
+- [ ] 测试：`ctest --test-dir build\windows --output-on-failure`
 
 结果：______；commit：______；ctest 通过数：____ / ____。
 
-### 1.1 `/we7560` 生效
+### 1.1 C7560 生效（不再需要 `/we7560`）
 
 - [ ] 在 VS 开发者命令行执行探针，确认指定初始化器错序被当作错误：
 
@@ -32,12 +32,12 @@
   echo struct S { int a; int b; };
   echo S s{ .b = 2, .a = 1 };
   )
-  cl /nologo /std:c++20 /we7560 /c probe.cpp
+  cl /nologo /std:c++20 /c probe.cpp
   ```
 
   期望：编译失败，报 **C7560**（designated initializers 顺序与声明不一致）。记下完整报错。
 - [ ] 撤掉探针文件，确认没有留在仓库或构建目录里。
-- [ ] 确认项目本身确实带上了该选项：`cmake --build --preset windows-release --verbose` 的输出中能看到 `/we7560`（没有则记不通过）。
+- [ ] 确认构建参数**不含** `/we7560`：`Select-String -Path build\windows\build.ninja -Pattern "/we7560"` 应无输出（MSVC 14.44 视其为无效参数，C7560 默认已是 error）。
 
 结果：______；报错原文：______。
 
@@ -54,10 +54,10 @@
 
 ## 2. 安装包
 
-- [ ] 从 CI artifact `xiaotu-win-installer` 下载，记录完整文件名与大小。
+- [ ] 从 CI artifact `xiaotu-win-installer`（`windows-build.yml`）或 `xiaotu-windows-release`（`release-windows.yml`）下载，记录完整文件名与大小。
 - [ ] 打开包内 `SIGNING.txt`，记录全文。
 - [ ] 确认它与安装包实际签名状态一致：未签名包应写「未签名」，已签名包应写「已签名」且 `Get-AuthenticodeSignature` 为 `Valid`，不能两者矛盾。
-- [ ] 右键包内 `xiaotu-server.exe` → 属性 → 详细信息，`文件版本`应为 1.0.6（与仓库根 `VERSION` 一致，不能为空）；`xiaotu-shell.exe` 同样有值。
+- [ ] 右键包内 `xiaotu-server.exe` → 属性 → 详细信息，`文件版本`应为 1.0.7（与仓库根 `VERSION.txt` 一致，不能为空）；`xiaotu-shell.exe` 同样有值。
 
 文件名：______；大小：______；`SIGNING.txt`：______。
 
@@ -102,7 +102,7 @@
 - [ ] 覆盖安装前，在数据目录放一条可见数据（如新建商品「升级前测试」）。
 - [ ] 覆盖安装完成后，数据目录未被清空，「升级前测试」仍在。
 - [ ] 启动后数据库正常迁移（日志无迁移错误），`/api/health` 返回的 `schema_version` 为 v39。
-- [ ] 关于/诊断处显示的版本号为新版本 1.0.3。
+- [ ] 关于/诊断处显示的版本号为新版本 1.0.7。
 
 结果：______；`schema_version`：______。
 

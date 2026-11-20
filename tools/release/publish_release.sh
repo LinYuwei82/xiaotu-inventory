@@ -78,7 +78,13 @@ esac
 
 VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
 [ -n "$VERSION" ] || { echo "无法从 $VERSION_FILE 读取版本号" >&2; exit 1; }
-TAG="${TAG:-v$VERSION}"
+if [ -z "${TAG:-}" ]; then
+  # 发布号以 tag 为准：取当前版本最新的 v<semver>+<seq>
+  TAG="$(git tag -l "v${VERSION}+*" --sort=-v:refname | head -1)"
+  [ -n "$TAG" ] || {
+    echo "找不到 v${VERSION}+* tag：请先执行 tools/release/release_tag.py create --push，或显式传 TAG=..." >&2
+    exit 2; }
+fi
 TITLE="${TITLE:-$PRODUCT_NAME $VERSION}"
 NOTES="${NOTES_FILE:-docs/release-notes-$VERSION.md}"
 DRY_RUN="${DRY_RUN:-false}"
@@ -114,8 +120,9 @@ echo "  + SHA256SUMS.txt"
 if git rev-parse "$TAG" >/dev/null 2>&1; then
   echo "tag $TAG 已存在，复用"
 else
-  echo "创建 tag $TAG"
-  [ "$DRY_RUN" = "true" ] || git tag -a "$TAG" -m "$TITLE"
+  echo "错误：tag $TAG 不存在。tag 由 release_tag.py 统一创建，请先执行：" >&2
+  echo "  python3 tools/release/release_tag.py create --push" >&2
+  exit 2
 fi
 if [ "$SKIP_TAG_PUSH" != "true" ] && [ "$DRY_RUN" != "true" ]; then
   echo "push tag → github"

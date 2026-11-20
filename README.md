@@ -1,6 +1,6 @@
-# 小兔进销存（1.0.6）
+# 小兔进销存（1.0.7）
 
-> 主仓库在 Gitee：`git@gitee.com:lin-yuwei168/xiaotu-inventory.git`。GitHub 的 `LinYuwei82/xiaotu-inventory` 是同源镜像：Linux 门禁在 Gitee Go，Windows 的 MSVC 构建与**未签名安装包**由镜像仓库的 `.github/workflows/windows-build.yml` 承担，macOS 全量构建仍在本地执行。
+> 主仓库在 Gitee：`git@gitee.com:lin-yuwei168/xiaotu-inventory.git`。GitHub 的 `LinYuwei82/xiaotu-inventory` 是同源镜像：Linux 门禁在 Gitee Go；Windows 的 MSVC 构建、**未签名安装包**与 tag 发布由镜像仓库的 `.github/workflows/windows-build.yml` / `release-windows.yml` 承担；macOS 的编译与测试也在镜像里跑，但 dmg 打包、签名与公证仍在本地执行。
 >
 > 开发、提交与发版都以 Gitee 为准；镜像不接收 PR。
 >
@@ -11,7 +11,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 - 不带参数启动 = **单机版**：内嵌服务只监听 `127.0.0.1` 的随机端口，生成一次性 token，用系统 WKWebView 打开本地页面。
 - `--server` 启动 = **网络版**：监听 `0.0.0.0`，用浏览器访问；使用用户名与口令登录（首次需先给内置管理员设置口令）。
 
-当前版本 1.0.6（唯一来源：仓库根 `VERSION.txt`）。按 [docs/进销存技术方案.md](docs/进销存技术方案.md) 的里程碑口径：M1–M3 与 M5 已完成；M4 除针式套打真机验证外已完成（纸型、边距、缩放与打印列勾选已落地，真机验收仍为阻塞项）；M6 的 macOS `.dmg` 打包脚本与用户手册已完成，Windows 壳已可接入顶层构建，自研更新桥（清单拉取、Ed25519 验签、SHA256 校验、静默安装重启）与前端更新卡片均已接入，一键打包用 `tools/package/package_windows.ps1`，安装/卸载真机验收见 [docs/Windows验收清单.md](docs/Windows验收清单.md)；Windows 代码签名暂不购买证书，签名脚本与 CI 已就绪，详见 [docs/未签名分发注意事项.md](docs/未签名分发注意事项.md)。macOS `.dmg` 已用 Developer ID 签名、公证并 staple。
+当前版本 1.0.7（唯一来源：仓库根 `VERSION.txt`；发布号用 annotated tag `v<semver>+<seq>`，构建号等于 tag 序号）。按 [docs/进销存技术方案.md](docs/进销存技术方案.md) 的里程碑口径：M1–M3 与 M5 已完成；M4 除针式套打真机验证外已完成（纸型、边距、缩放与打印列勾选已落地，真机验收仍为阻塞项）；M6 的 macOS `.dmg` 打包脚本与用户手册已完成，Windows 壳已可接入顶层构建，自研更新桥（清单拉取、Ed25519 验签、SHA256 校验、静默安装重启）与前端更新卡片均已接入，一键打包用 `tools/package/package_windows.ps1`，安装/卸载真机验收见 [docs/Windows验收清单.md](docs/Windows验收清单.md)；Windows 代码签名暂不购买证书，签名脚本与 CI 已就绪，详见 [docs/未签名分发注意事项.md](docs/未签名分发注意事项.md)。macOS `.dmg` 已用 Developer ID 签名、公证并 staple。
 
 已打通：**商品（分类 / 条码 / 税率）/ 单位 / 仓库 / 职员 / 客户 / 供应商档案（支持 Excel 批量导入导出，客户供应商已合表到 partner 并支持合并与撤销）→ 库存、应收、应付、资金账户四类期初导入 → 采购入库、销售出库、采购退货、销售退货、其他入库、其他出库、调拨、盘点、成本调整（草稿与反审核）→ 销售订单确认与转出库（可记录业务员）→ 库存余额与流水 → 应收应付台账与核销（按 partner 维度归集）→ 收付款单与资金账户 → 往来对账单 → 15 个报表接口（14 类输出）的导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志（含来源 IP 与请求号）、单据幂等与乐观锁、登录失败锁定与强制改密、成本口径参数（含税价 / 不含税净额，可切换并标注切换日）、前端离线提示与表单草稿、打印纸型 / 边距 / 缩放与 Cmd+P、报表导出流式化（不再有 10 万行上限）与 macOS `.dmg` 打包。桌面壳提供撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选编辑菜单；单据录入时商品下拉显示编码、名称与规格，数量框旁显示单位；桌面版支持直接「导出 PDF」。成本重算保持只读核对，差异通过成本调整单落账。
 
@@ -110,7 +110,7 @@ build/dev/shell/xiaotu-inventory.app
 macOS 产物是 `.app` bundle（图标、Info.plist、前端资源都在 bundle 内），可执行文件位于 `Contents/MacOS/xiaotu-inventory`。
 另有一个不依赖 WebView 的命令行产物 `build/release/server/xiaotu-server`，用于网络版与浏览器开发。
 
-构建目标有三个业务目标：`xiaotu_core`（纯业务）、`xiaotu_server`（HTTP 服务与内嵌静态资源）、`xiaotu-inventory`（macOS WKWebView 壳），另有命令行入口 `xiaotu-server` 与六个测试目标 `core_smoke`、`config_smoke`、`session_smoke`、`platform_paths_smoke`、`xlsx_smoke`、`masterdata_smoke`。
+构建目标有三个业务目标：`xiaotu_core`（纯业务）、`xiaotu_server`（HTTP 服务与内嵌静态资源）、`xiaotu-inventory`（macOS WKWebView 壳），另有命令行入口 `xiaotu-server` 与 `tests/CMakeLists.txt` 里的一组 ctest 目标（`core_smoke`、`config_smoke`、`session_smoke`、`platform_paths_smoke`、`xlsx_smoke`、`masterdata_smoke`、`opening_smoke`、`report_smoke`、`api_smoke`、`system_shutdown_smoke`、`backup_smoke`、`print_paper_smoke`、`update_*_smoke` 等）。
 Preset 对应关系：`macos-release` / `macos-dev`（构建名 `release` / `dev`）用于 macOS 全量构建；
 `windows-release` / `windows-dev` 用于 Windows，`linux-ci` 用于 Linux 与 CI（构建目录 `build/ci-linux`）；三个非 macOS preset 均已设置 `XIAOTU_BUILD_SHELL=OFF`。
 依赖全部内嵌在 `third_party/`（SQLite amalgamation、cpp-httplib、nlohmann/json、phc-winner-argon2 参考实现，均为 CC0 / Apache-2.0 / MIT 许可），构建不依赖网络；安装 vcpkg 后自动优先使用 vcpkg 版本。
@@ -152,7 +152,7 @@ git switch -c <机器名>/<主题>   # 例如 macmini/报表 或 macbook/打印�
 
 cmake --preset windows-release
 cmake --build --preset windows-release
-ctest --preset windows-release
+ctest --test-dir build/windows --output-on-failure
 ```
 
 产物为 `build\windows\server\xiaotu-server.exe`。启动网络版：
@@ -387,14 +387,14 @@ xiaotu-inventory/
 │   └── src/                       # 手写路由（含 print_routes.cpp）+ cli_main.cpp + src/gen/（生成物）
 ├── shell/                         # 平台代码（可关闭）
 │   ├── common/                    # 壳公共代码预留目录（当前无跟踪文件）
-│   ├── mac/icon/                  # 图标源 SVG（A/B/C 候选）、A 的 .icns（现用）与旧 xiaotu.icns（B，保留）
+│   ├── mac/icon/                  # 应用图标 xiaotu.icns（shell/CMakeLists.txt 与 Info.plist 引用）
 │   ├── mac/webview.mm             # WKWebView 宿主
 │   └── win/                       # Win32 + WebView2 壳工程（可用 XIAOTU_BUILD_WIN_SHELL 接入顶层，默认关闭）
 ├── web/                           # 前端（无构建步骤）
 │   ├── index.html / app.js / styles.css
 │   └── gen/                       # ← 生成物（列表页/表单页 + pages.json）
-├── tests/                         # core_smoke / config_smoke / session_smoke / platform_paths_smoke / xlsx_smoke / masterdata_smoke
-├── packaging/                     # Windows 分发打包脚本（win/）
+├── tests/                         # ctest 目标：core/config/session/platform_paths/xlsx/masterdata/opening/report/api/backup/print_paper/update_* 等
+├── packaging/                     # Windows 分发打包（win/：Inno Setup 脚本、make-zip.ps1、sign.ps1）
 ├── deploy/                        # config.toml 示例与 systemd 单元
 ├── docs/                          # 用户手册、技术方案、部署与配置、并发压测等
 └── tools/
@@ -406,8 +406,8 @@ xiaotu-inventory/
     ├── ci/                        # check.sh 与平台代码泄漏检查
     ├── loadtest/mixed_load.py     # 并发压测脚本
     ├── nightly/                   # 定时任务（nightly.sh 与 launchd plist）
-    ├── release/                   # 发布：publish_macos.sh（macOS 完整发布）、publish_windows.sh / .ps1（Windows 发布）+ 三仓库共享的 manifest_v2.py / guard.py / gen_build.py 及 .sha256
-    └── package/                   # 打包 + selftest：package_macos.sh（只出 DMG）、package_windows.ps1、cleanup_oss_versions.sh、rollout_oss.sh、test_release_scripts.py、test_update_manifest.py
+    ├── release/                   # 发布：publish_macos.sh（macOS 完整发布）、publish_windows.sh / .ps1（Windows 发布）+ 三仓库共享的 manifest_v2.py / guard.py / gen_build.py / release_tag.py / check_version_bump.py / update_compare_vectors.json 及 .sha256
+    └── package/                   # 打包 + selftest：package_macos.sh（dmg）、package_windows.ps1（zip + setup.exe）、cleanup_oss_versions.sh、rollout_oss.sh、test_release_scripts.py、test_update_manifest.py
 ```
 
 ## 6. 代码生成器
@@ -673,14 +673,14 @@ struct DocumentDefinition {
 - 数据权限白名单不做：所有登录用户可见全部仓库数据（口径见上一条）。
 - 外部对接不做：Excel 导入导出即为对接面。
 - License 与防拷贝不做加密狗：社区版免费、专业版靠功能差异分层，弱校验即可。
-- Windows 自动更新不接 WinSparkle，改为自研 C++ 桥接（`shell/win/updater_win`）：WinHTTP 拉清单、复用 core 层 `parse_manifest` / `evaluate_manifest` 做版本与灰度判定、Ed25519 验签、BCrypt SHA256 校验、ISCC 静默安装并重启，零新增第三方依赖。桥已通过 `AddHostObjectToScript("updater_win")` 暴露给前端；前端更新卡片目前只识别 macOS 的 `window.webkit.messageHandlers`，**Windows 侧 UI 接入与真机验证完成前，正式分发仍以手动下载为准**。
+- Windows 自动更新不接 WinSparkle，改为自研 C++ 桥接（`shell/win/updater_win`）：WinHTTP 拉清单、复用 core 层 `parse_manifest` / `evaluate_manifest` 做版本与灰度判定、Ed25519 验签、BCrypt SHA256 校验、ISCC 静默安装并重启，零新增第三方依赖。桥已通过 `AddHostObjectToScript("updater_win")` 暴露给前端，`web/app.js` 的更新卡片已同时适配 macOS 与 Windows 桥；正式分发仍以客户从下载页获取安装包为主。
 - 单据支持草稿态：存草稿只写单据与明细、不写库存流水，审核时才进单事务；反审核为整单反向。
 - 销售订单只做需求确认与转出库来源：确认不动库存、不写流水、不产生往来，只有转出的销售出库单才产生库存与应收。
 - 数量按 4 位定点整数存储（×10000），接口传十进制字符串、前端用字符串计算；`unit.qty_decimals` 决定录入精度（件 0 位、千克 3 位、米 2 位），展示时去掉末尾 0。金额仍为分，只有行金额按「数量 × 单价 ÷ 10000」四舍五入取整。
 - 成本按移动加权平均，暂不支持其他计价方式；成本重算保持**只读核对**（`/api/stock/cost-recalc` 与库存页「成本重算核对」），不静默写回。金额差异可一键生成成本调整单草稿（`POST /api/cost-adjustments/drafts`）后人工审核，数量差异引导去做盘点；调整单反审核若会使结存金额为负则拒绝，需先处理后续出库或调整。
 - 桌面版已支持直接「导出 PDF」（原生保存面板，不弹系统打印面板），导出走窗口模态打印会话（`runOperationModalForWindow`），避免 WKWebView 异步分页在无窗口会话下产出空白页。打印与 PDF 均按模板纸型（A4 / A5 / 自定义针式 241×140、241×93）与页边距设置 `NSPrintInfo`，PDF 的 MediaBox 与实际纸张一致；针式套打位置仍待真机验证。打印入口的查询串统一用 `URL` + `URLSearchParams` 组装。页码依赖打印引擎：WKWebView 实测不渲染 `@page` margin box、不支持 `counter(page)`，`position: fixed` 页脚只在末页出现且解析为 0；`show_page_no` 仅作提示性字段，不做前端分页与 PDF 后处理，网络版可在浏览器打印对话框勾选页眉和页脚。
 - Windows：顶层 CMake 默认不构建 GUI 壳（`XIAOTU_BUILD_WIN_SHELL=OFF`），界面通过浏览器访问；`shell/win` 是 Win32 + WebView2 壳工程，可显式打开顶层开关，也可独立构建。打包脚本与验收脚本共用同一套壳路径解析顺序，找不到壳会报错而不是静默出无壳包。壳内通过 `AddHostObjectToScript` 暴露 `native_io`（原生打开 / 保存文件对话框）与 `updater_win`（更新桥），并经 `PrintToPdf` 走原生「导出 PDF」。
-- 更新策略：macOS 单机版已端到端跑通——启动 30 秒首查、之后每日一次（±2 小时抖动），检查失败按 1 分钟 / 10 分钟 / 1 小时后继续重试，只开 stable。清单与安装包托管在 `https://dl.xiaotu.online`（阿里云 OSS 香港 + CDN），两平台共用一份 v2 `manifest.json`（Ed25519 签名）/ `appcast.xml`（Sparkle EdDSA），安装包由 Developer ID 签名 + 公证 + staple。自动检查与后台预下载两个开关已实现（默认开，关于页可改；首次后台下载前有流量提示，可取消，预下载失败按 60s/600s 退避、最多 3 次，同一时间只保留一个待装包）。壳内已按清单校验 `platforms.macos` 的版本、通道、`min_os`、`artifacts.dmg` 与 `rollout_percent`（按安装 UUID 稳定分桶，强制更新不受限；v2 清单已无 schema / API 区间，数据兼容性交由安装器与服务端握手）；macOS 段的 `build` 固定为 `0`，待安装、验证期与恢复模式均按版本号判定（Windows 先比 version、同版本再比 build）；`mandatory=true` 时登录后弹出不可跳过的阻塞提示，安装前按清单大小提示“将重新下载约 X MB”，并展示 `mandatory_deadline`；网络版还支持 `min_supported_version` 握手阻断。安装仍由内嵌的 Sparkle 2.10.1 在用户确认后完成，预下载的包不会交给 Sparkle 复用，安装时会重新下载。恢复模式与旧版本回退已实现（安装前保留 1 份 `.app`，连续 3 次启动失败后可一键回退，稳定启动 3 次后清理），且“替换 `.app` 后重启”的回退演练已于 2026-11-17 真机完成。已提供 `tools/package/rollout_oss.sh` 自动逐档放量（默认 1% → 10% → 50% → 100%，每档 24 小时，自动重签 v2 `manifest.json` 的 `platforms.*.rollout_percent`、上传、purge 并轮询 CDN 生效；`--platform all|macos|windows` 选择放量平台，`--dry-run` 可预览）。beta 通道与静默安装不做。网络版服务端已实现同名的 `auto_check` / `prefetch` 与服务端调度，以及检查/状态/下载/安装接口，并接入厂商清单（`manifest_url`）与自动替换重启（确认后退出、备份、覆盖、按原参数重启，失败回滚）。Windows 侧不接 WinSparkle，`shell/win/updater_win` 已实现同规范的壳内更新桥（清单拉取、Ed25519 验签、SHA256 校验、ISCC 静默安装重启），但前端更新卡片尚未接 Windows 桥、未经真机验证，正式分发仍以手动下载为准。发布侧另有 `tools/package/cleanup_oss_versions.sh` 清理 OSS 历史 dmg（默认保留最近 3 个版本，默认 dry-run），以及 `scripts/sync-signing-key-to-mac.sh` 在 Mac 上一键同步 Windows 签名私钥并校验 trust anchor。
+- 更新策略：macOS 单机版已端到端跑通——启动 30 秒首查、之后每日一次（±2 小时抖动），检查失败按 1 分钟 / 10 分钟 / 1 小时后继续重试，只开 stable。清单与安装包托管在 `https://dl.xiaotu.online`（阿里云 OSS `xiaotu-update`，前缀 `xiaotu/`，自定义域名直连，无 CDN 层），两平台共用一份 v2 `manifest.json`（Ed25519 签名）/ `appcast.xml`（Sparkle EdDSA），安装包由 Developer ID 签名 + 公证 + staple。自动检查与后台预下载两个开关已实现（默认开，关于页可改；首次后台下载前有流量提示，可取消，预下载失败按 60s/600s 退避、最多 3 次，同一时间只保留一个待装包）。壳内已按清单校验 `platforms.macos` 的版本、通道、`min_os`、`artifacts.dmg` 与 `rollout_percent`（按安装 UUID 稳定分桶，强制更新不受限；v2 清单已无 schema / API 区间，数据兼容性交由安装器与服务端握手）；发布时两平台的 `build` 都取发布 tag 序号（`build = seq`），待安装、验证期与恢复模式按版本号判定，同版本再比 `build`；`mandatory=true` 时登录后弹出不可跳过的阻塞提示，安装前按清单大小提示“将重新下载约 X MB”，并展示 `mandatory_deadline`；网络版还支持 `min_supported_version` 握手阻断。安装仍由内嵌的 Sparkle 2.10.1 在用户确认后完成，预下载的包不会交给 Sparkle 复用，安装时会重新下载。恢复模式与旧版本回退已实现（安装前保留 1 份 `.app`，连续 3 次启动失败后可一键回退，稳定启动 3 次后清理），且“替换 `.app` 后重启”的回退演练已于 2026-11-17 真机完成。已提供 `tools/package/rollout_oss.sh` 自动逐档放量（默认 1% → 10% → 50% → 100%，每档 24 小时，自动重签 v2 `manifest.json` 的 `platforms.*.rollout_percent`、上传并下载校验；`--platform all|macos|windows` 选择放量平台，`--dry-run` 可预览）。beta 通道与静默安装不做。网络版服务端已实现同名的 `auto_check` / `prefetch` 与服务端调度，以及检查/状态/下载/安装接口，并接入厂商清单（`manifest_url`）与自动替换重启（确认后退出、备份、覆盖、按原参数重启，失败回滚）。Windows 侧不接 WinSparkle，`shell/win/updater_win` 已实现同规范的壳内更新桥（清单拉取、Ed25519 验签、SHA256 校验、ISCC 静默安装重启），前端更新卡片已接入，1.0.6 真机验收已过。发布侧另有 `tools/package/cleanup_oss_versions.sh` 清理 OSS 历史产物（默认保留最近 3 个版本，默认 dry-run），以及 `scripts/sync-signing-key-to-mac.sh` 在 Mac 上一键同步 Windows 签名私钥并校验 trust anchor。
 - 导航使用 `#/<key>` 路由：**刷新保页**在单机版与网络版都有效；**前进 / 后退**只在 `--server` 的浏览器里有效，单机版 WKWebView 没有后退入口。单机版有意不开 `allowsBackForwardNavigationGestures`、也不加后退 / 前进菜单项：侧栏已经是完整导航路径，录入页的脏标记会拦住误跳，横扫手势还会和明细表的横向滚动冲突。未保存离开确认与提示 / 输入框都是页内自绘（`askDialog`），不依赖 `window.confirm` / `alert` / `prompt`（WKWebView 未实现对应面板）；单机版直接关闭窗口不会拦（WKWebView 不执行 `beforeunload`），网络版浏览器会提示，单机版请先保存再关窗。
 - 商品条码支持**一商品多码**（v25 起正式启用）：`item_barcode` 保存全部码，其中一个为主码；`item.barcode` 只作主码镜像并由应用层同步，避免两处真相。条码全局唯一，空码不占位；商品表单可增删码并切换主码，扫码按任意码精确命中商品。导入导出用 `|` 分隔多个码、第一个为主码。升级时 v25 会把已有 `item.barcode` 回填为主码行，不丢码。箱码换算、一码多商品、校验位计算未实现。
 - 含税价**第一步已落地**（v26）：单据行保存 `tax_rate_bp`（整数万分比，默认取商品税率、可逐行覆盖）、`price_includes_tax` 与算好的 `net_cents` / `tax_cents`。**逐行算税再汇总**，每行恒有「净额 + 税额 = 价税合计」，整数分四舍五入、不引入浮点；选逐行是因为每行展示的净额 / 税额能与合计逐分对上，汇总后再算税会出现「行税额之和 ≠ 合计税额」。退货红字沿用同一公式，数量与金额按红字取负后税额同步为负，冲回对称。单据页面、打印、CSV、XLSX 均输出「税额」与「价税合计」。含税行与不含税行的「金额」列含义不同（前者是价税合计、后者是不含税金额），因此该列头统一写作「金额（录入价）」，并且「价税合计」列常显，数值不做任何改动。库存成本口径由 v33 参数控制：默认按含税价（`amount_cents`），可切到不含税净额（`net_cents`），只影响切换后新审核的单据，报表标注切换日；历史单据的结存、流水与毛利不重算、不回填。
@@ -689,35 +689,52 @@ struct DocumentDefinition {
 - 应收应付与账龄只统计 v7 迁移之后审核的单据，升级前已审核单据不计入，详见「应收应付统计口径」。
 - 未接入 vcpkg 时依赖 `third_party/` 内嵌头文件；接入 vcpkg 后 `vcpkg.json` 会自动生效。
 
-## 10. 打包（macOS .dmg）
+## 10. 打包与发布
+
+### macOS .dmg
 
 一条命令从构建到出可分发的 dmg：
 
 ```bash
-tools/package/package_macos.sh
-```
-
-产物：`dist/xiaotu-inventory-1.0.4.dmg`（版本取自仓库根 `VERSION.txt`），内含 `小兔进销存.app`
-与指向 `/Applications` 的「应用程序」软链。脚本、签名参数与校验方式见
-[tools/package/README.md](tools/package/README.md)。
-
-包体实测（0.9.0）：dmg **6,633,958 B（6.33 MiB）**；`.app` 实占 13,844 KiB（约 13.5 MiB）；主可执行 10,153,072 B；内嵌 `Sparkle.framework` 3,032 KiB；图标 867,537 B。引入 Sparkle 与静态 OpenSSL 后，原「dmg ≤ 3 MiB」目标不再适用。
-
-**签名与公证**：dmg 用 `Developer ID Application: Yuwei Lin (BMCUC4B6XX)` 签名（hardened runtime），并已公证 + staple。打包命令：
-
-```bash
 XIAOTU_SIGN_IDENTITY="Developer ID Application: Yuwei Lin (BMCUC4B6XX)" \
 XIAOTU_NOTARY_PROFILE="xiaotu-notary" \
-XIAOTU_BUILD=<单调递增构建号> \
+XIAOTU_BUILD=<tag 序号> \
 XIAOTU_UPDATE_MANIFEST_URL=https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
 XIAOTU_UPDATE_FEED_URL=https://dl.xiaotu.online/xiaotu/updates/stable/appcast.xml \
 XIAOTU_UPDATE_PUBKEY=<Ed25519 公钥 base64> \
 tools/package/package_macos.sh
 ```
 
-**发布**：`PRODUCT=xiaotu tools/release/publish_macos.sh` 一条命令完成上传 dmg、用 `tools/release/manifest_v2.py` 生成并签 `manifest.json` / `appcast.xml`、本地验签、上传清单；下载页由 `site.js` 读取清单自动同步，脚本不改写 HTML；OSS 凭据只从环境变量或仓库外 600 权限文件读取。`dl.xiaotu.online` 直连 OSS 无 CDN 层，默认不 purge（将来接入 CDN 时 `PURGE=true` 开启）。已发版本补/改发行说明用 `NOTES_ONLY=true tools/release/publish_macos.sh`，只上传说明页并重签清单，不重出包。详见 [tools/package/README.md](tools/package/README.md)。
+- 产物：`dist/xiaotu-inventory-<版本>.dmg`（版本取自仓库根 `VERSION.txt`），内含 `小兔进销存.app` 与指向 `/Applications` 的「应用程序」软链；中间目录由 `mktemp` 创建，不落 `dist/`。
+- 签名与公证是硬性前提：`XIAOTU_SIGN_IDENTITY` 与 `XIAOTU_NOTARY_PROFILE` 缺一即退出 1，不再回落到 ad-hoc 签名。
+- 构建号 `XIAOTU_BUILD` 应等于发布 tag 序号，写入 `Info.plist` 的 `CFBundleVersion`；发布时清单 `platforms.macos.build` 取同一个值（`publish_macos.sh` 优先用显式 `BUILD`，未传时回退 `gen_build.py`）。
 
-用户侧放行方式见 [docs/发行与安装说明.md](docs/发行与安装说明.md)。
+### Windows 绿色包与安装包
+
+```powershell
+.\tools\package\package_windows.ps1 -Build <tag 序号>
+```
+
+产物：`dist\xiaotu-inventory-<版本>-win64.zip`（绿色包）与 `dist\xiaotu-inventory-<版本>-win64-setup.exe`（Inno Setup 安装包，`packaging/win/xiaotu-inventory.iss` 的 `OutputDir` 为 `..\..\dist`）。
+
+### 发布号与 tag
+
+发布号只由 annotated tag `v<semver>+<seq>` 定义，构建号 `build = seq`（从 1 起，每个 tag 加 1）；CI 的 Windows 发布由 tag 触发：
+
+```bash
+python3 tools/release/release_tag.py create --push        # 自动取下一个序号、创建并推送 tag
+python3 tools/release/release_tag.py parse --tag v1.0.7+1 --ensure-latest   # CI 校验序号递增
+```
+
+- tag 的 semver 必须等于 `VERSION.txt`；序号只增不减，tag 不可删除重打。
+- CI 由 tag 触发时用 `release_tag.py parse --ensure-latest` 取 `build`；`workflow_dispatch` 手动发布必须手填 build。
+- 本地出包时把同一个序号传给 `XIAOTU_BUILD` / `-Build`，保证安装包、清单与 tag 一致。
+
+### 发布到 OSS
+
+macOS：`BUILD=<seq> PRODUCT=xiaotu tools/release/publish_macos.sh`；Windows：`BUILD=<seq> tools/release/publish_windows.sh`（或在 Windows 上用 `publish_windows.ps1`）。脚本上传安装包、用 `tools/release/manifest_v2.py` 生成并签 `dist/manifest.json`、生成 `dist/appcast.xml`、本地验签后上传；OSS bucket 为 `xiaotu-update`，对象前缀 `xiaotu/`，域名 `https://dl.xiaotu.online`。下载页由 `site.js` 读取清单自动同步，脚本不改写 HTML。已发版本补/改发行说明用 `NOTES_ONLY=true`，只上传说明页并重签清单，不重出包。
+
+签名状态：macOS dmg 已用 Developer ID 签名、公证并 staple；Windows 安装包未签名，客户首次打开需按 [docs/客户安装说明.md](docs/客户安装说明.md) 放行 SmartScreen，发版 Checklist 见 [docs/未签名分发注意事项.md](docs/未签名分发注意事项.md)。脚本、签名参数与校验方式见 [tools/package/README.md](tools/package/README.md)。
 
 ## 11. 开发流程与并行约定
 
@@ -743,9 +760,9 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 #### 平台与边界
 
 - 执行平台为 **Gitee Go**，流水线文件是仓库根目录的 `.workflow/MasterPipeline.yml`；检查逻辑只来自 `tools/ci/check.sh`，Gitee Go 侧不复制步骤。
-- 云端只有 **Linux 运行器**（`build@gcc` 10.3，Ubuntu 20.04 基础镜像）。**Windows MSVC 构建不在 Gitee 云端覆盖**，改由 GitHub 镜像仓库的 `windows-build` 工作流承担；**macOS 全量构建（含 WKWebView 壳）**仍需本地执行。
+- 云端只有 **Linux 运行器**（`build@gcc` 10.3，Ubuntu 20.04 基础镜像）。**Windows MSVC 构建不在 Gitee 云端覆盖**，改由 GitHub 镜像仓库的 `windows-build` / `release-windows` 工作流承担；macOS 的编译与测试也在镜像里跑，但 dmg 打包、签名与公证仍需本地执行。
 - 首次开通必须在网页「新建流水线 → 可视化编排 → 保存」：平台会向仓库提交 `.workflow/` 下的标准文件。仓库里的 `MasterPipeline.yml` 已按平台格式写好，若被平台覆盖，用仓库版本替换即可；不要把「提交了 yml」当成已开通。
-- Gitee 侧不使用 GitHub Actions，避免两套 Linux 流水线重复维护。**GitHub 镜像仓库**另有一条独立的 Windows 构建，见下节。
+- Gitee 侧不使用 GitHub Actions，避免两套 Linux 流水线重复维护。**GitHub 镜像仓库**另有 Windows 构建与 tag 发布两条流水线，见下节。
 
 #### 触发规则
 
@@ -757,14 +774,11 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 
 `strategy.blocking: true` 开启阻塞构建：上一次没跑完时，下一次排队等待，不并行消耗核分。流水线另设 `stepTimeout: 60`（分钟），卡死的构建会被取消，避免堵住排队队列。
 
-#### GitHub 镜像的 Windows 构建
+#### GitHub 镜像的构建与发布
 
-- 文件：`.github/workflows/windows-build.yml`；在 `push` 到 `main` 或推送 `v*` tag 时触发，在 `windows-latest` 上依次执行
-  `cmake --preset windows-release` → `cmake --build --preset windows-release` → `ctest --test-dir build/windows`。
-- 只做「编得过 + 用例过」，**不打包、不签名**。依赖 runner 自带的 VS2022 MSVC、CMake 与 Ninja；
-  `windows-release` preset 不启用 ccache，`XIAOTU_BUILD_SHELL=OFF` 所以不编 WebView 壳。
-- 镜像只推 `main` 和 tag，因此这条流水线是**合并后才发现**，不是 PR 事前拦截。需要事前拦截时，
-  再把自建 Windows runner 挂到 Gitee Go 的主机组。
+- `windows-build.yml`：`push` 到 `main`、推送 `v*` tag 或指向 `main` 的 PR（限定相关路径）时触发。先跑 guard / 布局自检，再在 `windows-latest` 上 `cmake --preset windows-release` → `cmake --build --preset windows-release` → `ctest --test-dir build/windows`，然后独立构建 `shell/win` 壳并用 Inno Setup 打出**未签名安装包**上传 artifact（有证书 secret 时才调用 signtool，并在 `SIGNING.txt` 如实标注）。同一工作流还有 `macos-latest` 任务：`macos-release` 构建 + `ctest` + `tools/ci/check.sh --quick`，不打包、不签名、不公证。
+- `release-windows.yml`：推送 `v*` tag 或 `workflow_dispatch` 手动触发。tag 触发时用 `python3 tools/release/release_tag.py parse --ensure-latest --tag "$GITHUB_REF_NAME" --emit sh` 取版本与 `build = seq`；手动触发**必须手填 build**。随后跑 `check_version_bump.py` 门禁、构建服务端与壳、打 zip 与 setup.exe、生成并签 `manifest.json`、上传 OSS 并做线上校验。
+- 镜像的 `push` / tag 触发属于**合并后才发现**；`windows-build.yml` 对指向 `main` 且命中相关路径的 PR 会提前跑构建，`release-windows.yml` 只在 tag 或手动触发时执行。需要更严格的事前拦截时，再把自建 Windows runner 挂到 Gitee Go 的主机组。
 
 #### 耗时与免费额度
 

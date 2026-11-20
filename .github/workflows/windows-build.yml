@@ -23,7 +23,7 @@ on:
       - 'deploy/**'
       - 'CMakeLists.txt'
       - 'CMakePresets.json'
-      - 'VERSION'
+      - 'VERSION.txt'
       - 'vcpkg.json'
       - '.github/workflows/**'
   # 保留 repository_dispatch 入口，供后续同步或手动触发；GITHUB_TOKEN 的 push 不会触发其它 workflow。
@@ -128,7 +128,7 @@ jobs:
           CERT_PFX_PASSWORD: ${{ secrets.WINDOWS_CERT_PFX_PASSWORD }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $version = (Get-Content VERSION -Raw).Trim()
+          $version = (Get-Content VERSION.txt -Raw).Trim()
           New-Item -ItemType Directory -Force dist | Out-Null
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path -LiteralPath $iscc)) {

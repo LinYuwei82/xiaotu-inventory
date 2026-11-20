@@ -26,13 +26,13 @@
 #   ~/.config/xiaotu-updates/oss-credentials.env（600 权限）
 #
 # 用法：
-#   BUILD=202611171349 OSS_BUCKET=xxx OSS_REGION=cn-hangzhou PRODUCT=xiaotu tools/release/publish_windows.sh
+#   BUILD=<tag 序号> OSS_BUCKET=xxx OSS_REGION=cn-hangzhou PRODUCT=xiaotu tools/release/publish_windows.sh
 #
 #   # 只本地生成 + 验签，不碰 OSS
-#   OSS_SKIP=true BUILD=202611171349 tools/release/publish_windows.sh
+#   OSS_SKIP=true BUILD=<tag 序号> tools/release/publish_windows.sh
 #
 #   # 安装包不在默认位置时显式指定
-#   SETUP_PATH=/tmp/xiaotu-inventory-1.0.0-win64-setup.exe BUILD=... tools/release/publish_windows.sh
+#   SETUP_PATH=/tmp/xiaotu-inventory-<版本>-win64-setup.exe BUILD=<tag 序号> tools/release/publish_windows.sh
 #
 #   # 发行说明：docs/release-notes-<版本>.html 存在时自动上传并写入 notes_url，
 #   # 也可显式指定文件或直接给外链地址

@@ -9,7 +9,7 @@ tools/package/package_macos.sh
 产物在仓库根 `dist/`（已在 `.gitignore` 里，不入库）：
 
 ```text
-dist/xiaotu-inventory-1.0.6.dmg
+dist/xiaotu-inventory-<版本>.dmg
 ```
 
 dmg 内包含：
@@ -36,24 +36,23 @@ tools/package/make_icons.sh
 Windows 两个 exe 与 Inno Setup 安装包都引用同一个 `.ico`；`xiaotu-shell.exe`、`xiaotu-server.exe`
 的图标来自各自的 `version.rc`。
 
-> **已删除的旧图标**（全库清理）：`xiaotu-a-rabbit-barcode.icns`、`xiaotu-a-rabbit-barcode.ico`、
-> `candidate-a-rabbit-barcode.svg`、`candidate-b-rabbit-bars.svg`、`candidate-c-rabbit-negative-shelf.svg`——
-> 三套兔耳 SVG 设计方向全部废弃，统一改用 `Tu.icns`（青绿色底 + 白色"兔"字）。
+> 早期的 A/B/C 三套候选图标与旧 `.icns` 已清理，仓库只保留当前在用的 `shell/mac/icon/xiaotu.icns` 与 `packaging/win/xiaotu.ico`。
 
 ## 构建号与更新配置
 
 打包时通过环境变量把构建号与更新配置注入 `Info.plist`：
 
 ```bash
-# 构建号可不传：package_macos.sh 会调 tools/release/gen_build.py 自动取号
+# 正式发布：XIAOTU_BUILD 传发布 tag 的序号（build = seq，见根 README「发布号与 tag」）
+XIAOTU_BUILD=<tag 序号> \
 XIAOTU_UPDATE_MANIFEST_URL=https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json \
 XIAOTU_UPDATE_FEED_URL=https://dl.xiaotu.online/xiaotu/updates/stable/appcast.xml \
 XIAOTU_UPDATE_PUBKEY="$(cat ~/keys/update_signing.pub.b64)" \
 tools/package/package_macos.sh
 ```
 
-- `XIAOTU_BUILD` 可选：纯数字且单调递增；不传时由 `tools/release/gen_build.py` 生成
-  （`YYYY * 10^12 + git rev-list --count`，跨机器/跨平台一致），传了非数字值直接退出 1。
+- `XIAOTU_BUILD` 应为发布 tag 的序号（纯数字）。未传时脚本回退到 `tools/release/gen_build.py`
+  生成的旧内测构建号，只适合本地验证，不要用于正式发布；传了非数字值直接退出 1。
   构建号写入 `Info.plist`（`CFBundleVersion`）并供 Sparkle appcast 比较；构建号不变时 Sparkle 会判为“没有更新”。
   v2 清单的 macOS 段 `build` 与 `CFBundleVersion` 同值，应用内“是否有更新/待安装/恢复模式”仍按 `version` 判定，
   发布时 `VERSION.txt` 必须递增。
@@ -65,8 +64,8 @@ tools/package/package_macos.sh
 - “有更新”的最小闭环还需要 `SUFeedURL` 指向的 appcast 与安装包（见下节）。
 
 本地开发不经过本脚本：`cmake --preset macos-dev`（或直接 `macos-release`）允许不传构建号，但配置阶段会打印
-“构建号 2026111301 是开发默认值，此产物不可用于发布”的警告。出包与 CI 走
-`-DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=<纯数字>`：缺号、非数字或仍为默认值都会在 configure 阶段失败。
+“构建号 999999999 是开发占位值，此产物不可用于发布”的警告。出包与 CI 走
+`-DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=<纯数字>`：缺号、非数字或仍为占位值都会在 configure 阶段失败。
 
 ## 签名与公证
 
@@ -74,13 +73,13 @@ tools/package/package_macos.sh
 
 ```bash
 XIAOTU_SIGN_IDENTITY="Developer ID Application: Yuwei Lin (BMCUC4B6XX)" \
-XIAOTU_NOTARY_PROFILE="notary-shared" \
+XIAOTU_NOTARY_PROFILE="xiaotu-notary" \
 tools/package/package_macos.sh
 ```
 
-- 脚本用 `codesign --options runtime`（hardened runtime）签名，再 `notarytool submit --wait`、`stapler staple`，最后用 `spctl -a -vv` 与 `stapler validate` 自检。
+- 脚本用 `codesign --options runtime`（hardened runtime）分步嵌套签名，再 `notarytool submit --wait`、`stapler staple`，最后用 `spctl -a -vv` 与 `stapler validate` 自检。
+- `XIAOTU_SIGN_IDENTITY` 与 `XIAOTU_NOTARY_PROFILE` 都是**硬性前提**，缺一即退出 1；已移除 ad-hoc 签名与跳过公证的旁路。
 - `XIAOTU_NOTARY_PROFILE` 是 `xcrun notarytool store-credentials` 创建的钥匙串 profile；凭据不写进仓库。
-- 不传 `XIAOTU_SIGN_IDENTITY` 时回落到 ad-hoc 签名并打印警告，只用于本地验证，不是可分发产物。
 - 正式产物实测 `spctl` 输出 `source=Notarized Developer ID`，首次打开不再被 Gatekeeper 拦截。
 
 ## 签名密钥同步（Windows → Mac）
@@ -118,14 +117,14 @@ Sparkle appcast，以及服务端验签兼容（同时认 v1 / v2）。
 ```bash
 # 手动生成/验签（正常发布不需要单独跑）
 python3 tools/release/manifest_v2.py generate \
-  --product xiaotu --channel stable --platform macos --version 1.0.6 --min-os 13.0 \
-  --artifact dmg=dist/xiaotu-1.0.6-macos-arm64.dmg \
+  --product xiaotu --channel stable --platform macos --version <版本> --min-os 13.0 \
+  --artifact dmg=dist/xiaotu-inventory-<版本>.dmg \
   --key ~/.config/xiaotu-updates/update_signing_2026.pem \
   --out dist/manifest.json
 python3 tools/release/manifest_v2.py verify \
   --manifest dist/manifest.json \
   --pub ~/.config/xiaotu-updates/update_signing_2026.pub.pem \
-  --artifact dmg=dist/xiaotu-1.0.6-macos-arm64.dmg
+  --artifact dmg=dist/xiaotu-inventory-<版本>.dmg
 ```
 
 私钥不进入仓库与构建产物；appcast 的签名覆盖 dmg 文件字节，供 Sparkle 校验。
@@ -138,7 +137,7 @@ tools/release/publish_macos.sh
 ```
 
 一条命令完成：上传 dmg（immutable 长缓存）→ 用 `manifest_v2.py` 生成并签 `manifest.json` /
-`appcast.xml` → 本地验签 → 上传清单（60 秒缓存）→ purge CDN → 下载一次预热 CDN。
+`appcast.xml` → 本地验签 → 上传清单（60 秒缓存）→ 下载一次预热。`dl.xiaotu.online` 直连 OSS，没有 CDN 层，默认不 purge（将来接入 CDN 时再用 `PURGE=true`）。
 
 - 凭据：优先读 `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET`；未设置时读仓库外
   `~/.config/xiaotu-updates/oss-credentials.env`，该文件不存在时回退到
@@ -158,8 +157,8 @@ NOTES_ONLY=true tools/release/publish_windows.sh
 
 - 只上传说明页（`public, max-age=3600`），并用 `manifest_v2.py resign --notes-url`
   重签清单，把 `notes_url` 写进全部平台段；版本、dmg/exe 与 appcast 均不变。
-- 默认取 `docs/release-notes-<VERSION>.html`，并要求线上清单版本与 `VERSION` 一致；
-  补历史版本用 `NOTES_VERSION=1.0.2`，自定地址用 `RELEASE_NOTES_URL=…`。
+- 默认取 `docs/release-notes-<版本>.html`，并要求线上清单版本与 `VERSION.txt` 一致；
+  补历史版本用 `NOTES_VERSION=<版本>`，自定地址用 `RELEASE_NOTES_URL=…`。
 - 加 `OSS_SKIP=true` 只本地生成并验签，不上传。
 
 ## 逐档放量

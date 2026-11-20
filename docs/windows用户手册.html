@@ -154,7 +154,7 @@
     <h1>Windows用户手册</h1>
     <p class="hero-sub">从安装、登录到开单、报表、备份，一本讲清楚。</p>
     <div class="chips">
-      <span class="chip">适用版本 0.9.0（构建 2026111301）</span>
+      <span class="chip">适用版本 1.0.7</span>
       <span class="chip">Windows 10 / 11（64 位）</span>
       <span class="chip">单机版 · 网络版</span>
       <span class="chip">更新日期 2026-11-14</span>
@@ -205,7 +205,7 @@
 
       <h3 id="install-run">1.1 运行安装包</h3>
       <ol class="steps">
-        <li><strong>双击安装包。</strong>文件名类似 <code>小兔进销存-0.9.0-win64-setup.exe</code>。</li>
+        <li><strong>双击安装包。</strong>文件名类似 <code>xiaotu-1.0.7-win64-setup.exe</code>。</li>
         <li><strong>如果出现蓝色提示“Windows 已保护你的电脑”。</strong>点“更多信息”，再点“仍要运行”。这是 Windows 对未签名安装包的常规提醒。</li>
         <li><strong>按向导点下一步。</strong>安装向导目前是英文按钮，对照如下：Next＝下一步，Back＝上一步，Cancel＝取消，Browse＝浏览，Install＝安装，Finish＝完成。</li>
         <li><strong>选择数据目录。</strong>直接点 Next 使用默认目录即可；要换到其他盘，点 Browse 选择，例如 <code>D:\小兔进销存数据</code>。</li>
@@ -252,7 +252,7 @@
 
       <h3 id="install-silent">1.4 静默安装（备注，普通用户可跳过）</h3>
       <p class="sub">这一段给负责批量装机的电脑管理员看。普通门店用户按上面的向导安装即可。</p>
-      <pre><code>小兔进销存-0.9.0-win64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="D:\Apps\小兔进销存"</code></pre>
+      <pre><code>xiaotu-1.0.7-win64-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="D:\Apps\小兔进销存"</code></pre>
       <ul>
         <li><code>/DIR</code> 指定程序安装目录，不写则使用默认目录。</li>
         <li>静默安装不会弹出“数据目录”选择页，数据会放在默认目录 <code>%LOCALAPPDATA%\com.simem.xiaotu</code>。确实要自定义数据目录时，不要用静默安装，改用图形向导。</li>
@@ -587,7 +587,7 @@ $env:XIAOTU_PASSWORD = "你自己定的口令"
     <section id="update">
       <div class="sec-head"><div class="sec-num">8</div><div><h2>软件更新</h2><p class="sub">这一版不自动下载更新；收到新安装包后覆盖安装即可，数据会保留。</p></div></div>
       <figure class="shot-small">
-        <img src="images/windows-manual/21-update.png" alt="关于与诊断页中的软件更新区域，显示当前版本0.9.0" />
+        <img src="images/windows-manual/21-update.png" alt="关于与诊断页中的软件更新区域，显示当前版本" />
         <figcaption>图 8-1　“系统→关于与诊断”里的软件更新区域，可以看到当前版本号。</figcaption>
       </figure>
       <h3>怎么升级</h3>
@@ -658,14 +658,14 @@ $env:XIAOTU_PASSWORD = "你自己定的口令"
         <li><strong>出问题：</strong>先看第 9 章；涉及口令、端口、防火墙的，交给电脑管理员。</li>
       </ol>
       <div class="callout good"><b>最后提醒</b>不要把数据目录放共享盘/网盘；不要删数据目录来解决口令问题；升级前先备份。做到这三条，日常使用基本不会出大问题。</div>
-      <p class="sub" style="margin-top:18px">本手册对应小兔进销存 Windows 版 0.9.0（构建 2026111301）。如果界面与手册略有差异，以软件实际显示为准。</p>
+      <p class="sub" style="margin-top:18px">本手册对应小兔进销存 Windows 版 1.0.7。如果界面与手册略有差异，以软件实际显示为准。</p>
       <a class="to-top" href="#start">返回顶部 ↑</a>
     </section>
   </main>
 </div>
 
 <footer class="footer">
-  <p>小兔进销存 Windows 用户手册 · 适用于 0.9.0 · 2026-11-14</p>
+  <p>小兔进销存 Windows 用户手册 · 适用于 1.0.7 · 2026-11-21</p>
 </footer>
 
 </body>

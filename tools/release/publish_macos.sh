@@ -29,8 +29,8 @@
 #       也可用 OPENSSL_BIN=/path/to/openssl 指定；macOS 自带的 LibreSSL 会被拒绝。
 #
 # 用法：
-#   # 完整发布（需要 OSS 凭据，见上）
-#   OSS_BUCKET=xxx OSS_REGION=cn-hangzhou PRODUCT=xiaotu tools/release/publish_macos.sh
+#   # 完整发布（需要 OSS 凭据，见上；正式发布的 BUILD 应等于 tag 序号）
+#   BUILD=<tag 序号> OSS_BUCKET=xxx OSS_REGION=cn-hangzhou PRODUCT=xiaotu tools/release/publish_macos.sh
 #
 #   # dry-run：只本地生成 + 验签，不碰 OSS
 #   OSS_SKIP=true PRODUCT=xiaotu tools/release/publish_macos.sh

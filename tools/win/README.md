@@ -59,7 +59,7 @@
 | --- | --- |
 | MSVC 构建 | `cmake --preset windows-release` 与构建均返回 0 |
 | 编译参数不含 /we7560 | `build/windows/build.ninja` 里搜不到 `/we7560`（根 `CMakeLists.txt` 已移除该开关） |
-| ctest | `ctest --preset windows-release` 返回 0；失败时列出失败用例名 |
+| ctest | `ctest --test-dir build/windows --output-on-failure` 返回 0；失败时列出失败用例名 |
 | 静态运行库 /MT | `dumpbin /dependents` 不含 `vcruntime140.dll`、`msvcp140.dll`、`ucrtbased.dll`；找不到 dumpbin 记 SKIP |
 | C7560 生效 | 临时 worktree 的 `document.cpp` 追加错序指定初始化器后编译失败，且输出含 `C7560`；随后主仓库 `document.cpp` 无改动。判定依据是「C7560 被当作错误」，**不是**「`/we7560` 被识别」：本机 MSVC 14.44 对 `/we7560` 报 `D9014`（值无效），而 C7560 默认就是 error，所以该开关是否被接受不在本项验证范围内 |
 | 安装包签名状态 | `SIGNING.txt` 明确写「未签名」且不写「已签名」 |

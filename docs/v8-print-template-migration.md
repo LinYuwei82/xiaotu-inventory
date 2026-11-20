@@ -1,5 +1,7 @@
 # v8 打印模板迁移 SQL（v7 → v8）
 
+> 历史归档：本文是 v7 → v8 的一次性迁移记录，当前 schema 已到 v39，命令与路径可能已过时，勿照做。
+
 - 适用版本：数据库 schema **v7 → v8**
 - 迁移名：`v8_print_template`
 - 来源：[migrations.cpp](../core/src/migrations.cpp) 中的 `kV8` 常量，下面「完整语句」为原样摘录，可直接查看与手工执行。

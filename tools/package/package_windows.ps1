@@ -13,14 +13,15 @@
     - WebView2 SDK 由 shell\win\fetch-webview2.ps1 自动获取
 
 .PARAMETER Build
-  构建号（纯数字）。缺省由 tools/release/gen_build.py 生成（自动校验严格大于线上 build）。
+  构建号（纯数字），发布时传 tag 序号（build = seq）。缺省由 tools/release/gen_build.py
+  生成内测构建号（自动校验严格大于线上 build），仅用于本地验证。
   会同时写入服务端与壳。
 
 .EXAMPLE
   .\tools\package\package_windows.ps1
 
 .EXAMPLE
-  .\tools\package\package_windows.ps1 -Build 202611180930
+  .\tools\package\package_windows.ps1 -Build <tag 序号>
 #>
 [CmdletBinding()]
 param(
@@ -75,8 +76,8 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
 $version = (Get-Content (Join-Path $root 'VERSION.txt') -Raw).Trim()
 if (-not $version) { Fail "无法读取 VERSION.txt" }
 
-# 构建号：缺省走 gen_build.py（year*10^12 + git_count，自动校验 > 线上），
-# 三仓库统一口径；不再用 UTC 时间戳，避免与 macOS 各自生成导致撞号。
+# 构建号：正式发布传 tag 序号（-Build，build = seq）；缺省回退 gen_build.py 的内测构建号，
+# 三仓库统一口径，不再用 UTC 时间戳，避免与 macOS 各自生成导致撞号。
 if (-not $Build) {
   $genBuild = Join-Path $root 'tools\release\gen_build.py'
   if (-not (Test-Path $genBuild)) { Fail "找不到 gen_build.py：$genBuild" }
