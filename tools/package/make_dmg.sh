@@ -145,18 +145,20 @@ if [ "$UPDATE_CONFIG_COUNT" -eq 3 ]; then
   fi
 fi
 
-BUILD_NUMBER="${XIAOTU_BUILD:-}"
-if [ -z "$BUILD_NUMBER" ]; then
-  echo "打包必须显式设置 XIAOTU_BUILD（纯数字、单调递增），例如：" >&2
-  echo "  XIAOTU_BUILD=$(date -u +%Y%m%d%H) tools/package/make_dmg.sh" >&2
-  exit 1
+# 构建号：自动从 gen_build.py 生成（year*10^12 + git_count，单调递增，自动校验 > 线上）。
+# 用户显式传 XIAOTU_BUILD 时优先使用（兼容手动指定场景）。
+if [ -n "${XIAOTU_BUILD:-}" ]; then
+  BUILD_NUMBER="$XIAOTU_BUILD"
+  case "$BUILD_NUMBER" in
+    *[!0-9]*) echo "XIAOTU_BUILD 必须是纯数字：$BUILD_NUMBER" >&2; exit 1 ;;
+  esac
+  echo "构建号：${BUILD_NUMBER}（来源 XIAOTU_BUILD 环境变量）"
+else
+  BUILD_NUMBER="$(python3 "$REPO_ROOT/tools/release/gen_build.py" \
+    --product xiaotu --repo-root "$REPO_ROOT")" || {
+    echo "gen_build.py 失败，无法生成构建号" >&2; exit 1; }
+  echo "构建号：${BUILD_NUMBER}（来源 gen_build.py）"
 fi
-case "$BUILD_NUMBER" in
-  *[!0-9]*)
-    echo "XIAOTU_BUILD 必须是纯数字：$BUILD_NUMBER" >&2
-    exit 1
-    ;;
-esac
 
 # 显式传入（含空值），避免 CMake 缓存把上一次的更新配置带到本次包。
 CMAKE_ARGS=(

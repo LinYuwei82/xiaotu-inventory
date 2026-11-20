@@ -110,12 +110,16 @@ fi
 CHANNEL="${CHANNEL:-stable}"
 case "$CHANNEL" in stable|beta) ;; *) echo "CHANNEL 必须是 stable/beta" >&2; exit 1 ;; esac
 
-BUILD="${BUILD:-}"
+# 构建号：NOTES_ONLY 模式不需要；正常模式从 gen_build.py 自动生成（或用户显式传 BUILD）。
 if [ "$NOTES_ONLY" != "true" ]; then
-[[ "$BUILD" =~ ^[0-9]{4,}$ ]] || {
-  echo "缺少或非法的 BUILD：需要与打包时 XIAOTU_BUILD 相同的纯数字构建号（例：BUILD=202611171349）" >&2
-  exit 1
-}
+  if [ -n "${BUILD:-}" ]; then
+    [[ "$BUILD" =~ ^[0-9]{4,}$ ]] || { echo "用户显式传的 BUILD 非法：$BUILD" >&2; exit 1; }
+  else
+    BUILD="$(python3 "$REPO_ROOT/tools/release/gen_build.py" \
+      --product xiaotu --repo-root "$REPO_ROOT")" || {
+      echo "gen_build.py 失败，无法生成构建号" >&2; exit 1; }
+    echo "build：${BUILD}（来源 gen_build.py）"
+  fi
 fi
 
 DEFAULT_SETUP="$REPO_ROOT/packaging/win/out/xiaotu-inventory-$VERSION-win64-setup.exe"

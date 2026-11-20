@@ -228,17 +228,24 @@ if [ "$OSS_SKIP" != "true" ]; then
   assert_cred_not_tracked
 fi
 
-# ---- 元数据：从 dmg 的 Info.plist 读构建号与最低系统版本 ----
-BUILD="${BUILD:-}"   # 用户可显式传 BUILD（macOS 固定 0 时必须传，否则正则 ^[0-9]{4,}$ 过不了）
+# ---- 元数据：构建号从 gen_build.py 生成；DMG Info.plist 用于校验 + MIN_OS ----
+if [ -n "${BUILD:-}" ]; then
+  BUILD_SRC="用户显式传 BUILD"
+else
+  BUILD="$(python3 "$REPO_ROOT/tools/release/gen_build.py" \
+    --product xiaotu --repo-root "$REPO_ROOT")" || {
+    echo "gen_build.py 失败，无法生成构建号" >&2; exit 1; }
+  BUILD_SRC="gen_build.py"
+fi
 DMG_MOUNT="$(mktemp -d -t xiaotu-dmg)"
-# 仅补发说明页时不需要 dmg，跳过挂载与元数据提取。
 if [ "$NOTES_ONLY" != "true" ]; then
 hdiutil attach "$DMG_PATH" -mountpoint "$DMG_MOUNT" -nobrowse -readonly >/dev/null 2>&1 || true
 APP_IN_DMG="$(find "$DMG_MOUNT" -name "*.app" -maxdepth 2 2>/dev/null | head -1 || true)"
 PLIST_VERSION=""
+PLIST_BUILD=""
 MIN_OS=""
 if [ -n "$APP_IN_DMG" ] && [ -f "$APP_IN_DMG/Contents/Info.plist" ]; then
-  [ -z "$BUILD" ] && BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+  PLIST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
     "$APP_IN_DMG/Contents/Info.plist" 2>/dev/null || true)"
   PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
     "$APP_IN_DMG/Contents/Info.plist" 2>/dev/null || true)"
@@ -247,17 +254,18 @@ if [ -n "$APP_IN_DMG" ] && [ -f "$APP_IN_DMG/Contents/Info.plist" ]; then
   if [ "$PLIST_VERSION" != "$VERSION" ]; then
     echo "警告：dmg 内版本 $PLIST_VERSION ≠ 仓库 VERSION $VERSION" >&2
   fi
+  # 校验 DMG 里的 CFBundleVersion 与 gen_build.py 一致
+  if [ -n "$PLIST_BUILD" ] && [ "$PLIST_BUILD" != "$BUILD" ]; then
+    echo "警告：dmg 内 CFBundleVersion=$PLIST_BUILD ≠ 发布用 build=$BUILD ($BUILD_SRC)" >&2
+    echo "  → 确认 DMG 是用相同 build 打包的，否则客户端会反复提示更新" >&2
+  fi
 fi
 hdiutil detach "$DMG_MOUNT" >/dev/null 2>&1 || true
 rm -rf "$DMG_MOUNT"
 
-# 从文件名推断 build 号
-if ! [[ "$BUILD" =~ ^[0-9]{1,}$ ]]; then
-  DMG_BASENAME_FN="$(basename "$DMG_PATH")"
-  BUILD="$(echo "$DMG_BASENAME_FN" | sed -E 's/.*-([0-9]{6,})\.dmg$/\1/')"
-  [[ "$BUILD" =~ ^[0-9]{1,}$ ]] || { echo "无法从 dmg 推断构建号（${DMG_BASENAME_FN}）" >&2; exit 1; }
-fi
-fi
+# BUILD 兜底：gen_build.py 已经生成了，不会再为空
+[[ "$BUILD" =~ ^[0-9]{1,}$ ]] || { echo "BUILD 非法（$BUILD_SRC）" >&2; exit 1; }
+echo "build：${BUILD}（来源 $BUILD_SRC）"
 
 PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 PUB_BASE64="$("$OPENSSL_BIN" pkey -pubin -in "$SIGNING_PUB" -outform DER 2>/dev/null \
