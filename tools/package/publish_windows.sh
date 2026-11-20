@@ -455,6 +455,8 @@ fi
 echo ""
 echo "================ 发布完成 ================"
 echo "版本 / build / channel：  $VERSION / $BUILD / $CHANNEL"
+GIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+echo "commit：                   $GIT_HASH"
 echo "安装包下载地址：          $SETUP_PUBLIC_URL"
 echo "  sha256 / size：         $SETUP_SHA256 / $SETUP_SIZE 字节"
 [ -n "$ZIP_KEY" ] && echo "绿色包下载地址：          $ZIP_PUBLIC_URL
