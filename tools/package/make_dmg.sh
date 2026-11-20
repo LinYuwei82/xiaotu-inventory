@@ -8,16 +8,15 @@
 #   ├── 小兔进销存.app
 #   └── 应用程序 -> /Applications
 #
-# 签名：
-#   - 默认 ad-hoc 签名（codesign -s -），不满足 Gatekeeper 与公证要求；
-#   - 设置 XIAOTU_SIGN_IDENTITY 后改用 Developer ID Application 证书签名；
-#   - 设置 XIAOTU_NOTARY_PROFILE 后调用 notarytool 提交 dmg 并 staple；
-#     未提供时明确打印「跳过公证」，不会静默当作已公证。
-#   未签名/未公证的包首次打开会被 Gatekeeper 拦截，处理方式见 tools/package/README.md。
+# 签名与公证（硬性前提，2026-11-20 起生效）：
+#   - 必须提供 XIAOTU_SIGN_IDENTITY（Developer ID Application 证书名称），否则 exit 1
+#   - 必须提供 XIAOTU_NOTARY_PROFILE（notarytool keychain profile 名），否则 exit 1
+#   - 已移除 ad-hoc 签名与跳过公证的旁路（历史上用于本地调试，发布路径禁止）
+#   - 签名口径见 D13：Developer ID Application 逐层签名 + 公证（notarytool + stapler）
 #
 # 环境变量：
-#   XIAOTU_SIGN_IDENTITY  签名证书名称（默认空，使用 ad-hoc）
-#   XIAOTU_NOTARY_PROFILE notarytool keychain profile（默认空，跳过公证）
+#   XIAOTU_SIGN_IDENTITY  Developer ID Application 证书名称；必填
+#   XIAOTU_NOTARY_PROFILE notarytool keychain profile；必填
 #   XIAOTU_DIST_DIR       产物目录（默认 <repo>/build/package）
 #   XIAOTU_BUILD          构建号（纯数字，单调递增）；必填，缺失即失败
 #   XIAOTU_UPDATE_MANIFEST_URL  单机版清单地址（https）
@@ -43,11 +42,15 @@ usage() {
 小兔进销存 · macOS 打包
 
 用法：
+  XIAOTU_SIGN_IDENTITY="Developer ID Application: <你的名字>" \
+  XIAOTU_NOTARY_PROFILE=xiaotu-notary \
   tools/package/make_dmg.sh
 
+硬性前提（2026-11-20 起生效）：签名证书 + 公证 profile 必须同时提供，缺失则 exit 1。
+
 环境变量：
-  XIAOTU_SIGN_IDENTITY  签名证书名称；为空则 ad-hoc 签名
-  XIAOTU_NOTARY_PROFILE notarytool keychain profile；为空则跳过公证并打印日志
+  XIAOTU_SIGN_IDENTITY  Developer ID Application 证书名称；必填
+  XIAOTU_NOTARY_PROFILE notarytool keychain profile；必填
   XIAOTU_DIST_DIR       产物目录（默认 <repo>/build/package）
   XIAOTU_BUILD          构建号（纯数字，单调递增）；必填，缺失退出 1
   XIAOTU_UPDATE_MANIFEST_URL  单机版清单地址（https）
@@ -69,6 +72,33 @@ if ! command -v hdiutil >/dev/null 2>&1; then
   echo "未找到 hdiutil，请在 macOS 上执行。" >&2
   exit 1
 fi
+
+# ===== 硬门禁前置：签名证书 + 公证 profile 必须同时满足 =====
+if [ -z "${XIAOTU_SIGN_IDENTITY:-}" ]; then
+  echo "硬性前提检查失败：XIAOTU_SIGN_IDENTITY 未设置" >&2
+  echo "  需要 Developer ID Application 证书名称" >&2
+  echo "  钥匙串查找：security find-identity -v -p codesigning" >&2
+  echo "  然后：export XIAOTU_SIGN_IDENTITY='Developer ID Application: <你的名字>'" >&2
+  exit 1
+fi
+echo "签名证书：${XIAOTU_SIGN_IDENTITY} ✓"
+
+if [ -z "${XIAOTU_NOTARY_PROFILE:-}" ]; then
+  echo "硬性前提检查失败：XIAOTU_NOTARY_PROFILE 未设置" >&2
+  echo "  需要 notarytool keychain profile 名" >&2
+  echo "  先存储一次：xcrun notarytool store-credentials 'xiaotu-notary' \\" >&2
+  echo "    --apple-id <your@appleid.com> --team-id BMCUC4B6XX --password <app-specific-password>" >&2
+  echo "  然后：export XIAOTU_NOTARY_PROFILE=xiaotu-notary" >&2
+  exit 1
+fi
+# profile 存在性验证
+if xcrun notarytool history --keychain-profile "$XIAOTU_NOTARY_PROFILE" 2>&1 | head -1 | grep -qi "error"; then
+  echo "硬性前提检查失败：notarytool keychain profile '$XIAOTU_NOTARY_PROFILE' 不存在" >&2
+  echo "  重新存储：xcrun notarytool store-credentials '$XIAOTU_NOTARY_PROFILE' \\" >&2
+  echo "    --apple-id <your@appleid.com> --team-id BMCUC4B6XX --password <app-specific-password>" >&2
+  exit 1
+fi
+echo "公证 profile：${XIAOTU_NOTARY_PROFILE} ✓"
 
 VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION" 2>/dev/null)"
 if [ -z "$VERSION" ]; then
@@ -217,15 +247,8 @@ xattr -cr "$APP_PATH"
 xattr -d com.apple.FinderInfo "$APP_PATH" 2>/dev/null || true
 xattr -d "com.apple.fileprovider.fpfs#P" "$APP_PATH" 2>/dev/null || true
 
-sign_identity="${XIAOTU_SIGN_IDENTITY:-}"
-if [ -n "$sign_identity" ]; then
-  echo "使用证书：$sign_identity"
-  sign_mode="Developer ID"
-else
-  echo "未提供 XIAOTU_SIGN_IDENTITY，使用 ad-hoc 签名（不满足 Gatekeeper 与公证要求）"
-  sign_identity="-"
-  sign_mode="ad-hoc"
-fi
+sign_identity="$XIAOTU_SIGN_IDENTITY"
+echo "使用证书：$sign_identity（硬性前提已前置检查 ✓）"
 
 # Step 1: 签 Sparkle.framework（用 --deep 覆盖内部 Updater.app、XPCServices 等嵌套 bundle）
 SPARKLE_FW="$APP_PATH/Contents/Frameworks/Sparkle.framework"
@@ -251,41 +274,16 @@ rm -f "$DMG"
 hdiutil create -volname "$VOLUME_NAME" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 hdiutil verify "$DMG"
 
-# DMG 也签名（Developer ID 签名的 DMG 让 mount 过程更顺畅）
-if [ -n "${XIAOTU_SIGN_IDENTITY:-}" ]; then
-  codesign --force --sign "$sign_identity" --timestamp "$DMG"
-fi
+# DMG 也签名（Developer ID 签名的 DMG 让 mount 过程更顺畅，公证更稳）
+codesign --force --sign "$sign_identity" --timestamp "$DMG"
 
 echo "===== 公证"
-NOTARIZED=0
-NOTARY_PROFILE="${XIAOTU_NOTARY_PROFILE:-}"
-if [ -n "$NOTARY_PROFILE" ]; then
-  # 提前检测 profile 是否在 Keychain 中存在
-  if xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" 2>&1 | head -1 | grep -qi "error"; then
-    echo "错误：notarytool keychain profile '$NOTARY_PROFILE' 不存在" >&2
-    echo "      需要先运行：" >&2
-    echo "        xcrun notarytool store-credentials '$NOTARY_PROFILE' \\" >&2
-    echo "          --apple-id <your@appleid.com> \\" >&2
-    echo "          --team-id BMCUC4B6XX \\" >&2
-    echo "          --password <app-specific-password>" >&2
-    exit 1
-  fi
-  echo "使用 notarytool 凭据：$NOTARY_PROFILE"
-  xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait \
-    || { echo "notarytool submit 失败"; exit 1; }
-  xcrun stapler staple "$DMG"
-  NOTARIZED=1
-else
-  echo "跳过：未提供 XIAOTU_NOTARY_PROFILE（notarytool 凭据），dmg 未公证"
-  echo "      要开启公证，先在 Keychain 存一次凭据："
-  echo "        xcrun notarytool store-credentials 'xiaotu-notary' \\"
-  echo "          --apple-id <your@appleid.com> --team-id BMCUC4B6XX --password <app-specific-password>"
-  echo "      然后重新跑：XIAOTU_NOTARY_PROFILE=xiaotu-notary tools/package/make_dmg.sh"
-fi
-
-if [ -z "${XIAOTU_SIGN_IDENTITY:-}" ]; then
-  echo "警告：当前产物为 ad-hoc 签名，distributable 需 Developer ID 签名并公证。" >&2
-fi
+echo "使用 notarytool 凭据：$XIAOTU_NOTARY_PROFILE（硬性前提已前置检查 ✓）"
+xcrun notarytool submit "$DMG" --keychain-profile "$XIAOTU_NOTARY_PROFILE" --wait \
+  || { echo "notarytool submit 失败"; exit 1; }
+xcrun stapler staple "$DMG"
+xcrun stapler validate "$DMG"
+echo "公证通过 ✓"
 
 SIZE_BYTES="$(stat -f %z "$DMG")"
 SHA256="$(shasum -a 256 "$DMG" | awk '{print $1}')"
@@ -295,8 +293,8 @@ echo "===== 完成"
 echo "产物：$DMG"
 echo "字节数：$SIZE_BYTES"
 echo "SHA256：$SHA256"
-echo "签名：$([ -n "${XIAOTU_SIGN_IDENTITY:-}" ] && echo "$XIAOTU_SIGN_IDENTITY" || echo "ad-hoc（不可直接分发）")"
-echo "公证：$([ "$NOTARIZED" -eq 1 ] && echo "已公证" || echo "未公证")"
+echo "签名：$XIAOTU_SIGN_IDENTITY（Developer ID ✓）"
+echo "公证：$XIAOTU_NOTARY_PROFILE（notarytool 已公证 ✓）"
 echo "产品版本：$VERSION"
 echo "构建号：$PLIST_BUILD"
 echo "更新配置：$([ "$UPDATE_CONFIG_COUNT" -eq 3 ] && echo "已注入" || echo "未配置（更新功能关闭）")"

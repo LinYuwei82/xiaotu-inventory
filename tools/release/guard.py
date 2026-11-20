@@ -493,7 +493,7 @@ def existing_artifact_ok(url: str, size: int, md5: str) -> None:
 def check_mac_embed(path: Path, product: str, channel: str, base: str, version: str,
                     schema: str) -> None:
     if sys.platform != "darwin":
-        warn("非 macOS 环境，跳过 DMG 内嵌地址检查")
+        warn("非 macOS 环境，跳过 DMG 内嵌地址检查与签名/公证验证")
         return
     with tempfile.TemporaryDirectory() as mnt:
         subprocess.run(
@@ -501,11 +501,25 @@ def check_mac_embed(path: Path, product: str, channel: str, base: str, version: 
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         try:
+            apps = list(Path(mnt).glob("*.app"))
             plists = list(Path(mnt).glob("*.app/Contents/Info.plist"))
             if not plists:
                 die(f"DMG 内没有 .app/Contents/Info.plist：{path}")
             with plists[0].open("rb") as f:
                 info = plistlib.load(f)
+
+            # ===== spctl --assess：签名 + 公证硬门禁（2026-11-20 起）=====
+            # 发布硬性前提：DMG 内嵌 .app 必须已通过 Gatekeeper 评估
+            app_path = apps[0]
+            spctl_out = subprocess.run(
+                ["spctl", "--assess", "--type", "execute", "-vv", str(app_path)],
+                capture_output=True, text=True,
+            )
+            combined = (spctl_out.stdout + spctl_out.stderr).strip()
+            if "Notarized Developer ID" not in combined and "accepted" not in combined.lower():
+                die(f"DMG 内嵌 App 未通过 spctl Gatekeeper 评估：\n    {combined}\n"
+                    "    期望 source=Notarized Developer ID（已公证的 Developer ID 签名）")
+            ok(f"DMG 内 App 签名/公证：{combined.splitlines()[0] if combined else 'Notarized Developer ID'}")
         finally:
             subprocess.run(["hdiutil", "detach", mnt, "-quiet"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
