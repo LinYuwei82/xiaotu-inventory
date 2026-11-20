@@ -72,7 +72,7 @@ case "$PRODUCT_KEY" in
     )
     ;;
   *)
-    echo "未识别的仓库目录：$PRODUCT_KEY（脚本只支持 xiaotu-inventory / mote / dev_card_cpp）" >&2
+    echo "未识别的仓库目录：${PRODUCT_KEY}（脚本只支持 xiaotu-inventory / mote / dev_card_cpp）" >&2
     exit 2 ;;
 esac
 
@@ -183,7 +183,7 @@ print(len(d) if isinstance(d,list) else 0)' 2>/dev/null || echo 0)"
     if [ "$DRY_RUN" = "true" ]; then
       echo "  [dry-run] 创建或更新 release（tag=${TAG}）+ 上传 ${#FILES[@]} 个附件"
     elif [ -n "$REL_ID" ]; then
-      echo "Release 已存在（id=$REL_ID）→ 更新说明 + 补传附件"
+      echo "Release 已存在（id=${REL_ID}）→ 更新说明 + 补传附件"
       curl -sS -X PATCH "$API/releases/$REL_ID" \
         --data-urlencode "access_token=$GITEE_TOKEN" \
         --data-urlencode "name=$TITLE" \
@@ -204,7 +204,7 @@ print('1' if any(isinstance(a,dict) and a.get('name')==b for a in d) else '0')" 
             "$API/releases/$REL_ID/attach_files" \
             -F "access_token=$GITEE_TOKEN" -F "file=@$f")"
           if [ "$code" = "201" ] || [ "$code" = "200" ]; then echo "  ✓ $base"; else
-            echo "  ✗ $base（HTTP $code）"; head -c 300 /tmp/gitee-attach.json; echo; fi
+            echo "  ✗ ${base}（HTTP $code）"; head -c 300 /tmp/gitee-attach.json; echo; fi
         fi
       done
     else
@@ -222,14 +222,14 @@ except Exception: print("")' 2>/dev/null || true)"
       if [ -z "$REL_ID" ]; then
         echo "  ✗ 创建失败：$(printf '%s' "$resp" | head -c 400)" >&2
       else
-        echo "  已创建（id=$REL_ID），上传附件"
+        echo "  已创建（id=${REL_ID}），上传附件"
         for f in "${FILES[@]}"; do
           base="$(basename "$f")"
           code="$(curl -sS -o /tmp/gitee-attach.json -w '%{http_code}' -X POST \
             "$API/releases/$REL_ID/attach_files" \
             -F "access_token=$GITEE_TOKEN" -F "file=@$f")"
           if [ "$code" = "201" ] || [ "$code" = "200" ]; then echo "  ✓ $base"; else
-            echo "  ✗ $base（HTTP $code）"; head -c 300 /tmp/gitee-attach.json; echo; fi
+            echo "  ✗ ${base}（HTTP $code）"; head -c 300 /tmp/gitee-attach.json; echo; fi
         done
       fi
     fi
