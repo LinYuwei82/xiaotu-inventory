@@ -73,6 +73,11 @@ def remote_versions(manifest: dict) -> tuple[list[tuple[int, int, int]], list[in
 
 
 def main() -> int:
+    # Windows 英文环境的控制台是 cp1252，直接 print 中文会 UnicodeEncodeError；
+    # 强制 UTF-8 输出，避免校验通过却因编码崩溃。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="发布前版本号 / 构建号递增校验")
     parser.add_argument("--product", default="", help="产品名（仅用于提示）")
     parser.add_argument("--version-file", default=str(REPO / "VERSION.txt"))

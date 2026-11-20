@@ -35,6 +35,11 @@ on:
 permissions:
   contents: read
 
+# Windows 英文 runner 默认 cp1252，Python 打印中文会崩；统一 UTF-8 输出
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
 jobs:
   release:
     name: 构建 → 门禁 → 签名 → 上传
