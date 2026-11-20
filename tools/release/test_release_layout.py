@@ -111,7 +111,8 @@ def test_gen_build_synced() -> None:
     if not path.is_file():
         check(False, "缺少 tools/release/gen_build.py")
         return
-    digest = hashlib.md5(path.read_bytes()).hexdigest()
+    # Windows 检出会把 .py 转成 CRLF，先归一化再算哈希，否则固定 MD5 永远对不上
+    digest = hashlib.md5(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
     check(digest == GEN_BUILD_MD5,
           f"gen_build.py 与三仓同步版本不一致（{digest}，期望 {GEN_BUILD_MD5}）")
 
