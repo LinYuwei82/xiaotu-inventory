@@ -136,8 +136,8 @@ foreach ($file in @($setup, $zip)) {
 Write-Host ""
 Write-Host "下一步：" -ForegroundColor Green
 Write-Host "  选项 A · 直接在本 Windows 机器上发布清单（需要签名私钥 PEM 或 CI 环境变量 XIAOTU_UPDATE_SIGNING_KEY）："
-Write-Host "    powershell -ExecutionPolicy Bypass -File tools\package\publish_windows.ps1 -Build $Build -SkipUpload   # 先空跑"
-Write-Host "    powershell -ExecutionPolicy Bypass -File tools\package\publish_windows.ps1 -Build $Build                 # 正式上传"
+Write-Host "    powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1 -Build $Build -SkipUpload   # 先空跑"
+Write-Host "    powershell -ExecutionPolicy Bypass -File tools\release\publish_windows.ps1 -Build $Build                 # 正式上传"
 Write-Host ""
 Write-Host "  选项 B · 拷回 Mac 执行 .sh（与之前相同）："
 Write-Host "    cd <xiaotu-inventory 仓库>"
