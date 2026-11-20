@@ -207,7 +207,7 @@ echo "$status_json" | grep -q '"build":' || {
 MANIFEST_V2="$REPO_ROOT/tools/release/manifest_v2.py"
 cp "$TMP/app.dmg" "$TMP/xiaotu-1.4.2-macos-arm64.dmg"
 "$VENV_PY" "$MANIFEST_V2" generate --product xiaotu --platform macos \
-  --version 1.4.2 --build 0 --artifact "dmg=$TMP/xiaotu-1.4.2-macos-arm64.dmg" \
+  --version 1.4.2 --build 2026111301 --artifact "dmg=$TMP/xiaotu-1.4.2-macos-arm64.dmg" \
   --key "$TMP/key.pem" --out "$TMP/manifest.json" >/dev/null
 
 mkdir -p "$TMP/data5"

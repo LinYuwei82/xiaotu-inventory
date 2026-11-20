@@ -250,7 +250,7 @@ if ([string]::IsNullOrWhiteSpace($Build)) {
     if (-not (Test-Path -LiteralPath $cachePath)) {
         # 兼容旧 preset 的构建目录
         foreach ($candidate in @(
-            (Join-Path $root "build-native-ninja\CMakeCache.txt"),
+            (Join-Path $root "build\windows\CMakeCache.txt"),
             (Join-Path $root "build\CMakeCache.txt")
         )) {
             if (Test-Path -LiteralPath $candidate) { $cachePath = $candidate; break }
@@ -318,7 +318,7 @@ if ($BuildSource -ne "CMakeCache") {
     $cachePath = Join-Path $root "build\windows\CMakeCache.txt"
     if (-not (Test-Path -LiteralPath $cachePath)) {
         foreach ($candidate in @(
-            (Join-Path $root "build-native-ninja\CMakeCache.txt"),
+            (Join-Path $root "build\windows\CMakeCache.txt"),
             (Join-Path $root "build\CMakeCache.txt")
         )) {
             if (Test-Path -LiteralPath $candidate) { $cachePath = $candidate; break }

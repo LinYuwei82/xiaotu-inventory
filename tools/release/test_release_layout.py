@@ -6,13 +6,18 @@
 - 打包脚本缺省调用 gen_build.py，并显式开启 <PREFIX>_RELEASE_BUILD；
 - 发布脚本按约定链路确定构建号（CMakeCache / 绿色包 exe / gen_build.py）；
 - 根 CMakeLists 的严格开关、开发占位值与 unset 语义；
-- 三仓共享的 gen_build.py 哈希一致（与 sync_guard.sh 对齐）。
+- 三仓共享的 gen_build.py 哈希一致（与 sync_guard.sh 对齐）；
+- CMake preset 的发布配置统一：macos-release→build/release、windows-release→build/windows；
+- 本地产物/清单统一落 dist/，打包与发布脚本不再引用旧构建目录；
+- CI / 打包入口统一走 macos-release / windows-release 预设。
 
 运行：python3 tools/release/test_release_layout.py
 """
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -43,6 +48,9 @@ LEGACY_PATHS = [
 ]
 LEGACY_NAMES = ["publish_oss.sh", "make_dmg.sh", "build-release.ps1", "build-release.cmd"]
 GEN_BUILD_MD5 = "fa077f04f9dd8d7e2f05692178e1ed02"
+PRESETS_FILE = "CMakePresets.json"
+# 目录统一后，打包 / 发布脚本里不应再出现的旧目录
+LEGACY_DIR_PATTERNS = [r"build/package", r"packaging/win/out"]
 
 failures = 0
 
@@ -117,8 +125,110 @@ def test_gen_build_synced() -> None:
           f"gen_build.py 与三仓同步版本不一致（{digest}，期望 {GEN_BUILD_MD5}）")
 
 
+def _normalize_binary_dir(raw: str) -> str:
+    """把 ${sourceDir}/... 与 ../build/... 归一化成仓库根相对路径。"""
+    parts: list[str] = []
+    for piece in raw.replace("\\", "/").replace("${sourceDir}", "").split("/"):
+        if piece in ("", "."):
+            continue
+        if piece == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(piece)
+    return "/".join(parts)
+
+
+def test_presets() -> None:
+    path = REPO / PRESETS_FILE
+    if not path.is_file():
+        check(False, f"缺少构建预设文件 {PRESETS_FILE}")
+        return
+    try:
+        presets = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        check(False, f"{PRESETS_FILE} 不是合法 JSON：{exc}")
+        return
+    by_name = {item.get("name"): item for item in presets.get("configurePresets", [])}
+    for name, suffix in (("macos-release", "build/release"),
+                         ("windows-release", "build/windows")):
+        preset = by_name.get(name)
+        check(preset is not None, f"{PRESETS_FILE} 缺少 configurePreset {name}")
+        if preset is None:
+            continue
+        check(preset.get("generator") == "Ninja",
+              f"{name} 的 generator 应为 Ninja，实际 {preset.get('generator')!r}")
+        normalized = _normalize_binary_dir(str(preset.get("binaryDir", "")))
+        check(normalized.endswith(suffix),
+              f"{name} 的 binaryDir 应以 {suffix} 结尾，实际 {preset.get('binaryDir')!r}")
+
+
+def _script_texts() -> dict[str, str]:
+    texts: dict[str, str] = {}
+    for rel in list(PUBLISH_SCRIPTS) + PACKAGE_SCRIPTS:
+        path = REPO / rel
+        if path.is_file():
+            texts[rel] = path.read_text(encoding="utf-8", errors="ignore")
+    return texts
+
+
+def test_artifact_dirs() -> None:
+    texts = _script_texts()
+    for rel in PUBLISH_SCRIPTS:
+        text = texts.get(rel)
+        if text is None:
+            continue
+        check("dist" in text, f"{rel} 未把本地产物/清单落到 dist/")
+        check("manifest.json" in text, f"{rel} 未生成或读取 manifest.json")
+        if rel.endswith("publish_macos.sh"):
+            check("appcast.xml" in text, f"{rel} 缺少 appcast.xml")
+    for rel in PACKAGE_SCRIPTS:
+        text = texts.get(rel)
+        if text is None:
+            continue
+        check("dist" in text, f"{rel} 未把产物输出到 dist/")
+    for rel, text in texts.items():
+        for pattern in LEGACY_DIR_PATTERNS:
+            check(re.search(pattern, text) is None,
+                  f"{rel} 仍引用旧目录（匹配 /{pattern}/）")
+
+
+def test_build_entry_uses_presets() -> None:
+    if PRODUCT == "mote":
+        check("macos-release" in read("tools/package/package_macos.sh"),
+              "tools/package/package_macos.sh 未使用 macos-release 预设")
+        check("windows-release" in read("tools/package/package_windows.ps1"),
+              "tools/package/package_windows.ps1 未使用 windows-release 预设")
+    for rel, required in ((".github/workflows/release-windows.yml", True),
+                          (".github/workflows/ci.yml", False)):
+        path = REPO / rel
+        if not path.is_file():
+            check(not required, f"缺少 {rel}")
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        check("windows-release" in text, f"{rel} 未使用 windows-release 预设")
+    if PRODUCT != "mote":
+        # mac 相关 workflow（存在才查；ci.yml 若存在也算 mac 侧入口）
+        workflow_dir = REPO / ".github" / "workflows"
+        mac_workflows = sorted(workflow_dir.glob("*mac*")) if workflow_dir.is_dir() else []
+        ci = workflow_dir / "ci.yml"
+        if ci.is_file():
+            mac_workflows.append(ci)
+        for path in mac_workflows:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            check("macos-release" in text, f"{path.name} 未使用 macos-release 预设")
+
+
+def test_release_attachments() -> None:
+    text = read("tools/release/publish_release.sh")
+    check("dist/" in text, "publish_release.sh 未从 dist/ 收集附件")
+    check("build/package" not in text, "publish_release.sh 仍引用旧目录 build/package")
+
+
 for test in (test_layout, test_no_legacy_references, test_packaging,
-             test_publish_chain, test_cmake_strict_switch, test_gen_build_synced):
+             test_publish_chain, test_cmake_strict_switch, test_gen_build_synced,
+             test_presets, test_artifact_dirs, test_build_entry_uses_presets,
+             test_release_attachments):
     test()
 
 print(f"SUMMARY failures={failures}")

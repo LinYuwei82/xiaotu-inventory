@@ -46,8 +46,8 @@ case "$PRODUCT_KEY" in
     VERSION_FILE="VERSION.txt"
     ATT_SRC=(
       "dist/Mote-macOS-native-{V}.dmg"
-      "dist/mote-{V}-win64-setup.exe"
-      "dist/mote-{V}-win64-portable.zip"
+      "dist/Mote-Setup-{V}.exe"
+      "dist/Mote-Windows.zip"
     )
     ATT_DST=(
       "mote-{V}-macos-arm64.dmg"
@@ -61,9 +61,9 @@ case "$PRODUCT_KEY" in
     GITEE_OWNER="lin-yuwei168"; GITEE_REPO="dev_card_cpp"
     VERSION_FILE="VERSION.txt"
     ATT_SRC=(
-      "dist/devcard-{V}-macos-arm64.dmg"
-      "dist/devcard-{V}-win64-setup.exe"
-      "dist/devcard-{V}-win64-portable.zip"
+      "dist/DevCard-{V}-macos-arm64.dmg"
+      "dist/DevCard-{V}-setup.exe"
+      "dist/DevCard-{V}-win64-portable.zip"
     )
     ATT_DST=(
       "devcard-{V}-macos-arm64.dmg"
