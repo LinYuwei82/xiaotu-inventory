@@ -6985,6 +6985,16 @@
     return labels[reason] || "";
   }
 
+  // 强制是否已生效：未设期限 → 立即强制；设了期限 → 到期才强制（截止前可稍后）。
+  // 期限解析失败按「已到期」处理，避免格式问题成为绕过手段；三端同一口径。
+  function mandatoryActive(status) {
+    if (!status || !status.mandatory || !status.update_available) return false;
+    const raw = status.pending_deadline || status.mandatory_deadline || "";
+    if (!raw) return true;
+    const at = Date.parse(raw);
+    return !Number.isFinite(at) || Date.now() >= at;
+  }
+
   // macOS v2 清单没有构建号（build 固定 0）：没有构建号时只显示版本号。
   function versionWithBuild(version, build) {
     const text = version || "新版本";
@@ -7244,7 +7254,7 @@
   // blocker 只弹一次；安装由壳交给 Sparkle 完成，安装包会重新下载。
   let mandatoryBlockOpen = false;
   function blockMandatoryUpdate(status) {
-    if (mandatoryBlockOpen || !status || !status.mandatory || !status.update_available) return;
+    if (mandatoryBlockOpen || !mandatoryActive(status)) return;
     const bridge = nativeUpdateBridge();
     if (!bridge || !bridge.xiaotuUpdateInstall) return;
     mandatoryBlockOpen = true;
@@ -7383,19 +7393,22 @@
              </p>
              <button class="btn" type="button" data-role="ack-prefetch">我知道了，开始后台下载</button>`
           : "";
-      // 强制升级：阻塞式提示，不提供“跳过此版本”，安装入口保持可用。
+      // 强制升级：到期后阻塞式提示，不提供“跳过此版本”；截止前仍按普通更新提示。
       const reason = mandatoryReasonText(status.reason);
+      const forceNow = mandatoryActive(status);
       const mandatory =
         status.update_available && status.mandatory
-          ? `<div class="notice error" style="margin:10px 0">
-               <strong>必须升级</strong>：${
+          ? `<div class="notice ${forceNow ? "error" : "warn"}" style="margin:10px 0">
+               <strong>${forceNow ? "必须升级" : "计划升级"}</strong>：${
                  reason ? escapeHtml(reason) + "，" : ""
                }当前版本需升级到 ${escapeHtml(
                  status.pending_version || "新版本"
-               )} 后才能继续使用，此更新不能跳过。${
-                 status.pending_deadline
-                   ? `请于 ${escapeHtml(status.pending_deadline)} 前完成升级。`
-                   : ""
+               )}。${
+                 forceNow
+                   ? "此更新已到截止时间，不能跳过。"
+                   : status.pending_deadline
+                     ? `请在 ${escapeHtml(status.pending_deadline)} 前完成升级，到期后将无法跳过。`
+                     : ""
                }
              </div>`
           : "";
@@ -7540,9 +7553,14 @@
           ? `约 ${formatBytes(status.pending_size)}`
           : "安装包";
         const downloaded = status.prefetch_state === "done";
+        const forceNow = mandatoryActive(status);
+        const deadlineNote =
+          !forceNow && status.mandatory && status.pending_deadline
+            ? `该版本为强制更新，请在 ${status.pending_deadline} 前完成，到期后将无法跳过。`
+            : "";
         const confirmed = await askConfirm(
-          status.mandatory
-            ? `此更新为必须升级（${mandatoryReasonText(status.reason) || "服务端要求"}），不能跳过。` +
+          forceNow
+            ? `此更新已到截止时间（${mandatoryReasonText(status.reason) || "服务端要求"}），不能跳过。` +
                 (downloaded
                   ? "将使用已下载的安装包，随后关闭程序并完成安装。是否继续？"
                   : `安装时会重新下载${size}，随后关闭程序并完成安装。是否继续？`)
@@ -7550,6 +7568,7 @@
                 status.pending_version,
                 status.pending_build
               )}。` +
+                deadlineNote +
                 (downloaded
                   ? "将使用已下载并校验的安装包，随后关闭程序并完成安装。是否继续？"
                   : `安装时会重新下载${size}（后台预下载只用于提前校验），随后关闭程序并完成安装。是否继续？`),
@@ -7706,16 +7725,29 @@
       if (data.manifest_warning) {
         rows.push(["清单提示", data.manifest_warning]);
       }
-      // 强制升级：服务端 min_supported_version 或清单 mandatory 都会置位。
+      // 强制升级：服务端 min_supported_version 或清单 mandatory 都会置位；
+      // 设了期限时，截止前仍按普通更新提示，到期才阻塞。
       const mandatoryReason = mandatoryReasonText(data.mandatory_reason || "");
+      const deadlineRaw = data.pending_deadline || data.mandatory_deadline || "";
+      const forceNow = mandatoryActive({
+        mandatory: data.mandatory,
+        update_available: data.update_available,
+        pending_deadline: deadlineRaw,
+      });
       const mandatory =
         data.update_available && data.mandatory
-          ? `<div class="notice error" style="margin:0 0 10px">
-               <strong>必须升级</strong>：${
+          ? `<div class="notice ${forceNow ? "error" : "warn"}" style="margin:0 0 10px">
+               <strong>${forceNow ? "必须升级" : "计划升级"}</strong>：${
                  mandatoryReason ? escapeHtml(mandatoryReason) + "，" : ""
                }当前版本需升级到 ${escapeHtml(
                  latest ? latest.version : "新版本"
-               )} 后才能继续使用，此更新不能跳过。
+               )}。${
+                 forceNow
+                   ? "此更新已到截止时间，不能跳过。"
+                   : deadlineRaw
+                     ? `请在 ${escapeHtml(deadlineRaw)} 前完成升级，到期后将无法跳过。`
+                     : ""
+               }
              </div>`
           : "";
       let downloadLine = "";

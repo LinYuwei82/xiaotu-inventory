@@ -73,32 +73,6 @@ if ! command -v hdiutil >/dev/null 2>&1; then
   exit 1
 fi
 
-# ===== 硬门禁前置：签名证书 + 公证 profile 必须同时满足 =====
-if [ -z "${XIAOTU_SIGN_IDENTITY:-}" ]; then
-  echo "硬性前提检查失败：XIAOTU_SIGN_IDENTITY 未设置" >&2
-  echo "  需要 Developer ID Application 证书名称" >&2
-  echo "  钥匙串查找：security find-identity -v -p codesigning" >&2
-  echo "  然后：export XIAOTU_SIGN_IDENTITY='Developer ID Application: <你的名字>'" >&2
-  exit 1
-fi
-echo "签名证书：${XIAOTU_SIGN_IDENTITY} ✓"
-
-if [ -z "${XIAOTU_NOTARY_PROFILE:-}" ]; then
-  echo "硬性前提检查失败：XIAOTU_NOTARY_PROFILE 未设置" >&2
-  echo "  需要 notarytool keychain profile 名" >&2
-  echo "  先存储一次：xcrun notarytool store-credentials 'xiaotu-notary' \\" >&2
-  echo "    --apple-id <your@appleid.com> --team-id BMCUC4B6XX --password <app-specific-password>" >&2
-  echo "  然后：export XIAOTU_NOTARY_PROFILE=xiaotu-notary" >&2
-  exit 1
-fi
-# profile 存在性验证
-if xcrun notarytool history --keychain-profile "$XIAOTU_NOTARY_PROFILE" 2>&1 | head -1 | grep -qi "error"; then
-  echo "硬性前提检查失败：notarytool keychain profile '$XIAOTU_NOTARY_PROFILE' 不存在" >&2
-  echo "  重新存储：xcrun notarytool store-credentials '$XIAOTU_NOTARY_PROFILE' \\" >&2
-  echo "    --apple-id <your@appleid.com> --team-id BMCUC4B6XX --password <app-specific-password>" >&2
-  exit 1
-fi
-echo "公证 profile：${XIAOTU_NOTARY_PROFILE} ✓"
 
 VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION.txt" 2>/dev/null)"
 if [ -z "$VERSION" ]; then
@@ -159,6 +133,33 @@ else
     echo "gen_build.py 失败，无法生成构建号" >&2; exit 1; }
   echo "构建号：${BUILD_NUMBER}（来源 gen_build.py）"
 fi
+
+# ===== 硬门禁前置：签名证书 + 公证 profile 必须同时满足 =====
+if [ -z "${XIAOTU_SIGN_IDENTITY:-}" ]; then
+  echo "硬性前提检查失败：XIAOTU_SIGN_IDENTITY 未设置" >&2
+  echo "  需要 Developer ID Application 证书名称" >&2
+  echo "  钥匙串查找：security find-identity -v -p codesigning" >&2
+  echo "  然后：export XIAOTU_SIGN_IDENTITY='Developer ID Application: <你的名字>'" >&2
+  exit 1
+fi
+echo "签名证书：${XIAOTU_SIGN_IDENTITY} ✓"
+
+if [ -z "${XIAOTU_NOTARY_PROFILE:-}" ]; then
+  echo "硬性前提检查失败：XIAOTU_NOTARY_PROFILE 未设置" >&2
+  echo "  需要 notarytool keychain profile 名" >&2
+  echo "  先存储一次：xcrun notarytool store-credentials 'xiaotu-notary' \\" >&2
+  echo "    --apple-id <your@appleid.com> --team-id BMCUC4B6XX --password <app-specific-password>" >&2
+  echo "  然后：export XIAOTU_NOTARY_PROFILE=xiaotu-notary" >&2
+  exit 1
+fi
+# profile 存在性验证
+if xcrun notarytool history --keychain-profile "$XIAOTU_NOTARY_PROFILE" 2>&1 | head -1 | grep -qi "error"; then
+  echo "硬性前提检查失败：notarytool keychain profile '$XIAOTU_NOTARY_PROFILE' 不存在" >&2
+  echo "  重新存储：xcrun notarytool store-credentials '$XIAOTU_NOTARY_PROFILE' \\" >&2
+  echo "    --apple-id <your@appleid.com> --team-id BMCUC4B6XX --password <app-specific-password>" >&2
+  exit 1
+fi
+echo "公证 profile：${XIAOTU_NOTARY_PROFILE} ✓"
 
 # 显式传入（含空值），避免 CMake 缓存把上一次的更新配置带到本次包。
 CMAKE_ARGS=(

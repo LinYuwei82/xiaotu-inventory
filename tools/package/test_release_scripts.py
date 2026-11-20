@@ -285,11 +285,8 @@ class TestMakeDmg(unittest.TestCase):
     def test_help_zero_exit(self):
         self.r.run(self.script, ["--help"], expect_code=0)
 
-    def test_build_required(self):
-        self.r.run(self.script, env_override={"XIAOTU_BUILD": ""},
-                   expect_code=1, expect_stderr_contains="XIAOTU_BUILD")
-
-    def test_build_must_be_numeric(self):
+    def test_build_optional_but_numeric(self):
+        """BUILD 可省略（自动 gen_build）；显式传入时必须纯数字。"""
         self.r.run(self.script, env_override={"XIAOTU_BUILD": "abc"},
                    expect_code=1, expect_stderr_contains="必须是纯数字")
 

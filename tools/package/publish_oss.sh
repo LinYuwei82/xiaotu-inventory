@@ -148,7 +148,6 @@ SCHEMA_MIN="${SCHEMA_MIN:-1}"
 SCHEMA_MAX="${SCHEMA_MAX:-39}"
 API_MIN="${API_MIN:-1}"
 API_MAX="${API_MAX:-1}"
-MANDATORY="${MANDATORY:-}"
 RELEASE_NOTES_URL="${RELEASE_NOTES_URL:-}"
 RELEASE_NOTES_FILE="${RELEASE_NOTES_FILE:-}"
 # dl.xiaotu.online 是 OSS 自定义域名（CNAME 直连 OSS，无 CDN 层），源站上传即生效，
@@ -427,33 +426,21 @@ if [ ! -s "$MANIFEST_LOCAL" ]; then
 fi
 
 # ---- 灰度与强制更新（与 Mote / DevCard 同一口径，默认全量 + 非强制）----
-ROLLOUT_PERCENT="${ROLLOUT_PERCENT:-100}"
-case "$MANDATORY" in
-  ""|false|0) MANDATORY_ON=0 ;;
-  true|1) MANDATORY_ON=1 ;;
-  *) echo "MANDATORY 只能是 true/false（或 1/0）：$MANDATORY" >&2; exit 2 ;;
-esac
-if ! [[ "$ROLLOUT_PERCENT" =~ ^[0-9]+$ ]] \
-   || (( ROLLOUT_PERCENT < 1 || ROLLOUT_PERCENT > 100 )); then
-  echo "ROLLOUT_PERCENT 必须是 1–100 的整数：$ROLLOUT_PERCENT" >&2; exit 2
-fi
-MANDATORY_REASON="${MANDATORY_REASON:-}"
-MANDATORY_DEADLINE="${MANDATORY_DEADLINE:-}"
+# 校验在 tools/release/publish_args.py（三仓库共享，由 sync_guard.sh 同步），这里只收集参数。
+# 兼容历史用法：只传 MANDATORY=true 时用 MIN_SUPPORTED + 发布日期补齐原因/期限。
+PUBLISH_ARGS_SH="$(python3 "$REPO_ROOT/tools/release/publish_args.py" validate \
+  --product xiaotu \
+  --rollout "${ROLLOUT_PERCENT:-100}" \
+  --mandatory "${MANDATORY:-}" \
+  --mandatory-reason "${MANDATORY_REASON:-}" \
+  --mandatory-deadline "${MANDATORY_DEADLINE:-}" \
+  --default-reason MIN_SUPPORTED \
+  --default-deadline "$PUBLISHED_AT" \
+  --emit sh)" || exit 2
+eval "$PUBLISH_ARGS_SH"
 if [ "$MANDATORY_ON" = "1" ]; then
-  # 兼容历史用法：只传 MANDATORY=true 时沿用 MIN_SUPPORTED + 发布日期
-  MANDATORY_REASON="${MANDATORY_REASON:-MIN_SUPPORTED}"
-  case "$MANDATORY_REASON" in
-    SECURITY|PROTOCOL|REGULATORY|MIN_SUPPORTED) ;;
-    *) echo "MANDATORY_REASON 必须是 SECURITY/PROTOCOL/REGULATORY/MIN_SUPPORTED 之一：$MANDATORY_REASON" >&2; exit 2 ;;
-  esac
-  MANDATORY_DEADLINE="${MANDATORY_DEADLINE:-$PUBLISHED_AT}"
-  if ! [[ "$MANDATORY_DEADLINE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
-    echo "MANDATORY_DEADLINE 必须是 ISO 8601 UTC（如 2026-12-01T00:00:00Z）：$MANDATORY_DEADLINE" >&2; exit 2
-  fi
   echo "更新策略：灰度 ${ROLLOUT_PERCENT}% · 强制更新（${MANDATORY_REASON}，截止 ${MANDATORY_DEADLINE}）"
 else
-  [ -z "$MANDATORY_REASON$MANDATORY_DEADLINE" ] || {
-    echo "MANDATORY_REASON / MANDATORY_DEADLINE 只在 MANDATORY=true 时有效" >&2; exit 2; }
   echo "更新策略：灰度 ${ROLLOUT_PERCENT}% · 非强制"
 fi
 

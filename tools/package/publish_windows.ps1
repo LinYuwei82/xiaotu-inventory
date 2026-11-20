@@ -44,32 +44,43 @@ param(
     [string]$KeyId = "2026-11",
     [switch]$SkipUpload,
     [switch]$NotesOnly,
-    [ValidateRange(1, 100)][int]$Rollout = 100,
+    [int]$Rollout = 100,
     [switch]$Mandatory,
-    [ValidateSet("SECURITY", "PROTOCOL", "REGULATORY", "MIN_SUPPORTED")][string]$MandatoryReason = "",
+    [string]$MandatoryReason = "",
     [string]$MandatoryDeadline = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+# ---- 仓库根 ----
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 function Fail([string]$message) {
     Write-Host "[失败] $message" -ForegroundColor Red
     exit 1
 }
 
-# 灰度 / 强制更新参数校验（与 Mote / DevCard 同一口径）
-if ($Mandatory -and -not $MandatoryReason) {
-    Fail "强制更新必须用 -MandatoryReason 指定 SECURITY/PROTOCOL/REGULATORY/MIN_SUPPORTED 之一"
+# 灰度 / 强制更新参数校验：唯一实现在 tools/release/publish_args.py（三仓库共享）。
+# 非 0 退出直接 exit 2，脚本里不再重复 if 校验。
+$pyArgs = Get-Command python3 -ErrorAction SilentlyContinue
+if (-not $pyArgs) { $pyArgs = Get-Command python -ErrorAction SilentlyContinue }
+if (-not $pyArgs) { Fail "找不到 python（publish_args / manifest_v2 需要）" }
+$mandatoryArg = if ($Mandatory) { "1" } else { "0" }
+$argsOutput = & $pyArgs.Source (Join-Path $root "tools\release\publish_args.py") validate `
+    "--product=xiaotu" "--rollout=$Rollout" "--mandatory=$mandatoryArg" `
+    "--mandatory-reason=$MandatoryReason" "--mandatory-deadline=$MandatoryDeadline" --emit sh
+if ($LASTEXITCODE -ne 0) { exit 2 }
+foreach ($line in @($argsOutput)) {
+    if ($line -notmatch "^([A-Z_]+)='(.*)'$") { continue }
+    $key = $Matches[1]
+    $val = $Matches[2].Replace("'\''", "'")
+    switch ($key) {
+        "ROLLOUT_PERCENT"    { $Rollout = [int]$val }
+        "MANDATORY_ON"       { $Mandatory = ($val -eq "1") }
+        "MANDATORY_REASON"   { $MandatoryReason = $val }
+        "MANDATORY_DEADLINE" { $MandatoryDeadline = $val }
+    }
 }
-if (-not $Mandatory -and ($MandatoryReason -or $MandatoryDeadline)) {
-    Fail "-MandatoryReason / -MandatoryDeadline 只在 -Mandatory 时有效"
-}
-if ($MandatoryDeadline -and $MandatoryDeadline -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$') {
-    Fail "-MandatoryDeadline 必须是 ISO 8601 UTC（如 2026-12-01T00:00:00Z）"
-}
-
-# ---- 仓库根 ----
-$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 
 # ---- 凭据文件解析：环境变量优先，其次 %USERPROFILE%\.config\xiaotu-updates\.env ----
 function Import-EnvFile([string]$path) {
