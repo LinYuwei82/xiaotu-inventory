@@ -49,14 +49,15 @@ endif()
 set(XIAOTU_EDITION "full" CACHE STRING "版本：full（全功能版）或 community（社区版）")
 message(STATUS "版本：${XIAOTU_EDITION}")
 
-# 构建号：单调递增。出包与 CI 必须显式传入；本地开发留空时回落到开发默认值并告警，
-# 让“这是默认值、不可发布”在配置阶段就可见，而不是悄悄生效。
-set(XIAOTU_DEFAULT_BUILD "2026111301")
-option(XIAOTU_RELEASE_BUILD "发布/出包构建：XIAOTU_BUILD 必须显式提供" OFF)
-set(XIAOTU_BUILD "" CACHE STRING "构建号（发布构建必填；开发态留空使用默认值）")
+# 构建号：单调递增。出包与 CI 必须显式传入 -DXIAOTU_BUILD=$(gen_build.py)；
+# 本地开发留空时回落到开发占位值 999999999 并告警，配置阶段就可见。
+# 统一用 tools/release/gen_build.py 生成（保证 > 线上 manifest.json 的 build 最大值）。
+set(XIAOTU_DEFAULT_BUILD "999999999")
+option(XIAOTU_RELEASE_BUILD "发布/出包构建：XIAOTU_BUILD 必须显式提供（由 gen_build.py 生成）" OFF)
+set(XIAOTU_BUILD "" CACHE STRING "构建号（gen_build.py 生成；开发态留空回落到 999999999）")
 if(XIAOTU_RELEASE_BUILD)
   if(XIAOTU_BUILD STREQUAL "")
-    message(FATAL_ERROR "发布/出包构建必须显式指定 -DXIAOTU_BUILD=<纯数字构建号>")
+    message(FATAL_ERROR "发布/出包构建必须显式指定 -DXIAOTU_BUILD=<build>，推荐：\n  BUILD=$(python3 tools/release/gen_build.py --product xiaotu --repo-root .)\n  cmake -B build -DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=$BUILD ...")
   endif()
   if(NOT XIAOTU_BUILD MATCHES "^[0-9]+$")
     message(FATAL_ERROR "XIAOTU_BUILD 必须是纯数字：${XIAOTU_BUILD}")
@@ -70,7 +71,7 @@ elseif(XIAOTU_BUILD STREQUAL "")
   set(XIAOTU_BUILD "${XIAOTU_DEFAULT_BUILD}" CACHE STRING "" FORCE)
 endif()
 if(XIAOTU_BUILD STREQUAL XIAOTU_DEFAULT_BUILD)
-  message(WARNING "构建号 ${XIAOTU_BUILD} 是开发默认值，此产物不可用于发布；出包请用 tools/package/make_dmg.sh 并显式设置 XIAOTU_BUILD")
+  message(WARNING "构建号 ${XIAOTU_BUILD} 是开发占位值，此产物不可用于发布；\n  出包请用 tools/package/make_dmg.sh（内部调用 gen_build.py 自动生成）。")
 endif()
 # 单机版更新配置：由 tools/package/make_dmg.sh 在打包时注入 Info.plist。
 # 三者都为空表示更新功能关闭；只提供一部分视为配置错误。
