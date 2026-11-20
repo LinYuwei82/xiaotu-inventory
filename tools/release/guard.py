@@ -342,7 +342,8 @@ def live_version_v2(product: str, channel: str, base: str, kind: str) -> Optiona
 def check_manifest_v2(data: Dict[str, Any], product: str, kind: str,
                       artifacts: List[Artifact], version: str, base: str,
                       channel: str, build: Optional[int] = None,
-                      pub: Optional[bytes] = None) -> None:
+                      pub: Optional[bytes] = None,
+                      allow_build_drift: bool = False) -> None:
     if data.get("manifest_version") != 2:
         die(f"manifest_version={data.get('manifest_version')}，应为 2")
     if data.get("product") != product:
@@ -383,6 +384,24 @@ def check_manifest_v2(data: Dict[str, Any], product: str, kind: str,
         die(f"清单 {platform}.version={section.get('version')} 与产物 {version} 不一致")
     if build is not None and int(section.get("build", 0)) != build:
         die(f"清单 {platform}.build={section.get('build')} 与产物构建号 {build} 不一致")
+    # 跨平台构建号同源：build 由 git count 派生、与平台无关，
+    # 同一次发布的两平台必须同号，否则同一版本号下用户会装到不同代码。
+    other_key = "windows" if platform == "macos" else "macos"
+    other = platforms.get(other_key)
+    if isinstance(other, dict):
+        other_version = str(other.get("version", ""))
+        other_build = int(other.get("build", 0) or 0)
+        if other_version == version and other_build == 0:
+            warn(f"{other_key}.build=0（历史清单未写构建号），该平台下次发布后自动纠正")
+        elif (other_version == version and build is not None
+              and other_build > 0 and other_build != build):
+            msg = (f"同版本 {version} 两平台 build 不同源："
+                   f"{platform}={build}，{other_key}={other_build}"
+                   "（build 由 git count 派生，应一致）")
+            if allow_build_drift:
+                warn(msg + "；已用 --allow-build-drift 放行")
+            else:
+                die(msg + "\n    单平台热修请显式加 --allow-build-drift，并在发布记录写明原因。")
     arts = section.get("artifacts")
     if not isinstance(arts, dict) or not arts:
         die(f"清单 {platform}.artifacts 为空")
@@ -867,7 +886,8 @@ def cmd_preflight(args: argparse.Namespace) -> int:
                 die(f"清单不存在：{mpath}")
             data = json.loads(mpath.read_text(encoding="utf-8"))
             check_manifest_v2(data, args.product, args.kind, artifacts, version,
-                              base, args.channel, build=args.build, pub=pub)
+                              base, args.channel, build=args.build, pub=pub,
+                              allow_build_drift=args.allow_build_drift)
         elif args.kind == "win" and args.build is None:
             warn("v2 未提供 --build，跳过构建号相关检查")
         current = None if args.offline else live_version_v2(args.product, args.channel, base, args.kind)
@@ -940,7 +960,8 @@ def cmd_verify_live(args: argparse.Namespace) -> int:
     if schema == "v2":
         pub = load_pub_bytes_arg(args.pub_hex, args.pub)
         check_manifest_v2(data, args.product, args.kind, artifacts, version,
-                          base, args.channel, build=args.build, pub=pub)
+                          base, args.channel, build=args.build, pub=pub,
+                          allow_build_drift=args.allow_build_drift)
     else:
         check_manifest(data, args.product, args.kind, artifacts, version, base, args.channel)
 
@@ -1109,6 +1130,27 @@ def cmd_selftest() -> int:
     bad["platforms"]["windows"]["artifacts"]["portable"]["url"] = "https://dl.xiaotu.online/mote/Mote-1.0.3.zip"
     _expect_error(lambda: check_manifest_v2(bad, "mote", "win", v2arts, "1.0.3", DEFAULT_BASE,
                                             "stable", build=202611180530), "与 v2 命名不一致"); n += 1
+
+    # 跨平台 build 同源（P0）：同一版本两平台必须同号；单平台热修可显式放行
+    v2dual = json.loads(json.dumps(v2good))
+    v2dual["platforms"]["macos"] = {
+        "version": "1.0.3", "build": 202611180530, "min_os": "13.0",
+        "artifacts": {"dmg": {
+            "url": "https://dl.xiaotu.online/mote/mote-1.0.3-macos-arm64.dmg",
+            "size": 7, "sha256": "d" * 64}}}
+    check_manifest_v2(v2dual, "mote", "win", v2arts, "1.0.3", DEFAULT_BASE, "stable",
+                      build=202611180530); n += 1
+    v2drift = json.loads(json.dumps(v2dual))
+    v2drift["platforms"]["macos"]["build"] = 202611180531
+    _expect_error(lambda: check_manifest_v2(v2drift, "mote", "win", v2arts, "1.0.3",
+                                            DEFAULT_BASE, "stable",
+                                            build=202611180530), "不同源"); n += 1
+    check_manifest_v2(v2drift, "mote", "win", v2arts, "1.0.3", DEFAULT_BASE, "stable",
+                      build=202611180530, allow_build_drift=True); n += 1
+    v2zero = json.loads(json.dumps(v2dual))
+    v2zero["platforms"]["macos"]["build"] = 0
+    check_manifest_v2(v2zero, "mote", "win", v2arts, "1.0.3", DEFAULT_BASE, "stable",
+                      build=202611180530); n += 1
 
     # 绿色包内嵌地址（v2：manifest.json）
     with tempfile.TemporaryDirectory() as td:
@@ -1313,6 +1355,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="v2：本次发布的 Windows 构建号")
         s.add_argument("--pub", help="v2：Ed25519 公钥文件（PEM/hex/base64）用于验签")
         s.add_argument("--pub-hex", help="v2：Ed25519 公钥 hex（与 --pub 二选一）")
+        s.add_argument("--allow-build-drift", action="store_true",
+                       help="v2：允许同版本两平台 build 不同（单平台热修，需在发布记录写明原因）")
     return p
 
 

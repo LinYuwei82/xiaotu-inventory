@@ -2,8 +2,8 @@
 """
 gen_build — 生成三仓库统一格式的 build 号
 
-格式：YYYY * 100000 + git_rev_list_count（10 位纯整数）
-      例：2026 * 100000 + 418 = 2026000418
+格式：YYYY * 10^12 + git_rev_list_count（16 位纯整数）
+      例：2026 * 10^12 + 358 = 2026000000000358
 
 单调递增保证：
   - 同一 commit 跨机器完全一致（git rev-list --count HEAD 不变）
@@ -68,11 +68,11 @@ def _git_count(repo_root: str) -> int:
 
 def _build_from_components(count: int) -> int:
     """
-    build = YYYY * 10^12 + git_rev_list_count（13 位纯整数）
+    build = YYYY * 10^12 + git_rev_list_count（16 位纯整数）
 
     为什么乘 10^12：
       上一代用 UTC 时间戳 YYYYMMDDHHmm（12 位），最大 209912312359。
-      13 位数字天然大于任何 12 位时间戳，一次切换完不回退。
+      16 位数字天然大于任何 12 位时间戳，一次切换完不回退。
 
     为什么加 git_count：
       同一 commit 跨机器完全一致（git rev-list --count HEAD 不变），
