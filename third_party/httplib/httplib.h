@@ -6834,6 +6834,12 @@ inline bool Server::listen_internal() {
 inline bool Server::routing(Request &req, Response &res, Stream &strm) {
   if (pre_routing_handler_ &&
       pre_routing_handler_(req, res) == HandlerResponse::Handled) {
+    // [xiaotu patch] 预路由拒绝发生在请求体读取之前。若直接返回并关闭连接，
+    // Windows 会因接收缓冲区仍有未读数据而发 RST，客户端偶尔拿不到 401/403，
+    // 只看到连接被重置。这里先把请求体读完，再交出响应。
+    if (detail::expect_content(req)) {
+      read_content(strm, req, res);
+    }
     return true;
   }
 
