@@ -112,4 +112,4 @@ $env:XIAOTU_SHELL_STARTUP_TIMEOUT = '60'; .\xiaotu-shell.exe
 
 对外暴露：`main.cpp` 用 `AddHostObjectToScript("updater_win", ...)` 把 `UpdaterWin` 挂到 `window.chrome.webview.hostObjects.updater_win`，可用 `checkNow()` / `downloadUpdate()` / `installUpdate()` / `cancelPrefetch()` / `setOptions(auto, prefetch)` / `statusJson()`。
 
-**当前限制**：`web/app.js` 的更新卡片只识别 macOS 的 `window.webkit.messageHandlers`，尚未接 Windows 的 `hostObjects.updater_win`，因此 Windows 界面看到的仍是服务端更新源分支。桥本身未经真机验证；正式分发仍以手动下载安装包为准。
+**当前状态**：`web/app.js` 已接入 `chrome.webview.hostObjects.updater_win` 前端卡片（第 6996-7104 行），但**未签名安装包 + WebView2 + 静默 ISCC 安装 + 重启全链路尚未在真实 Windows 上跑通**；正式分发仍以手动下载安装包为准。建议下一次 12600k 构建后补真机验收。
