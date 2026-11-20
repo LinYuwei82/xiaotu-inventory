@@ -44,6 +44,8 @@ jobs:
         run: sha256sum -c tools/release/guard.sha256
       - name: guard selftest
         run: python3 tools/release/guard.py selftest
+      - name: 发布脚本布局检查
+        run: python3 tools/release/test_release_layout.py
 
   windows:
     runs-on: windows-latest

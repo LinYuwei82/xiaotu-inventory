@@ -230,6 +230,56 @@ int main() {
         "强制更新不受跳过限制");
   check(mandatory_decision.reason == "SECURITY", "强制原因保留");
 
+  // 强制更新绕过灰度：percent 取该设备桶号，bucket >= percent 即未命中
+  xiaotu::UpdateQuery blocked_query = query();
+  int blocked_bucket = xiaotu::rollout_bucket(blocked_query.install_id, 2026111301);
+  for (int i = 0; blocked_bucket == 0 && i < 1000; ++i) {
+    blocked_query.install_id = "blocked-device-" + std::to_string(i);
+    blocked_bucket = xiaotu::rollout_bucket(blocked_query.install_id, 2026111301);
+  }
+  check(blocked_bucket >= 1 && !xiaotu::rollout_allows(blocked_bucket, blocked_bucket),
+        "构造出的设备应落在灰度外");
+
+  auto mandatory_rollout_body = base_manifest();
+  mandatory_rollout_body["rollout_percent"] = blocked_bucket;
+  mandatory_rollout_body["mandatory"] = true;
+  mandatory_rollout_body["mandatory_reason"] = "SECURITY";
+  xiaotu::UpdateManifest mandatory_rollout;
+  check(xiaotu::parse_manifest(mandatory_rollout_body, mandatory_rollout, error),
+        "强制 + 灰度外清单应通过");
+  auto mandatory_rollout_decision =
+      xiaotu::evaluate_manifest(mandatory_rollout, blocked_query, 0);
+  check(mandatory_rollout_decision.update_available && mandatory_rollout_decision.mandatory &&
+            mandatory_rollout_decision.code == "UPDATE_REQUIRED",
+        "强制更新绕过灰度且状态码为 UPDATE_REQUIRED");
+
+  auto staged_outside_body = base_manifest();
+  staged_outside_body["rollout_percent"] = blocked_bucket;
+  xiaotu::UpdateManifest staged_outside;
+  check(xiaotu::parse_manifest(staged_outside_body, staged_outside, error),
+        "灰度外清单应通过");
+  check(xiaotu::evaluate_manifest(staged_outside, blocked_query, 0).code == "NOT_IN_ROLLOUT",
+        "非强制灰度外不应命中");
+
+  auto bad_deadline = base_manifest();
+  bad_deadline["mandatory"] = true;
+  bad_deadline["mandatory_reason"] = "SECURITY";
+  bad_deadline["mandatory_deadline"] = "2026-12-01";
+  check(!xiaotu::parse_manifest(bad_deadline, manifest, error) &&
+            error.code == "MANIFEST_TIME_INVALID",
+        "非法 mandatory_deadline 应拒绝");
+
+  auto stale_mandatory_body = base_manifest();
+  stale_mandatory_body["mandatory"] = false;
+  stale_mandatory_body["mandatory_reason"] = "SECURITY";
+  stale_mandatory_body["mandatory_deadline"] = "2026-12-01T00:00:00Z";
+  xiaotu::UpdateManifest stale_mandatory;
+  check(xiaotu::parse_manifest(stale_mandatory_body, stale_mandatory, error),
+        "非强制清单应通过");
+  check(!stale_mandatory.mandatory && stale_mandatory.mandatory_reason.empty() &&
+            stale_mandatory.mandatory_deadline.empty(),
+        "非强制时应清空 reason/deadline");
+
   const int bucket_a = xiaotu::rollout_bucket("device-a", 2026111301);
   const int bucket_b = xiaotu::rollout_bucket("device-a", 2026111301);
   check(bucket_a == bucket_b, "分桶稳定");
