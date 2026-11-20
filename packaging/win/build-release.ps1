@@ -54,16 +54,17 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
   Fail "当前不是 Developer PowerShell（找不到 cl.exe）。请从「Developer PowerShell for VS 2022」启动后再运行。"
 }
 
-$version = (Get-Content (Join-Path $root 'VERSION') -Raw).Trim()
-if (-not $version) { Fail "无法读取 VERSION" }
+$version = (Get-Content (Join-Path $root 'VERSION.txt') -Raw).Trim()
+if (-not $version) { Fail "无法读取 VERSION.txt" }
 
 # 构建号：缺省走 gen_build.py（year*10^12 + git_count，自动校验 > 线上），
 # 三仓库统一口径；不再用 UTC 时间戳，避免与 macOS 各自生成导致撞号。
 if (-not $Build) {
   $genBuild = Join-Path $root 'tools\release\gen_build.py'
   if (-not (Test-Path $genBuild)) { Fail "找不到 gen_build.py：$genBuild" }
-  $py = Get-Command python3 -ErrorAction SilentlyContinue
-  if (-not $py) { $py = Get-Command python -ErrorAction SilentlyContinue }
+  # Windows 上 python3 常是 Microsoft Store 的占位程序（退出码 9009），优先用 python
+  $py = Get-Command python -ErrorAction SilentlyContinue
+  if (-not $py) { $py = Get-Command python3 -ErrorAction SilentlyContinue }
   if (-not $py) { Fail "找不到 python，无法运行 gen_build.py" }
   $Build = (& $py.Source $genBuild --product xiaotu --repo-root $root 2>$null | Select-Object -Last 1)
   if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($Build)) {
@@ -90,7 +91,7 @@ $serverExe = Join-Path $root 'build\windows\server\xiaotu-server.exe'
 if (-not (Test-Path -LiteralPath $serverExe)) { Fail "未找到服务端产物：$serverExe" }
 
 Step "3/5 构建桌面壳"
-Invoke-Native 'cmake' @('-S', 'shell/win', '-B', 'shell/win/build', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release')
+Invoke-Native 'cmake' @('-S', 'shell/win', '-B', 'shell/win/build', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DXIAOTU_RELEASE_BUILD=ON')
 Invoke-Native 'cmake' @('--build', 'shell/win/build')
 
 $shellExe = Join-Path $root 'shell\win\build\xiaotu-shell.exe'

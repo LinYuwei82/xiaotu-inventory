@@ -3,8 +3,11 @@
 # 两种用法：
 #   1) 独立工程（默认）：
 #        .\shell\win\fetch-webview2.ps1
-#        cmake -S shell\win -B shell\win\build -G Ninja -DCMAKE_BUILD_TYPE=Release
+#        $env:XIAOTU_BUILD = "<gen_build.py 生成>"
+#        cmake -S shell\win -B shell\win\build -G Ninja -DCMAKE_BUILD_TYPE=Release -DXIAOTU_RELEASE_BUILD=ON
 #        cmake --build shell\win\build
+#      发布构建必须带 -DXIAOTU_RELEASE_BUILD=ON（或环境变量 XIAOTU_BUILD），
+#      缺构建号或使用开发占位值时 configure 阶段直接失败。
 #   2) 接入顶层构建（仅 Windows，默认关闭）：
 #        cmake --preset windows-release -DXIAOTU_BUILD_WIN_SHELL=ON
 #
@@ -59,19 +62,36 @@ else()
     "${_core_include}"
     "${_third_party}"
     "${_repo_root}/cmake")
-  # 独立构建没有父工程的 -DXIAOTU_BUILD，改从环境变量读。
+  # 独立构建没有父工程的 -DXIAOTU_BUILD，改从同名 CMake 变量 / 环境变量读，
+  # 与仓库根 CMakeLists 同一套语义：XIAOTU_RELEASE_BUILD=ON 时缺构建号、非数字或
+  # 仍为开发占位值都直接 FATAL；本地开发回落到 999999999 并告警。
   # 发布包必须与服务端、清单使用同一个 build 号：core 的更新判定是
   # `manifest.build <= 当前 build → 无更新`，若壳的 build 落后于清单，
-  # 客户端会每次都提示有新版本、装完仍然提示。这里不再回退到 0。
-  set(XIAOTU_SHELL_BUILD "2026111301" CACHE STRING
-      "独立构建 Windows 壳时的 build 号（发布时请用环境变量 XIAOTU_BUILD 覆盖）")
-  set(_build_epoch "$ENV{XIAOTU_BUILD}")
-  if (NOT _build_epoch OR _build_epoch STREQUAL "")
-    set(_build_epoch "${XIAOTU_SHELL_BUILD}")
-    message(WARNING
-      "未设置 XIAOTU_BUILD，壳的 build 号回退为 ${_build_epoch}（仅适合本地开发）。"
-      "发布包请与服务端使用同一个 XIAOTU_BUILD。")
+  # 客户端会每次都提示有新版本、装完仍然提示。
+  option(XIAOTU_RELEASE_BUILD "发布/出包构建：XIAOTU_BUILD 必须显式提供（由 gen_build.py 生成）" OFF)
+  set(XIAOTU_DEFAULT_BUILD "999999999")
+  # 来源优先级：-DXIAOTU_BUILD → 环境变量 XIAOTU_BUILD（packaging\win\build-release.ps1 用这个）
+  set(_build_epoch "${XIAOTU_BUILD}")
+  if (_build_epoch STREQUAL "" AND NOT "$ENV{XIAOTU_BUILD}" STREQUAL "")
+    set(_build_epoch "$ENV{XIAOTU_BUILD}")
   endif()
+  if (_build_epoch STREQUAL "")
+    if (XIAOTU_RELEASE_BUILD)
+      message(FATAL_ERROR "发布/出包构建必须显式指定 -DXIAOTU_BUILD=<build> 或环境变量 XIAOTU_BUILD，推荐：\n  BUILD=$(python3 tools/release/gen_build.py --product xiaotu --repo-root .)\n  cmake -S shell/win -B shell/win/build -DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=$BUILD ...")
+    endif()
+    set(_build_epoch "${XIAOTU_DEFAULT_BUILD}")
+    message(WARNING
+      "未设置 XIAOTU_BUILD，壳的构建号回退为开发占位值 ${_build_epoch}（仅适合本地开发）。"
+      "发布包请用 -DXIAOTU_RELEASE_BUILD=ON 并显式传入构建号。")
+  endif()
+  if (NOT _build_epoch MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "XIAOTU_BUILD 必须是纯数字：${_build_epoch}")
+  endif()
+  if (XIAOTU_RELEASE_BUILD AND _build_epoch STREQUAL XIAOTU_DEFAULT_BUILD)
+    message(FATAL_ERROR "发布构建（XIAOTU_RELEASE_BUILD=ON）不能使用开发默认构建号 ${XIAOTU_DEFAULT_BUILD}，请用 gen_build.py 生成")
+  endif()
+  # 只对本次配置生效：避免缓存把发布态带到同一目录后续的开发构建。
+  unset(XIAOTU_RELEASE_BUILD CACHE)
   # 让下面的壳目标 compile_definitions 也能拿到
   set(XIAOTU_BUILD "${_build_epoch}")
   target_compile_definitions(xiaotu_core_updater PUBLIC

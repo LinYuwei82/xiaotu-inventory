@@ -18,7 +18,7 @@
 # 壳的更新判定是「version 相同且 platforms.windows.build <= 当前 build → 无更新」；如果清单里的 build
 # 与安装包内的 build 不一致，客户端会反复提示更新。打包机在 Windows 上执行
 #   cmake --preset windows-release -DXIAOTU_RELEASE_BUILD=ON -DXIAOTU_BUILD=<BUILD>
-#   set XIAOTU_BUILD=<BUILD> & cmake -S shell\win -B shell\win\build ...
+#   set XIAOTU_BUILD=<BUILD> & cmake -S shell\win -B shell\win\build -DXIAOTU_RELEASE_BUILD=ON ...
 # 然后从 build.ninja 的 DEFINES 里确认两处都是同一个 <BUILD> 再发布。
 #
 # 凭据与签名私钥：与 publish_oss.sh 相同（私钥只在 Mac 上）：

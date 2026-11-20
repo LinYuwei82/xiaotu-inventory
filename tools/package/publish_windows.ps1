@@ -9,6 +9,8 @@
 #   客户端只读 platforms.windows：先比 version、同版本再比 build
 #
 # 重要：BUILD 必须等于 Windows 侧编译时的 -DXIAOTU_BUILD，否则客户端会反复提示同一版本。
+# -Build 可省略：依次从 CMakeCache、绿色包内 xiaotu-shell.exe 的 "XIAOTU_BUILD=<digits>"
+# 标记自动识别，最后才用 gen_build.py 按当前 git 计数生成；识别后与 CMakeCache 交叉校验。
 #
 # 目录约定（v2 命名：<product>-<version>-<os>-<arch>-<type>.<ext>）：
 #   oss://<bucket>/xiaotu/xiaotu-<ver>-win64-setup.exe           长缓存 immutable
@@ -25,7 +27,7 @@
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File tools\package\publish_windows.ps1 `
 #     -Build 202611190001
-#   powershell ... -SkipUpload -Build 202611190001    # dry-run
+#   powershell -ExecutionPolicy Bypass -File tools\package\publish_windows.ps1 -SkipUpload   # 构建号自动识别
 #   powershell ... -NotesOnly                         # 只补发说明页，不需要 setup / zip / Build
 #   powershell ... -SetupPath ... -ZipPath ... -Build 202611190001
 #   powershell ... -Rollout 10 -Build 202611190001     # 灰度 10%
@@ -108,10 +110,10 @@ Write-Host "===== 小兔进销存 · Windows 发布 ====="
 Write-Host ""
 
 # ---- 读取版本 ----
-$versionFile = Join-Path $root "VERSION"
-if (-not (Test-Path -LiteralPath $versionFile)) { Fail "无法读取 VERSION 文件：$versionFile" }
+$versionFile = Join-Path $root "VERSION.txt"
+if (-not (Test-Path -LiteralPath $versionFile)) { Fail "无法读取 VERSION.txt：$versionFile" }
 $Version = (Get-Content -LiteralPath $versionFile -Raw).Trim()
-if ($Version -notmatch '^\d+\.\d+\.\d+$') { Fail "VERSION 内容不是 x.y.z 形式：$Version" }
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { Fail "VERSION.txt 内容不是 x.y.z 形式：$Version" }
 Write-Host "版本：$Version   通道：$Channel"
 
 # ---- NotesOnly：只补发说明页并重签清单 ----
@@ -235,6 +237,10 @@ print("  manifest.json -> " + os.environ["UPLOAD_MANIFEST_KEY"])
 }
 
 # ---- Build：必须等于编译时的 -DXIAOTU_BUILD ----
+# 解析顺序：-Build 显式传入 → CMakeCache → 绿色包内 xiaotu-shell.exe 的
+# "XIAOTU_BUILD=<digits>" 标记 → gen_build.py 兜底；取到后与 CMakeCache 交叉校验。
+# 与 Mote / DevCard 的 Windows 发布脚本同一口径。
+$BuildSource = "参数 -Build"
 if ([string]::IsNullOrWhiteSpace($Build)) {
     $cachePath = Join-Path $root "build\windows\CMakeCache.txt"
     if (-not (Test-Path -LiteralPath $cachePath)) {
@@ -249,14 +255,88 @@ if ([string]::IsNullOrWhiteSpace($Build)) {
     if (Test-Path -LiteralPath $cachePath) {
         $cacheText = Get-Content -LiteralPath $cachePath -Raw
         $match = [regex]::Match($cacheText, 'XIAOTU_BUILD:[A-Z]+=(\d+)')
-        if ($match.Success) { $Build = $match.Groups[1].Value }
-    }
-    if ([string]::IsNullOrWhiteSpace($Build)) {
-        Fail "未能确定编译时的 XIAOTU_BUILD。请用 -Build <构建号> 显式传入，值必须与 cmake --preset windows-release -DXIAOTU_BUILD=<BUILD> 一致"
+        if ($match.Success) { $Build = $match.Groups[1].Value; $BuildSource = "CMakeCache" }
     }
 }
+if ([string]::IsNullOrWhiteSpace($Build)) {
+    # 兜底：直接从绿色包里的 xiaotu-shell.exe 识别（updater_win.cpp 内嵌 "XIAOTU_BUILD=<digits>"）
+    if ([string]::IsNullOrWhiteSpace($ZipPath)) {
+        $ZipPath = Join-Path $root "build\package\win\xiaotu-inventory-$Version-win64.zip"
+    }
+    if (Test-Path -LiteralPath $ZipPath) {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zipForBuild = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $ZipPath).Path)
+        try {
+            $entryForBuild = $zipForBuild.Entries | Where-Object {
+                $_.FullName.EndsWith("xiaotu-shell.exe", [StringComparison]::OrdinalIgnoreCase)
+            } | Select-Object -First 1
+            if ($entryForBuild) {
+                $tmpExe = Join-Path $env:TEMP ("xiaotu-build-" + [guid]::NewGuid().ToString("N") + ".exe")
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entryForBuild, $tmpExe)
+                try {
+                    $ascii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($tmpExe))
+                    $m = [regex]::Match($ascii, 'XIAOTU_BUILD=(\d{4,})')
+                    if ($m.Success) { $Build = $m.Groups[1].Value; $BuildSource = "绿色包内 xiaotu-shell.exe" }
+                } finally {
+                    Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } finally {
+            $zipForBuild.Dispose()
+        }
+    }
+}
+if ([string]::IsNullOrWhiteSpace($Build)) {
+    # 最后兜底：按当前 git 计数生成（与编译值不一定相同，因此显式提示来源）
+    $genBuild = Join-Path $root "tools\release\gen_build.py"
+    if (Test-Path -LiteralPath $genBuild) {
+        # PS 5.1 下原生命令写 stderr 会被当成终止错误并绕过 $LASTEXITCODE 判断，
+        # 这里临时放宽 EAP 并合并 stderr，失败时仍落到下面的统一提示。
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $genOutput = & $pyArgs.Source $genBuild --product xiaotu --repo-root $root 2>&1
+        $ErrorActionPreference = $prevEap
+        $genText = ($genOutput | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and $genText -match '^\d{4,}$') {
+            $Build = $genText
+            $BuildSource = "gen_build.py"
+            Write-Host "[警告] 未找到 CMakeCache / 绿色包构建痕迹，按当前 git 计数生成构建号；如与编译值不一致，请用 -Build 显式指定"
+        }
+    }
+}
+if ([string]::IsNullOrWhiteSpace($Build)) {
+    Fail "未能确定编译时的 XIAOTU_BUILD。请用 -Build <构建号> 显式传入，或先跑 packaging\win\build-release.ps1（会自动生成并写进 CMakeCache）"
+}
 if ($Build -notmatch '^\d{4,}$') { Fail "非法构建号：$Build（应为纯数字，如 202611190001）" }
-Write-Host "构建号：$Build"
+
+# 二次验证：与 CMakeCache 里的 XIAOTU_BUILD 一致（防止 -Build 与编译值不同步）
+if ($BuildSource -ne "CMakeCache") {
+    $cachePath = Join-Path $root "build\windows\CMakeCache.txt"
+    if (-not (Test-Path -LiteralPath $cachePath)) {
+        foreach ($candidate in @(
+            (Join-Path $root "build-native-ninja\CMakeCache.txt"),
+            (Join-Path $root "build\CMakeCache.txt")
+        )) {
+            if (Test-Path -LiteralPath $candidate) { $cachePath = $candidate; break }
+        }
+    }
+    if (Test-Path -LiteralPath $cachePath) {
+        $cachedMatch = [regex]::Match((Get-Content -LiteralPath $cachePath -Raw), 'XIAOTU_BUILD:[A-Z]+=(\d+)')
+        if ($cachedMatch.Success) {
+            $cachedBuild = $cachedMatch.Groups[1].Value
+            if ($cachedBuild -ne $Build) {
+                Fail "-Build $Build 与编译时 CMakeCache XIAOTU_BUILD=$cachedBuild 不一致；请保持同步（或清理构建目录重编）"
+            }
+            Write-Host "构建号：$Build（来源 $BuildSource，CMakeCache 一致 ✓）"
+        } else {
+            Write-Host "构建号：$Build（来源 $BuildSource，CMakeCache 未找到 XIAOTU_BUILD，跳过二次验证）"
+        }
+    } else {
+        Write-Host "构建号：$Build（来源 $BuildSource，无 CMakeCache，跳过二次验证）"
+    }
+} else {
+    Write-Host "构建号：$Build（来源 $BuildSource）"
+}
 
 # ---- 签名私钥 ----
 if (-not $SignKeyPath) {
