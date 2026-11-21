@@ -102,6 +102,20 @@ set(_repo_root "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 set(_core_include "${_repo_root}/core/include")
 set(_third_party "${_repo_root}/third_party")
 
+# 独立构建（cmake -S shell/win）时没有父工程的 win_encoding 目标，这里补一个；
+# 接入顶层构建时直接复用已有的同名目标。
+if (NOT TARGET win_encoding)
+  add_library(win_encoding STATIC
+    "${_repo_root}/modules/win_encoding/src/encoding.cpp")
+  target_include_directories(win_encoding PUBLIC
+    "${_repo_root}/modules/win_encoding/include")
+  target_compile_features(win_encoding PUBLIC cxx_std_20)
+  if (MSVC)
+    target_compile_options(win_encoding PRIVATE /utf-8 /W4)
+    target_compile_definitions(win_encoding PRIVATE UNICODE _UNICODE)
+  endif()
+endif()
+
 if (TARGET xiaotu_core)
   set(_core_link xiaotu_core)
 else()
@@ -119,7 +133,7 @@ else()
   # 发布包必须与服务端、清单使用同一个 build 号：core 的更新判定是
   # `manifest.build <= 当前 build → 无更新`，若壳的 build 落后于清单，
   # 客户端会每次都提示有新版本、装完仍然提示。
-  option(XIAOTU_RELEASE_BUILD "发布/出包构建：XIAOTU_BUILD 必须显式提供（由 gen_build.py 生成）" OFF)
+  option(XIAOTU_RELEASE_BUILD "发布/出包构建：XIAOTU_BUILD 必须显式提供（取发布 tag 序号）" OFF)
   set(XIAOTU_DEFAULT_BUILD "999999999")
   # 来源优先级：-DXIAOTU_BUILD → 环境变量 XIAOTU_BUILD（tools\package\package_windows.ps1 用这个）
   set(_build_epoch "${XIAOTU_BUILD}")
@@ -158,7 +172,7 @@ endif()
 # OpenSSL 3.0（Ed25519 验签），独立工程和顶层都要
 find_package(OpenSSL 3.0 REQUIRED)
 if (NOT TARGET xiaotu_core)
-  target_link_libraries(xiaotu_core_updater PRIVATE OpenSSL::SSL OpenSSL::Crypto bcrypt)
+  target_link_libraries(xiaotu_core_updater PRIVATE win_encoding OpenSSL::SSL OpenSSL::Crypto bcrypt)
   target_compile_definitions(xiaotu_core_updater PUBLIC XIAOTU_HAS_OPENSSL=1)
 endif()
 message(STATUS "OpenSSL (Ed25519): ${OPENSSL_VERSION}")
@@ -209,6 +223,7 @@ target_compile_definitions(xiaotu-shell PRIVATE UNICODE _UNICODE NOMINMAX WIN32_
 target_link_libraries(xiaotu-shell PRIVATE
   WebView2LoaderStatic
   ${_core_link}
+  win_encoding
   OpenSSL::SSL OpenSSL::Crypto
   winhttp bcrypt
   ole32 oleaut32 user32 shell32 gdi32)
