@@ -23,6 +23,7 @@
 #   XIAOTU_UPDATE_FEED_URL      Sparkle appcast 地址（https）
 #   XIAOTU_UPDATE_PUBKEY        Sparkle 公钥（Ed25519，base64，32 字节）
 #   更新三项必须同时提供或同时留空；留空表示更新功能关闭。
+#   XIAOTU_SPARKLE_DIR         可选；留空使用仓库内 third_party/sparkle（发布构建必带 Sparkle）
 
 set -euo pipefail
 
@@ -232,6 +233,12 @@ if [ -n "$XIAOTU_SPARKLE_DIR_VAL" ]; then
         "$STAGE/$APP_DISPLAY_NAME.app/Contents/Frameworks/Sparkle.framework"
   ls -d "$STAGE/$APP_DISPLAY_NAME.app/Contents/Frameworks/Sparkle.framework" >/dev/null
   echo "已嵌入：Contents/Frameworks/Sparkle.framework"
+fi
+# 发布包不允许缺少 Sparkle：否则安装会退化为「打开 dmg 让用户拖拽」。
+if [ ! -d "$STAGE/$APP_DISPLAY_NAME.app/Contents/Frameworks/Sparkle.framework" ]; then
+  echo "安装包缺少 Sparkle.framework：自动更新会退化为打开 dmg，拒绝出包。" >&2
+  echo "  仓库内应有 third_party/sparkle/Sparkle.framework，或用 XIAOTU_SPARKLE_DIR 指定。" >&2
+  exit 1
 fi
 
 # 签名配置：entitlements plist（禁用 sandbox，Sparkle 更新要求 bundle 可写）

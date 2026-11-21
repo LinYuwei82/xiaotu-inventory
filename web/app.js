@@ -7367,6 +7367,9 @@
 
     function render(status) {
       status = status || { update_available: false };
+      // Sparkle 安装引擎：下载 / 验签 / 替换 / 重启都在安装流程内完成，
+      // 不再提供「后台预下载、下载并校验」这些自研入口。
+      const sparkle = status.install_engine === "sparkle";
       const prefetchRunning =
         status.prefetch_state === "running" || status.prefetch_state === "retrying";
       const prefetchDone = status.prefetch_state === "done";
@@ -7383,8 +7386,8 @@
             ? versionWithBuild(status.pending_version, status.pending_build)
             : "—",
         ],
-        ["后台下载", prefetchText(status)],
-      ];
+        sparkle ? null : ["后台下载", prefetchText(status)],
+      ].filter(Boolean);
       const consent =
         status.prefetch_state === "needs_consent"
           ? `<p class="page-sub" style="margin-top:10px">
@@ -7460,22 +7463,26 @@
           <label class="checkbox"><input type="checkbox" data-role="auto-check" ${
             status.auto_check ? "checked" : ""
           } /> 自动检查更新</label>
-          <label class="checkbox"><input type="checkbox" data-role="prefetch" ${
-            status.prefetch ? "checked" : ""
-          } /> 发现新版本时自动下载安装包</label>
+          ${
+            sparkle
+              ? ""
+              : `<label class="checkbox"><input type="checkbox" data-role="prefetch" ${
+                  status.prefetch ? "checked" : ""
+                } /> 发现新版本时自动下载安装包</label>`
+          }
         </div>
         ${consent}
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
           <button class="btn" type="button" data-role="check">检查更新</button>
           ${
-            status.update_available
+            status.update_available && !sparkle
               ? `<button class="btn" type="button" data-role="download" ${
                   prefetchRunning || prefetchDone ? "disabled" : ""
                 }>${prefetchDone ? "已下载" : "下载并校验"}</button>`
               : ""
           }
           ${
-            prefetchRunning
+            prefetchRunning && !sparkle
               ? `<button class="btn" type="button" data-role="cancel">取消下载</button>`
               : ""
           }
@@ -7505,25 +7512,27 @@
         nativeBridge.xiaotuUpdateOptions.postMessage({ auto_check: autoInput.checked });
       });
       const prefetchInput = card.querySelector('[data-role="prefetch"]');
-      prefetchInput.addEventListener("change", async () => {
-        if (prefetchInput.checked && status.prefetch_notice_acked !== true) {
-          const confirmed = await askConfirm(
-            "发现新版本时会在后台自动下载安装包，可能产生网络流量并占用磁盘空间。" +
-              "可随时在此处关闭，是否开启？",
-            { okText: "开启", cancelText: "取消" }
-          );
-          if (!confirmed) {
-            prefetchInput.checked = false;
+      if (prefetchInput) {
+        prefetchInput.addEventListener("change", async () => {
+          if (prefetchInput.checked && status.prefetch_notice_acked !== true) {
+            const confirmed = await askConfirm(
+              "发现新版本时会在后台自动下载安装包，可能产生网络流量并占用磁盘空间。" +
+                "可随时在此处关闭，是否开启？",
+              { okText: "开启", cancelText: "取消" }
+            );
+            if (!confirmed) {
+              prefetchInput.checked = false;
+              return;
+            }
+            nativeBridge.xiaotuUpdateOptions.postMessage({
+              prefetch: true,
+              ack_prefetch_notice: true,
+            });
             return;
           }
-          nativeBridge.xiaotuUpdateOptions.postMessage({
-            prefetch: true,
-            ack_prefetch_notice: true,
-          });
-          return;
-        }
-        nativeBridge.xiaotuUpdateOptions.postMessage({ prefetch: prefetchInput.checked });
-      });
+          nativeBridge.xiaotuUpdateOptions.postMessage({ prefetch: prefetchInput.checked });
+        });
+      }
       const downloadButton = card.querySelector('[data-role="download"]');
       if (downloadButton) {
         downloadButton.addEventListener("click", () => {
@@ -7552,26 +7561,26 @@
         const size = status.pending_size
           ? `约 ${formatBytes(status.pending_size)}`
           : "安装包";
-        const downloaded = status.prefetch_state === "done";
+        const downloaded = !sparkle && status.prefetch_state === "done";
         const forceNow = mandatoryActive(status);
         const deadlineNote =
           !forceNow && status.mandatory && status.pending_deadline
             ? `该版本为强制更新，请在 ${status.pending_deadline} 前完成，到期后将无法跳过。`
             : "";
+        // Sparkle 负责下载、验签、原子替换并自动重启；不再有「拖拽安装」这一步。
+        const installTail = sparkle
+          ? `安装时由 Sparkle 下载并校验${size}，完成后自动重启。是否继续？`
+          : downloaded
+            ? "将使用已下载并校验的安装包，随后关闭程序并完成安装。是否继续？"
+            : `安装时会重新下载${size}（后台预下载只用于提前校验），随后关闭程序并完成安装。是否继续？`;
         const confirmed = await askConfirm(
           forceNow
             ? `此更新已到截止时间（${mandatoryReasonText(status.reason) || "服务端要求"}），不能跳过。` +
-                (downloaded
-                  ? "将使用已下载的安装包，随后关闭程序并完成安装。是否继续？"
-                  : `安装时会重新下载${size}，随后关闭程序并完成安装。是否继续？`)
+                installTail
             : `将安装 ${versionWithBuild(
                 status.pending_version,
                 status.pending_build
-              )}。` +
-                deadlineNote +
-                (downloaded
-                  ? "将使用已下载并校验的安装包，随后关闭程序并完成安装。是否继续？"
-                  : `安装时会重新下载${size}（后台预下载只用于提前校验），随后关闭程序并完成安装。是否继续？`),
+              )}。` + deadlineNote + installTail,
           { okText: "安装", cancelText: "取消" }
         );
         if (!confirmed) return;

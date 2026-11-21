@@ -67,6 +67,8 @@ if(XIAOTU_RELEASE_BUILD)
     message(FATAL_ERROR "发布/出包构建不能使用开发默认构建号 ${XIAOTU_DEFAULT_BUILD}")
   endif()
   # 只对本次配置生效：避免缓存把发布态带到同一目录后续的开发构建。
+  # 子目录（shell）通过普通变量判断发布态——unset(CACHE) 后缓存变量在子目录不可见。
+  set(XIAOTU_RELEASE_BUILD_EFFECTIVE ON)
   unset(XIAOTU_RELEASE_BUILD CACHE)
 elseif(XIAOTU_BUILD STREQUAL "")
   set(XIAOTU_BUILD "${XIAOTU_DEFAULT_BUILD}" CACHE STRING "" FORCE)

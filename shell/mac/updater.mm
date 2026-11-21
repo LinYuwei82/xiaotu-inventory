@@ -22,6 +22,11 @@
 #define XIAOTU_HAS_SPARKLE 0
 #endif
 
+// 发布构建不允许退化成「打开 dmg 让用户拖拽」——安装必须由 Sparkle 完成。
+#if defined(XIAOTU_RELEASE_BUILD) && !XIAOTU_HAS_SPARKLE
+#error "发布构建必须链接 Sparkle.framework：请提供 XIAOTU_SPARKLE_DIR，或使用仓库内 third_party/sparkle"
+#endif
+
 namespace {
 NSString* const kSkippedVersionKey = @"XiaotuSkippedVersion";
 NSString* const kSkipUntilKey = @"XiaotuSkipUntil";
@@ -210,6 +215,12 @@ bool auto_check_enabled() {
 
 bool prefetch_enabled() {
   return [[NSUserDefaults standardUserDefaults] boolForKey:kPrefetchKey];
+}
+
+// Gatekeeper 会把从 dmg / 下载目录直接启动的应用放到只读的 AppTranslocation 路径，
+// 此时 Sparkle 无法替换 bundle。提前识别并给出可执行指引，避免安装静默失败。
+bool app_is_translocated() {
+  return [[NSBundle mainBundle].bundlePath containsString:@"/AppTranslocation/"];
 }
 
 // 预下载缓存目录：Application Support 下按 bundle id 分开，卸载时随应用数据一起清理。
@@ -930,6 +941,14 @@ didCompleteWithError:(NSError*)error {
 // 自动检查命中新版本后调用：记录版本、按开关与提示确认情况决定是否自动开始。
 // autoStart=NO 用于手动检查：只准备状态，不自动下载。
 - (void)preparePrefetchForManifest:(NSDictionary*)manifest autoStart:(BOOL)autoStart {
+#if XIAOTU_HAS_SPARKLE
+  // 链接 Sparkle 时，下载、验签与替换都由安装流程统一完成；
+  // 自研预下载只会造成重复流量，Sparkle 构建不再预热，并清掉历史遗留的包。
+  (void)manifest;
+  (void)autoStart;
+  [self resetPrefetchOnQueue];
+  return;
+#endif
   NSString* version = json_string(manifest, @"version");
   if (version.length == 0) {
     return;
@@ -1238,6 +1257,15 @@ didCompleteWithError:(NSError*)error {
       completion(result);
     });
   };
+#if XIAOTU_HAS_SPARKLE
+  // Sparkle 构建下「下载」不再是独立步骤：交给 Sparkle 下载、验签并安装，
+  // 避免自研预下载与 Sparkle 各下一遍。
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [[[self sparkleController] updater] checkForUpdates];
+  });
+  respond(@{@"ok" : @YES, @"code" : @"STARTED", @"status" : [self status]});
+  return;
+#endif
   dispatch_async(self.queue, ^{
     NSDictionary* manifest = [self pendingPackageManifest];
     if (manifest == nil) {
@@ -1369,12 +1397,21 @@ didCompleteWithError:(NSError*)error {
     });
   };
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  // 从 dmg / 下载目录直接启动时，系统把 app 挂在只读路径，Sparkle 无法替换。
+  if (app_is_translocated()) {
+    respond(@{
+      @"ok" : @NO,
+      @"code" : @"TRANSLOCATED",
+      @"message" : @"当前程序从只读位置运行（例如直接打开 dmg），"
+                   @"请先把「小兔进销存」拖入「应用程序」并从那里启动，再执行更新。",
+    });
+    return;
+  }
 #if XIAOTU_HAS_SPARKLE
   const bool installerAvailable = true;
-  NSURL* packageURL = nil;
 #else
-  // 没有 Sparkle 时，后台预下载并校验通过的安装包就是安装入口：由系统打开，
-  // 替换与重启仍交给安装器，程序自身不静默替换正在运行的二进制。
+  // 仅开发构建（未提供 Sparkle.framework）保留打开安装包的兜底；
+  // 发布构建由 CMake 强制要求 Sparkle，编译期就会拒绝这条路径。
   NSURL* packageURL = nil;
   if ([self.prefetchState isEqualToString:kPrefetchDone] && self.prefetchFile.length > 0 &&
       [[NSFileManager defaultManager] fileExistsAtPath:self.prefetchFile]) {
@@ -1412,6 +1449,8 @@ didCompleteWithError:(NSError*)error {
   }
 #if XIAOTU_HAS_SPARKLE
   // 脚本消息在主线程派发；控制器也只在主线程创建。
+  // Sparkle 负责下载、appcast EdDSA 验签、原子替换 .app 并自动重启；
+  // 自研层只做「有没有新版本 / 灰度 / 强制」判定，不再打开 dmg 让用户拖拽。
   [[[self sparkleController] updater] checkForUpdates];
   respond(@{@"ok" : @YES, @"code" : @"STARTED"});
 #else
@@ -1604,6 +1643,12 @@ didCompleteWithError:(NSError*)error {
     @"channel" : self.channel ?: @"stable",
     @"auto_check" : @(auto_check_enabled()),
     @"prefetch" : @(prefetch_enabled()),
+#if XIAOTU_HAS_SPARKLE
+    // 安装引擎：sparkle 表示下载与替换都由 Sparkle 完成，前端隐藏自研下载入口。
+    @"install_engine" : @"sparkle",
+#else
+    @"install_engine" : @"package",
+#endif
     @"prefetch_notice_acked" : @([defaults boolForKey:kPrefetchNoticeKey]),
     @"prefetch_state" : self.prefetchState ?: kPrefetchIdle,
     @"prefetch_version" : [defaults stringForKey:kPrefetchVersionKey] ?: [NSNull null],

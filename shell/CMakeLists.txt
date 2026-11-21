@@ -21,6 +21,10 @@ target_include_directories(xiaotu-inventory PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(xiaotu-inventory PRIVATE xiaotu_server)
 target_compile_definitions(xiaotu-inventory PRIVATE XIAOTU_VERSION="${PROJECT_VERSION}"
                                                      XIAOTU_WEBVIEW_SHELL=1)
+if(XIAOTU_RELEASE_BUILD_EFFECTIVE)
+  # 发布构建禁止「打开 dmg」的安装兜底，见 shell/mac/updater.mm 的编译期检查。
+  target_compile_definitions(xiaotu-inventory PRIVATE XIAOTU_RELEASE_BUILD=1)
+endif()
 
 target_link_libraries(xiaotu-inventory PRIVATE "-framework Cocoa" "-framework WebKit"
                                              "-framework Security"
@@ -30,11 +34,20 @@ set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/mac/webview.mm"
 set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/mac/updater.mm"
   PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 
-# Sparkle 2 可选：仓库不内嵌框架，发布机通过 -DXIAOTU_SPARKLE_DIR=<含 Sparkle.framework 的目录>
-# 接入；未提供时保留可编译的接入点，更新只记录待安装版本。
+# Sparkle 2 自更新：仓库内 third_party/sparkle 随包分发（与 DevCard / Mote 一致）。
+# 发布/出包构建必须携带 Sparkle；缺失直接失败，避免产出「打开 dmg 让用户拖拽」的包。
 # 启用时：链接 + 嵌入 Sparkle.framework 到 .app/Contents/Frameworks/
 # + RPATH 指向 @loader_path/Frameworks（让 app 在运行时找到内嵌 framework）。
-set(XIAOTU_SPARKLE_DIR "" CACHE PATH "Sparkle.framework 所在目录（可选）")
+set(XIAOTU_SPARKLE_DIR "" CACHE PATH "Sparkle.framework 所在目录（留空使用仓库内 third_party/sparkle）")
+if(NOT XIAOTU_SPARKLE_DIR AND EXISTS "${CMAKE_SOURCE_DIR}/third_party/sparkle/Sparkle.framework")
+  set(XIAOTU_SPARKLE_DIR "${CMAKE_SOURCE_DIR}/third_party/sparkle")
+endif()
+if(XIAOTU_RELEASE_BUILD_EFFECTIVE AND NOT EXISTS "${XIAOTU_SPARKLE_DIR}/Sparkle.framework")
+  message(FATAL_ERROR "发布/出包构建必须携带 Sparkle.framework：\n"
+    "  期望 ${CMAKE_SOURCE_DIR}/third_party/sparkle/Sparkle.framework，\n"
+    "  或用 -DXIAOTU_SPARKLE_DIR=<含 Sparkle.framework 的目录> 指定。\n"
+    "  缺失时自动更新会退化为「打开 dmg 让用户拖拽」，禁止发布。")
+endif()
 if(XIAOTU_SPARKLE_DIR AND EXISTS "${XIAOTU_SPARKLE_DIR}/Sparkle.framework")
   target_link_libraries(xiaotu-inventory PRIVATE "-framework Sparkle")
   target_link_options(xiaotu-inventory PRIVATE

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -195,10 +196,21 @@ class TestPublishOss(unittest.TestCase):
 class TestPublishWindows(unittest.TestCase):
     """publish_windows.sh：小兔 Windows 发布脚本的拒绝路径。"""
 
+    MANIFEST_URL = "https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json"
+
     @classmethod
     def setUpClass(cls):
         cls.r = Runner()
         cls.script = str(REL / "publish_windows.sh")
+
+    def _live_macos_build(self) -> str:
+        """同版本跨平台 build 必须同源：测试的 Windows build 取线上 macOS build。"""
+        try:
+            with urllib.request.urlopen(self.MANIFEST_URL, timeout=10) as resp:
+                data = json.load(resp)
+            return str(data["platforms"]["macos"]["build"])
+        except Exception:
+            self.skipTest("需要网络访问线上 manifest.json 以取 macOS build")
 
     def test_help_zero_exit(self):
         self.r.run(self.script, ["--help"], expect_code=0)
@@ -211,7 +223,7 @@ class TestPublishWindows(unittest.TestCase):
         """BUILD 可省略（自动 gen_build）；显式传入时必须纯数字，1 位也合法（tag 序号）。"""
         setup, _ = self._make_fake_artifacts()
         self.r.run(self.script, env_override={
-            "BUILD": "12",
+            "BUILD": self._live_macos_build(),
             "SETUP_PATH": str(setup),
             "OSS_SKIP": "true",
         }, expect_code=0)
@@ -224,7 +236,7 @@ class TestPublishWindows(unittest.TestCase):
         """BUILD 合法纯数字时通过校验（后续校验 setup.exe 文件名）。"""
         setup, _ = self._make_fake_artifacts()
         self.r.run(self.script, env_override={
-            "BUILD": "2026111901",
+            "BUILD": self._live_macos_build(),
             "SETUP_PATH": str(setup),
             "OSS_SKIP": "true",
         }, expect_code=0)
