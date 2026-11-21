@@ -30,6 +30,7 @@
 #   powershell ... -NotesOnly                         # 只补发说明页，不需要 setup / zip / Build
 #   powershell ... -SetupPath ... -ZipPath ... -Build <tag 序号>
 #   powershell ... -Rollout 10 -Build <tag 序号>       # 灰度 10%
+#   powershell ... -AllowBuildDrift -Build <tag 序号>  # 单平台热修：放行同版本 build 差异
 #   powershell ... -Mandatory -MandatoryReason SECURITY -MandatoryDeadline 2026-12-01T00:00:00Z
 
 param(
@@ -45,6 +46,7 @@ param(
     [string]$KeyId = "2026-11",
     [switch]$SkipUpload,
     [switch]$NotesOnly,
+    [switch]$AllowBuildDrift,
     [int]$Rollout = 100,
     [switch]$Mandatory,
     [string]$MandatoryReason = "",
@@ -480,6 +482,9 @@ $guardArgs = @(
 if ($ZipFull) {
     $guardArgs += @("--zip", $ZipFull, "--zip-name", $V2ZipName)
 }
+# 单平台热修：同版本时 Windows build 可以高于 macOS build，但必须显式放行，
+# 并在发布记录写明原因（与 guard.py 的 --allow-build-drift 同一口径）。
+if ($AllowBuildDrift) { $guardArgs += "--allow-build-drift" }
 if ($SkipUpload) { $guardArgs += "--offline" }
 
 & $python (Join-Path $root "tools\release\guard.py") preflight @guardArgs

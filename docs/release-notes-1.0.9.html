@@ -1,7 +1,7 @@
-<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:720px;margin:40px auto;padding:0 20px;line-height:1.7;color:#222}h1{border-bottom:2px solid #eee;padding-bottom:8px}h2{margin-top:1.5em;color:#111}table{border-collapse:collapse;width:100%;margin:1em 0}th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}th{background:#f6f8fa}code{background:#f0f0f0;padding:1px 6px;border-radius:3px;font-size:.9em}pre{background:#f6f8fa;padding:12px 16px;border-radius:6px;overflow-x:auto}pre code{background:none;padding:0}blockquote{border-left:4px solid #ddd;margin:1em 0;padding:0 16px;color:#666}</style></head><body><h2>小兔进销存 1.0.8</h2>
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:720px;margin:40px auto;padding:0 20px;line-height:1.7;color:#222}h1{border-bottom:2px solid #eee;padding-bottom:8px}h2{margin-top:1.5em;color:#111}table{border-collapse:collapse;width:100%;margin:1em 0}th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}th{background:#f6f8fa}code{background:#f0f0f0;padding:1px 6px;border-radius:3px;font-size:.9em}pre{background:#f6f8fa;padding:12px 16px;border-radius:6px;overflow-x:auto}pre code{background:none;padding:0}blockquote{border-left:4px solid #ddd;margin:1em 0;padding:0 16px;color:#666}</style></head><body><h2>小兔进销存 1.0.9</h2>
 <h3>本次更新</h3>
 <ul>
-<li><strong>修复 Windows 包缺少运行时 DLL</strong>：绿色包与安装包此前没有附带 OpenSSL 运行时（<code>libcrypto-3-x64.dll</code>、<code>libssl-3-x64.dll</code>），在未安装 OpenSSL 的机器上双击桌面壳会直接报「找不到 libcrypto-3-x64.dll」；构建号 <code>3</code> 起两个包内均已随带，并加入出包前校验。</li>
+<li><strong>修复 Windows 包缺少运行时 DLL</strong>：绿色包与安装包此前没有附带 OpenSSL 运行时（<code>libcrypto-3-x64.dll</code>、<code>libssl-3-x64.dll</code>），在未安装 OpenSSL 的机器上双击桌面壳会直接报「找不到 libcrypto-3-x64.dll」；1.0.9（构建号 <code>5</code>）起两个包内均已随带，并加入出包前校验。</li>
 <li><strong>Windows 应用内更新链路可用</strong>：1.0.6 已在真机完成「检查更新 → 下载 → ISCC 静默安装 → 重启 → 版本核对」全链路验收，1.0.8 起 macOS 与 Windows 双端均可通过应用内更新升级。</li>
 <li><strong>Windows 编码统一</strong>：新增独立模块 <code>win_encoding</code>，统一命令行参数、路径、控制台输出、子进程输出与错误文本的 UTF-8 边界，修复中文乱码。</li>
 <li><strong>修复 Windows 出包构建号</strong>：桌面壳不再沿用 <code>CMakeCache</code> 里的旧构建号；绿色包与安装包统一使用本次构建的壳，避免两端构建号不一致导致反复提示更新。</li>
@@ -13,7 +13,7 @@
 <ul>
 <li>macOS 安装包使用 <strong>Developer ID 签名 + Apple 公证 + stapler 票据</strong>。</li>
 <li>包体实测：dmg <code>6,393,430</code> 字节（约 6.10 MiB），数据来源 <code>dist/manifest.json</code>。</li>
-<li>Windows 安装包与绿色版同步更新，构建号 <code>3</code>。</li>
+<li>Windows 安装包与绿色版同步更新，构建号 <code>5</code>。</li>
 </ul>
 <h3>下载</h3>
 <table>
@@ -28,16 +28,16 @@
 <tr>
 <td>macOS（Apple Silicon）</td>
 <td><code>xiaotu-1.0.8-macos-arm64.dmg</code></td>
-<td>拖拽到「应用程序」即可</td>
+<td>拖拽到「应用程序」即可（macOS 侧仍为 1.0.8）</td>
 </tr>
 <tr>
 <td>Windows</td>
-<td><code>xiaotu-1.0.8-win64-setup.exe</code></td>
+<td><code>xiaotu-1.0.9-win64-setup.exe</code></td>
 <td>安装版</td>
 </tr>
 <tr>
 <td>Windows</td>
-<td><code>xiaotu-1.0.8-win64-portable.zip</code></td>
+<td><code>xiaotu-1.0.9-win64-portable.zip</code></td>
 <td>免安装绿色版</td>
 </tr>
 </tbody>
@@ -48,7 +48,7 @@
 shasum -a 256 -c SHA256SUMS.txt
 
 # Windows
-certutil -hashfile xiaotu-1.0.8-win64-setup.exe SHA256
+certutil -hashfile xiaotu-1.0.9-win64-setup.exe SHA256
 </code></pre>
 <h3>升级说明</h3>
 <ul>
