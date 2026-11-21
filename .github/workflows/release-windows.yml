@@ -71,14 +71,33 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          choco install openssl --version=3.6.2 --allow-downgrade --yes --no-progress
-          $root = $null
-          foreach ($p in @("$env:ProgramFiles\OpenSSL-Win64", "$env:ProgramFiles\OpenSSL")) {
-            if (Test-Path (Join-Path $p 'include\openssl\evp.h')) { $root = $p; break }
+          function Find-OpenSsl3 {
+            foreach ($p in @("$env:ProgramFiles\OpenSSL-Win64", "$env:ProgramFiles\OpenSSL")) {
+              $exe = Join-Path $p 'bin\openssl.exe'
+              if ((Test-Path (Join-Path $p 'include\openssl\evp.h')) -and (Test-Path $exe)) {
+                $v = (& $exe version) -join ' '
+                if ($v -match '^OpenSSL 3\.') { return [pscustomobject]@{ Root = $p; Ver = $v } }
+              }
+            }
+            return $null
           }
-          if (-not $root) { throw '未找到 OpenSSL 安装目录' }
-          "OPENSSL_ROOT_DIR=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Join-Path $root 'bin' | Out-File -FilePath $env:GITHUB_PATH -Append
+          # windows-latest 已预装 OpenSSL 3.x。choco 的 openssl 包指向 slproweb 的安装文件，
+          # 上游随时会删旧版（2026-11-21 的 3.6.2 就 404），所以先找预装，找不到才装。
+          $found = Find-OpenSsl3
+          if (-not $found) {
+            foreach ($ver in @('3.6.2', '3.5.4', '3.4.1')) {
+              choco install openssl --version=$ver --allow-downgrade --yes --no-progress
+              # choco 失败时 $LASTEXITCODE=1 会被 Actions 的 pwsh 包装器当步骤退出码，必须清零
+              $global:LASTEXITCODE = 0
+              $found = Find-OpenSsl3
+              if ($found) { break }
+            }
+          }
+          if (-not $found) { throw '未找到可用的 OpenSSL 3.x（预装与 choco 均失败）' }
+          "OPENSSL_ROOT_DIR=$($found.Root)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Join-Path $found.Root 'bin' | Out-File -FilePath $env:GITHUB_PATH -Append
+          Write-Host "OpenSSL：$($found.Ver)（$($found.Root)）"
+          exit 0
 
       - name: Fetch WebView2 SDK
         shell: pwsh
