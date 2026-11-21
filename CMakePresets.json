@@ -66,6 +66,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "XIAOTU_BUILD_SHELL": "OFF",
+        "XIAOTU_BUILD_WIN_SHELL": "OFF",
         "XIAOTU_DEV_WEB": "OFF"
       }
     },
@@ -77,6 +78,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "XIAOTU_BUILD_SHELL": "OFF",
+        "XIAOTU_BUILD_WIN_SHELL": "OFF",
         "XIAOTU_DEV_WEB": "ON"
       }
     }

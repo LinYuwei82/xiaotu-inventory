@@ -35,15 +35,63 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 set(XIAOTU_WEBVIEW2_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.cache/webview2" CACHE PATH
-    "WebView2 SDK 目录（由 fetch-webview2.ps1 准备）")
+    "WebView2 SDK 目录：fetch-webview2.ps1 产出的扁平布局，或 nuget 包解压后的根目录")
 
-set(_wv2_header "${XIAOTU_WEBVIEW2_DIR}/include/WebView2.h")
-set(_wv2_lib "${XIAOTU_WEBVIEW2_DIR}/build/native/x64/WebView2LoaderStatic.lib")
+# 架构子目录：x64 / arm64。MSVC 没有 CMAKE_SYSTEM_PROCESSOR 语义，优先看生成器平台。
+if (CMAKE_GENERATOR_PLATFORM MATCHES "ARM64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$")
+  set(_wv2_arch "arm64")
+else()
+  set(_wv2_arch "x64")
+endif()
+
+# 头文件目录支持两种布局：
+#   1) fetch-webview2.ps1 / 手工整理：<DIR>/include/WebView2.h
+#   2) nuget 包直接解压：            <DIR>/build/native/include/WebView2.h
+set(_wv2_include_dir "")
+foreach(_candidate
+    "${XIAOTU_WEBVIEW2_DIR}/include"
+    "${XIAOTU_WEBVIEW2_DIR}/build/native/include")
+  if (EXISTS "${_candidate}/WebView2.h")
+    set(_wv2_include_dir "${_candidate}")
+    break()
+  endif()
+endforeach()
+
+set(_wv2_header "${_wv2_include_dir}/WebView2.h")
+set(_wv2_lib_dir "${XIAOTU_WEBVIEW2_DIR}/build/native/${_wv2_arch}")
+set(_wv2_lib "${_wv2_lib_dir}/WebView2LoaderStatic.lib")
+
+# SDK 版本：fetch 脚本写 .version；直接解压 nuget 包时从 nuspec 读；都没有就显示未知。
+set(_wv2_version "")
+if (EXISTS "${XIAOTU_WEBVIEW2_DIR}/.version")
+  file(READ "${XIAOTU_WEBVIEW2_DIR}/.version" _wv2_version)
+  string(STRIP "${_wv2_version}" _wv2_version)
+elseif (EXISTS "${XIAOTU_WEBVIEW2_DIR}/Microsoft.Web.WebView2.nuspec")
+  file(READ "${XIAOTU_WEBVIEW2_DIR}/Microsoft.Web.WebView2.nuspec" _wv2_nuspec)
+  string(REGEX MATCH "<version>([^<]+)</version>" _wv2_match "${_wv2_nuspec}")
+  if (_wv2_match)
+    set(_wv2_version "${CMAKE_MATCH_1}")
+  endif()
+endif()
 
 if (NOT EXISTS "${_wv2_header}" OR NOT EXISTS "${_wv2_lib}")
   message(FATAL_ERROR
-    "未找到 WebView2 SDK。请先运行：\n"
-    "  powershell -ExecutionPolicy Bypass -File \"${CMAKE_CURRENT_SOURCE_DIR}/fetch-webview2.ps1\"")
+    "未找到 WebView2 SDK（目标架构：${_wv2_arch}）。\n"
+    "  XIAOTU_WEBVIEW2_DIR = ${XIAOTU_WEBVIEW2_DIR}\n"
+    "  已查找头文件：\n"
+    "    ${XIAOTU_WEBVIEW2_DIR}/include/WebView2.h\n"
+    "    ${XIAOTU_WEBVIEW2_DIR}/build/native/include/WebView2.h\n"
+    "  已查找库文件：\n"
+    "    ${_wv2_lib}\n"
+    "请先运行：\n"
+    "  powershell -ExecutionPolicy Bypass -File \"${CMAKE_CURRENT_SOURCE_DIR}/fetch-webview2.ps1\"\n"
+    "也可以把 -DXIAOTU_WEBVIEW2_DIR 指向 nuget 包解压后的根目录。")
+endif()
+
+if (_wv2_version STREQUAL "")
+  message(STATUS "WebView2 SDK：版本未知（${_wv2_arch}）")
+else()
+  message(STATUS "WebView2 SDK：${_wv2_version}（${_wv2_arch}）")
 endif()
 
 # ---- core 更新模块（独立工程直接 add 源文件，顶层构建时用 xiaotu_core target） ----
@@ -143,11 +191,11 @@ set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/version.rc"
   PROPERTIES OBJECT_DEPENDS "${XIAOTU_WIN_ICON}")
 
 target_include_directories(xiaotu-shell PRIVATE
-  "${XIAOTU_WEBVIEW2_DIR}/include"
+  "${_wv2_include_dir}"
   "${_core_include}"
   "${_third_party}"
   "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_directories(xiaotu-shell PRIVATE "${XIAOTU_WEBVIEW2_DIR}/build/native/x64")
+target_link_directories(xiaotu-shell PRIVATE "${_wv2_lib_dir}")
 
 # 源码含中文字面量，MSVC 默认按系统代码页解析会出错。
 target_compile_options(xiaotu-shell PRIVATE /utf-8 /W4 /EHsc)
