@@ -46,6 +46,8 @@
   #elif !FileExists(ShellExe)
     #error 指定的 /DShellExe 指向的文件不存在；显式指定时不会回退到其他路径。
   #endif
+  ; 壳与它依赖的 OpenSSL 运行时 DLL 同在壳产物目录（CMake POST_BUILD 拷贝）。
+  #define ShellDir ExtractFilePath(ShellExe)
 #endif
 
 #ifndef OutputDir
@@ -99,6 +101,16 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 Source: "..\..\build\windows\server\{#ServerExeName}"; DestDir: "{app}"; Flags: ignoreversion
 #if !XIAOTU_NO_SHELL
 Source: "{#ShellExe}"; DestDir: "{app}"; Flags: ignoreversion
+; 壳的 OpenSSL 运行时依赖（libcrypto-3-x64.dll / libssl-3-x64.dll）：必须与壳
+; 同级，Windows 只在 exe 目录、System32 与 PATH 里找 DLL。文件名是 OpenSSL 3
+; 在 Windows x64 上的固定命名；用 FileExists 包住，缺 DLL 时不至于让编译直接失败
+; （绿色包脚本 make-zip.ps1 会在缺 DLL 时报错，不会静默出坏包）。
+#if FileExists(ShellDir + "libcrypto-3-x64.dll")
+Source: "{#ShellDir}libcrypto-3-x64.dll"; DestDir: "{app}"; Flags: ignoreversion
+#endif
+#if FileExists(ShellDir + "libssl-3-x64.dll")
+Source: "{#ShellDir}libssl-3-x64.dll"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 #endif
 Source: "..\..\deploy\config.toml.example"; DestDir: "{app}"; Flags: ignoreversion; DestName: "config.toml.example"
 Source: "package-readme.md"; DestDir: "{app}"; Flags: ignoreversion; DestName: "README.md"

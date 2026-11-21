@@ -234,3 +234,23 @@ add_custom_command(TARGET xiaotu-shell POST_BUILD
           "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
           "$<TARGET_FILE_DIR:xiaotu-shell>/shell-README.md"
   VERBATIM)
+
+# OpenSSL 运行时 DLL（libcrypto-3-x64.dll / libssl-3-x64.dll）：Windows 上
+# find_package 给的是导入库，壳运行时要动态加载这些 DLL。构建机的 OpenSSL
+# 目录布局统一是 <root>/include + <root>/bin（choco / vcpkg / 自编译都一样），
+# 把 bin 下的运行时 DLL 拷到壳旁边，避免单独拷走 exe 或出包后启动就报
+# 「由于找不到 libcrypto-3-x64.dll，无法继续执行代码」。
+get_filename_component(_openssl_root "${OPENSSL_INCLUDE_DIR}" DIRECTORY)
+file(GLOB _openssl_runtime_dlls
+  "${_openssl_root}/bin/libcrypto-*.dll"
+  "${_openssl_root}/bin/libssl-*.dll")
+if (_openssl_runtime_dlls)
+  add_custom_command(TARGET xiaotu-shell POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_openssl_runtime_dlls}
+            "$<TARGET_FILE_DIR:xiaotu-shell>"
+    VERBATIM)
+else()
+  message(WARNING
+    "未找到 OpenSSL 运行时 DLL（${_openssl_root}/bin/libcrypto-*.dll）。"
+    "壳单独运行或出包后在未装 OpenSSL 的机器上会启动失败。")
+endif()

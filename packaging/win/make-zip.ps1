@@ -111,6 +111,20 @@ Copy-Item -LiteralPath $serverExe -Destination $stage
 if ($includeShell) {
   # 与 xiaotu-server.exe 同级，壳才能按同目录找到服务端。
   Copy-Item -LiteralPath $ShellExe -Destination $stage
+
+  # 壳动态依赖 OpenSSL 运行时 DLL（如 libcrypto-3-x64.dll）。构建时由
+  # shell/win 的 CMake POST_BUILD 拷到壳旁边，这里随壳一起进包；漏带的话
+  # 目标机器没装 OpenSSL 时双击壳会直接报「找不到 libcrypto-3-x64.dll」。
+  $shellDir = Split-Path -Parent $ShellExe
+  $runtimeDlls = @(Get-ChildItem -LiteralPath $shellDir -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^(libcrypto|libssl)-.*\.dll$' })
+  if (-not $runtimeDlls) {
+    throw ("壳目录未找到 OpenSSL 运行时 DLL（libcrypto-*.dll / libssl-*.dll）：$shellDir`n" +
+      '请先重新构建壳（cmake --build shell\win\build），让 POST_BUILD 把 DLL 拷到 exe 旁边。')
+  }
+  foreach ($dll in $runtimeDlls) {
+    Copy-Item -LiteralPath $dll.FullName -Destination $stage
+  }
 }
 
 $configExample = Join-Path $root 'deploy\config.toml.example'
