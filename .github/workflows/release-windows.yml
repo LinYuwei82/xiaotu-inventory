@@ -174,8 +174,10 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = '2026-07-21'
-          $url = "https://raw.githubusercontent.com/jrathlev/InnoUnpacker-Windows-GUI/$tag/innounp-2/bin/innounp-270.zip"
+          # 上游的日期 tag 会消失（原来的 2026-07-21 已 404），钉到具体 commit，
+          # 避免源失效再次卡住发布；innounp-2.zip 是该 fork 目录下的最新构建。
+          $ref = '418937d9913c67b9abbe93a2e9e725a06f0f2be7'
+          $url = "https://raw.githubusercontent.com/jrathlev/InnoUnpacker-Windows-GUI/$ref/innounp-2/bin/innounp-2.zip"
           $dest = Join-Path $env:RUNNER_TEMP 'innounp'
           New-Item -ItemType Directory -Force $dest | Out-Null
           $zip = Join-Path $dest 'innounp.zip'
