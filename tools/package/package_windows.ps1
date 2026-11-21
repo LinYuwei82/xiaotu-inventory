@@ -110,7 +110,9 @@ $serverExe = Join-Path $root 'build\windows\server\xiaotu-server.exe'
 if (-not (Test-Path -LiteralPath $serverExe)) { Fail "未找到服务端产物：$serverExe" }
 
 Step "3/5 构建桌面壳"
-Invoke-Native 'cmake' @('-S', 'shell/win', '-B', 'shell/win/build', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DXIAOTU_RELEASE_BUILD=ON')
+# 必须显式传 -DXIAOTU_BUILD：shell/win/build 的 CMakeCache 会记住上一次的值，
+# 只设环境变量时旧缓存优先级更高，壳会悄悄沿用旧构建号（客户端会反复提示同一版本）。
+Invoke-Native 'cmake' @('-S', 'shell/win', '-B', 'shell/win/build', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DXIAOTU_RELEASE_BUILD=ON', "-DXIAOTU_BUILD=$Build")
 Invoke-Native 'cmake' @('--build', 'shell/win/build')
 
 $shellExe = Join-Path $root 'shell\win\build\xiaotu-shell.exe'
