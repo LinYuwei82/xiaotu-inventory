@@ -74,6 +74,7 @@ case "$PRODUCT_KEY" in
     PRODUCT_NAME="Mote"
     GH_REPO="LinYuwei82/mote-md"
     GITEE_OWNER="lin-yuwei168"; GITEE_REPO="mote-md"
+    OSS_DIR="mote"
     VERSION_FILE="VERSION.txt"
     ATT_SRC=(
       "dist/Mote-macOS-native-{V}.dmg"
@@ -90,6 +91,7 @@ case "$PRODUCT_KEY" in
     PRODUCT_NAME="DevCard"
     GH_REPO="LinYuwei82/dev_card_cpp"
     GITEE_OWNER="lin-yuwei168"; GITEE_REPO="dev_card_cpp"
+    OSS_DIR="devcard"
     VERSION_FILE="VERSION.txt"
     ATT_SRC=(
       "dist/DevCard-{V}-macos-arm64.dmg"
