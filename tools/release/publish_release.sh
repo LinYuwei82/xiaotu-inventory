@@ -7,6 +7,9 @@
 #   SKIP_GITEE=true tools/release/publish_release.sh    # 只发 GitHub
 #   SKIP_TAG_PUSH=true tools/release/publish_release.sh # 不 push tag（tag 已在远端）
 #
+# 附件来源：优先用本地 dist/；缺失时自动从 https://dl.xiaotu.online/<product>/ 回源
+# （v2 发布名与 OSS 对象名一致），也可用 OSS_BASE=... 覆盖下载域。
+#
 # 凭据：
 #   GitHub  使用 gh CLI（需已 gh auth login，具备 repo 权限）
 #   Gitee   环境变量 GITEE_TOKEN，或 ~/.config/release/gitee.env 中的 GITEE_TOKEN=（权限 600）
@@ -27,6 +30,7 @@ case "$PRODUCT_KEY" in
     PRODUCT_NAME="小兔进销存"
     GH_REPO="LinYuwei82/xiaotu-inventory"
     GITEE_OWNER="lin-yuwei168"; GITEE_REPO="xiaotu-inventory"
+    OSS_DIR="xiaotu"
     VERSION_FILE="VERSION.txt"
     ATT_SRC=(
       "dist/xiaotu-inventory-{V}.dmg"
@@ -101,16 +105,23 @@ echo "说明：$NOTES"
 STAGE="$(mktemp -d -t release-stage)"
 trap 'rm -rf "$STAGE"' EXIT
 FILES=()
+OSS_BASE="${OSS_BASE:-https://dl.xiaotu.online}"
 for i in "${!ATT_SRC[@]}"; do
   src="${ATT_SRC[$i]//\{V\}/$VERSION}"
   dst="${ATT_DST[$i]//\{V\}/$VERSION}"
-  [ -f "$src" ] || {
-    echo "错误：附件不存在 $src" >&2
-    echo "  提示：Windows 产物若已从 dist/ 清掉，可从 https://dl.xiaotu.online/ 重新下载后放回该路径" >&2
-    exit 1; }
-  cp -f "$src" "$STAGE/$dst"
+  if [ -f "$src" ]; then
+    cp -f "$src" "$STAGE/$dst"
+  else
+    # dist/ 里已清理时从 OSS 回源：v2 发布名与 OSS 对象名一致
+    oss_url="$OSS_BASE/$OSS_DIR/$dst"
+    echo "  本地缺少 $src → 回源 $oss_url"
+    if ! curl -fsSL --retry 2 --max-time 300 "$oss_url" -o "$STAGE/$dst"; then
+      echo "错误：附件不存在 $src，且从 OSS 回源失败：$oss_url" >&2
+      exit 1
+    fi
+  fi
   FILES+=("$STAGE/$dst")
-  printf '  + %-44s %8s B\n' "$dst" "$(stat -f %z "$src")"
+  printf '  + %-44s %8s B\n' "$dst" "$(stat -f %z "$STAGE/$dst")"
 done
 ( cd "$STAGE" && shasum -a 256 ./* > SHA256SUMS.txt )
 FILES+=("$STAGE/SHA256SUMS.txt")
