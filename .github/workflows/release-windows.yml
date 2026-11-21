@@ -2,16 +2,20 @@ name: Windows 发布
 
 # 手动触发的 Windows 发布流水线：
 #   构建服务端与壳 → 绿色包/安装包 → guard 门禁 → 生成并签名 manifest.json（v2）
-#   → 上传 OSS → guard 线上校验。
+#   → 上传 OSS（含发行说明页，清单写 notes_url）→ guard 线上校验
+#   → 创建 GitHub / Gitee Release（附件与 OSS 发布名一致；dry_run 跳过上传与 Release）
 #
 # 前置 secrets：
 #   OSS_ACCESS_KEY_ID / OSS_ACCESS_KEY_SECRET   仅授予 xiaotu/ 前缀 PutObject
 #   XIAOTU_UPDATE_SIGNING_KEY                   Ed25519 私钥 PEM（update_signing_2026.pem 内容）
+#   GITEE_TOKEN                                 Gitee 令牌（releases + 附件上传权限）
 #
 # 注意：
 #   - 发布前先改仓库根目录的 VERSION.txt（必须大于线上版本），guard 会拒绝版本回退；
 #   - 安装包 immutable 长缓存，同名覆盖不会生效；
-#   - tag 触发时 build = tag 序号（必须大于已发布值）；手动触发必须显式填写 build。
+#   - tag 触发时 build = tag 序号（必须大于已发布值）；手动触发必须显式填写 build；
+#   - 发行说明页约定为 docs/release-notes-<版本>.html（缺页时清单不写 notes_url，不阻断发布）；
+#   - Release 说明正文取 docs/release-notes-<版本>.md（两份都要有，CI 才算完整）。
 
 on:
   push:
@@ -33,7 +37,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write   # 创建/更新 GitHub Release 需要写权限（Gitee 走 GITEE_TOKEN）
 
 # Windows 英文 runner 默认 cp1252，Python 打印中文会崩；统一 UTF-8 输出
 env:
@@ -203,12 +207,22 @@ jobs:
           $keyPath = Join-Path $env:RUNNER_TEMP 'update_signing.pem'
           [IO.File]::WriteAllText($keyPath, $env:XIAOTU_UPDATE_SIGNING_KEY.Replace("`n", "`r`n"))
           $v = '${{ env.VERSION }}'; $b = '${{ env.BUILD }}'
+          # 发行说明页随发布上传到 OSS；清单里写 notes_url，客户端「更新说明」直接可打开
+          $notesFile = "docs/release-notes-$v.html"
+          $notesArgs = @()
+          if (Test-Path -LiteralPath $notesFile) {
+            $notesUrl = "https://dl.xiaotu.online/xiaotu/release-notes-$v.html"
+            $notesArgs = @('--notes-url', $notesUrl)
+            Write-Host "清单写 notes_url：$notesUrl"
+          } else {
+            Write-Host "未找到 $notesFile：清单不写 notes_url（不阻断发布）"
+          }
           python tools/release/manifest_v2.py generate `
             --product xiaotu --channel ${{ inputs.channel || 'stable' }} --platform windows `
             --version $v --build $b --min-os 10.0 --key-id 2026-11 `
             --artifact "setup=dist/xiaotu-inventory-$v-win64-setup.exe" `
             --artifact "portable=dist/xiaotu-inventory-$v-win64.zip" `
-            --key $keyPath --out dist/manifest.json
+            --key $keyPath --out dist/manifest.json @notesArgs
           python tools/release/manifest_v2.py verify `
             --manifest dist/manifest.json --key $keyPath `
             --artifact "setup=dist/xiaotu-inventory-$v-win64-setup.exe" `
@@ -242,6 +256,11 @@ jobs:
           $env:UPLOAD_SETUP = "dist/xiaotu-inventory-$v-win64-setup.exe"
           $env:UPLOAD_ZIP = "dist/xiaotu-inventory-$v-win64.zip"
           $env:UPLOAD_MANIFEST = 'dist/manifest.json'
+          $notesFile = "docs/release-notes-$v.html"
+          if (Test-Path -LiteralPath $notesFile) {
+            $env:UPLOAD_NOTES_PATH = $notesFile
+            $env:UPLOAD_NOTES_KEY = "xiaotu/release-notes-$v.html"
+          }
           $env:CHANNEL = '${{ inputs.channel || 'stable' }}'
           $py = @'
           import os, oss2
@@ -261,6 +280,13 @@ jobs:
               with open(os.environ[env_key], "rb") as f:
                   bkt.put_object(key, f, headers={"Cache-Control": cc, "Content-Type": ct})
               print(f"  OK {key}")
+          notes = os.environ.get("UPLOAD_NOTES_PATH")
+          if notes:
+              key = os.environ["UPLOAD_NOTES_KEY"]
+              bkt.put_object_from_file(key, notes, headers={
+                  "Cache-Control": "public, max-age=3600",
+                  "Content-Type": "text/html; charset=utf-8"})
+              print(f"  OK {key}")
           '@
           $py | Out-File "$env:RUNNER_TEMP\upload.py" -Encoding utf8
           python "$env:RUNNER_TEMP\upload.py"
@@ -277,6 +303,27 @@ jobs:
             --zip "dist/xiaotu-inventory-$v-win64.zip" `
             --zip-name "xiaotu-$v-win64-portable.zip" `
             --schema v2 --pub-hex ${{ env.PUB_HEX }} --build $b
+          $notesUrl = "https://dl.xiaotu.online/xiaotu/release-notes-$v.html"
+          if (Test-Path -LiteralPath "docs/release-notes-$v.html") {
+            $code = (Invoke-WebRequest -Uri $notesUrl -Method Head -UseBasicParsing).StatusCode
+            if ($code -ne 200) { throw "说明页不可访问：$notesUrl（HTTP $code）" }
+            Write-Host "说明页可访问：$notesUrl"
+          }
+
+      # GitHub 用工作流自带 token（contents: write），Gitee 用仓库 secret GITEE_TOKEN。
+      # 附件优先取 dist/ 里本次构建的包，缺 macOS 包时从 OSS 回源（单平台发版则跳过）。
+      - name: 创建 GitHub / Gitee Release
+        if: ${{ inputs.dry_run != true }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          REQUIRE_GITEE: "true"
+          ALLOW_MISSING_ATTACHMENTS: "true"
+          SKIP_TAG_PUSH: "true"
+          TAG: v${{ env.VERSION }}+${{ env.BUILD }}
+          NOTES_FILE: docs/release-notes-${{ env.VERSION }}.md
+        run: bash tools/release/publish_release.sh
 
       - name: 上传构建产物（留档）
         if: always()

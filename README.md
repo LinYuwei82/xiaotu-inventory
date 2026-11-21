@@ -777,7 +777,7 @@ tools/codegen/.venv/bin/python tools/codegen/generate.py --check
 #### GitHub 镜像的构建与发布
 
 - `windows-build.yml`：`push` 到 `main`、推送 `v*` tag 或指向 `main` 的 PR（限定相关路径）时触发。先跑 guard / 布局自检，再在 `windows-latest` 上 `cmake --preset windows-release` → `cmake --build --preset windows-release` → `ctest --test-dir build/windows`，然后独立构建 `shell/win` 壳并用 Inno Setup 打出**未签名安装包**上传 artifact（有证书 secret 时才调用 signtool，并在 `SIGNING.txt` 如实标注）。同一工作流还有 `macos-latest` 任务：`macos-release` 构建 + `ctest` + `tools/ci/check.sh --quick`，不打包、不签名、不公证。
-- `release-windows.yml`：推送 `v*` tag 或 `workflow_dispatch` 手动触发。tag 触发时用 `python3 tools/release/release_tag.py parse --ensure-latest --tag "$GITHUB_REF_NAME" --emit sh` 取版本与 `build = seq`；手动触发**必须手填 build**。随后跑 `check_version_bump.py` 门禁、构建服务端与壳、打 zip 与 setup.exe、生成并签 `manifest.json`、上传 OSS 并做线上校验。
+- `release-windows.yml`：推送 `v*` tag 或 `workflow_dispatch` 手动触发。tag 触发时用 `python3 tools/release/release_tag.py parse --ensure-latest --tag "$GITHUB_REF_NAME" --emit sh` 取版本与 `build = seq`；手动触发**必须手填 build**。随后跑 `check_version_bump.py` 门禁、构建服务端与壳、打 zip 与 setup.exe、生成并签 `manifest.json`（存在 `docs/release-notes-<版本>.html` 时同时上传说明页并写入 `notes_url`）、上传 OSS 并做线上校验，最后创建/更新 **GitHub 与 Gitee Release**（附件用 v2 发布名，缺 macOS 包时从 OSS 回源）。需要 secrets `GITEE_TOKEN` 才能同步 Gitee。
 - 镜像的 `push` / tag 触发属于**合并后才发现**；`windows-build.yml` 对指向 `main` 且命中相关路径的 PR 会提前跑构建，`release-windows.yml` 只在 tag 或手动触发时执行。需要更严格的事前拦截时，再把自建 Windows runner 挂到 Gitee Go 的主机组。
 
 #### 耗时与免费额度

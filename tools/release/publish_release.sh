@@ -6,13 +6,20 @@
 #   DRY_RUN=true tools/release/publish_release.sh       # 只打印将执行的动作
 #   SKIP_GITEE=true tools/release/publish_release.sh    # 只发 GitHub
 #   SKIP_TAG_PUSH=true tools/release/publish_release.sh # 不 push tag（tag 已在远端）
+#   ALLOW_MISSING_ATTACHMENTS=true ...                  # 单平台发版时跳过缺失的另一个平台附件
+#   REQUIRE_GITEE=true ...                              # 缺 Gitee token 直接失败（CI 用，避免假成功）
 #
 # 附件来源：优先用本地 dist/；缺失时自动从 https://dl.xiaotu.online/<product>/ 回源
 # （v2 发布名与 OSS 对象名一致），也可用 OSS_BASE=... 覆盖下载域。
 #
 # 凭据：
-#   GitHub  使用 gh CLI（需已 gh auth login，具备 repo 权限）
+#   GitHub  使用 gh CLI（本机 gh auth login，或 CI 里设 GH_TOKEN）
 #   Gitee   环境变量 GITEE_TOKEN，或 ~/.config/release/gitee.env 中的 GITEE_TOKEN=（权限 600）
+#           CI 里缺 token 时可用 REQUIRE_GITEE=true 让脚本直接失败，避免「只发了 GitHub」的假成功
+#
+# 跨平台（macOS 本机 / CI 的 Windows Git Bash 均可直接执行）：
+#   - 优先 python3，Windows 上 python3 是 Store 占位程序时自动退回 python
+#   - 文件大小、SHA256 不依赖 BSD 的 stat -f / shasum
 #
 # 幂等：
 #   - tag 已存在则复用，不覆盖
@@ -22,6 +29,26 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
+
+# Windows Git Bash 里 python3 可能是 Microsoft Store 占位程序：真跑一下再决定
+PY=""
+for cand in python3 python; do
+  if command -v "$cand" >/dev/null 2>&1 && "$cand" -c 'print(1)' >/dev/null 2>&1; then
+    PY="$cand"; break
+  fi
+done
+[ -n "$PY" ] || { echo "需要可用的 Python 3（python3 或 python）" >&2; exit 2; }
+
+file_size() { wc -c < "$1" | tr -d ' \t\r\n'; }
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    "$PY" -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"
+  fi
+}
 
 # ===== 按仓库自动识别配置（三仓共用同一份脚本）=====
 PRODUCT_KEY="$(basename "$REPO_ROOT")"
@@ -94,7 +121,9 @@ NOTES="${NOTES_FILE:-docs/release-notes-$VERSION.md}"
 DRY_RUN="${DRY_RUN:-false}"
 SKIP_GITEE="${SKIP_GITEE:-false}"
 SKIP_TAG_PUSH="${SKIP_TAG_PUSH:-false}"
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
+# CI 按 tag 检出时是 detached HEAD；Gitee 的 target_commitish 需要一个真实分支
+[ "$BRANCH" = "HEAD" ] && BRANCH="main"
 [ -f "$NOTES" ] || { echo "发行说明不存在：$NOTES" >&2; exit 1; }
 
 echo "===== 发行 · $PRODUCT_NAME ${VERSION}（tag ${TAG}）====="
@@ -102,7 +131,7 @@ echo "仓库：$REPO_ROOT   分支：$BRANCH"
 echo "说明：$NOTES"
 
 # ---- ① 收集附件 + 生成 SHA256SUMS.txt ----
-STAGE="$(mktemp -d -t release-stage)"
+STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 FILES=()
 OSS_BASE="${OSS_BASE:-https://dl.xiaotu.online}"
@@ -116,14 +145,20 @@ for i in "${!ATT_SRC[@]}"; do
     oss_url="$OSS_BASE/$OSS_DIR/$dst"
     echo "  本地缺少 $src → 回源 $oss_url"
     if ! curl -fsSL --retry 2 --max-time 300 "$oss_url" -o "$STAGE/$dst"; then
-      echo "错误：附件不存在 $src，且从 OSS 回源失败：$oss_url" >&2
+      if [ "${ALLOW_MISSING_ATTACHMENTS:-false}" = "true" ]; then
+        # 本次只发单平台（例如 Windows-only 修复版）：允许缺另一个平台的包
+        echo "  警告：${src} 不存在且 OSS 也没有该附件，跳过该附件" >&2
+        continue
+      fi
+      echo "错误：附件不存在 ${src}，且从 OSS 回源失败：$oss_url" >&2
       exit 1
     fi
   fi
   FILES+=("$STAGE/$dst")
-  printf '  + %-44s %8s B\n' "$dst" "$(stat -f %z "$STAGE/$dst")"
+  printf '  + %-44s %8s B\n' "$dst" "$(file_size "$STAGE/$dst")"
 done
-( cd "$STAGE" && shasum -a 256 ./* > SHA256SUMS.txt )
+[ "${#FILES[@]}" -gt 0 ] || { echo "错误：没有任何可用附件，拒绝创建空 Release" >&2; exit 1; }
+( cd "$STAGE" && for f in ./*; do printf '%s  %s\n' "$(sha256_hex "$f")" "${f#./}"; done > SHA256SUMS.txt )
 FILES+=("$STAGE/SHA256SUMS.txt")
 echo "  + SHA256SUMS.txt"
 
@@ -175,6 +210,11 @@ else
     GITEE_TOKEN="$(sed -n 's/^[[:space:]]*GITEE_TOKEN[[:space:]]*=[[:space:]]*//p' "$GITEE_ENV_FILE" | tail -1 | tr -d '\r' | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//")"
   fi
   if [ -z "${GITEE_TOKEN:-}" ]; then
+    if [ "${REQUIRE_GITEE:-false}" = "true" ]; then
+      echo "===== Gitee：缺少 GITEE_TOKEN（REQUIRE_GITEE=true，终止）" >&2
+      echo "  CI 请配置仓库 secret GITEE_TOKEN；本机可写入 $GITEE_ENV_FILE" >&2
+      exit 3
+    fi
     echo "===== Gitee：缺少 GITEE_TOKEN，跳过（写入 $GITEE_ENV_FILE 后重跑即可补齐）" >&2
   else
     API="https://gitee.com/api/v5/repos/$GITEE_OWNER/$GITEE_REPO"
@@ -183,7 +223,7 @@ else
     REL_ID=""
     for page in 1 2 3 4 5; do
       rel_json="$(curl -sS "$API/releases?access_token=$GITEE_TOKEN&per_page=100&page=$page")"
-      id="$(printf '%s' "$rel_json" | STAG="$TAG" python3 -c "
+      id="$(printf '%s' "$rel_json" | STAG="$TAG" "$PY" -c "
 import json,sys,os
 try: d=json.load(sys.stdin)
 except Exception: d=[]
@@ -191,7 +231,7 @@ t=os.environ.get('STAG')
 print(next((str(r.get('id')) for r in d if isinstance(r,dict) and r.get('tag_name')==t), ''))
 " 2>/dev/null || true)"
       if [ -n "$id" ]; then REL_ID="$id"; break; fi
-      n="$(printf '%s' "$rel_json" | python3 -c 'import json,sys
+      n="$(printf '%s' "$rel_json" | "$PY" -c 'import json,sys
 try: d=json.load(sys.stdin)
 except Exception: d=[]
 print(len(d) if isinstance(d,list) else 0)' 2>/dev/null || echo 0)"
@@ -209,7 +249,7 @@ print(len(d) if isinstance(d,list) else 0)' 2>/dev/null || echo 0)"
       for f in "${FILES[@]}"; do
         base="$(basename "$f")"
         exists="$(curl -sS "$API/releases/$REL_ID/attach_files?access_token=$GITEE_TOKEN" \
-          | BASE="$base" python3 -c "
+          | BASE="$base" "$PY" -c "
 import json,sys,os
 try: d=json.load(sys.stdin)
 except Exception: d=[]
@@ -234,7 +274,7 @@ print('1' if any(isinstance(a,dict) and a.get('name')==b for a in d) else '0')" 
         --data-urlencode "body@$NOTES" \
         --data-urlencode "target_commitish=$BRANCH" \
         --data-urlencode "prerelease=false")"
-      REL_ID="$(printf '%s' "$resp" | python3 -c 'import json,sys
+      REL_ID="$(printf '%s' "$resp" | "$PY" -c 'import json,sys
 try: print(json.load(sys.stdin).get("id",""))
 except Exception: print("")' 2>/dev/null || true)"
       if [ -z "$REL_ID" ]; then
@@ -263,5 +303,5 @@ echo "GitHub： $GH_URL"
 [ "$SKIP_GITEE" = "true" ] && echo "Gitee：  （已跳过）" || echo "Gitee：  $GITEE_URL"
 echo "附件："
 for f in "${FILES[@]}"; do
-  printf '  %-44s %s\n' "$(basename "$f")" "$(shasum -a 256 "$f" | cut -c1-16)"
+  printf '  %-44s %s\n' "$(basename "$f")" "$(sha256_hex "$f" | cut -c1-16)"
 done
