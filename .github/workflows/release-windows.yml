@@ -240,7 +240,7 @@ jobs:
             --name "xiaotu-$v-win64-setup.exe" `
             --zip "dist/xiaotu-inventory-$v-win64.zip" `
             --zip-name "xiaotu-$v-win64-portable.zip" `
-            --schema v2 --manifest dist/manifest.json --pub-hex ${{ env.PUB_HEX }} --build $b
+            --manifest dist/manifest.json --pub-hex ${{ env.PUB_HEX }} --build $b
 
       # ---- 以下为上传段：dry_run 到此为止 ----
       - name: 上传 OSS
@@ -302,7 +302,7 @@ jobs:
             --name "xiaotu-$v-win64-setup.exe" `
             --zip "dist/xiaotu-inventory-$v-win64.zip" `
             --zip-name "xiaotu-$v-win64-portable.zip" `
-            --schema v2 --pub-hex ${{ env.PUB_HEX }} --build $b
+            --pub-hex ${{ env.PUB_HEX }} --build $b
           $notesUrl = "https://dl.xiaotu.online/xiaotu/release-notes-$v.html"
           if (Test-Path -LiteralPath "docs/release-notes-$v.html") {
             $code = (Invoke-WebRequest -Uri $notesUrl -Method Head -UseBasicParsing).StatusCode
