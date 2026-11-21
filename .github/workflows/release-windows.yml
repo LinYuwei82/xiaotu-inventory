@@ -217,12 +217,23 @@ jobs:
           } else {
             Write-Host "未找到 $notesFile：清单不写 notes_url（不阻断发布）"
           }
+          # 另一平台段已在线上：先拉线上清单作为 --prev 合并，否则只写 windows 会把 macOS 段丢掉
+          $prev = "dist/manifest.prev.json"
+          $prevArgs = @()
+          try {
+            Invoke-WebRequest -Uri "https://dl.xiaotu.online/xiaotu/updates/${{ inputs.channel || 'stable' }}/manifest.json" `
+              -OutFile $prev -UseBasicParsing -Headers @{ 'Cache-Control' = 'no-cache' }
+            $prevArgs = @('--prev', $prev)
+            Write-Host "合并线上清单：$prev"
+          } catch {
+            Write-Host "线上清单不可读（首次发布？），不合并"
+          }
           python tools/release/manifest_v2.py generate `
             --product xiaotu --channel ${{ inputs.channel || 'stable' }} --platform windows `
             --version $v --build $b --min-os 10.0 --key-id 2026-11 `
             --artifact "setup=dist/xiaotu-inventory-$v-win64-setup.exe" `
             --artifact "portable=dist/xiaotu-inventory-$v-win64.zip" `
-            --key $keyPath --out dist/manifest.json @notesArgs
+            --key $keyPath --out dist/manifest.json @prevArgs @notesArgs
           python tools/release/manifest_v2.py verify `
             --manifest dist/manifest.json --key $keyPath `
             --artifact "setup=dist/xiaotu-inventory-$v-win64-setup.exe" `
