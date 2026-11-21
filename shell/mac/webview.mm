@@ -263,14 +263,13 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
   // 让输出只包含模板内容；系统打印与「导出 PDF」共用这份 NSPrintInfo。
   // 模板自己的 company_name / header_text 属于业务抬头，不受此开关影响。
   [[info dictionary] setObject:@NO forKey:NSPrintHeaderAndFooter];
-  // WKWebView 的打印排版按 90 dpi 换算 CSS 像素（1 CSS px = 0.8pt），而 CSS 规范
-  // 是 96 dpi（1 px = 0.75pt），整页因此凭空大 96/90 ≈ 1.067 倍；这是排版 DPI
-  // 的偏差，不是内容缩放，改字号或乘反向系数都只是盖住现象。
-  // scalingFactor 是 AppKit 在这层排版结果上再乘一次（实测 0.5 → 字号减半），
-  // 所以用它把 90 dpi 的排版压回 96 dpi 的真实物理尺寸。
-  constexpr double kWebKitPrintLayoutPxPt = 0.8;  // 1 CSS px → 0.8pt（90 dpi）
-  constexpr double kCssPxPt = 0.75;               // 1 CSS px → 0.75pt（96 dpi）
-  [info setScalingFactor:kCssPxPt / kWebKitPrintLayoutPxPt];
+  // WKWebView 的打印排版按 90 dpi 换算 CSS 像素（1 CSS px = 0.8pt），比 CSS 规范的
+  // 96 dpi（1 px = 0.75pt）大 96/90 ≈ 1.067 倍。补偿必须放在前端 CSS 层
+  // （web/app.js 的 MAC_PRINT_ZOOM）：内容正好占满可打印宽度时，WebKit 会先做一次
+  // shrink-to-fit；若这里再用 scalingFactor 压一次，净效果会比模板小 6.25%
+  // （实测 A4 表体 10pt → 9.37pt、标题 16pt → 15pt、100mm 标尺 → 93.75mm）。
+  // 因此 scalingFactor 固定 1.0，物理尺寸由 CSS zoom 与受限视图宽度共同保证。
+  [info setScalingFactor:1.0];
   // 套打与自定义纸不接受系统居中，否则位置会随纸宽漂移。
   [info setHorizontallyCentered:NO];
   [info setVerticallyCentered:NO];

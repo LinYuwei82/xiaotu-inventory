@@ -720,12 +720,25 @@
     return "";
   }
 
+  // WKWebView 打印排版按 90dpi 换算 CSS 像素（1 CSS px = 0.8pt），比 CSS 规范的
+  // 96dpi（1 px = 0.75pt）整体大 1.067 倍。补偿必须放在 CSS 层：若改用
+  // NSPrintInfo.scalingFactor，内容正好占满可打印宽度时会先触发 WebKit 的
+  // shrink-to-fit，再被 scalingFactor 压一次，净效果反而小 6.25%。
+  const MAC_PRINT_ZOOM = 0.9375;  // 0.75 / 0.8 = 96 / 90
+
+  function macPrintZoom() {
+    const handlers = window.webkit && window.webkit.messageHandlers;
+    // 只有 macOS WKWebView 壳走 90dpi 排版；浏览器与 Windows WebView2 按 96dpi。
+    return handlers && (handlers.xiaotuPrint || handlers.xiaotuPrintPdf) ? MAC_PRINT_ZOOM : 1;
+  }
+
   // 模板只提供展示配置，所有数据都按纯文本转义后拼进打印视图。
   function printViewHtml(data) {
     const tmpl = data.template || {};
     const layout = data.layout || {};
     const columns = data.columns || [];
     const scale = Math.max(10, Math.min(100, Number(layout.scale_percent) || 100));
+    const zoom = (scale / 100) * macPrintZoom();
     const tableWidth = Number(layout.table_width_mm) || 0;
     const colgroup = columns
       .map((column) =>
@@ -771,7 +784,7 @@
     return `
       <div class="print-sheet" style="width:${
         tableWidth > 0 ? tableWidth + "mm" : "auto"
-      };zoom:${scale / 100};font-size:${Number(tmpl.font_size_pt) || 10}pt">
+      };zoom:${zoom};font-size:${Number(tmpl.font_size_pt) || 10}pt">
         ${headerText}
         <h1 class="print-title">${escapeHtml(data.title || "")}</h1>
         <div class="print-subtitle">${escapeHtml(data.subtitle || "")}</div>
@@ -810,6 +823,13 @@
     view.className = "print-view";
     view.dataset.printView = "1";
     view.innerHTML = printViewHtml(data);
+    // macOS 壳：把视图宽度限制在可打印宽度（同样按 90dpi 折算），超宽内容只裁切，
+    // 不触发 WebKit 的整页 shrink-to-fit；连续纸原始尺寸与套打位置因此保持不缩放。
+    const printable = Number((data.layout || {}).printable_width_mm) || 0;
+    const nativeZoom = macPrintZoom();
+    if (nativeZoom < 1 && printable > 0) {
+      view.style.width = `${(printable * nativeZoom).toFixed(3)}mm`;
+    }
     document.body.appendChild(view);
     const style = document.createElement("style");
     style.dataset.printView = "1";
