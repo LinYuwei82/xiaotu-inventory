@@ -285,6 +285,107 @@ void write_stderr(std::string_view utf8)
 #endif
 }
 
+#if defined(_WIN32)
+// 清理 FormatMessageW(FORMAT_MESSAGE_IGNORE_INSERTS) 的产物：
+//   1) 去掉 %1 / %n / %r / %t 等占位符（用空格替代，避免词粘连），%% 还原为字面 %；
+//   2) 压缩连续空白；
+//   3) 删除占位符消失后留下的空括号，反复清理直到稳定；
+//   4) 去掉首尾空白与句末标点（系统描述常以 “。” 或 “.” 结尾）。
+std::string clean_error_text(const std::string &text)
+{
+    std::string without;
+    without.reserve(text.size());
+    for (std::size_t i = 0; i < text.size();) {
+        if (text[i] != '%') {
+            without.push_back(text[i++]);
+            continue;
+        }
+        if (i + 1 >= text.size()) {
+            without.push_back('%');
+            ++i;
+            continue;
+        }
+        const char next = text[i + 1];
+        if (next == '%') {
+            without.push_back('%');
+            i += 2;
+            continue;
+        }
+        if (next >= '0' && next <= '9') {
+            std::size_t end = i + 1;
+            while (end < text.size() && text[end] >= '0' && text[end] <= '9')
+                ++end;
+            without.push_back(' ');
+            i = end;
+            continue;
+        }
+        if (next == 'n' || next == 'N' || next == 'r' || next == 'R' || next == 't'
+            || next == 'T') {
+            without.push_back(' ');
+            i += 2;
+            continue;
+        }
+        // 不是占位符（例如 “50%”），原样保留。
+        without.push_back('%');
+        ++i;
+    }
+
+    std::string collapsed;
+    bool pending_space = false;
+    for (const char ch : without) {
+        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') {
+            pending_space = true;
+            continue;
+        }
+        if (pending_space && !collapsed.empty())
+            collapsed.push_back(' ');
+        pending_space = false;
+        collapsed.push_back(ch);
+    }
+
+    const char *empty_pairs[] = {"()",  "[]",  "{}",  "（）", "【】",
+                                 "《》", "「」", "『』", "\"\"", "''"};
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const char *pair : empty_pairs) {
+            const std::string target(pair);
+            std::size_t pos = 0;
+            while ((pos = collapsed.find(target, pos)) != std::string::npos) {
+                collapsed.erase(pos, target.size());
+                changed = true;
+            }
+        }
+    }
+
+    bool trimmed = true;
+    while (trimmed && !collapsed.empty()) {
+        trimmed = false;
+        while (!collapsed.empty()) {
+            const char tail = collapsed.back();
+            if (tail == ' ' || tail == '\t' || tail == '\r' || tail == '\n' || tail == '.'
+                || tail == ',' || tail == ';' || tail == ':') {
+                collapsed.pop_back();
+                trimmed = true;
+                continue;
+            }
+            break;
+        }
+        for (const char *mark : {"。", "，", "；", "：", "！", "？"}) {
+            const std::string suffix(mark);
+            if (collapsed.size() >= suffix.size()
+                && collapsed.compare(collapsed.size() - suffix.size(), suffix.size(), suffix)
+                       == 0) {
+                collapsed.erase(collapsed.size() - suffix.size());
+                trimmed = true;
+                break;
+            }
+        }
+    }
+    return collapsed;
+}
+#endif // _WIN32
+
 std::string system_error_text(std::uint32_t code)
 {
 #if defined(_WIN32)
@@ -296,18 +397,8 @@ std::string system_error_text(std::uint32_t code)
         MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
         reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
     std::string text;
-    if (length > 0 && buffer != nullptr) {
-        std::wstring wide(buffer, length);
-        while (!wide.empty()) {
-            const wchar_t tail = wide.back();
-            if (tail == L'\r' || tail == L'\n' || tail == L' ' || tail == L'\t'
-                || tail == L'.' || tail == L'\u3002')
-                wide.pop_back();
-            else
-                break;
-        }
-        text = wide_to_utf8(wide);
-    }
+    if (length > 0 && buffer != nullptr)
+        text = clean_error_text(wide_to_utf8(std::wstring(buffer, length)));
     if (buffer != nullptr)
         ::LocalFree(buffer);
     if (text.empty())
