@@ -132,7 +132,10 @@ echo "说明：$NOTES"
 
 # ---- ① 收集附件 + 生成 SHA256SUMS.txt ----
 STAGE="$(mktemp -d)"
-trap 'rm -rf "$STAGE"' EXIT
+# 标题单独落成 UTF-8 文件：Windows Git Bash 把中文当命令行参数传给 gh/curl 会变成问号
+TITLE_FILE="$(mktemp)"
+printf '%s' "$TITLE" > "$TITLE_FILE"
+trap 'rm -rf "$STAGE" "$TITLE_FILE"' EXIT
 FILES=()
 OSS_BASE="${OSS_BASE:-https://dl.xiaotu.online}"
 for i in "${!ATT_SRC[@]}"; do
@@ -180,23 +183,44 @@ fi
 # ---- ③ GitHub Release ----
 echo ""
 echo "===== GitHub：$GH_REPO"
-if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
-  echo "Release 已存在 → 更新说明 + 补传附件"
-  if [ "$DRY_RUN" = "true" ]; then
-    echo "  [dry-run] gh release edit $TAG --notes-file $NOTES"
-    echo "  [dry-run] gh release upload $TAG <${#FILES[@]} 个附件> --clobber"
-  else
-    gh release edit "$TAG" --repo "$GH_REPO" --title "$TITLE" --notes-file "$NOTES"
-    gh release upload "$TAG" "${FILES[@]}" --repo "$GH_REPO" --clobber
-  fi
+# 标题/正文一律走 UTF-8 文件 + curl JSON，避免 Windows 控制台把中文参数转成 ????
+if [ "$DRY_RUN" = "true" ]; then
+  echo "  [dry-run] 创建或更新 GitHub Release + 上传 ${#FILES[@]} 个附件"
 else
-  echo "创建 Release"
-  if [ "$DRY_RUN" = "true" ]; then
-    echo "  [dry-run] gh release create $TAG --title $TITLE --notes-file $NOTES <${#FILES[@]} 个附件>"
-  else
-    gh release create "$TAG" --repo "$GH_REPO" --title "$TITLE" \
-      --notes-file "$NOTES" --verify-tag "${FILES[@]}"
+  if [ -z "${GH_TOKEN:-}" ]; then
+    GH_TOKEN="$(gh auth token 2>/dev/null || true)"
   fi
+  if [ -z "${GH_TOKEN:-}" ]; then
+    echo "错误：缺少 GitHub 凭据（设 GH_TOKEN，或先 gh auth login）" >&2
+    exit 3
+  fi
+  export GH_TOKEN
+  GH_API="https://api.github.com/repos/$GH_REPO/releases"
+  TAG_ENC="${TAG//+/%2B}"
+  GH_REL_ID="$(curl -sS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+    "$GH_API/tags/$TAG_ENC" | "$PY" -c 'import json,sys
+try: print(json.load(sys.stdin).get("id",""))
+except Exception: print("")' 2>/dev/null || true)"
+  PAYLOAD="$(mktemp)"
+  "$PY" - "$TITLE_FILE" "$NOTES" "$TAG" "$BRANCH" > "$PAYLOAD" <<'PYEOF'
+import json, sys
+title = open(sys.argv[1], encoding="utf-8").read()
+body = open(sys.argv[2], encoding="utf-8").read()
+print(json.dumps({"tag_name": sys.argv[3], "target_commitish": sys.argv[4],
+                  "name": title, "body": body, "draft": False, "prerelease": False},
+                 ensure_ascii=False))
+PYEOF
+  if [ -n "$GH_REL_ID" ]; then
+    echo "Release 已存在（id=${GH_REL_ID}）→ 更新说明 + 补传附件"
+    curl -fsS -X PATCH -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+      --data-binary @"$PAYLOAD" "$GH_API/$GH_REL_ID" >/dev/null
+  else
+    echo "创建 Release"
+    curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+      --data-binary @"$PAYLOAD" "$GH_API" >/dev/null
+  fi
+  gh release upload "$TAG" "${FILES[@]}" --repo "$GH_REPO" --clobber
+  rm -f "$PAYLOAD"
 fi
 GH_URL="https://github.com/$GH_REPO/releases/tag/$TAG"
 
@@ -242,10 +266,17 @@ print(len(d) if isinstance(d,list) else 0)' 2>/dev/null || echo 0)"
       echo "  [dry-run] 创建或更新 release（tag=${TAG}）+ 上传 ${#FILES[@]} 个附件"
     elif [ -n "$REL_ID" ]; then
       echo "Release 已存在（id=${REL_ID}）→ 更新说明 + 补传附件"
-      curl -sS -X PATCH "$API/releases/$REL_ID" \
+      # Gitee 的 PATCH 要求 tag_name / body / name 一起传；缺字段会 400，必须检查状态码
+      code="$(curl -sS -o /tmp/gitee-rel.json -w '%{http_code}' -X PATCH "$API/releases/$REL_ID" \
         --data-urlencode "access_token=$GITEE_TOKEN" \
-        --data-urlencode "name=$TITLE" \
-        --data-urlencode "body@$NOTES" >/dev/null
+        --data-urlencode "tag_name=$TAG" \
+        --data-urlencode "name@$TITLE_FILE" \
+        --data-urlencode "body@$NOTES")"
+      if [ "$code" = "200" ] || [ "$code" = "201" ]; then
+        echo "  ✓ 标题/说明已更新"
+      else
+        echo "  ✗ 更新标题/说明失败（HTTP ${code}）"; head -c 300 /tmp/gitee-rel.json; echo
+      fi
       for f in "${FILES[@]}"; do
         base="$(basename "$f")"
         exists="$(curl -sS "$API/releases/$REL_ID/attach_files?access_token=$GITEE_TOKEN" \
@@ -262,7 +293,7 @@ print('1' if any(isinstance(a,dict) and a.get('name')==b for a in d) else '0')" 
             "$API/releases/$REL_ID/attach_files" \
             -F "access_token=$GITEE_TOKEN" -F "file=@$f")"
           if [ "$code" = "201" ] || [ "$code" = "200" ]; then echo "  ✓ $base"; else
-            echo "  ✗ ${base}（HTTP $code）"; head -c 300 /tmp/gitee-attach.json; echo; fi
+            echo "  ✗ ${base}（HTTP ${code}）"; head -c 300 /tmp/gitee-attach.json; echo; fi
         fi
       done
     else
@@ -270,7 +301,7 @@ print('1' if any(isinstance(a,dict) and a.get('name')==b for a in d) else '0')" 
       resp="$(curl -sS -X POST "$API/releases" \
         --data-urlencode "access_token=$GITEE_TOKEN" \
         --data-urlencode "tag_name=$TAG" \
-        --data-urlencode "name=$TITLE" \
+        --data-urlencode "name@$TITLE_FILE" \
         --data-urlencode "body@$NOTES" \
         --data-urlencode "target_commitish=$BRANCH" \
         --data-urlencode "prerelease=false")"
@@ -287,7 +318,7 @@ except Exception: print("")' 2>/dev/null || true)"
             "$API/releases/$REL_ID/attach_files" \
             -F "access_token=$GITEE_TOKEN" -F "file=@$f")"
           if [ "$code" = "201" ] || [ "$code" = "200" ]; then echo "  ✓ $base"; else
-            echo "  ✗ ${base}（HTTP $code）"; head -c 300 /tmp/gitee-attach.json; echo; fi
+            echo "  ✗ ${base}（HTTP ${code}）"; head -c 300 /tmp/gitee-attach.json; echo; fi
         done
       fi
     fi

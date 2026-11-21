@@ -128,7 +128,7 @@ class PublishReleaseTagTest(unittest.TestCase):
         })
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("已存在，复用", result.stdout)
-        self.assertIn("[dry-run] gh release", result.stdout)
+        self.assertIn("[dry-run] 创建或更新 GitHub Release", result.stdout)
 
 
 if __name__ == "__main__":
