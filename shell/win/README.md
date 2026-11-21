@@ -112,4 +112,4 @@ $env:XIAOTU_SHELL_STARTUP_TIMEOUT = '60'; .\xiaotu-shell.exe
 
 对外暴露：`main.cpp` 用 `AddHostObjectToScript("updater_win", ...)` 把 `UpdaterWin` 挂到 `window.chrome.webview.hostObjects.updater_win`，可用 `checkNow()` / `downloadUpdate()` / `installUpdate()` / `cancelPrefetch()` / `setOptions(auto, prefetch)` / `statusJson()`。
 
-**当前状态**：`web/app.js` 已接入 `chrome.webview.hostObjects.updater_win` 前端卡片（第 6996-7104 行），但**未签名安装包 + WebView2 + 静默 ISCC 安装 + 重启全链路尚未在真实 Windows 上跑通**；正式分发仍以手动下载安装包为准。建议下一次 12600k 构建后补真机验收。
+**当前状态**（2026-11-21 核对）：`web/app.js` 已接入 `chrome.webview.hostObjects.updater_win` 前端卡片；1.0.6 已在 12600K 完成真机验收（检查 → 下载 → ISCC 静默安装 → 重启 → 版本核对，结论见 [发行与安装说明.md](../../docs/发行与安装说明.md) §1/§4）。安装包仍未签名，首次运行需手动放行 SmartScreen；正式分发仍以客户从下载页获取安装包为主。

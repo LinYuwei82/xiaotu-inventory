@@ -89,11 +89,35 @@ TARGET_FILES=(
 # 同时扫描 docs/，提示但不阻断（文档可能滞后于代码，但应该追平）
 DOCS_GLOB="docs/*.md docs/**/*.md docs/tools/package/README.md"
 
-# 同时扫描工作区里所有出现的 base64 样式字符串（排除 build/、3rdparty/、vendor/）
-ALL_PUBKEY_HITS=$(git ls-files \
-    | grep -vE '(^|/)(build|3rdparty|vendor|\.git|dist)/' \
-    | grep -E '\.(txt|md|sh|cmake|plist|py|yml|yaml|json)$|^CMakeLists\.txt$' \
-    | xargs grep -lE '[A-Za-z0-9+/]{43}=' 2>/dev/null || true)
+# 广扫：所有已跟踪的代码/脚本/配置（排除 build/dist/3rdparty/vendor 与 docs/）里出现的
+# 32 字节 base64 公钥，只要不是正确值就阻断——新增文件硬编码错公钥也会被拦下。
+# 只把 base64 解码后正好 32 字节的当公钥（签名是 64 字节，自动排除），减少误判。
+# docs/ 仍只提示（文档可能记录历史密钥，需人工核对）。
+echo ""
+echo -e "  ${YELLOW}— 全仓扫描（代码/脚本，阻断）—${NC}"
+scan_files=$(git ls-files \
+    | grep -vE '(^|/)(build|dist|3rdparty|vendor|\.git)/' \
+    | grep -vE '^docs/' \
+    | grep -E '(^|/)(CMakeLists\.txt|.*\.(txt|sh|cmake|plist|py|yml|yaml|json|iss|ps1))$' || true)
+scan_fail=0
+if [ -n "$scan_files" ]; then
+    while IFS= read -r f; do
+        [ -f "$REPO_ROOT/$f" ] || continue
+        hits=$(grep -oE '[A-Za-z0-9+/]{43}=' "$REPO_ROOT/$f" 2>/dev/null | sort -u || true)
+        [ -z "$hits" ] && continue
+        while IFS= read -r tok; do
+            [ -z "$tok" ] && continue
+            [ "$tok" = "$CORRECT_PUBKEY" ] && continue
+            tok_size=$(printf '%s' "$tok" | openssl base64 -d -A 2>/dev/null | wc -c | tr -d ' ')
+            [ "$tok_size" = "32" ] || continue
+            echo -e "  ${RED}✗${NC} $f 出现非预期公钥：$tok"
+            scan_fail=$((scan_fail + 1))
+        done <<< "$hits"
+    done <<< "$scan_files"
+fi
+if [ $scan_fail -eq 0 ]; then
+    echo -e "  ${GREEN}✓ 通过：代码/脚本里的公钥均为正确值${NC}"
+fi
 
 target_fail=0
 for f in "${TARGET_FILES[@]}"; do
@@ -132,9 +156,9 @@ for pat in $DOCS_GLOB; do
     done
 done
 
-if [ $target_fail -gt 0 ]; then
+if [ $((target_fail + scan_fail)) -gt 0 ]; then
     echo ""
-    echo -e "${RED}[hook] 阻断：${target_fail} 处硬编码公钥与实际密钥不一致${NC}"
+    echo -e "${RED}[hook] 阻断：$((target_fail + scan_fail)) 处硬编码公钥与实际密钥不一致${NC}"
     echo -e "       错公钥会导致 Sparkle 验签失败 / updater_win 静默拒绝更新。"
     echo -e "       密钥文件：$KEY_FILE"
     echo -e "       绕过：$RERUN"
