@@ -8,6 +8,9 @@
 #        cmake --build shell\win\build
 #      发布构建必须带 -DXIAOTU_RELEASE_BUILD=ON（或环境变量 XIAOTU_BUILD），
 #      缺构建号或使用开发占位值时 configure 阶段直接失败。
+#      WebView2 SDK 默认取 shell\win\.cache\webview2（fetch-webview2.ps1 产出）；
+#      也可用 -DXIAOTU_WEBVIEW2_DIR=<nuget 包解压根目录> 直接指向解压目录，
+#      头文件同时支持 <DIR>/include 与 <DIR>/build/native/include 两种布局。
 #   2) 接入顶层构建（仅 Windows，默认关闭）：
 #        cmake --preset windows-release -DXIAOTU_BUILD_WIN_SHELL=ON
 #

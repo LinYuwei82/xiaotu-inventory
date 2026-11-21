@@ -27,9 +27,13 @@ $stamp = Join-Path $dest '.version'
 $nupkg = Join-Path $cacheRoot "microsoft.web.webview2.$Version.nupkg"
 $extract = Join-Path $cacheRoot "extract-$Version"
 
+# 与 shell/win/CMakeLists.txt 的架构选择保持一致：ARM64 机器校验 arm64 子目录，其余按 x64。
+# nupkg 里 build\native 下各架构齐全，整目录拷贝后两种架构都能用。
+$arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+
 $needed = @(
   (Join-Path $dest 'include\WebView2.h'),
-  (Join-Path $dest 'build\native\x64\WebView2LoaderStatic.lib')
+  (Join-Path $dest "build\native\$arch\WebView2LoaderStatic.lib")
 )
 
 if (-not $Force -and (Test-Path -LiteralPath $stamp)) {
@@ -86,5 +90,5 @@ Remove-Item -LiteralPath $nupkg -Force -ErrorAction SilentlyContinue
 
 Write-Host "WebView2 SDK $Version 已就绪：$dest"
 Write-Host "  头文件：include\WebView2.h"
-Write-Host "  静态库：build\native\x64\WebView2LoaderStatic.lib"
+Write-Host "  静态库：build\native\$arch\WebView2LoaderStatic.lib"
 Write-Host "注意：目标机器需已安装 WebView2 Runtime（本机已装 157.x）。"
