@@ -479,6 +479,40 @@ class NativeIoHost : public IDispatch {
   LONG ref_ = 1;
 };
 
+// 按打印布局创建 WebView2 打印设置。前端传来的 paper 即 /api/print/render 的
+// layout：width_mm / height_mm / margin_mm 已按横纵向换算好。PrintToPdf 的
+// 页面尺寸与边距单位是英寸；fit-width 缩放已由前端 CSS zoom 完成，这里固定
+// ScaleFactor=1.0，避免再缩一次。创建失败时返回 nullptr，回退到旧行为。
+ICoreWebView2PrintSettings* make_print_settings(ICoreWebView2Environment* env,
+                                                const nlohmann::json& paper) {
+  if (!env || !paper.is_object()) return nullptr;
+  ICoreWebView2Environment6* env6 = nullptr;
+  if (FAILED(env->QueryInterface(IID_PPV_ARGS(&env6))) || !env6) return nullptr;
+  ICoreWebView2PrintSettings* settings = nullptr;
+  const HRESULT hr = env6->CreatePrintSettings(&settings);
+  env6->Release();
+  if (FAILED(hr) || !settings) return nullptr;
+
+  constexpr double kMmPerInch = 25.4;
+  auto number_of = [&paper](const char* key) {
+    return paper.contains(key) && paper[key].is_number() ? paper[key].get<double>() : 0.0;
+  };
+  const double width_mm = number_of("width_mm");
+  const double height_mm = number_of("height_mm");
+  if (width_mm > 0) settings->put_PageWidth(width_mm / kMmPerInch);
+  if (height_mm > 0) settings->put_PageHeight(height_mm / kMmPerInch);
+  if (paper.contains("margin_mm") && paper["margin_mm"].is_number()) {
+    const double margin = paper["margin_mm"].get<double>() / kMmPerInch;
+    settings->put_MarginLeft(margin);
+    settings->put_MarginRight(margin);
+    settings->put_MarginTop(margin);
+    settings->put_MarginBottom(margin);
+  }
+  settings->put_ScaleFactor(1.0);
+  settings->put_ShouldPrintHeaderAndFooter(FALSE);
+  return settings;
+}
+
 // PrintToPdf 回调 —— 通知前端导出完成/失败
 class PrintToPdfCompleted final
     : public ICoreWebView2PrintToPdfCompletedHandler {
@@ -511,8 +545,15 @@ class PrintToPdfCompleted final
 class WebMessageReceivedHandler final
     : public ICoreWebView2WebMessageReceivedEventHandler {
  public:
-  explicit WebMessageReceivedHandler(ICoreWebView2* webview) : webview_(webview) { webview_->AddRef(); }
-  ~WebMessageReceivedHandler() { if (webview_) webview_->Release(); }
+  explicit WebMessageReceivedHandler(ICoreWebView2* webview, ICoreWebView2Environment* env)
+      : webview_(webview), env_(env) {
+    webview_->AddRef();
+    if (env_) env_->AddRef();
+  }
+  ~WebMessageReceivedHandler() {
+    if (webview_) webview_->Release();
+    if (env_) env_->Release();
+  }
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
     if (!ppv) return E_POINTER;
@@ -556,7 +597,11 @@ class WebMessageReceivedHandler final
         // QI 到 ICoreWebView2_7 才能调 PrintToPdf
         ICoreWebView2_7* wv7 = nullptr;
         if (SUCCEEDED(webview_->QueryInterface(IID_PPV_ARGS(&wv7)))) {
-          wv7->PrintToPdf(dr.path.c_str(), nullptr, new PrintToPdfCompleted());
+          const nlohmann::json paper =
+              j.contains("paper") && j["paper"].is_object() ? j["paper"] : nlohmann::json::object();
+          ICoreWebView2PrintSettings* settings = make_print_settings(env_, paper);
+          wv7->PrintToPdf(dr.path.c_str(), settings, new PrintToPdfCompleted());
+          if (settings) settings->Release();
           wv7->Release();
         } else {
           nlohmann::json err = {{"event", "printPdf"}, {"code", "error"}, {"message", "no_wv7"}};
@@ -570,6 +615,7 @@ class WebMessageReceivedHandler final
  private:
   LONG ref_ = 1;
   ICoreWebView2* webview_;
+  ICoreWebView2Environment* env_ = nullptr;
 };
 
 // ---------- 文本与路径 ----------
@@ -944,7 +990,7 @@ class ControllerCompleted
     }
     // 注册 WebMessageReceived —— 前端用 chrome.webview.postMessage({...}) 发的消息。
     //   { kind: "printPdf", filename, paper } → 原生用 PrintToPdf 把当前页面渲染成 PDF
-    app_->webview->add_WebMessageReceived(new WebMessageReceivedHandler(app_->webview), nullptr);
+    app_->webview->add_WebMessageReceived(new WebMessageReceivedHandler(app_->webview, app_->env), nullptr);
     // 给文件对话框用的主窗口句柄
     g_shell_hwnd = app_->hwnd;
     // 给 updater_win 异步回调用的 webview 指针
