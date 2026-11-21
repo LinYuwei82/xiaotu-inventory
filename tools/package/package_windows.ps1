@@ -103,7 +103,7 @@ Step "1/5 取 WebView2 SDK"
 & (Join-Path $root 'shell\win\fetch-webview2.ps1')
 
 Step "2/5 构建服务端"
-Invoke-Native 'cmake' @('--preset', 'windows-release', '-DXIAOTU_RELEASE_BUILD=ON', "-DXIAOTU_BUILD=$Build")
+Invoke-Native 'cmake' @('--preset', 'windows-release', '-DXIAOTU_RELEASE_BUILD=ON', '-DXIAOTU_BUILD_WIN_SHELL=ON', "-DXIAOTU_BUILD=$Build")
 Invoke-Native 'cmake' @('--build', '--preset', 'windows-release')
 
 $serverExe = Join-Path $root 'build\windows\server\xiaotu-server.exe'
@@ -126,7 +126,9 @@ if ($text -notlike '*xiaotu/updates/stable/manifest.json*') {
 Write-Host "  ✓ 壳内清单地址正确"
 
 Step "4/5 打绿色包"
-& (Join-Path $root 'packaging\win\make-zip.ps1')
+# 显式指定刚构建的壳：make-zip 默认会优先找 build\<preset>\shell\win 下的旧壳，
+# 增量构建时目标未重建就会把上一次构建号打进绿色包（与 setup 不一致）。
+& (Join-Path $root 'packaging\win\make-zip.ps1') -ShellExe $shellExe
 
 $zip = Join-Path $root "dist\xiaotu-inventory-$version-win64.zip"
 if (-not (Test-Path -LiteralPath $zip)) { Fail "未找到绿色包：$zip" }
