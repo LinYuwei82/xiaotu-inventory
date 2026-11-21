@@ -118,6 +118,20 @@ Invoke-Native 'cmake' @('--build', 'shell/win/build')
 $shellExe = Join-Path $root 'shell\win\build\xiaotu-shell.exe'
 if (-not (Test-Path -LiteralPath $shellExe)) { Fail "未找到壳产物：$shellExe" }
 
+# 壳动态链接 OpenSSL 3，运行时必须在 exe 同目录找到 libcrypto-3-x64.dll 等；
+# 这些 DLL 由 shell/win 的 CMake POST_BUILD 从 OpenSSL 的 bin 拷过来。构建后
+# 立刻确认，免得打完整包才发现目标机双击报「找不到 libcrypto-3-x64.dll」。
+$shellDir = Split-Path -Parent $shellExe
+$requiredDlls = @('libcrypto-3-x64.dll', 'libssl-3-x64.dll')
+$missingDlls = @($requiredDlls | Where-Object {
+    -not (Test-Path -LiteralPath (Join-Path $shellDir $_))
+  })
+if ($missingDlls) {
+  Fail ("壳缺少 OpenSSL 运行时 DLL：{0}`n目录：{1}`n请重新构建壳，确认 CMake POST_BUILD 把 DLL 拷到了 exe 旁边。" -f
+    ($missingDlls -join ', '), $shellDir)
+}
+Write-Host "  ✓ 壳运行时 DLL 齐全（$($requiredDlls -join ', ')）"
+
 # 1.0.0 的包就是这里漏了：壳内清单地址必须与本次发布一致
 $text = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($shellExe))
 if ($text -notlike '*xiaotu/updates/stable/manifest.json*') {
