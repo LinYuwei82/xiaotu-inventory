@@ -194,21 +194,17 @@ if ($NotesOnly) {
             }
         }
 
-        # 凭据轮换自检：AccessKey 不得出现在受版本控制的文件里
+        # 凭据轮换自检：AccessKey 不得出现在受版本控制的文件里。
+        # 用 git grep 直接扫已跟踪内容，避免 git ls-files 的转义路径在 PS 5.1
+        # 下触发「Illegal characters in path」。
         $ak = $env:OSS_ACCESS_KEY_ID
-        $gitDir = Join-Path $root ".git"
-        if (Test-Path -LiteralPath $gitDir) {
+        if (Test-Path -LiteralPath (Join-Path $root ".git")) {
             Push-Location $root
-            $tracked = git ls-files 2>$null
+            $hits = @(git grep -l -F -- $ak 2>$null)
             Pop-Location
-            foreach ($f in $tracked) {
-                $fp = Join-Path $root $f
-                if (-not (Test-Path -LiteralPath $fp -PathType Leaf)) { continue }
-                try {
-                    if (Select-String -LiteralPath $fp -SimpleMatch $ak -Quiet -ErrorAction SilentlyContinue) {
-                        Fail "AccessKey 出现在受版本控制的文件 $f 里，已拒绝发布。请先移除该值，再到 RAM 控制台轮换这对密钥后重跑。"
-                    }
-                } catch { }
+            if ($hits.Count -gt 0) {
+                Fail ("AccessKey 出现在受版本控制的文件 {0} 里，已拒绝发布。请先移除该值，再到 RAM 控制台轮换这对密钥后重跑。" -f
+                    ($hits -join ', '))
             }
         }
 
@@ -503,21 +499,17 @@ if ($SkipUpload) {
         }
     }
 
-    # 凭据轮换自检：AccessKey 不得出现在受版本控制的文件里
+    # 凭据轮换自检：AccessKey 不得出现在受版本控制的文件里。
+    # 用 git grep 直接扫已跟踪内容：git ls-files 默认输出带引号的转义路径，
+    # PS 5.1 下 Test-Path 会因中文路径报「Illegal characters in path」。
     $ak = $env:OSS_ACCESS_KEY_ID
-    $gitDir = Join-Path $root ".git"
-    if (Test-Path -LiteralPath $gitDir) {
+    if (Test-Path -LiteralPath (Join-Path $root ".git")) {
         Push-Location $root
-        $tracked = git ls-files 2>$null
+        $hits = @(git grep -l -F -- $ak 2>$null)
         Pop-Location
-        foreach ($f in $tracked) {
-            $fp = Join-Path $root $f
-            if (-not (Test-Path -LiteralPath $fp -PathType Leaf)) { continue }
-            try {
-                if (Select-String -LiteralPath $fp -SimpleMatch $ak -Quiet -ErrorAction SilentlyContinue) {
-                    Fail "AccessKey 出现在受版本控制的文件 $f 里，已拒绝发布。请先移除该值，再到 RAM 控制台轮换这对密钥后重跑。"
-                }
-            } catch { }
+        if ($hits.Count -gt 0) {
+            Fail ("AccessKey 出现在受版本控制的文件 {0} 里，已拒绝发布。请先移除该值，再到 RAM 控制台轮换这对密钥后重跑。" -f
+                ($hits -join ', '))
         }
     }
 
