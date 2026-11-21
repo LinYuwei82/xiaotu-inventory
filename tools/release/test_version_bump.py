@@ -74,6 +74,19 @@ class VersionBumpTest(unittest.TestCase):
         self.assertEqual(self.run_check("150", "--manifest-file", str(manifest)).returncode, 2)
         self.assertEqual(self.run_check("201", "--manifest-file", str(manifest)).returncode, 0)
 
+    def test_platform_scoped_build_ignores_other_platform(self) -> None:
+        # 同版本双端发布：macOS 先发把最大 build 抬到 120，Windows 复用同一 build 应放行
+        manifest = self.manifest("1.2.3", 120, "1.2.3", 100)
+        result = self.run_check("120", "--manifest-file", str(manifest), "--platform", "windows")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        # 不带 --platform 时仍按全平台最大值拦截
+        self.assertEqual(self.run_check("120", "--manifest-file", str(manifest)).returncode, 2)
+
+    def test_platform_scoped_still_blocks_same_platform_rebuild(self) -> None:
+        manifest = self.manifest("1.2.3", 120, "1.2.3", 120)
+        result = self.run_check("120", "--manifest-file", str(manifest), "--platform", "windows")
+        self.assertEqual(result.returncode, 2)
+
     def test_missing_manifest_fails_by_default(self) -> None:
         result = self.run_check("999", "--manifest-file", str(self.dir / "nope.json"))
         self.assertEqual(result.returncode, 2)

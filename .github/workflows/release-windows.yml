@@ -132,7 +132,7 @@ jobs:
         shell: bash
         run: |
           python3 tools/release/check_version_bump.py --product xiaotu \
-            --build "$BUILD" \
+            --build "$BUILD" --platform windows \
             --manifest-url "https://dl.xiaotu.online/xiaotu/updates/$CHANNEL/manifest.json"
 
       - name: 构建服务端

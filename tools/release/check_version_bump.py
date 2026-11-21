@@ -48,10 +48,21 @@ def load_manifest(args: argparse.Namespace) -> dict | None:
         return None
 
 
-def remote_versions(manifest: dict) -> tuple[list[tuple[int, int, int]], list[int]]:
+def remote_versions(manifest: dict, platform: str = "") -> tuple[list[tuple[int, int, int]], list[int]]:
     versions: list[tuple[int, int, int]] = []
     builds: list[int] = []
-    for section in (manifest.get("platforms") or {}).values():
+    sections = manifest.get("platforms") or {}
+    # 指定平台时只看该平台：同版本双端发布共用 tag 序号，先发的平台会把
+    # 全平台最大 build 抬高，若按最大值比较，后发平台会被误判为“构建号未前移”。
+    if platform and isinstance(sections.get(platform), dict):
+        section = sections[platform]
+        parsed = parse_semver(str(section.get("version", "")))
+        if parsed:
+            try:
+                return [parsed], [int(section.get("build", 0))]
+            except (TypeError, ValueError):
+                return [parsed], [0]
+    for section in sections.values():
         if not isinstance(section, dict):
             continue
         parsed = parse_semver(str(section.get("version", "")))
@@ -85,6 +96,8 @@ def main() -> int:
     parser.add_argument("--build", required=True, help="本次构建号（纯数字）")
     parser.add_argument("--manifest-url", default="")
     parser.add_argument("--manifest-file", default="")
+    parser.add_argument("--platform", default="",
+                        help="只校验该平台（windows/macos）；缺省按全平台最大值")
     parser.add_argument("--allow-missing", action="store_true",
                         help="线上清单不可读时放行（仅首次发布）")
     args = parser.parse_args()
@@ -115,7 +128,7 @@ def main() -> int:
               "（首次发布可加 --allow-missing）")
         return 2
 
-    versions, builds = remote_versions(manifest)
+    versions, builds = remote_versions(manifest, args.platform)
     if not versions:
         print(f"{tag}线上清单缺少 version 字段，无法校验")
         return 2
