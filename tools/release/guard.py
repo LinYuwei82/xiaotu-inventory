@@ -384,7 +384,7 @@ def check_manifest_v2(data: Dict[str, Any], product: str, kind: str,
         die(f"清单 {platform}.version={section.get('version')} 与产物 {version} 不一致")
     if build is not None and int(section.get("build", 0)) != build:
         die(f"清单 {platform}.build={section.get('build')} 与产物构建号 {build} 不一致")
-    # 跨平台构建号同源：build 由 git count 派生、与平台无关，
+    # 跨平台构建号同源：build 取发布 tag 序号、与平台无关，
     # 同一次发布的两平台必须同号，否则同一版本号下用户会装到不同代码。
     other_key = "windows" if platform == "macos" else "macos"
     other = platforms.get(other_key)
@@ -397,7 +397,7 @@ def check_manifest_v2(data: Dict[str, Any], product: str, kind: str,
               and other_build > 0 and other_build != build):
             msg = (f"同版本 {version} 两平台 build 不同源："
                    f"{platform}={build}，{other_key}={other_build}"
-                   "（build 由 git count 派生，应一致）")
+                   "（build 取发布 tag 序号，应一致）")
             if allow_build_drift:
                 warn(msg + "；已用 --allow-build-drift 放行")
             else:

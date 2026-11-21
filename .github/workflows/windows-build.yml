@@ -48,7 +48,7 @@ jobs:
         run: python3 tools/release/test_release_layout.py
       - name: 发布/门禁单元测试
         run: |
-          for t in test_release_tag test_version_bump test_guard test_publish_release; do
+          for t in test_release_tag test_version_bump test_guard test_guard_manifest test_publish_release; do
             python3 tools/release/$t.py
           done
 
