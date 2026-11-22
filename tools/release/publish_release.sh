@@ -137,6 +137,9 @@ STAGE="$(mktemp -d)"
 # 标题单独落成 UTF-8 文件：Windows Git Bash 把中文当命令行参数传给 gh/curl 会变成问号
 TITLE_FILE="$(mktemp)"
 printf '%s' "$TITLE" > "$TITLE_FILE"
+# Windows/MSYS 的 /tmp 路径原生 curl 读不到，转成 Windows 路径后传参
+TITLE_ARG="$TITLE_FILE"
+if command -v cygpath >/dev/null 2>&1; then TITLE_ARG="$(cygpath -w "$TITLE_FILE")"; fi
 trap 'rm -rf "$STAGE" "$TITLE_FILE"' EXIT
 FILES=()
 OSS_BASE="${OSS_BASE:-https://dl.xiaotu.online}"
@@ -272,7 +275,7 @@ print(len(d) if isinstance(d,list) else 0)' 2>/dev/null || echo 0)"
       code="$(curl -sS -o /tmp/gitee-rel.json -w '%{http_code}' -X PATCH "$API/releases/$REL_ID" \
         --data-urlencode "access_token=$GITEE_TOKEN" \
         --data-urlencode "tag_name=$TAG" \
-        --data-urlencode "name@$TITLE_FILE" \
+        --data-urlencode "name@$TITLE_ARG" \
         --data-urlencode "body@$NOTES")"
       if [ "$code" = "200" ] || [ "$code" = "201" ]; then
         echo "  ✓ 标题/说明已更新"
@@ -303,7 +306,7 @@ print('1' if any(isinstance(a,dict) and a.get('name')==b for a in d) else '0')" 
       resp="$(curl -sS -X POST "$API/releases" \
         --data-urlencode "access_token=$GITEE_TOKEN" \
         --data-urlencode "tag_name=$TAG" \
-        --data-urlencode "name@$TITLE_FILE" \
+        --data-urlencode "name@$TITLE_ARG" \
         --data-urlencode "body@$NOTES" \
         --data-urlencode "target_commitish=$BRANCH" \
         --data-urlencode "prerelease=false")"
