@@ -141,7 +141,8 @@ C7560 指「指定初始化器（designated initializer）顺序与结构体成�
 
 - 真实针式打印机（套打、连续走纸、多层复写）；
 - 购买证书后的 SmartScreen 信誉表现；
-- Apple 公证 / Gatekeeper（macOS 侧）。
+- Apple 公证 / Gatekeeper（macOS 侧）；
+- 安装器在无 WebView2 干净系统上的首次安装耗时与自动安装结果：用 `packaging\win\test_first_install.ps1` 在 Win10 快照里跑（本脚本不安装/卸载 WebView2）。
 
 ## 构建耗时采集（profile-build.ps1）
 

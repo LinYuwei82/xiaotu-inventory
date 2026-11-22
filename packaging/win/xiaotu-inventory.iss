@@ -60,6 +60,7 @@
 #define AppExeName "xiaotu-shell.exe"
 #define ServerExeName "xiaotu-server.exe"
 #define WebView2Url "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+#define WebView2InstallerName "MicrosoftEdgeWebview2Setup.exe"
 
 [Setup]
 AppId={{6E2A9B4D-5C1F-4F3B-9D2E-7A8B1C3D5E6F}
@@ -95,6 +96,10 @@ SignedUninstaller=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: checkedonce
+#if !XIAOTU_NO_SHELL
+; 仅在本机检测不到 WebView2 Runtime 时出现；勾选后安装期下载官方 bootstrapper 并静默安装。
+Name: "webview2"; Description: "下载并安装 WebView2 运行环境（桌面窗口必需，需要联网）"; GroupDescription: "附加任务："; Check: not WebView2Installed
+#endif
 
 [Files]
 ; 服务端必须存在；壳缺失时编译期直接失败，确实要出无壳包请显式 /DXIAOTU_NO_SHELL=1。
@@ -124,13 +129,26 @@ Name: "{userprograms}\{#AppName}（浏览器访问）"; Filename: "{app}\{#Serve
 Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon; Check: HasShell
 
 [Run]
+#if !XIAOTU_NO_SHELL
+; 勾选 webview2 任务时：PrepareToInstall 已把官方 bootstrapper 下载到 {tmp}，这里静默安装。
+; 必须排在启动应用之前，否则壳可能在 Runtime 装好前就起来了。
+; 安装失败时下面的「下载并安装 WebView2」入口仍然可见（NeedWebView2 会重新查注册表）。
+Filename: "{tmp}\{#WebView2InstallerName}"; Parameters: "/silent /install"; StatusMsg: "正在安装 WebView2 运行环境…"; Flags: runhidden waituntilterminated; Check: ShouldRunWebView2Setup
+#endif
 Filename: "{app}\{#AppExeName}"; Description: "启动{#AppName}"; Flags: postinstall nowait skipifsilent; Check: HasShell
 ; 壳依赖 WebView2 Runtime：缺失时在完成页提供官方安装入口（见 [Code] 的注册表检查）。
 Filename: "{#WebView2Url}"; Description: "下载并安装 WebView2 Runtime（桌面窗口必需）"; Flags: postinstall shellexec nowait skipifsilent runasoriginaluser; Check: NeedWebView2
 
 [Code]
+{ 仅下载 WebView2 Evergreen 官方引导程序；安装交给 [Run] 的 /silent /install。 }
+function URLDownloadToFile(pCaller: LongWord; szURL, szFileName: String;
+  dwReserved: LongWord; lpfnCB: LongWord): Integer;
+  external 'URLDownloadToFileW@urlmon.dll stdcall';
+
 var
   DataDirPage: TInputDirWizardPage;
+  WebView2SetupPath: String;
+  WebView2SetupReady: Boolean;
 
 function DefaultDataDir: String;
 begin
@@ -170,6 +188,41 @@ function NeedWebView2: Boolean;
 begin
   { 仅桌面壳需要 WebView2；纯浏览器模式不拦。 }
   Result := HasShell and (not WebView2Installed);
+end;
+
+{ 下载 WebView2 Evergreen bootstrapper 到临时目录；失败不中断安装，留给完成页手动入口。 }
+function DownloadWebView2Bootstrapper: Boolean;
+var
+  Res: Integer;
+begin
+  WebView2SetupPath := ExpandConstant('{tmp}\{#WebView2InstallerName}');
+  Res := URLDownloadToFile(0, '{#WebView2Url}', WebView2SetupPath, 0, 0);
+  Result := (Res = 0) and FileExists(WebView2SetupPath);
+end;
+
+{ 在复制文件前完成下载，[Run] 才有安装包可执行。 }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  WebView2SetupReady := False;
+  if not (WizardIsTaskSelected('webview2') or WizardSilent) then
+    Exit;
+  if WebView2Installed then
+    Exit;
+  WizardForm.StatusLabel.Caption := '正在下载 WebView2 运行环境…';
+  WizardForm.Refresh;
+  WebView2SetupReady := DownloadWebView2Bootstrapper;
+  if not WebView2SetupReady then
+    SuppressibleMsgBox('未能下载 WebView2 运行环境（可能未联网）。' + #13#10#13#10 +
+           '安装完成后可在完成页手动安装，或直接使用「浏览器访问」入口。',
+           mbInformation, MB_OK, IDOK);
+  WizardForm.StatusLabel.Caption := '';
+end;
+
+{ [Run] 静默安装条件：下载成功，且此刻注册表里仍没有 Runtime。 }
+function ShouldRunWebView2Setup: Boolean;
+begin
+  Result := WebView2SetupReady and (not WebView2Installed);
 end;
 
 procedure InitializeWizard;
@@ -223,8 +276,8 @@ begin
              '[storage]' + #13#10 +
              'data_dir = "' + TargetDir + '"' + #13#10;
   if not SaveStringToFile(ConfigFilePath, Content, False) then
-    MsgBox('写入配置文件失败：' + ConfigFilePath + #13#10 +
-           '应用将使用默认数据目录 ' + DefaultDataDir, mbError, MB_OK);
+    SuppressibleMsgBox('写入配置文件失败：' + ConfigFilePath + #13#10 +
+           '应用将使用默认数据目录 ' + DefaultDataDir, mbError, MB_OK, IDOK);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -234,11 +287,16 @@ begin
   if CurStep = ssPostInstall then
   begin
     WriteDataConfig;
-    if NeedWebView2 then
-      MsgBox('本机未检测到 WebView2 Runtime。' + #13#10#13#10 +
-             '桌面窗口依赖该运行时；完成页提供了官方安装入口，装好后重新打开即可。' + #13#10 +
-             '也可以直接用开始菜单里的「浏览器访问」入口。', mbInformation, MB_OK);
+    if NeedWebView2 and (not WebView2SetupReady) then
+      SuppressibleMsgBox('本机未检测到 WebView2 Runtime。' + #13#10#13#10 +
+             '桌面窗口依赖该运行时；本次未自动安装，完成页提供了官方安装入口，装好后重新打开即可。' + #13#10 +
+             '也可以直接用开始菜单里的「浏览器访问」入口。', mbInformation, MB_OK, IDOK);
   end;
+
+  { 自动安装跑完后再查一次注册表；静默安装失败时给出明确提示，不静默放过。 }
+  if (CurStep = ssDone) and (WizardIsTaskSelected('webview2') or WizardSilent) and (not WebView2Installed) then
+    SuppressibleMsgBox('WebView2 运行环境未安装成功，桌面窗口可能无法打开。' + #13#10#13#10 +
+           '请手动安装：{#WebView2Url}', mbError, MB_OK, IDOK);
 
   // 静默覆盖更新（updater_win 调 /VERYSILENT）时，壳文件会被占用导致安装失败。
   // 这里在安装开始前强制 kill 旧壳，释放文件锁；安装完后 [Run] 段（postinstall）会启新壳。
@@ -284,8 +342,8 @@ begin
     if DataDir = '' then
       DataDir := DefaultDataDir;
     if DirExists(DataDir) then
-      MsgBox('数据目录已保留：' + DataDir + #13#10#13#10 +
+      SuppressibleMsgBox('数据目录已保留：' + DataDir + #13#10#13#10 +
              '卸载不会删除数据库、日志与备份。确认不再需要时，请手动删除该目录。',
-             mbInformation, MB_OK);
+             mbInformation, MB_OK, IDOK);
   end;
 end;

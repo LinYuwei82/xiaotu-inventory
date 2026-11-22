@@ -1,4 +1,4 @@
-# 小兔进销存（1.0.10）
+# 小兔进销存（1.0.11）
 
 > 主仓库在 Gitee：`git@gitee.com:lin-yuwei168/xiaotu-inventory.git`。GitHub 的 `LinYuwei82/xiaotu-inventory` 是同源镜像：Linux 门禁在 Gitee Go；Windows 的 MSVC 构建、**未签名安装包**与 tag 发布由镜像仓库的 `.github/workflows/windows-build.yml` / `release-windows.yml` 承担；macOS 的编译与测试也在镜像里跑，但 dmg 打包、签名与公证仍在本地执行。
 >
@@ -11,7 +11,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 - 不带参数启动 = **单机版**：内嵌服务只监听 `127.0.0.1` 的随机端口，生成一次性 token，用系统 WKWebView 打开本地页面。
 - `--server` 启动 = **网络版**：监听 `0.0.0.0`，用浏览器访问；使用用户名与口令登录（首次需先给内置管理员设置口令）。
 
-当前版本 1.0.10（唯一来源：仓库根 `VERSION.txt`；发布号用 annotated tag `v<semver>+<seq>`，构建号等于 tag 序号）。按 [docs/进销存技术方案.md](docs/进销存技术方案.md) 的里程碑口径：M1–M3 与 M5 已完成；M4 除针式套打真机验证外已完成（纸型、边距、缩放与打印列勾选已落地，真机验收仍为阻塞项）；M6 的 macOS `.dmg` 打包脚本与用户手册已完成，Windows 壳已可接入顶层构建，自研更新桥（清单拉取、Ed25519 验签、SHA256 校验、静默安装重启）与前端更新卡片均已接入，一键打包用 `tools/package/package_windows.ps1`，安装/卸载真机验收见 [docs/Windows验收清单.md](docs/Windows验收清单.md)；Windows 代码签名暂不购买证书，签名脚本与 CI 已就绪，详见 [docs/未签名分发注意事项.md](docs/未签名分发注意事项.md)。macOS `.dmg` 已用 Developer ID 签名、公证并 staple。
+当前版本 1.0.11（唯一来源：仓库根 `VERSION.txt`；发布号用 annotated tag `v<semver>+<seq>`，构建号等于 tag 序号）。按 [docs/进销存技术方案.md](docs/进销存技术方案.md) 的里程碑口径：M1–M3 与 M5 已完成；M4 除针式套打真机验证外已完成（纸型、边距、缩放与打印列勾选已落地，真机验收仍为阻塞项）；M6 的 macOS `.dmg` 打包脚本与用户手册已完成，Windows 壳已可接入顶层构建，自研更新桥（清单拉取、Ed25519 验签、SHA256 校验、静默安装重启）与前端更新卡片均已接入，一键打包用 `tools/package/package_windows.ps1`，安装/卸载真机验收见 [docs/Windows验收清单.md](docs/Windows验收清单.md)；Windows 代码签名暂不购买证书，签名脚本与 CI 已就绪，详见 [docs/未签名分发注意事项.md](docs/未签名分发注意事项.md)。macOS `.dmg` 已用 Developer ID 签名、公证并 staple。
 
 已打通：**商品（分类 / 条码 / 税率）/ 单位 / 仓库 / 职员 / 客户 / 供应商档案（支持 Excel 批量导入导出，客户供应商已合表到 partner 并支持合并与撤销）→ 库存、应收、应付、资金账户四类期初导入 → 采购入库、销售出库、采购退货、销售退货、其他入库、其他出库、调拨、盘点、成本调整（草稿与反审核）→ 销售订单确认与转出库（可记录业务员）→ 库存余额与流水 → 应收应付台账与核销（按 partner 维度归集）→ 收付款单与资金账户 → 往来对账单 → 15 个报表接口（14 类输出）的导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志（含来源 IP 与请求号）、单据幂等与乐观锁、登录失败锁定与强制改密、成本口径参数（含税价 / 不含税净额，可切换并标注切换日）、前端离线提示与表单草稿、打印纸型 / 边距 / 缩放与 Cmd+P、报表导出流式化（不再有 10 万行上限）与 macOS `.dmg` 打包。桌面壳提供撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选编辑菜单；单据录入时商品下拉显示编码、名称与规格，数量框旁显示单位；桌面版支持直接「导出 PDF」。成本重算保持只读核对，差异通过成本调整单落账。
 
@@ -176,7 +176,7 @@ $env:XIAOTU_PASSWORD = '你的口令'
 
 - Windows 10/11 x64，Visual Studio 2022 Build Tools（含 C++ 工具集），CMake 3.25+、Ninja。
 - **WebView2 SDK**：`shell\win\fetch-webview2.ps1` 会从 NuGet 下载 `Microsoft.Web.WebView2`（默认 1.0.4314.35），解压到 `shell\win\.cache\webview2`；也可手动把 nupkg 放到该目录后重跑脚本。
-- **WebView2 Runtime**：开发机与目标机器都需要。Win11 自带；Win10 可从 <https://go.microsoft.com/fwlink/p/?LinkId=2124703> 安装，或随安装包引导安装。
+- **WebView2 Runtime**：开发机与目标机器都需要。Win11 自带；Win10 可从 <https://go.microsoft.com/fwlink/p/?LinkId=2124703> 安装。Windows 安装包在缺失时默认勾选自动安装（需联网；`/VERYSILENT` 静默安装同样生效），绿色包需手动安装。首次安装耗时基线见 `packaging/win/README.md`（Win10 干净 VM：总 67.6 s，其中 WebView2 64.9 s）。
 
 ```powershell
 .\shell\win\fetch-webview2.ps1

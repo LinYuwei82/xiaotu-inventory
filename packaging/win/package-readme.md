@@ -30,6 +30,8 @@ $env:XIAOTU_PASSWORD = '你的口令'
 ## 桌面窗口需要 WebView2 Runtime
 
 `xiaotu-shell.exe` 依赖系统的 **WebView2 Runtime**（Windows 11 自带；部分 Windows 10 没有）。
+用安装包装时，向导「附加任务」里的「下载并安装 WebView2 运行环境」默认勾选（需要联网），
+装完会自动装好；IT 静默安装（`/VERYSILENT`）同样会自动装，不需要额外参数。绿色包没有这一步。
 双击后若提示缺少 WebView2，或窗口一片空白，按下面处理：
 
 - 检测方法（在 PowerShell 里执行，有版本号输出即为已安装）：

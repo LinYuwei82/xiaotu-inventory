@@ -1,6 +1,6 @@
 # Windows 验收清单（12600k 实机）
 
-适用版本：1.0.7。目标：确认 MSVC 构建、未签名安装包、安装/启动/业务/升级/卸载全链路在真实 Windows 上可用。
+适用版本：1.0.11。目标：确认 MSVC 构建、未签名安装包、安装/启动/业务/升级/卸载全链路在真实 Windows 上可用。
 
 用法：逐条执行，在「结果」列填 **通过 / 不通过 / 未测**，附截图或命令输出；失败项贴完整报错原文，不要概括。
 
@@ -57,7 +57,7 @@
 - [ ] 从 CI artifact `xiaotu-win-installer`（`windows-build.yml`）或 `xiaotu-windows-release`（`release-windows.yml`）下载，记录完整文件名与大小。
 - [ ] 打开包内 `SIGNING.txt`，记录全文。
 - [ ] 确认它与安装包实际签名状态一致：未签名包应写「未签名」，已签名包应写「已签名」且 `Get-AuthenticodeSignature` 为 `Valid`，不能两者矛盾。
-- [ ] 右键包内 `xiaotu-server.exe` → 属性 → 详细信息，`文件版本`应为 1.0.7（与仓库根 `VERSION.txt` 一致，不能为空）；`xiaotu-shell.exe` 同样有值。
+- [ ] 右键包内 `xiaotu-server.exe` → 属性 → 详细信息，`文件版本`应为 1.0.11（与仓库根 `VERSION.txt` 一致，不能为空）；`xiaotu-shell.exe` 同样有值。
 
 文件名：______；大小：______；`SIGNING.txt`：______。
 
@@ -69,6 +69,9 @@
 - [ ] 开始菜单出现「小兔进销存」（有壳时为窗口入口，无壳时为「浏览器访问」）。
 - [ ] 有 `xiaotu-shell.exe` 时，桌面出现「小兔进销存」快捷方式（安装时勾选了桌面图标）。
 - [ ] 数据目录为 `%LOCALAPPDATA%\com.simem.xiaotu`，安装后尚未启动时不生成数据库属正常。
+- [ ] 缺 WebView2 的机器上，向导「附加任务」出现默认勾选的「下载并安装 WebView2 运行环境」；联网安装后壳可直接打开（取消勾选或断网时，完成页仍出现官方安装入口）。
+- [ ] 静默安装（`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART`）退出码 0，全程无弹窗等待；缺 WebView2 的机器上装完 Runtime 已就位。
+- [ ] 在**无 WebView2 的干净 Win10 快照**里运行 `packaging\win\test_first_install.ps1`，报告为 `PASS`；参考基线：总耗时 67.6 s，其中 WebView2 引导器 64.9 s（Win10 Pro 19041，4 vCPU / 6 GB）。
 
 结果：______；实际路径：______。
 
@@ -102,7 +105,7 @@
 - [ ] 覆盖安装前，在数据目录放一条可见数据（如新建商品「升级前测试」）。
 - [ ] 覆盖安装完成后，数据目录未被清空，「升级前测试」仍在。
 - [ ] 启动后数据库正常迁移（日志无迁移错误），`/api/health` 返回的 `schema_version` 为 v39。
-- [ ] 关于/诊断处显示的版本号为新版本 1.0.7。
+- [ ] 关于/诊断处显示的版本号为新版本 1.0.11。
 
 结果：______；`schema_version`：______。
 

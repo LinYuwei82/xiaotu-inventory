@@ -4,7 +4,7 @@
 
 本目录放 Windows 侧的分发产物构建脚本，不参与顶层 CMake 构建：
 
-- `xiaotu-inventory.iss`：Inno Setup 6 安装包脚本（安装、快捷方式、卸载、数据目录、WebView2 检查）。
+- `xiaotu-inventory.iss`：Inno Setup 6 安装包脚本（安装、快捷方式、卸载、数据目录、WebView2 检测与可选自动安装）。
 - `make-zip.ps1`：从现有 `windows-release` 产物（`build\windows\server\xiaotu-server.exe`）生成绿色 zip。
 
 两者都读取同一批产物：服务端 exe 为必需，桌面壳按同一套顺序解析：显式指定 → `build\windows\shell\win\xiaotu-shell.exe` → `build\windows\shell\win\Release\xiaotu-shell.exe` → 旧的 `shell\win\build\xiaotu-shell.exe` → `shell\win\build\Release\xiaotu-shell.exe`。**都找不到时脚本报错退出/编译失败**，不会静默产出无壳包；确实需要无壳包时显式加 `-NoShell` / `/DXIAOTU_NO_SHELL=1`。
@@ -152,8 +152,13 @@ $version = (Get-Content VERSION.txt -Raw).Trim()
   该路径始终属于当前用户，不会被管理员账户影响。选择非默认目录且尚无 `config.toml`
   时，安装器在默认目录写入 `[storage] data_dir = "..."`；已存在 `config.toml` 时
   该页锁定不改写，避免覆盖用户配置。
-- 安装阶段读注册表检测 WebView2 Runtime（机器级 x64/x86 与用户级）；缺失且装了壳时，
-  完成页给出官方安装入口并弹提示，纯浏览器模式不拦。
+- 安装阶段读注册表检测 WebView2 Runtime（机器级 x64/x86 与用户级）。缺失且装了壳时，
+  「附加任务」页出现默认勾选的**「下载并安装 WebView2 运行环境」**：勾选后安装期下载
+  官方 Evergreen Bootstrapper（约 2 MB，需联网）并 `/silent /install` 静默安装；下载或
+  安装失败只提示、不中断，完成页仍保留官方安装入口。纯浏览器模式不拦。
+- **静默安装同样生效**：`/VERYSILENT` 下没有向导页，任务按默认勾选处理（代码用
+  `WizardIsTaskSelected('webview2') or WizardSilent`），IT 批量部署不需要额外 `/TASKS`。
+  安装/卸载提示统一用 `SuppressibleMsgBox`，配合 `/SUPPRESSMSGBOXES` 不会阻塞静默流程。
 - 服务端与壳均以静态运行库（`/MT`，Debug 为 `/MTd`）构建，**不需要安装
   VC++ 2015-2022 Redistributable**。
 
@@ -321,11 +326,27 @@ xiaotu-inventory-<版本>-win64\
 
 ## WebView2 依赖怎么处理
 
-- **只检查，不打包**：脚本读取注册表判断打包机是否装了 WebView2 Runtime 并打印版本，
-  39 MB 的 SDK 缓存（`shell\win\.cache\`）不入包。
-- 壳在目标机器启动时若发现没有 Runtime，会弹出提示并给出下载地址；包内 `README.md`
-  也写了一条可直接粘贴的注册表检测命令与官方下载链接
+- **不打包运行时**：39 MB 的 SDK 缓存（`shell\win\.cache\`）与 WebView2 Runtime 都不入包；
+  打包脚本只读取注册表判断打包机版本并打印。
+- **安装包可选自动安装**：目标机器缺 Runtime 时，向导「附加任务」页出现默认勾选的
+  「下载并安装 WebView2 运行环境」。勾选后 `PrepareToInstall` 把官方 Evergreen Bootstrapper
+  下载到 `{tmp}`，再由 `[Run]` 以 `/silent /install` 安装（需要联网）；下载失败只提示、
+  不中断安装，安装结束 `ssDone` 会再查一次注册表，失败时明确报错。
+- **静默安装不跳过**：`/VERYSILENT /SUPPRESSMSGBOXES` 下同样执行下载与安装，不需要额外参数；
+  所有提示用 `SuppressibleMsgBox`，不会弹窗等待。
+- **首次安装耗时实测**（2026-11-22，1.0.11 构建号 7。Win10 Pro 19041 x64 干净 VM，4 vCPU / 6 GB，Hyper-V
+  Default Switch NAT）：总 **67.6 s**；其中 WebView2 引导器 **64.9 s**（exit 0），
+  下载/准备/复制 1.9 s，收尾 0 s；装后 WebView2 `157.0.4341.60`。计时脚本见下方。
+- **自测脚本**：`packaging/win/test_first_install.ps1`。把安装包放同目录，在干净 Win10
+  快照里运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\test_first_install.ps1`，
+  输出控制台摘要与 `first-install-report.json`（总耗时、引导器区间、WebView2 前后版本、
+  启动冒烟）。已有 WebView2 的机器会直接退出（`-Force` 可跳过），避免测出假数据。
+- **兜底入口**：未勾选或自动安装失败时，完成页仍提供官方安装入口；壳启动时若发现没有
+  Runtime 也会弹提示并给出下载地址。包内 `README.md` 写有注册表检测命令与官方链接
   （https://go.microsoft.com/fwlink/p/?LinkId=2124703）。
+- **绿色包（zip）不含自动安装**：解压即用，缺 Runtime 需按包内 README 手动安装，或改用安装包。
+- **维护约束**：静默路径里不要用裸 `MsgBox`（不受 `/SUPPRESSMSGBOXES` 控制，会让安装器
+  卡在弹窗）；任务判断要兼容 `WizardSilent`，否则 `/VERYSILENT` 会跳过 WebView2 任务。
 
 ## 单机与网络使用方式
 

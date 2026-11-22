@@ -12,7 +12,7 @@
 - MSVC（VS 2022 Build Tools 或 Community，含 C++ 工具集）
 - CMake 3.25+、Ninja
 - 目标机器需安装 **WebView2 Runtime**（Win11 自带；Win10 可从
-  https://go.microsoft.com/fwlink/p/?LinkId=2124703 安装）
+  https://go.microsoft.com/fwlink/p/?LinkId=2124703 安装；安装包提供默认勾选的可选任务自动安装，需联网）
 
 ## 构建
 
