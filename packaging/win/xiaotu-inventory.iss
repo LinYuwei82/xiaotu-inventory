@@ -135,6 +135,8 @@ Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "
 ; 安装失败时下面的「下载并安装 WebView2」入口仍然可见（NeedWebView2 会重新查注册表）。
 Filename: "{tmp}\{#WebView2InstallerName}"; Parameters: "/silent /install"; StatusMsg: "正在安装 WebView2 运行环境…"; Flags: runhidden waituntilterminated; Check: ShouldRunWebView2Setup
 #endif
+; 静默覆盖更新：安装完成后把新壳拉起来，否则窗口消失后不会自动恢复。
+Filename: "{app}\{#AppExeName}"; Flags: nowait runasoriginaluser; Check: RestartAfterSilent
 Filename: "{app}\{#AppExeName}"; Description: "启动{#AppName}"; Flags: postinstall nowait skipifsilent; Check: HasShell
 ; 壳依赖 WebView2 Runtime：缺失时在完成页提供官方安装入口（见 [Code] 的注册表检查）。
 Filename: "{#WebView2Url}"; Description: "下载并安装 WebView2 Runtime（桌面窗口必需）"; Flags: postinstall shellexec nowait skipifsilent runasoriginaluser; Check: NeedWebView2
@@ -149,6 +151,7 @@ var
   DataDirPage: TInputDirWizardPage;
   WebView2SetupPath: String;
   WebView2SetupReady: Boolean;
+  WasInstalled: Boolean;
 
 function DefaultDataDir: String;
 begin
@@ -169,6 +172,15 @@ end;
 function NoShell: Boolean;
 begin
   Result := not HasShell;
+end;
+
+{ 静默覆盖更新（updater_win 调 /VERYSILENT）装完要把新壳拉起来：
+  壳是安装脚本 taskkill 掉的，不在 Restart Manager 管理内，/RESTARTAPPLICATIONS
+  不会替我们重启；而下面带 skipifsilent 的「启动应用」项在静默模式下会被跳过，
+  结果就是窗口消失后再也不回来（用户看到的是「点安装更新就闪退」）。 }
+function RestartAfterSilent: Boolean;
+begin
+  Result := WizardSilent and WasInstalled and HasShell;
 end;
 
 { WebView2 Runtime 检测：机器级 x64/x86 与用户级注册表任一存在且版本非空即视为已安装。 }
@@ -299,9 +311,12 @@ begin
            '请手动安装：{#WebView2Url}', mbError, MB_OK, IDOK);
 
   // 静默覆盖更新（updater_win 调 /VERYSILENT）时，壳文件会被占用导致安装失败。
-  // 这里在安装开始前强制 kill 旧壳，释放文件锁；安装完后 [Run] 段（postinstall）会启新壳。
+  // 这里在安装开始前强制 kill 旧壳，释放文件锁；安装完后 [Run] 段的
+  // RestartAfterSilent 会拉起新壳（不能依赖 skipifsilent 那一项）。
+  // WasInstalled 必须在覆盖前取，用来区分「真升级」与「首次静默安装」。
   if CurStep = ssInstall then
   begin
+    WasInstalled := FileExists(ExpandConstant('{app}\{#AppExeName}'));
     Exec('taskkill.exe', '/F /IM xiaotu-shell.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
