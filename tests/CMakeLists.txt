@@ -83,6 +83,13 @@ target_link_libraries(xiaotu_update_engine_smoke PRIVATE xiaotu_core Threads::Th
 
 add_test(NAME update_engine_smoke COMMAND xiaotu_update_engine_smoke)
 
+# P3 前端归一层回归：从 web/app.js 源码提取纯函数断言（无 node 环境自动跳过）。
+find_program(XIAOTU_NODE NAMES node node.exe)
+if(XIAOTU_NODE)
+  add_test(NAME update_web_normalize
+           COMMAND "${XIAOTU_NODE}" "${CMAKE_CURRENT_SOURCE_DIR}/update_web_normalize_test.mjs")
+endif()
+
 add_executable(xiaotu_update_service_smoke
                "${CMAKE_CURRENT_SOURCE_DIR}/update_service_smoke.cpp")
 target_link_libraries(xiaotu_update_service_smoke PRIVATE xiaotu_server Threads::Threads)
