@@ -7071,9 +7071,12 @@
     else if (state === "FAILED") prefetchState = "failed";
     else if (state === "CANCELED") prefetchState = "canceled";
     // 壳内的 download_progress 形如 "1234/5678 (22%)"，取出已下载字节用于进度展示。
+    // 注意：download_progress 不落盘，重启后 done 态只剩 pending_size，
+    // 直接按 0 显示会让有效的安装包看起来像 0 字节的坏包。
     let prefetchBytes = 0;
     const progressMatch = /^(\d+)\//.exec(s.download_progress || "");
     if (progressMatch) prefetchBytes = Number(progressMatch[1]) || 0;
+    else if (state === "DONE") prefetchBytes = Number(s.pending_size) || 0;
     return {
       channel: s.channel || "stable",
       last_check_at: s.last_check_epoch || 0,

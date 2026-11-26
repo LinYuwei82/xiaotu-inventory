@@ -627,6 +627,15 @@ void UpdaterWin::checkNow(Completion cb) {
     status_.consecutive_failures = 0;
     status_.last_check_epoch = epochNow();
     if (update_available) {
+      // 清单换了包（新版本或同版本重签）：旧的 pending 包必须作废。
+      // 否则界面显示待安装 1.0.14、点安装却拉起上一版本的旧包；旧包若已被
+      // 杀软截断或清理成 0 字节，/CLOSEAPPLICATIONS 先关掉本程序、安装器
+      // 自身又起不来，就表现为「点安装更新直接闪退」。
+      if (!pw.setup_sha256.empty() && pw.setup_sha256 != status_.manifest_sha256) {
+        status_.pending_local_path.clear();
+        status_.pending_size = 0;
+        if (status_.download_state != "RUNNING") status_.download_state = "IDLE";
+      }
       status_.manifest_version = pw.version;
       status_.manifest_build = pw.build;
       status_.manifest_sha256 = pw.setup_sha256;
@@ -839,14 +848,60 @@ void UpdaterWin::cancelPrefetch(Completion cb) {
 
 void UpdaterWin::installUpdate(Completion cb) {
   std::wstring path;
+  std::string expected_sha256;
+  std::int64_t expected_size = 0;
   {
     std::lock_guard<std::mutex> lock(status_mutex_);
-    std::string utf8 = status_.pending_local_path;
-    path = win_encoding::utf8_to_wide(utf8);
+    path = win_encoding::utf8_to_wide(status_.pending_local_path);
+    expected_sha256 = status_.manifest_sha256;
+    expected_size = status_.manifest_size;
   }
   if (path.empty() || GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
     recordOutcome("NO_PENDING_UPDATE", "没有已下载的安装包", false);
     if (cb) cb("NO_PENDING_UPDATE", "");
+    return;
+  }
+  // 启动安装器前重新校验包体：下载完成后文件可能被杀软隔离、截断或清理。
+  // 安装器带 /CLOSEAPPLICATIONS，一旦拉起就会先关掉本程序；坏包装不上又
+  // 不会重启，用户看到的就是「点安装直接闪退、程序再也回不来」。
+  // 校验不过宁可拒绝安装，也不能让本程序先死掉。
+  bool package_invalid = false;
+  std::string invalid_reason;
+  if (expected_size > 0) {
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
+      const std::int64_t actual =
+          (static_cast<std::int64_t>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+      if (actual != expected_size) {
+        package_invalid = true;
+        invalid_reason = "SIZE_MISMATCH:" + std::to_string(actual);
+      }
+    }
+  }
+  if (!package_invalid && !expected_sha256.empty()) {
+    const std::string actual = sha256File(path);
+    if (actual.empty()) {
+      package_invalid = true;
+      invalid_reason = "SHA256_COMPUTE_FAILED";
+    } else if (actual != expected_sha256) {
+      package_invalid = true;
+      invalid_reason = "SHA256_MISMATCH";
+    }
+  }
+  if (package_invalid) {
+    _wremove(path.c_str());
+    {
+      std::lock_guard<std::mutex> lock(status_mutex_);
+      status_.pending_local_path.clear();
+      status_.pending_size = 0;
+      status_.download_state = "FAILED";
+      status_.last_result = "DOWNLOAD_FAILED";
+      status_.last_error = "PACKAGE_INVALID_BEFORE_INSTALL:" + invalid_reason;
+      persistStatus();
+    }
+    recordOutcome("NO_PENDING_UPDATE", "安装包校验失败，请重新下载", false);
+    log_warn("更新：安装前校验失败，已丢弃坏包 " + invalid_reason);
+    if (cb) cb("NO_PENDING_UPDATE", "PACKAGE_INVALID");
     return;
   }
   // ISCC 静默安装：/CLOSEAPPLICATIONS 让 Restart Manager 关掉正在运行的壳，
