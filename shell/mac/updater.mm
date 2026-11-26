@@ -89,7 +89,7 @@ constexpr NSTimeInterval kPrefetchRetrySecondDelay = 600;  // 第二次失败后
 constexpr NSTimeInterval kCheckInterval = 86400;  // 24h
 constexpr NSTimeInterval kJitter = 7200;          // ±2h
 constexpr NSTimeInterval kRequestTimeout = 10;
-constexpr NSTimeInterval kManualCooldown = 600;  // 10min
+constexpr NSTimeInterval kManualCooldown = 60;  // 1min
 constexpr NSTimeInterval kFirstCheckDelay = 30;  // 首次安装后的首轮检查延迟
 constexpr int kMaxLaunchFailures = 3;
 // 新版本连续稳定运行 3 次后，删除安装前保留的旧版本副本。

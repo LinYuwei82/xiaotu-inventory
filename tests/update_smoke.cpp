@@ -304,7 +304,7 @@ int main() {
   check(!xiaotu::evaluate_manifest(staged, staged_query, 0).update_available,
         "未命中灰度桶不下发");
 
-  // 手动检查冷却：10 分钟。
+  // 手动检查冷却：函数按参数校验（壳侧口径现为 1 分钟）。
   check(xiaotu::manual_check_retry_after(0, 5000, 600) == 0, "从未手动检查时可立即检查");
   check(xiaotu::manual_check_retry_after(1000, 1000, 600) == 600, "刚检查完剩余完整冷却");
   check(xiaotu::manual_check_retry_after(1000, 1300, 600) == 300, "冷却中返回剩余秒数");
