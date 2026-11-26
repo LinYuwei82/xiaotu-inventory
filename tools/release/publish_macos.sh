@@ -311,7 +311,7 @@ css = """body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 body = markdown.markdown(open(sys.argv[1],encoding='utf-8').read(), extensions=['tables','fenced_code'])
 open(sys.argv[2],'w',encoding='utf-8').write(f'<!DOCTYPE html><html><head><meta charset="utf-8"><style>{css}</style></head><body>{body}</body></html>')
 PYEOF
-      echo "  (md → html 自动生成 $html)"
+      echo "  (md → html 自动生成 $html)" >&2
     fi
   fi
   [ -f "$html" ] && echo "$html"
