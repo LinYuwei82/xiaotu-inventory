@@ -920,6 +920,15 @@
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
       return window.crypto.randomUUID();
     }
+    // 单机版走 http 非安全上下文时 randomUUID 不可用，但 getRandomValues 仍可用；
+    // 幂等键不能退回 Math.random，否则可被预测撞键。
+    if (window.crypto && typeof window.crypto.getRandomValues === "function") {
+      const bytes = new Uint8Array(8);
+      window.crypto.getRandomValues(bytes);
+      let hex = "";
+      for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+      return "rid-" + Date.now().toString(36) + "-" + hex;
+    }
     return "rid-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
   }
 
