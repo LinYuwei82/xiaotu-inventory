@@ -1835,6 +1835,9 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
     const ValidatedDoc validated =
         validate_document(conn, downstream, *downstream_definition, true, true);
     result.doc_id = next_id();
+    // 下推直接生成已审核出库单并挂应收，信用额度必须与手工审核同口径卡住。
+    enforce_credit_limit(conn, *downstream_definition, downstream, validated, result.doc_id,
+                         input.confirm_credit, credit_limit_mode_);
     result.doc_no =
         allocate_doc_no(conn, downstream_definition->doc_no_prefix, validated.doc_date);
     insert_header(conn, result.doc_id, result.doc_no, downstream_definition->doc_type,

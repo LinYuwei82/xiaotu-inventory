@@ -3926,6 +3926,70 @@ int main() {
         });
         check(pragma_off, "升级完成后写连接应关闭约束忽略");
       }
+
+      // H2：销售订单下推直接生成已审核出库并挂应收，信用额度必须与手工审核同口径卡住。
+      {
+        xiaotu::CustomerService push_customers(db);
+        const auto push_customer = push_customers.create(xiaotu::gen::CustomerRow{
+            .code = "C-PUSH", .name = "下推客户", .credit_limit_cents = 100000});
+        auto push_item =
+            items.create(xiaotu::gen::ItemRow{.code = "PH001", .name = "下推商品"});
+        {
+          xiaotu::DocInput stock_in;
+          stock_in.doc_type = "OTH_IN";
+          stock_in.warehouse_id = warehouse_list.at(0).id;
+          stock_in.doc_date = kToday;
+          stock_in.partner = "期初";
+          stock_in.lines.push_back(xiaotu::DocLineInput{
+              .item_id = push_item.id, .qty = q(100), .price_cents = 10000});
+          documents.save_and_approve(stock_in);
+        }
+        xiaotu::DocInput push_order;
+        push_order.doc_type = "SAL_ORDER";
+        push_order.warehouse_id = warehouse_list.at(0).id;
+        push_order.doc_date = kToday;
+        push_order.partner_id = push_customer.id;
+        push_order.partner = push_customer.name;
+        push_order.lines.push_back(xiaotu::DocLineInput{
+            .item_id = push_item.id, .qty = q(20), .price_cents = 10000});
+        const auto push_order_doc = documents.save_and_approve(push_order);
+        const std::int64_t push_line_id = documents.detail(push_order_doc.id).lines.at(0).id;
+
+        xiaotu::OrderConvertInput push_convert;
+        push_convert.lines.push_back({.order_line_id = push_line_id, .qty = q(12)});
+        bool push_warning = false;
+        try {
+          documents.convert_order(push_order_doc.id, push_convert);
+        } catch (const xiaotu::AppError& error) {
+          push_warning = error.code() == "CREDIT_LIMIT_WARNING";
+        }
+        check(push_warning, "下推金额超出信用额度应返回可确认的提示");
+        check(documents.detail(push_order_doc.id).lines.at(0).converted_qty == 0,
+              "被拦截的下推不应累计已转数量");
+
+        documents.set_credit_limit_mode("reject");
+        bool push_rejected = false;
+        try {
+          documents.convert_order(push_order_doc.id, push_convert);
+        } catch (const xiaotu::AppError& error) {
+          push_rejected = error.code() == "CREDIT_LIMIT_EXCEEDED";
+        }
+        check(push_rejected, "reject 模式下超额下推应直接拒绝");
+        documents.set_credit_limit_mode("warn");
+
+        push_convert.confirm_credit = true;
+        const auto push_doc = documents.convert_order(push_order_doc.id, push_convert);
+        check(push_doc.doc_no.rfind("XSCK", 0) == 0, "二次确认后下推应生成销售出库单");
+        std::int64_t push_audited = 0;
+        db.read([&](sqlite3* conn) {
+          xiaotu::Stmt stmt(conn,
+                            "SELECT COUNT(*) FROM audit_log"
+                            " WHERE action = 'credit_over_limit' AND entity_id = ?;");
+          stmt.bind(1, push_doc.doc_id);
+          if (stmt.step()) push_audited = stmt.i64(0);
+        });
+        check(push_audited == 1, "超额度下推放行应写审计日志");
+      }
     }
   } catch (const std::exception& error) {
     std::cerr << "异常: " << error.what() << std::endl;

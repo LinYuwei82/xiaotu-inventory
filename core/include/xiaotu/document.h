@@ -132,6 +132,8 @@ struct OrderConvertInput {
   std::int64_t warehouse_id = 0;  // 0 表示沿用订单上的预计出库仓
   std::string doc_date;           // 空则取今天
   std::vector<OrderConvertLine> lines;
+  // warn 模式下超额度首次下推被拦截后，界面二次确认再带 true 重试放行。
+  bool confirm_credit = false;
 };
 
 struct OrderConversion {
