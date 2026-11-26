@@ -260,6 +260,8 @@ jobs:
         env:
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_BUCKET: ${{ vars.OSS_BUCKET || 'xiaotu-update-sz' }}
+          OSS_REGION: ${{ vars.OSS_REGION || 'cn-shenzhen' }}
         run: |
           $ErrorActionPreference = 'Stop'
           python -m pip install --quiet oss2
@@ -276,8 +278,8 @@ jobs:
           $py = @'
           import os, oss2
           ak, sk = os.environ["OSS_ACCESS_KEY_ID"], os.environ["OSS_ACCESS_KEY_SECRET"]
-          endpoint = "https://oss-cn-hongkong.aliyuncs.com"
-          bkt = oss2.Bucket(oss2.Auth(ak, sk), endpoint, "xiaotu-update")
+          endpoint = f"https://oss-{os.environ.get('OSS_REGION', 'cn-shenzhen')}.aliyuncs.com"
+          bkt = oss2.Bucket(oss2.Auth(ak, sk), endpoint, os.environ.get('OSS_BUCKET', 'xiaotu-update-sz'))
           jobs = [
               ("UPLOAD_SETUP", "xiaotu/xiaotu-{v}-win64-setup.exe",
                "application/octet-stream", "public, max-age=31536000, immutable"),
