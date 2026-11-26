@@ -133,6 +133,23 @@ UpdateEngine::UpdateEngine(Deps deps, EngineConfig cfg)
 
 UpdateEngine::~UpdateEngine() = default;
 
+void UpdateEngine::configure(const std::string& manifest_url, const std::string& channel) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!manifest_url.empty()) cfg_.manifest_url = manifest_url;
+  if (!channel.empty()) {
+    cfg_.channel = channel;
+    st_->channel = channel;
+  }
+}
+
+void UpdateEngine::set_options(bool enabled, bool auto_check, bool prefetch) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  cfg_.enabled = enabled;
+  cfg_.auto_check = auto_check;
+  cfg_.prefetch = prefetch;
+  persist_locked();
+}
+
 std::int64_t UpdateEngine::now() const {
   return deps_.clock ? deps_.clock->now_epoch() : 0;
 }
@@ -155,6 +172,7 @@ UpdateQuery UpdateEngine::build_query_locked() const {
   q.schema_version = cfg_.schema_version;
   q.api_version = cfg_.api_version;
   q.os_version = cfg_.os_version;
+  q.ignore_min_os = cfg_.ignore_min_os;
   q.install_id = st_->install_id;
   q.skipped_version = st_->skipped_version;
   q.skip_until_epoch = st_->skip_until_epoch;
@@ -170,6 +188,8 @@ std::string UpdateEngine::build_status_json_locked() const {
   // 兼容旧 updater_win.json 的键名：落盘用 manifest_*，前端契约用 version/build 别名。
   j["manifest_version"] = st_->manifest_version;
   j["manifest_build"] = st_->manifest_build;
+  // 旧 win 壳前端契约（normalizeWinUpdateStatus）用 manifest_size 做总进度与待装大小。
+  j["manifest_size"] = st_->manifest_size;
   j["bytes_total"] = st_->bytes_total;
   j["bytes_done"] = st_->bytes_done;
   j["pending_path"] = st_->pending_path;
@@ -320,6 +340,10 @@ void UpdateEngine::load() {
       get_i64(j, "pending_size", st_->pending_size);
       get_str(j, "skipped_version", st_->skipped_version);
       get_i64(j, "skip_until_epoch", st_->skip_until_epoch);
+      // 开关位随状态落盘，重启后必须恢复（旧壳 auto_check/prefetch 跨重启保持）。
+      get_bool(j, "enabled", cfg_.enabled);
+      get_bool(j, "auto_check", cfg_.auto_check);
+      get_bool(j, "prefetch", cfg_.prefetch);
     } catch (...) {
       // 文件损坏：按空状态起步，下次 persist 会覆盖。
     }
@@ -512,14 +536,10 @@ bool UpdateEngine::download_pending() {
     remove_quiet(part_path_of(dest));
     std::lock_guard<std::mutex> lock(mutex_);
     st_->bytes_done = 0;
-    if (cancel_flag_.load()) {
-      st_->state = UpdateState::kUpdateAvailable;
-      st_->last_result = "CANCELED";
-    } else {
-      st_->state = UpdateState::kFailed;
-      st_->last_result = "DOWNLOAD_FAILED";
-      st_->last_error = terr;
-    }
+    // 与两壳旧行为一致：取消也记 FAILED 态（last_result=CANCELED），可立即重下。
+    st_->state = UpdateState::kFailed;
+    st_->last_result = cancel_flag_.load() ? "CANCELED" : "DOWNLOAD_FAILED";
+    if (!cancel_flag_.load()) st_->last_error = terr;
     persist_locked();
     return false;
   }
@@ -579,8 +599,8 @@ InstallResult UpdateEngine::try_install() {
   if (!verify_pending(path, size, sha, reason)) {
     std::lock_guard<std::mutex> lock(mutex_);
     clear_pending_locked();
-    st_->state = st_->manifest_version.empty() ? UpdateState::kIdle
-                                               : UpdateState::kUpdateAvailable;
+    // 坏包记 FAILED（与旧壳一致）；download_pending 接受 FAILED，可立即重下。
+    st_->state = UpdateState::kFailed;
     st_->last_result = "VERIFY_FAILED";
     st_->last_error = reason;
     persist_locked();

@@ -299,9 +299,13 @@ void test_rule2_verify_before_install() {
   check(!res.started, "rule2: 拒绝安装");
   check(res.code == "VERIFY_FAILED", "rule2: code=VERIFY_FAILED");
   check(h.installer.calls == 0, "rule2: installer 没被调用");
-  check(h.status()["state"] == "UPDATE_AVAILABLE", "rule2: 回到可重下状态");
+  check(h.status()["state"] == "FAILED", "rule2: 坏包记 FAILED");
   check(!fs::exists(h.pending_file()) || h.status()["pending_path"] == "",
         "rule2: 坏包已清");
+  // FAILED 态允许立即重下。
+  h.hasher.hex = kSha;
+  check(h.engine->download_pending(), "rule2: FAILED 后可重下");
+  check(h.status()["state"] == "DONE", "rule2: 重下后 DONE");
 }
 
 // 规则 3：下载失败/取消必须删掉半截文件。
@@ -330,8 +334,12 @@ void test_rule3_partial_cleanup() {
     check(!fs::exists(dest) && !fs::exists(fs::path(dest.string() + ".part")),
           "rule3-cancel: 文件已清理");
     auto s = h.status();
-    check(s["state"] == "UPDATE_AVAILABLE", "rule3-cancel: 回 UPDATE_AVAILABLE");
+    check(s["state"] == "FAILED", "rule3-cancel: FAILED（与旧壳一致）");
     check(s["last_result"] == "CANCELED", "rule3-cancel: last_result=CANCELED");
+    // 取消后可立即重下。
+    h.transport.mid_download = nullptr;
+    check(h.engine->download_pending(), "rule3-cancel: 取消后可重下");
+    check(h.status()["state"] == "DONE", "rule3-cancel: 重下后 DONE");
   }
 }
 
@@ -507,6 +515,28 @@ void test_install_guards() {
   }
 }
 
+// configure / set_options：壳 start() 与设置页桥接依赖的两个运行期入口。
+void test_configure_and_options() {
+  Harness h;
+  h.engine->set_options(true, false, false);
+  auto s = h.status();
+  check(s["auto_check"] == false && s["prefetch"] == false, "options: 开关写入状态");
+  check(h.store.data.find("\"auto_check\": false") != std::string::npos,
+        "options: 立即落盘");
+  // 重启后开关不丢（load 读不到开关字段时由壳 cfg 传入，这里验证 status 稳定输出）。
+  h.engine->configure("", "beta");
+  check(h.status()["channel"] == "beta", "configure: channel 覆盖生效");
+  h.engine->configure("https://other.example.com/manifest.json", "");
+  h.clock.epoch += 3601;
+  const int before = h.transport.fetch_count;
+  check(h.engine->check(false), "configure: 覆盖 url 后检查照常");
+  check(h.transport.fetch_count == before + 1, "configure: 检查走了一次网络");
+  // 开关位跨重启保持：新引擎实例的 cfg 默认 true，load 必须从落盘状态恢复成 false。
+  auto reboot = h.restart();
+  const auto rs = reboot->status();
+  check(rs["auto_check"] == false && rs["prefetch"] == false, "options: 开关跨重启恢复");
+}
+
 // 统一 status_json 字段集合快照（前端契约，方案 2.4）。
 void test_status_json_field_snapshot() {
   Harness h;
@@ -517,7 +547,7 @@ void test_status_json_field_snapshot() {
       "enabled",                 "install_id",            "last_check_epoch",
       "last_error",              "last_manual_check_epoch", "last_result",
       "manifest_setup_url",      "manifest_sha256",       "manifest_build",
-      "manifest_version",        "mandatory",
+      "manifest_size",           "manifest_version",      "mandatory",
       "mandatory_deadline",      "mandatory_reason",      "next_check_epoch",
       "notes_url",               "pending_path",          "pending_size",
       "prefetch",                "retry_after",           "skipped_version",
@@ -555,6 +585,7 @@ int main() {
   test_crash_recovery();
   test_skip_flow();
   test_install_guards();
+  test_configure_and_options();
   test_status_json_field_snapshot();
   test_state_names();
 

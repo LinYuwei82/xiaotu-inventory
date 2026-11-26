@@ -131,6 +131,8 @@ struct EngineConfig {
   std::string os_version;
   int schema_version = 0;
   int api_version = 0;
+  // 忽略清单 min_os 拦截：旧 win 壳 v2 路径不查系统版本，端口置 true 保持行为。
+  bool ignore_min_os = false;
   // 开关位（仅随状态落盘透传给前端，引擎自身不消费）。
   bool enabled = true;
   bool auto_check = true;
@@ -151,6 +153,11 @@ class UpdateEngine {
 
   UpdateEngine(Deps deps, EngineConfig cfg);
   ~UpdateEngine();  // Persisted 是不完整类型，析构必须落在 cpp
+
+  // 启动后注入清单地址与频道（壳 start() 调用）；空值不覆盖现值。线程安全。
+  void configure(const std::string& manifest_url, const std::string& channel);
+  // 运行期开关（setOptions 桥调用）：写内存并立即落盘。
+  void set_options(bool enabled, bool auto_check, bool prefetch);
 
   // 从 IStore 恢复状态；顺带做崩溃恢复（DOWNLOADING→UPDATE_AVAILABLE、
   // INSTALLING→DONE）与「已安装覆盖的残留 pending」清理。
