@@ -9,8 +9,8 @@
 //   - SystemClock：UTC 秒
 //   - WinStore：读写 %LOCALAPPDATA%\com.simem.xiaotu\updater_win.json，
 //     检测旧格式键（download_state / pending_local_path / download_progress）
-//     时按 §5.3 一次性迁移为引擎 schema 并回写
-//   桥方法按 §5.4 映射旧返回码；statusJson 按 §5.4 补回旧壳独有键。
+//     时按 §5.3 一次性迁移为引擎 schema 并回写（输入侧兼容，1.1 删除）
+//   桥方法按 §5.4 映射旧返回码；statusJson 直接输出引擎 status_json（§2.4，P3）。
 
 #include "updater_win.h"
 
@@ -637,34 +637,10 @@ void UpdaterWin::setOptions(bool auto_check, bool prefetch, Completion cb) {
 }
 
 std::string UpdaterWin::statusJson() const {
-  // 引擎统一 status_json + 旧壳独有键适配（§5.4），
-  // 前端 normalizeWinUpdateStatus 不改即可读。
-  auto j = nlohmann::json::parse(impl_->engine->status_json(), nullptr, false);
-  if (j.is_discarded() || !j.is_object()) j = nlohmann::json::object();
-
-  const std::string state = j.value("state", "IDLE");
-  std::string download_state = "IDLE";
-  if (state == "DOWNLOADING") download_state = "RUNNING";
-  else if (state == "DONE" || state == "INSTALLING") download_state = "DONE";
-  else if (state == "FAILED") download_state = "FAILED";
-
-  std::string download_progress;
-  if (download_state == "RUNNING" || download_state == "DONE") {
-    const std::int64_t done = j.value("bytes_done", static_cast<std::int64_t>(0));
-    const std::int64_t total = j.value("bytes_total", static_cast<std::int64_t>(0));
-    if (total > 0) {
-      char buf[64];
-      snprintf(buf, sizeof(buf), "%lld/%lld (%.0f%%)",
-               static_cast<long long>(done), static_cast<long long>(total),
-               done * 100.0 / total);
-      download_progress = buf;
-    }
-  }
-
-  j["download_state"] = download_state;
-  j["download_progress"] = download_progress;
-  j["pending_local_path"] = j.value("pending_path", "");
-  return j.dump();
+  // P3 起直接输出引擎统一 status_json（方案 §2.4）：
+  // 旧壳键 download_state/download_progress/pending_local_path 的适配已删除，
+  // 前端 normalizeUpdateStatus 按引擎字段归一。
+  return impl_->engine->status_json();
 }
 
 void UpdaterWin::checkMinSupportedVersion(Completion cb) {

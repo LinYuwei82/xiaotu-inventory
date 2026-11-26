@@ -1801,53 +1801,30 @@ NSString* map_engine_last_result(NSString* raw, bool hasPending) {
 
 - (NSDictionary<NSString*, id>*)status {
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  // P3：以引擎统一 status_json 为底（方案 §2.4），壳只补 mac 扩展键；
+  // 旧键名重映射（pending_version / prefetch_bytes / next_check_at 等）已删除，
+  // 前端 normalizeUpdateStatus 负责归一成内部形状。
   nlohmann::json s = [self engineStatus];
-  const std::string version = jstr(s, "version");
+  NSMutableDictionary<NSString*, id>* out = [NSMutableDictionary dictionary];
+  const std::string text = s.dump();
+  NSData* data = [NSData dataWithBytes:text.data() length:text.size()];
+  id base = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  if ([base isKindOfClass:[NSDictionary class]]) {
+    [out addEntriesFromDictionary:base];
+  }
   const std::string engineState = jstr(s, "state");
   const std::string rawResult = jstr(s, "last_result");
-  const BOOL updateAvailable = !version.empty();
-  const BOOL mandatory = updateAvailable && jbool(s, "mandatory");
-  NSString* lastResult = map_engine_last_result(
-      rawResult.empty() ? nil : @(rawResult.c_str()), updateAvailable);
-  id reasonValue = [NSNull null];
-  if (mandatory) {
-    const std::string reason = jstr(s, "mandatory_reason");
-    if (!reason.empty()) {
-      reasonValue = @(reason.c_str());
-    }
-  } else if ([lastResult isEqualToString:kResultIncompatible]) {
-    // 单机版无法直接升级到最新版且没有中间版本时，用 reason 明确表达不兼容。
-    reasonValue = kResultIncompatible;
-  }
-  id pendingVersionValue = updateAvailable ? @(version.c_str()) : [NSNull null];
-  id notesValue = [NSNull null];
-  if (updateAvailable) {
-    const std::string notes = jstr(s, "notes_url");
-    if (!notes.empty()) {
-      notesValue = @(notes.c_str());
-    }
-  }
-  id deadlineValue = [NSNull null];
-  if (updateAvailable) {
-    const std::string deadline = jstr(s, "mandatory_deadline");
-    if (!deadline.empty()) {
-      deadlineValue = @(deadline.c_str());
-    }
-  }
-  id skippedValue = [NSNull null];
-  if (!jstr(s, "skipped_version").empty()) {
-    skippedValue = @(jstr(s, "skipped_version").c_str());
-  }
-  NSString* intermediateVersion = [defaults stringForKey:kIntermediateVersionKey];
-  id intermediateValue = [NSNull null];
-  if (intermediateVersion.length > 0) {
-    intermediateValue = @{
-      @"version" : intermediateVersion,
-      @"build" : @([defaults integerForKey:kIntermediateBuildKey]),
-      @"schema" : @([defaults integerForKey:kIntermediateSchemaKey]),
-    };
-  }
-  // prefetch_state：引擎状态为主，叠加壳侧 needs_consent / retrying。
+  // enabled 维持旧语义：配置了清单地址即启用（引擎的 enabled 是总开关位）。
+  out[@"enabled"] = @(self.manifestURL.length > 0);
+  out[@"channel"] = self.channel ?: @"stable";
+#if XIAOTU_HAS_SPARKLE
+  // 安装引擎：sparkle 表示下载与替换都由 Sparkle 完成，前端隐藏自研下载入口。
+  out[@"install_engine"] = @"sparkle";
+#else
+  out[@"install_engine"] = @"package";
+#endif
+  out[@"prefetch_notice_acked"] = @([defaults boolForKey:kPrefetchNoticeKey]);
+  // prefetch_state：引擎状态为主，叠加壳侧 needs_consent / retrying 门控细节。
   NSString* prefetchState;
   if (engineState == "DOWNLOADING") {
     prefetchState = kPrefetchRunning;
@@ -1864,57 +1841,29 @@ NSString* map_engine_last_result(NSString* raw, bool hasPending) {
                         ? kPrefetchNeedsConsent
                         : kPrefetchIdle;
   }
-  id pendingPath = [NSNull null];
-  const std::string pendingFile = jstr(s, "pending_path");
-  if (!pendingFile.empty()) {
-    pendingPath = [[NSURL fileURLWithPath:@(pendingFile.c_str())] lastPathComponent];
+  out[@"prefetch_state"] = prefetchState;
+  out[@"prefetch_version"] = self.prefetchVersion ?: [NSNull null];
+  out[@"prefetch_attempts"] = @(self.prefetchAttempts);
+  out[@"prefetch_message"] =
+      self.prefetchMessage.length > 0 ? self.prefetchMessage : [NSNull null];
+  NSString* intermediateVersion = [defaults stringForKey:kIntermediateVersionKey];
+  id intermediateValue = [NSNull null];
+  if (intermediateVersion.length > 0) {
+    intermediateValue = @{
+      @"version" : intermediateVersion,
+      @"build" : @([defaults integerForKey:kIntermediateBuildKey]),
+      @"schema" : @([defaults integerForKey:kIntermediateSchemaKey]),
+    };
   }
-  return @{
-    @"enabled" : @(self.manifestURL.length > 0),
-    @"channel" : self.channel ?: @"stable",
-    @"auto_check" : @(jbool(s, "auto_check")),
-    @"prefetch" : @(jbool(s, "prefetch")),
-#if XIAOTU_HAS_SPARKLE
-    // 安装引擎：sparkle 表示下载与替换都由 Sparkle 完成，前端隐藏自研下载入口。
-    @"install_engine" : @"sparkle",
-#else
-    @"install_engine" : @"package",
-#endif
-    @"prefetch_notice_acked" : @([defaults boolForKey:kPrefetchNoticeKey]),
-    @"prefetch_state" : prefetchState,
-    @"prefetch_version" : self.prefetchVersion ?: [NSNull null],
-    @"prefetch_attempts" : @(self.prefetchAttempts),
-    @"prefetch_bytes" : @(ji64(s, "bytes_done")),
-    @"prefetch_total" : @(ji64(s, "bytes_total")),
-    @"prefetch_file" : pendingPath,
-    @"prefetch_message" : self.prefetchMessage.length > 0 ? self.prefetchMessage
-                                                          : [NSNull null],
-    @"next_check_at" : @(ji64(s, "next_check_epoch")),
-    // 失败退避的可观测字段：失败计数与下次重试时间（next_check_at 已按退避重排）。
-    @"check_failures" : @(ji64(s, "consecutive_failures")),
-    @"min_supported_version" : [defaults stringForKey:kMinSupportedKey] ?: [NSNull null],
-    @"launch_attempts" : @([defaults integerForKey:kLaunchAttemptsKey]),
-    @"paused" : @([defaults boolForKey:kPausedKey]),
-    // 恢复模式：连续启动失败后引导回退；previous 为安装前保留的旧版本副本。
-    @"recovery_required" : @([defaults boolForKey:kRecoveryRequiredKey]),
-    @"previous" : [self previousBundleStatus],
-    @"skipped_version" : skippedValue,
-    @"skip_until" : @(ji64(s, "skip_until_epoch")),
-    @"last_check_at" : @(ji64(s, "last_check_epoch")),
-    @"last_result" : lastResult ?: [NSNull null],
-    @"pending_version" : pendingVersionValue,
-    // macOS 没有构建号，固定给 0；界面按“无构建号”展示。
-    @"pending_build" : @0,
-    // 安装包大小：Sparkle 安装前会重新下载，界面据此提示“将重新下载约 X MB”。
-    @"pending_size" : @(updateAvailable ? ji64(s, "manifest_size") : 0),
-    @"pending_deadline" : deadlineValue,
-    @"update_available" : @(updateAvailable),
-    @"mandatory" : @(mandatory),
-    @"reason" : reasonValue,
-    @"release_notes_url" : notesValue,
-    // 本地 schema 低于 schema_min 时由清单 upgrade_path 选出的中间版本；其余情况为 null。
-    @"intermediate" : intermediateValue,
-  };
+  out[@"min_supported_version"] = [defaults stringForKey:kMinSupportedKey] ?: [NSNull null];
+  out[@"launch_attempts"] = @([defaults integerForKey:kLaunchAttemptsKey]);
+  out[@"paused"] = @([defaults boolForKey:kPausedKey]);
+  // 恢复模式：连续启动失败后引导回退；previous 为安装前保留的旧版本副本。
+  out[@"recovery_required"] = @([defaults boolForKey:kRecoveryRequiredKey]);
+  out[@"previous"] = [self previousBundleStatus];
+  // 本地 schema 低于 schema_min 时由清单 upgrade_path 选出的中间版本；其余情况为 null。
+  out[@"intermediate"] = intermediateValue;
+  return out;
 }
 
 // 按引擎 next_check_epoch 武装一次性定时器；必须在 self.queue 上调用。

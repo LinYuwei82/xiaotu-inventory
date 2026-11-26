@@ -6,9 +6,8 @@
 //     1. 提供平台端口实现（WinHTTP 传输 / BCrypt 哈希 / ShellExecute 安装 /
 //        系统时钟 / updater_win.json 存储，含旧格式一次性迁移）；
 //     2. 桥方法 → 引擎调用 + 旧返回码映射（对外签名与返回码不变）；
-//     3. statusJson 适配器：引擎统一 status_json 补回旧壳独有键
-//        （download_state / download_progress / pending_local_path），
-//        前端 normalizeWinUpdateStatus 无需改动。
+//     3. statusJson 直接输出引擎统一 status_json（P3 起，旧壳键适配已删，
+//        前端 normalizeUpdateStatus 按引擎字段归一）。
 //
 //   shell/win/main.cpp 通过 ICoreWebView2::AddHostObjectToScript 把 UpdaterWin 暴露给前端，
 //   前端 JS 用 window.chrome.webview.hostObjects.updater_win.checkNow() 等调用。
