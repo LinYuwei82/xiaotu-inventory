@@ -282,10 +282,15 @@ spctl --assess --type execute -vv "$APP_PATH" >/dev/null 2>&1 && echo "  spctl �
 # .app 也做一次公证 + staple：用户把 .app 拖进 /Applications 后首启不再依赖在线核验，
 # 避免断网/代理拦截导致 Gatekeeper 弹「无法验证」弹窗。
 # 顺序必须是「先公证 .app → staple .app → 再打 dmg」，这样 dmg 里装的是已 staple 的 .app。
+# notarytool 只收 zip/pkg/dmg：用 ditto --keepParent 把 .app 压成 zip 提交，
+# 票据按二进制 cdhash 匹配，staple 仍打进 .app 本体。
 echo "===== 公证 .app（离线首启）"
 echo "使用 notarytool 凭据：${XIAOTU_NOTARY_PROFILE}（硬性前提已前置检查 ✓）"
-xcrun notarytool submit "$APP_PATH" --keychain-profile "$XIAOTU_NOTARY_PROFILE" --wait \
-  || { echo "notarytool submit .app 失败"; exit 1; }
+APP_ZIP="$(mktemp -t xiaotu-app-notarize).zip"
+ditto -c -k --keepParent "$APP_PATH" "$APP_ZIP"
+xcrun notarytool submit "$APP_ZIP" --keychain-profile "$XIAOTU_NOTARY_PROFILE" --wait \
+  || { echo "notarytool submit .app.zip 失败"; rm -f "$APP_ZIP"; exit 1; }
+rm -f "$APP_ZIP"
 xcrun stapler staple "$APP_PATH"
 xcrun stapler validate "$APP_PATH"
 echo ".app 公证与 staple 通过 ✓"
