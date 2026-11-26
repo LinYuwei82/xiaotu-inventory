@@ -7062,42 +7062,95 @@
   let winUpdaterListenerInstalled = false;
   let winUpdaterStatusCache = null;
 
-  function normalizeWinUpdateStatus(raw) {
+  // P3 统一状态归一（方案 §2.4）：两壳都输出引擎统一 status_json
+  // （mac 另带平台扩展键），这里归一成 renderNativeUpdate 期望的内部形状。
+  // platform："macos" | "windows"（mac v2 清单无构建号，界面固定按 0 隐藏）。
+  function mapEngineLastResult(raw, hasPending) {
+    if (!raw) return "";
+    if (raw === "CHANNEL_MISMATCH" || raw === "PLATFORM_MISMATCH") return "NO_UPDATE";
+    if (
+      raw === "DOWNLOAD_STARTED" ||
+      raw === "DOWNLOADED" ||
+      raw === "CANCELED" ||
+      raw === "VERIFY_FAILED" ||
+      raw === "INSTALL_FAILED" ||
+      raw === "UPDATE_REQUIRED"
+    ) {
+      return "UPDATE_AVAILABLE";
+    }
+    if (
+      raw === "MANIFEST_JSON_INVALID" ||
+      raw === "MANIFEST_SIGNATURE_INVALID" ||
+      raw === "MANIFEST_INVALID" ||
+      raw === "MANIFEST_URL_EMPTY" ||
+      raw === "NO_TRANSPORT" ||
+      raw === "VERSION_INVALID" ||
+      raw === "MANIFEST_PLATFORM_MISSING" ||
+      raw === "MANIFEST_ARTIFACTS_MISSING"
+    ) {
+      return "CHECK_FAILED";
+    }
+    if (raw === "COOLDOWN") return hasPending ? "UPDATE_AVAILABLE" : "NO_UPDATE";
+    return raw;  // NO_UPDATE / UPDATE_AVAILABLE / SKIPPED / NOT_IN_ROLLOUT /
+                 // OS_UNSUPPORTED / INCOMPATIBLE_* / CHECK_FAILED 等同名透传
+  }
+
+  function normalizeUpdateStatus(raw, platform) {
     const s = raw || {};
-    const state = s.download_state || "";
-    let prefetchState = "";
-    if (state === "RUNNING") prefetchState = "running";
-    else if (state === "DONE") prefetchState = "done";
-    else if (state === "FAILED") prefetchState = "failed";
-    else if (state === "CANCELED") prefetchState = "canceled";
-    // 壳内的 download_progress 形如 "1234/5678 (22%)"，取出已下载字节用于进度展示。
-    // 注意：download_progress 不落盘，重启后 done 态只剩 pending_size，
-    // 直接按 0 显示会让有效的安装包看起来像 0 字节的坏包。
-    let prefetchBytes = 0;
-    const progressMatch = /^(\d+)\//.exec(s.download_progress || "");
-    if (progressMatch) prefetchBytes = Number(progressMatch[1]) || 0;
-    else if (state === "DONE") prefetchBytes = Number(s.pending_size) || 0;
+    const manifestVersion = s.manifest_version || s.version || "";
+    const updateAvailable = !!manifestVersion;
+    const state = s.state || "IDLE";
+    // prefetch_state：mac 扩展键带 needs_consent / retrying 门控细节，优先采用；
+    // win 无扩展键，由引擎 state 派生。
+    let prefetchState;
+    if (typeof s.prefetch_state === "string" && s.prefetch_state) {
+      prefetchState = s.prefetch_state;
+    } else if (state === "DOWNLOADING") {
+      prefetchState = "running";
+    } else if (state === "DONE" || state === "INSTALLING") {
+      prefetchState = "done";
+    } else if (state === "FAILED") {
+      prefetchState = s.last_result === "CANCELED" ? "canceled" : "failed";
+    } else {
+      prefetchState = "idle";
+    }
+    const pendingPath = s.pending_path || "";
+    const pendingBase = pendingPath ? pendingPath.split(/[\\/]/).pop() : "";
     return {
       channel: s.channel || "stable",
       last_check_at: s.last_check_epoch || 0,
-      last_result: s.last_result || "",
-      update_available: !!s.manifest_version,
-      pending_version: s.manifest_version || "",
-      pending_build: s.manifest_build || 0,
+      next_check_at: s.next_check_epoch || 0,
+      check_failures: s.consecutive_failures || 0,
+      last_result: mapEngineLastResult(s.last_result || "", updateAvailable),
+      update_available: updateAvailable,
+      pending_version: manifestVersion,
+      pending_build: platform === "macos" ? 0 : s.manifest_build || 0,
       pending_size: s.manifest_size || s.pending_size || 0,
       pending_deadline: s.mandatory_deadline || "",
       notes_url: s.notes_url || s.release_notes_url || "",
-      mandatory: !!s.mandatory,
+      mandatory: !!s.mandatory && updateAvailable,
       reason: s.mandatory_reason || "",
       auto_check: s.auto_check !== false,
       prefetch: s.prefetch !== false,
+      skipped_version: s.skipped_version || "",
+      skip_until: s.skip_until_epoch || 0,
       prefetch_state: prefetchState,
-      prefetch_bytes: prefetchBytes,
-      prefetch_total: s.manifest_size || 0,
-      prefetch_version: s.manifest_version || "",
-      prefetch_file: s.pending_local_path || "",
-      previous: { available: false },
-      recovery_required: false,
+      prefetch_bytes: s.bytes_done || 0,
+      prefetch_total: s.bytes_total || s.manifest_size || 0,
+      prefetch_version: s.prefetch_version || manifestVersion,
+      prefetch_file: pendingBase,
+      // 平台扩展键缺省：win 无回滚/恢复模式，按「不可用」处理。
+      install_engine: s.install_engine || "package",
+      // win 无此扩展键时缺省 false，保持旧行为：勾选预下载先弹流量确认框
+      prefetch_notice_acked: s.prefetch_notice_acked === true,
+      prefetch_attempts: s.prefetch_attempts || 0,
+      prefetch_message: s.prefetch_message || null,
+      min_supported_version: s.min_supported_version || null,
+      launch_attempts: s.launch_attempts || 0,
+      paused: !!s.paused,
+      recovery_required: !!s.recovery_required,
+      previous: s.previous || { available: false },
+      intermediate: s.intermediate || null,
     };
   }
 
@@ -7197,7 +7250,8 @@
         const msg = parseWebviewMessage(event);
         if (!msg || !msg.event || msg.event === "printPdf") return;
         if (msg.status) winUpdaterStatusCache = msg.status;
-        const status = normalizeWinUpdateStatus(msg.status || winUpdaterStatusCache || {});
+        // P3：win 桥不再预归一，透传引擎原始 status，由 handler 统一 normalize。
+        const status = msg.status || winUpdaterStatusCache || {};
         const handlers = {
           checkNow: "xiaotuUpdateCheckDone",
           downloadUpdate: "xiaotuUpdateDownloadDone",
@@ -7220,7 +7274,7 @@
           status,
           code: msg.code,
           ok: !failed,
-          update_available: status.update_available,
+          update_available: !!(status.manifest_version || status.version),
         });
       });
     }
@@ -7232,9 +7286,9 @@
           (async () => {
             try {
               const s = await readStatus();
-              finish("xiaotuUpdateStatusDone", normalizeWinUpdateStatus(s));
+              finish("xiaotuUpdateStatusDone", s);
             } catch (error) {
-              finish("xiaotuUpdateStatusDone", normalizeWinUpdateStatus({}));
+              finish("xiaotuUpdateStatusDone", {});
             }
           })();
         },
@@ -7270,7 +7324,7 @@
           (async () => {
             try {
               const s = winUpdaterStatusCache || (await readStatus());
-              if (s.pending_local_path) {
+              if (s.pending_path) {
                 updater.installUpdate();
                 return;
               }
@@ -7304,6 +7358,11 @@
   function nativeUpdateBridge() {
     if (window.webkit && window.webkit.messageHandlers) return window.webkit.messageHandlers;
     return winUpdateBridge();
+  }
+
+  // 壳状态归一的平台参数（mac v2 清单无构建号，pending_build 固定 0）。
+  function nativeUpdatePlatform() {
+    return window.webkit && window.webkit.messageHandlers ? "macos" : "windows";
   }
 
   // 强制升级拦截：壳内状态一到就弹不可跳过的提示，只能点「立即安装」。
@@ -7340,8 +7399,10 @@
     const previous = window.xiaotuUpdateStatusDone;
     window.xiaotuUpdateStatusDone = (payload) => {
       window.xiaotuUpdateStatusDone = previous;
-      const status = payload && payload.status ? payload.status : payload;
-      if (status) onStatus(status);
+      const raw = payload && payload.status ? payload.status : payload;
+      if (raw) {
+        onStatus(normalizeUpdateStatus(raw, nativeUpdatePlatform()));
+      }
     };
     bridge.xiaotuUpdateStatus.postMessage({});
   }
@@ -7350,6 +7411,8 @@
   // 不自动安装：下载后仍需管理员点「安装更新」并二次确认。
   // 原生自动更新卡片：由壳内 XiaotuUpdater 提供状态、检查与安装。
   function renderNativeUpdate(card, nativeBridge) {
+    // P3：壳回调里都是引擎原始 status（+平台扩展键），统一在此归一后再渲染。
+    const statusPlatform = nativeUpdatePlatform();
     const resultText = (status) => {
       const labels = {
         UPDATE_AVAILABLE: "发现新版本",
@@ -7674,9 +7737,9 @@
 
     // 状态回调直接传 status 本体；检查回调里是 {status: ...} 包装。
     window.xiaotuUpdateStatusDone = (payload) =>
-      render(payload && payload.status ? payload.status : payload);
+      render(normalizeUpdateStatus((payload && payload.status) || payload || {}, statusPlatform));
     window.xiaotuUpdateCheckDone = (payload) => {
-      const status = (payload && payload.status) || {};
+      const status = normalizeUpdateStatus((payload && payload.status) || {}, statusPlatform);
       render(status);
       if (payload && payload.code === "COOLDOWN") {
         const retryAfter = payload.retry_after || 0;
@@ -7703,10 +7766,10 @@
       if (payload && payload.ok === false) {
         showNotice("设置未保存：" + (payload.code || ""), "error");
       }
-      render((payload && payload.status) || {});
+      render(normalizeUpdateStatus((payload && payload.status) || {}, statusPlatform));
     };
     window.xiaotuUpdateDownloadDone = (payload) => {
-      const status = (payload && payload.status) || {};
+      const status = normalizeUpdateStatus((payload && payload.status) || {}, statusPlatform);
       render(status);
       if (payload && payload.ok === false) {
         showNotice(winFailureText(payload.code), "error");
@@ -7715,13 +7778,13 @@
       }
     };
     window.xiaotuUpdateCancelDone = (payload) => {
-      render((payload && payload.status) || {});
+      render(normalizeUpdateStatus((payload && payload.status) || {}, statusPlatform));
       if (payload && payload.code === "CANCELED") {
         showNotice("已取消本次后台下载", "ok");
       }
     };
     window.xiaotuUpdateResumeDone = (payload) => {
-      render((payload && payload.status) || {});
+      render(normalizeUpdateStatus((payload && payload.status) || {}, statusPlatform));
       if (payload && payload.ok === false) {
         showNotice("恢复失败：" + (payload.code || ""), "error");
       } else {
