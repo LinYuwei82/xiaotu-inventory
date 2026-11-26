@@ -3156,6 +3156,7 @@
     let editingVersion = -1;
     let requestId = newRequestId();
     let convertingId = 0;
+    let convertRequestId = "";
     // 订单录入的本地草稿：只有改过表单才写，按订单类型分键。
     let formDirty = false;
     const draftEnteredAt = Date.now();
@@ -3595,6 +3596,8 @@
       try {
         const detail = await api("GET", "/api/documents/" + doc.id);
         convertingId = doc.id;
+        // 幂等键随弹窗会话生成一次：提交按钮双击/重试都复用同一个 request_id。
+        convertRequestId = newRequestId();
         convertTitle.textContent =
           detail.doc_no + " · " + (detail.partner || "未指定" + config.partnerLabel);
         convertWarehouse.value = String(detail.warehouse_id);
@@ -3655,6 +3658,7 @@
         const result = await api("POST", "/api/documents/" + convertingId + "/convert", {
           warehouse_id: Number(convertWarehouse.value || 0),
           doc_date: convertDate.value,
+          request_id: convertRequestId,
           lines,
         });
         showNotice(config.convertNotice + result.doc_no, "ok");

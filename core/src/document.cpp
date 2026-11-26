@@ -1718,6 +1718,19 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
 
   OrderConversion result;
   db_.write([&](sqlite3* conn) {
+    // 幂等：同一个 request_id 只生成一张下游单据，重复提交直接返回首次创建的那张。
+    // 必须放在 enforce_document_quota 之前，避免回放时误扣配额。
+    std::int64_t replay_version = 0;
+    if (find_doc_by_request(conn, input.request_id, result.doc_id, result.doc_no,
+                            replay_version)) {
+      Stmt status(conn, "SELECT order_status FROM doc_header WHERE id = ?;");
+      status.bind(1, order_id);
+      if (status.step()) result.order_status = status.text(0);
+      return;
+    }
+    if (input.request_id.empty()) {
+      log_warn("下推未带 request_id（无幂等键）: order_id=" + std::to_string(order_id));
+    }
     enforce_document_quota(conn);
     std::string doc_type;
     std::string status;
@@ -1807,6 +1820,8 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
     // 备注只做一次快照复制：不拼来源单号，后续订单再改不影响已生成单据。
     // 目标单仍是普通单据，备注走同一套 200 字符校验。
     downstream.remark = order_remark;
+    // 幂等键随下游单据头落库，重放时由 find_doc_by_request 命中。
+    downstream.request_id = input.request_id;
 
     std::vector<std::pair<std::int64_t, std::int64_t>> allocations;
     std::int64_t converted_total = 0;

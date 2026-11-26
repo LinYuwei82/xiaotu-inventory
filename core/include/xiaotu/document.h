@@ -134,6 +134,9 @@ struct OrderConvertInput {
   std::vector<OrderConvertLine> lines;
   // warn 模式下超额度首次下推被拦截后，界面二次确认再带 true 重试放行。
   bool confirm_credit = false;
+  // 幂等键：同一下推动作（含前端重试/双击）只生成一张下游单据，
+  // 重复提交直接返回首次创建的那张，避免 converted_qty 双计。
+  std::string request_id;
 };
 
 struct OrderConversion {

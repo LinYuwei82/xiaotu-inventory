@@ -522,6 +522,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
                       input.warehouse_id = body.value("warehouse_id", std::int64_t{0});
                       input.doc_date = body.value("doc_date", std::string{});
                       input.confirm_credit = body.value("confirm_credit", false);
+                      input.request_id = body.value("request_id", std::string{});
                       if (body.contains("lines") && body["lines"].is_array()) {
                         for (const auto& item : body["lines"]) {
                           input.lines.push_back(OrderConvertLine{

@@ -2139,6 +2139,23 @@ int main() {
       check(documents.detail(reconverted.doc_id).remark == "订单备注B",
             "重转生成的新单取当时的订单备注");
 
+      // D1：下推幂等键——同一 request_id 重复提交只生成一张下游单据，
+      // converted_qty 只计一次，避免双击/网络重试造成双计。
+      {
+        xiaotu::OrderConvertInput dup;
+        dup.request_id = "convert-dup-1";
+        dup.lines.push_back({.order_line_id = order_line_id, .qty = q(1)});
+        const auto first_dup = documents.convert_order(order.id, dup);
+        const auto second_dup = documents.convert_order(order.id, dup);
+        check(second_dup.doc_id == first_dup.doc_id &&
+                  second_dup.doc_no == first_dup.doc_no,
+              "相同 request_id 重复下推应返回首张单据");
+        order_detail = documents.detail(order.id);
+        check(order_detail.lines.at(0).converted_qty == q(5) &&
+                  order_detail.order_status == "CONFIRMED",
+              "重复下推不应累计 converted_qty（应停在 5，剩 1 件）");
+      }
+
       documents.close_order(order.id);
       check(documents.detail(order.id).order_status == "CLOSED", "订单应可关闭");
       bool closed_rejected = false;
