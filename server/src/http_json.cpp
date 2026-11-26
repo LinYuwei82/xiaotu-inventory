@@ -2,7 +2,25 @@
 
 #include <string>
 
+#include "xiaotu/log.h"
+
 namespace xiaotu {
+
+std::int64_t parse_id(std::string_view text) {
+  const auto reject = []() -> std::int64_t {
+    throw AppError("INVALID_INPUT", "参数格式不正确（需为整数）");
+  };
+  if (text.empty()) return reject();
+  std::size_t consumed = 0;
+  std::int64_t value = 0;
+  try {
+    value = std::stoll(std::string(text), &consumed, 10);
+  } catch (const std::exception&) {
+    return reject();
+  }
+  if (consumed != text.size()) return reject();
+  return value;
+}
 
 nlohmann::json json_body(const httplib::Request& req) {
   if (req.body.empty()) {
@@ -58,7 +76,9 @@ void json_from_exception(httplib::Response& res, const AppError& error) {
 }
 
 void json_from_exception(httplib::Response& res, const std::exception& error) {
-  json_error(res, 500, "INTERNAL", std::string("服务器内部错误: ") + error.what());
+  // 未映射异常：详情只进日志，响应体不回显 what()，避免泄露 SQLite/文件系统内部信息。
+  log_warn(std::string("未处理异常: ") + error.what());
+  json_error(res, 500, "INTERNAL", "服务器内部错误");
 }
 
 }  // namespace xiaotu
