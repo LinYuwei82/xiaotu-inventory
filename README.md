@@ -17,7 +17,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 
 ## 0. 数据库结构版本
 
-当前 schema 为 **v39**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
+当前 schema 为 **v40**（启动时自动迁移，已发布迁移不允许修改，校验 checksum）。
 
 | 版本 | 内容 |
 | --- | --- |
@@ -60,6 +60,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 | v37 | 单据列表统一筛选与合计的索引：重建 `idx_doc_header_type_date` 为 `(doc_type, doc_date DESC, id DESC)`，新增 `idx_doc_header_type_status`（`doc_type, status`）；只改索引，不动表结构与数据 |
 | v38 | 单据表头备注 `doc_header.remark`（`TEXT NOT NULL DEFAULT ''`，最多 200 个字符）；历史单据一律空串，不回填 |
 | v39 | 单机版「本机免输」长期凭据 `local_remember_token`：只存 token 哈希、`issued_at`、`expires_at` 与 `last_used_at`；与 `app_session` 独立，改口令不自动清除 |
+| v40 | 放宽 `stock_ledger` 金额约束：v13 的 `CHECK(amount_cents <> 0)` 误伤零金额合法流水（赠品/零成本出库/盘盈单价 0），改为只拒绝数量与金额同时为 0 的行；成本调整 qty=0 金额非 0 不受影响 |
 
 ## 1. 环境要求
 

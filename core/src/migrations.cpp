@@ -1053,6 +1053,40 @@ CREATE TABLE local_remember_token (
 CREATE UNIQUE INDEX uk_local_remember_token_hash ON local_remember_token(token_hash);
 )SQL";
 
+// v40：放宽 stock_ledger 金额约束。v13 的 CHECK(amount_cents <> 0) 会误伤
+// 合法的零金额流水：赠品/其他入库单价 0、零成本库存出库（移动加权成本为 0）、
+// 盘盈行单价 0。新约束只拒绝数量与金额同时为 0 的无意义流水；
+// 成本调整单 qty=0 且金额非 0 的流水保持合法。
+// 回退：从迁移前备份恢复；若只撤版本记录：
+// DELETE FROM schema_migration WHERE version = 40; PRAGMA user_version = 39;
+constexpr const char* kV40 = R"SQL(
+CREATE TABLE stock_ledger_v40 (
+  id           INTEGER PRIMARY KEY,
+  doc_id       INTEGER NOT NULL,
+  doc_line_id  INTEGER NOT NULL,
+  biz_type     TEXT    NOT NULL,
+  biz_time     TEXT    NOT NULL,
+  warehouse_id INTEGER NOT NULL REFERENCES warehouse(id),
+  item_id      INTEGER NOT NULL REFERENCES item(id),
+  qty          INTEGER NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  created_at   TEXT    NOT NULL,
+  batch_no     TEXT    NOT NULL DEFAULT '',
+  expiry_date  TEXT    NOT NULL DEFAULT '',
+  CHECK (NOT (qty = 0 AND amount_cents = 0))
+);
+INSERT INTO stock_ledger_v40 (id, doc_id, doc_line_id, biz_type, biz_time, warehouse_id,
+                              item_id, qty, amount_cents, created_at, batch_no, expiry_date)
+SELECT id, doc_id, doc_line_id, biz_type, biz_time, warehouse_id,
+       item_id, qty, amount_cents, created_at, batch_no, expiry_date
+FROM stock_ledger;
+DROP TABLE stock_ledger;
+ALTER TABLE stock_ledger_v40 RENAME TO stock_ledger;
+CREATE INDEX idx_stock_ledger_item_wh_time ON stock_ledger(item_id, warehouse_id, biz_time, id);
+CREATE INDEX idx_stock_ledger_doc ON stock_ledger(doc_id);
+CREATE UNIQUE INDEX uk_stock_ledger_doc_line ON stock_ledger(doc_line_id, biz_type);
+)SQL";
+
 std::string checksum_of(std::string_view sql) {
   std::uint64_t hash = 1469598103934665603ULL;
   for (const unsigned char ch : sql) {
@@ -1107,6 +1141,7 @@ const std::vector<Migration>& all_migrations() {
       {37, "v37_doc_header_list_index", kV37},
       {38, "v38_doc_header_remark", kV38},
       {39, "v39_local_remember_token", kV39},
+      {40, "v40_stock_ledger_zero_amount", kV40},
   };
   return migrations;
 }

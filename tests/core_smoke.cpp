@@ -91,7 +91,7 @@ int main() {
     {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
-      check(db.schema_version() == 39, "迁移后 schema 版本应为 39");
+      check(db.schema_version() == 40, "迁移后 schema 版本应为 40");
 
       // 读连接被占满时不能无限等待：超时后应报 DB_BUSY，让调用方回 503。
       {
@@ -3075,7 +3075,7 @@ int main() {
         });
 
         xiaotu::migrate(mig);
-        check(mig.schema_version() == 39, "有数据的模拟库应迁到 v39");
+        check(mig.schema_version() == 40, "有数据的模拟库应迁到 v40");
 
         mig.read([&](sqlite3* conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");
@@ -3586,10 +3586,10 @@ int main() {
         fs::create_directories(list_dir);
         xiaotu::Db ldb(list_dir / "app.db", 2);
         xiaotu::migrate(ldb);
-        check(ldb.schema_version() == 39, "列表筛选库应迁到 v39");
-        // 幂等：每次启动都会跑 migrate，已应用的 v39 只能跳过。
+        check(ldb.schema_version() == 40, "列表筛选库应迁到 v40");
+        // 幂等：每次启动都会跑 migrate，已应用的 v40 只能跳过。
         xiaotu::migrate(ldb);
-        check(ldb.schema_version() == 39, "重复迁移应保持 v39，不重复建 token 表");
+        check(ldb.schema_version() == 40, "重复迁移应保持 v40，不重复建 token 表");
         ldb.read([&](sqlite3* conn) {
           bool has_type_date = false;
           bool has_type_status = false;
@@ -3768,6 +3768,89 @@ int main() {
               "测试单据应全部落库");
         (void)percent;
         (void)underscore;
+      }
+
+      // v40：零金额流水回归。单价 0 的赠品入库、零成本库存的销售出库
+      // （移动加权成本为 0）都应能正常审核；数量与金额同时为 0 仍被拒绝。
+      {
+        const fs::path zero_dir = dir / "zero-amount";
+        fs::create_directories(zero_dir);
+        xiaotu::Db zdb(zero_dir / "app.db", 2);
+        xiaotu::migrate(zdb);
+        check(zdb.schema_version() == 40, "零金额库应迁到 v40");
+
+        xiaotu::gen::ItemService z_items(zdb);
+        xiaotu::gen::WarehouseService z_warehouses(zdb);
+        xiaotu::DocumentEngine z_docs(zdb);
+        const auto gift_item =
+            z_items.create(xiaotu::gen::ItemRow{.code = "Z001", .name = "赠品"});
+        const std::int64_t z_wh = z_warehouses.list().at(0).id;
+
+        xiaotu::DocInput gift_in;
+        gift_in.doc_type = "OTH_IN";
+        gift_in.biz_category = "GIFT";
+        gift_in.warehouse_id = z_wh;
+        gift_in.lines.push_back(
+            xiaotu::DocLineInput{.item_id = gift_item.id, .qty = q(3), .price_cents = 0});
+        const auto gift_doc = z_docs.save_and_approve(gift_in);
+        check(gift_doc.id > 0, "单价 0 的赠品入库应能审核");
+
+        xiaotu::DocInput zero_cost_sale;
+        zero_cost_sale.doc_type = "SAL_OUT";
+        zero_cost_sale.warehouse_id = z_wh;
+        zero_cost_sale.partner = "散客";
+        zero_cost_sale.lines.push_back(
+            xiaotu::DocLineInput{.item_id = gift_item.id, .qty = q(1), .price_cents = 500});
+        const auto sale_doc = z_docs.save_and_approve(zero_cost_sale);
+        check(sale_doc.id > 0, "零成本库存的销售出库应能审核");
+
+        zdb.read([&](sqlite3* conn) {
+          xiaotu::Stmt ledger(conn,
+                              "SELECT COUNT(*) FROM stock_ledger WHERE amount_cents = 0"
+                              " AND qty <> 0;");
+          check(ledger.step() && ledger.i64(0) >= 2,
+                "赠品入库与零成本出库都应留下零金额数量流水");
+        });
+
+        // 新约束边界：qty=0 且金额=0 无意义，应被 CHECK 拒绝；
+        // qty=0 且金额非 0（成本调整腿）应可写入。
+        bool all_zero_rejected = false;
+        zdb.write([&](sqlite3* conn) {
+          xiaotu::Stmt bad(conn,
+                           "INSERT INTO stock_ledger (id, doc_id, doc_line_id, biz_type,"
+                           " biz_time, warehouse_id, item_id, qty, amount_cents, created_at)"
+                           " VALUES (?, 0, ?, 'CST_ADJ', '2026-01-01 00:00:00', ?, ?, 0, 0,"
+                           " '2026-01-01 00:00:00');");
+          bad.bind(1, xiaotu::next_id())
+              .bind(2, xiaotu::next_id())
+              .bind(3, z_wh)
+              .bind(4, gift_item.id);
+          try {
+            bad.run();
+          } catch (const xiaotu::AppError&) {
+            all_zero_rejected = true;
+          }
+        });
+        check(all_zero_rejected, "数量与金额同时为 0 的流水应被拒绝");
+
+        zdb.write([&](sqlite3* conn) {
+          xiaotu::Stmt ok(conn,
+                          "INSERT INTO stock_ledger (id, doc_id, doc_line_id, biz_type,"
+                          " biz_time, warehouse_id, item_id, qty, amount_cents, created_at)"
+                          " VALUES (?, 0, ?, 'CST_ADJ', '2026-01-01 00:00:00', ?, ?, 0, 5,"
+                          " '2026-01-01 00:00:00');");
+          ok.bind(1, xiaotu::next_id())
+              .bind(2, xiaotu::next_id())
+              .bind(3, z_wh)
+              .bind(4, gift_item.id)
+              .run();
+        });
+        zdb.read([&](sqlite3* conn) {
+          xiaotu::Stmt kept(conn,
+                           "SELECT COUNT(*) FROM stock_ledger WHERE qty = 0"
+                           " AND amount_cents = 5;");
+          check(kept.step() && kept.i64(0) == 1, "成本调整式零数量非零金额流水应保留");
+        });
       }
     }
   } catch (const std::exception& error) {

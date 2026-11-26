@@ -54,7 +54,7 @@ int main() {
   {
     xiaotu::Db db(dir / "app.db");
     xiaotu::migrate(db);
-    check(db.schema_version() == 39, "schema 应为 v39");
+    check(db.schema_version() == 40, "schema 应为 v40");
 
     xiaotu::gen::ItemService items(db);
     const auto item = items.create(xiaotu::gen::ItemRow{.code = "OP001", .name = "期初商品"});
