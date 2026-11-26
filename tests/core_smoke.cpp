@@ -3990,6 +3990,56 @@ int main() {
         });
         check(push_audited == 1, "超额度下推放行应写审计日志");
       }
+
+      // H3：客户合并后已占用额度要沿合并链汇总，跨档案欠款不能被漏算稀释。
+      {
+        xiaotu::CustomerService merge_customers(db);
+        const auto kept_customer = merge_customers.create(xiaotu::gen::CustomerRow{
+            .code = "C-KEPT", .name = "保留客户", .credit_limit_cents = 100000});
+        const auto gone_customer = merge_customers.create(xiaotu::gen::CustomerRow{
+            .code = "C-GONE", .name = "被并客户", .credit_limit_cents = 0});
+        auto merge_item =
+            items.create(xiaotu::gen::ItemRow{.code = "MG001", .name = "合并商品"});
+        {
+          xiaotu::DocInput stock_in;
+          stock_in.doc_type = "OTH_IN";
+          stock_in.warehouse_id = warehouse_list.at(0).id;
+          stock_in.doc_date = kToday;
+          stock_in.partner = "期初";
+          stock_in.lines.push_back(xiaotu::DocLineInput{
+              .item_id = merge_item.id, .qty = q(50), .price_cents = 10000});
+          documents.save_and_approve(stock_in);
+        }
+        xiaotu::DocInput kept_sale;
+        kept_sale.doc_type = "SAL_OUT";
+        kept_sale.warehouse_id = warehouse_list.at(0).id;
+        kept_sale.doc_date = kToday;
+        kept_sale.partner_id = kept_customer.id;
+        kept_sale.partner = kept_customer.name;
+        kept_sale.lines.push_back(xiaotu::DocLineInput{
+            .item_id = merge_item.id, .qty = q(9), .price_cents = 10000});
+        documents.save_and_approve(kept_sale);  // 保留档案先占 900 元，未超 1000 限额
+
+        xiaotu::partner_merge(db, kept_customer.id, {gone_customer.id}, "test");
+
+        xiaotu::DocInput gone_sale;
+        gone_sale.doc_type = "SAL_OUT";
+        gone_sale.warehouse_id = warehouse_list.at(0).id;
+        gone_sale.doc_date = kToday;
+        gone_sale.partner_id = gone_customer.id;
+        gone_sale.partner = gone_customer.name;
+        gone_sale.lines.push_back(xiaotu::DocLineInput{
+            .item_id = merge_item.id, .qty = q(2), .price_cents = 10000});
+        bool merged_over_limit = false;
+        try {
+          documents.save_and_approve(gone_sale);
+        } catch (const xiaotu::AppError& error) {
+          merged_over_limit = error.code() == "CREDIT_LIMIT_WARNING" &&
+                              std::string(error.what()).find("已占用 900.00") !=
+                                  std::string::npos;
+        }
+        check(merged_over_limit, "合并后为被并档案出库应连同保留档案欠款一起卡额度");
+      }
     }
   } catch (const std::exception& error) {
     std::cerr << "异常: " << error.what() << std::endl;
