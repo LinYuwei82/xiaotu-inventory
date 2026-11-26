@@ -238,8 +238,11 @@ OpeningReport import_stock(Db& db, const SheetTable& table, const ColumnMap& col
         continue;
       }
       std::int64_t price = 0;
-      if (!parse_signed_money(price_text, &price) || price < 0) {
-        reject(issues, sheet_row.number, "成本单价（元）", "应为不小于 0 的金额，最多两位小数");
+      // 期初成本必须真实：0 元单价与「不能用 0 代替」的口径一致直接拒绝，
+      // 零成本商品请走其他入库（赠品），不占用期初导入。
+      if (!parse_signed_money(price_text, &price) || price <= 0) {
+        reject(issues, sheet_row.number, "成本单价（元）",
+               "应为大于 0 的金额，最多两位小数；零成本商品请走其他入库（赠品）");
         continue;
       }
       const std::string key = std::to_string(warehouse->second.id) + ":" + item_code;

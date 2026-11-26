@@ -77,6 +77,18 @@ int main() {
     check(count_rows(db, "SELECT COUNT(*) FROM doc_header;") == 0,
           "被拒绝的导入不应写入单据");
 
+    // 成本单价 0 同样整批拒绝：期初成本必须真实，零成本商品走其他入库（赠品）。
+    report = xiaotu::import_opening(
+        db, xiaotu::OpeningKind::Stock,
+        xlsx({"仓库编码", "商品编码", "数量", "成本单价（元）"},
+             {{"MAIN", "OP001", "5", "0"}}),
+        "stock-zero.xlsx");
+    check(!report.ok() && report.issues.size() == 1 &&
+              report.issues[0].column == "成本单价（元）",
+          "成本单价为 0 应整批拒绝");
+    check(count_rows(db, "SELECT COUNT(*) FROM doc_header;") == 0,
+          "0 成本单价被拒后不应写入单据");
+
     // 正常库存期初：5 个 @ 10.00 → 结存 5000 分、流水 1 条。
     report = xiaotu::import_opening(
         db, xiaotu::OpeningKind::Stock,
