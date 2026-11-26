@@ -3,6 +3,7 @@
 #include <sqlite3.h>
 
 #include <cstdio>
+#include <limits>
 #include <map>
 #include <string>
 
@@ -1148,7 +1149,7 @@ const std::vector<Migration>& all_migrations() {
 
 std::string_view partner_id_backfill_sql() { return kV36; }
 
-void migrate(Db& db) {
+void migrate_to(Db& db, int target_version) {
   db.write_raw([&](sqlite3* conn) {
     exec_sql(conn,
              "CREATE TABLE IF NOT EXISTS schema_migration ("
@@ -1167,7 +1168,16 @@ void migrate(Db& db) {
     }
   });
 
+  // v12 及更早的老库里，零金额流水是合法数据（旧 CHECK 只约束 qty <> 0），
+  // 而 v13 重建 stock_ledger 时新增的 CHECK(amount_cents <> 0) 会让拷贝整批失败，
+  // 升级被拦停。已发布脚本不允许修改，这里在 v13 执行前探测违例老流水：
+  // 存在时打开 ignore_check_constraints，并保持到 v40 用放宽约束重建表后再关闭。
+  // 必须跨步骤保持：违例行落在 v13 重建出的新表里，v15 还会按方向 UPDATE 盘点流水。
+  bool ledger_check_suppressed = false;
   for (const Migration& migration : all_migrations()) {
+    if (migration.version > target_version) {
+      break;
+    }
     const std::string checksum = checksum_of(migration.sql);
     const auto existing = applied.find(migration.version);
     if (existing != applied.end()) {
@@ -1182,6 +1192,13 @@ void migrate(Db& db) {
     db.write_raw([&](sqlite3* conn) {
       exec_sql(conn, "BEGIN IMMEDIATE;");
       try {
+        if (migration.version == 13 && !ledger_check_suppressed) {
+          Stmt probe(conn, "SELECT 1 FROM stock_ledger WHERE amount_cents = 0 LIMIT 1;");
+          if (probe.step()) {
+            exec_sql(conn, "PRAGMA ignore_check_constraints = ON;");
+            ledger_check_suppressed = true;
+          }
+        }
         exec_sql(conn, migration.sql);
         Stmt record(conn,
                     "INSERT INTO schema_migration (version, name, checksum, applied_at)"
@@ -1192,8 +1209,19 @@ void migrate(Db& db) {
             .bind(4, now_text())
             .run();
         exec_sql(conn, "PRAGMA user_version = " + std::to_string(migration.version) + ";");
+        if (migration.version == 40 && ledger_check_suppressed) {
+          exec_sql(conn, "PRAGMA ignore_check_constraints = OFF;");
+          ledger_check_suppressed = false;
+        }
         exec_sql(conn, "COMMIT;");
       } catch (...) {
+        if (ledger_check_suppressed) {
+          try {
+            exec_sql(conn, "PRAGMA ignore_check_constraints = OFF;");
+          } catch (...) {
+          }
+          ledger_check_suppressed = false;
+        }
         try {
           exec_sql(conn, "ROLLBACK;");
         } catch (...) {
@@ -1205,7 +1233,8 @@ void migrate(Db& db) {
 
   // 只有全新数据库才预置「现金」账户；升级库保持账户为空，由用户按实际情况建档，
   // 历史 settlement 一律 account_id=0，不把旧数据强行挂到现金上。
-  if (applied.empty()) {
+  // fund_account 是 v12 建的，只迁到低版本时不预置。
+  if (applied.empty() && target_version >= 12) {
     db.write_raw([&](sqlite3* conn) {
       exec_sql(conn,
                "INSERT OR IGNORE INTO fund_account"
@@ -1218,6 +1247,8 @@ void migrate(Db& db) {
     });
   }
 }
+
+void migrate(Db& db) { migrate_to(db, std::numeric_limits<int>::max()); }
 
 int target_schema_version() {
   const auto& migrations = all_migrations();

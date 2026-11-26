@@ -3852,6 +3852,59 @@ int main() {
           check(kept.step() && kept.i64(0) == 1, "成本调整式零数量非零金额流水应保留");
         });
       }
+
+      // C2：v12 及更早老库带零金额流水时，升级不得被 v13 的 CHECK 拦停。
+      // 老库用 migrate_to 构造，违例流水走裸 SQL（v12 时代合法：旧 CHECK 只约束 qty）。
+      {
+        const fs::path legacy_dir = dir / "legacy-v12";
+        fs::create_directories(legacy_dir);
+        xiaotu::Db ldb(legacy_dir / "app.db", 2);
+        xiaotu::migrate_to(ldb, 12);
+        check(ldb.schema_version() == 12, "老库模拟应停在 v12");
+
+        ldb.write([&](sqlite3* conn) {
+          // v1 已预置 id=1 的默认仓库，老库只补商品与流水。
+          xiaotu::Stmt it(conn,
+                          "INSERT INTO item (id, code, name, created_at, updated_at)"
+                          " VALUES (1, 'LI001', '老商品', '2026-01-01 00:00:00',"
+                          " '2026-01-01 00:00:00');");
+          it.run();
+          xiaotu::Stmt lg1(conn,
+                           "INSERT INTO stock_ledger (id, doc_id, doc_line_id, biz_type,"
+                           " biz_time, warehouse_id, item_id, qty, amount_cents, created_at)"
+                           " VALUES (1, 0, 1, 'OTH_IN', '2026-01-01 00:00:00', 1, 1, 10000, 0,"
+                           " '2026-01-01 00:00:00');");
+          lg1.run();
+          // 盘点流水会被 v15 按方向改写 biz_type，违例行同样要能穿过这一步。
+          xiaotu::Stmt lg2(conn,
+                           "INSERT INTO stock_ledger (id, doc_id, doc_line_id, biz_type,"
+                           " biz_time, warehouse_id, item_id, qty, amount_cents, created_at)"
+                           " VALUES (2, 0, 2, 'STK_CNT', '2026-01-02 00:00:00', 1, 1, 5000, 0,"
+                           " '2026-01-02 00:00:00');");
+          lg2.run();
+        });
+
+        xiaotu::migrate(ldb);
+        check(ldb.schema_version() == 40, "带零金额流水的老库应一路迁到 v40");
+
+        ldb.read([&](sqlite3* conn) {
+          xiaotu::Stmt kept(conn,
+                            "SELECT biz_type, qty, amount_cents FROM stock_ledger"
+                            " WHERE id = 1;");
+          check(kept.step() && kept.text(0) == "OTH_IN" && kept.i64(1) == 10000 &&
+                    kept.i64(2) == 0,
+                "零金额入库流水应原样保留");
+          xiaotu::Stmt cnt(conn, "SELECT biz_type FROM stock_ledger WHERE id = 2;");
+          check(cnt.step() && cnt.text(0) == "STK_CNT_IN",
+                "零金额盘点流水应穿过 v15 方向改写");
+        });
+        bool pragma_off = false;
+        ldb.write([&](sqlite3* conn) {
+          xiaotu::Stmt p(conn, "PRAGMA ignore_check_constraints;");
+          pragma_off = p.step() && p.i64(0) == 0;
+        });
+        check(pragma_off, "升级完成后写连接应关闭约束忽略");
+      }
     }
   } catch (const std::exception& error) {
     std::cerr << "异常: " << error.what() << std::endl;
