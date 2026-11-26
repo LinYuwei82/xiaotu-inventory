@@ -2,7 +2,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <fstream>
 #include <random>
+
+#if defined(_WIN32)
+#include <windows.h>
+#include <bcrypt.h>
+#endif
 
 namespace xiaotu {
 namespace {
@@ -24,15 +30,38 @@ std::int64_t next_id() {
   return (offset << kSeqBits) | seq;
 }
 
+void fill_random(unsigned char* buffer, std::size_t size) {
+#if defined(_WIN32)
+  if (BCryptGenRandom(nullptr, buffer, static_cast<ULONG>(size),
+                      BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0) {
+    return;
+  }
+#else
+  std::ifstream source("/dev/urandom", std::ios::binary);
+  if (source && source.read(reinterpret_cast<char*>(buffer),
+                            static_cast<std::streamsize>(size))) {
+    return;
+  }
+#endif
+  // 兜底：系统随机源不可用时退回 random_device（每字节单独取数）。
+  std::random_device device;
+  for (std::size_t index = 0; index < size; ++index) {
+    buffer[index] = static_cast<unsigned char>(device() & 0xFFU);
+  }
+}
+
 std::string random_hex(std::size_t bytes) {
-  static thread_local std::mt19937_64 rng{std::random_device{}()};
+  // 必须用加密安全随机源：这里的输出是会话 id、CSRF、一次性换票与
+  // 免输凭据等安全令牌；mt19937 这类伪随机数种子熵不足、输出可预测。
   static constexpr char kHex[] = "0123456789abcdef";
   std::string out;
-  out.reserve(bytes * 2);
+  out.resize(bytes * 2);
+  std::string raw(bytes, '\0');
+  fill_random(reinterpret_cast<unsigned char*>(raw.data()), bytes);
   for (std::size_t i = 0; i < bytes; ++i) {
-    const auto value = static_cast<unsigned>(rng() & 0xFFU);
-    out.push_back(kHex[value >> 4]);
-    out.push_back(kHex[value & 0x0FU]);
+    const unsigned value = static_cast<unsigned char>(raw[i]);
+    out[i * 2] = kHex[value >> 4];
+    out[i * 2 + 1] = kHex[value & 0x0FU];
   }
   return out;
 }

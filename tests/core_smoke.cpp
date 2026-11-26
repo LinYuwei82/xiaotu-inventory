@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -15,6 +16,7 @@
 #include <iostream>
 #include <iterator>
 #include <latch>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -92,6 +94,25 @@ int main() {
       xiaotu::Db db(dir / "app.db", 2);
       xiaotu::migrate(db);
       check(db.schema_version() == 40, "迁移后 schema 版本应为 40");
+
+      // 安全令牌随机源回归：输出为足长十六进制串、连续生成不重复。
+      // 弱随机（伪随机数可预测种子）的问题由实现层保证，这里只守可观测语义。
+      {
+        const auto token = xiaotu::random_hex(32);
+        check(token.size() == 64, "random_hex(32) 应输出 64 个十六进制字符");
+        bool all_hex = true;
+        for (const char ch : token) {
+          if (std::isxdigit(static_cast<unsigned char>(ch)) == 0) {
+            all_hex = false;
+          }
+        }
+        check(all_hex, "random_hex 输出应全部是十六进制字符");
+        std::set<std::string> seen;
+        for (int i = 0; i < 256; ++i) {
+          seen.insert(xiaotu::random_hex(32));
+        }
+        check(seen.size() == 256, "连续生成的 256 个令牌应互不重复");
+      }
 
       // 读连接被占满时不能无限等待：超时后应报 DB_BUSY，让调用方回 503。
       {

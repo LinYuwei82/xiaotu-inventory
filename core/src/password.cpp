@@ -5,15 +5,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
-#include <random>
 
 #include "xiaotu/error.h"
-
-#if defined(_WIN32)
-#include <windows.h>
-#include <bcrypt.h>
-#endif
+#include "xiaotu/ids.h"
 
 namespace xiaotu {
 namespace {
@@ -23,25 +17,6 @@ constexpr std::uint32_t kMemoryKib = 64 * 1024;  // 64 MiB
 constexpr std::uint32_t kParallelism = 1;
 constexpr std::size_t kSaltBytes = 16;
 constexpr std::size_t kHashBytes = 32;
-
-void fill_random(unsigned char* buffer, std::size_t size) {
-#if defined(_WIN32)
-  if (BCryptGenRandom(nullptr, buffer, static_cast<ULONG>(size),
-                      BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0) {
-    return;
-  }
-#else
-  std::ifstream source("/dev/urandom", std::ios::binary);
-  if (source && source.read(reinterpret_cast<char*>(buffer),
-                            static_cast<std::streamsize>(size))) {
-    return;
-  }
-#endif
-  std::random_device device;
-  for (std::size_t index = 0; index < size; ++index) {
-    buffer[index] = static_cast<unsigned char>(device() & 0xFFU);
-  }
-}
 
 }  // namespace
 

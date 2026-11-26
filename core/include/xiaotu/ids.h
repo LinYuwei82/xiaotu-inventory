@@ -11,6 +11,10 @@ namespace xiaotu {
 // 不依赖数据库自增，便于日后平滑迁移 PostgreSQL。
 std::int64_t next_id();
 
+// 加密安全随机字节：Windows 用 BCryptGenRandom，POSIX 读 /dev/urandom，
+// 两者都失败才回退 std::random_device。口令盐与全部安全 token 共用这一实现。
+void fill_random(unsigned char* buffer, std::size_t size);
+
 // 指定字节数的十六进制随机串（用于一次性 token、会话 id）。
 std::string random_hex(std::size_t bytes);
 
