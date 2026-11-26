@@ -279,6 +279,17 @@ codesign --force --sign "$sign_identity" --options runtime --timestamp \
 codesign --verify --deep --strict "$APP_PATH"
 spctl --assess --type execute -vv "$APP_PATH" >/dev/null 2>&1 && echo "  spctl 预检：accepted ✓" || echo "  spctl 预检：$(spctl --assess --type execute -vv "$APP_PATH" 2>&1 || true)"
 
+# .app 也做一次公证 + staple：用户把 .app 拖进 /Applications 后首启不再依赖在线核验，
+# 避免断网/代理拦截导致 Gatekeeper 弹「无法验证」弹窗。
+# 顺序必须是「先公证 .app → staple .app → 再打 dmg」，这样 dmg 里装的是已 staple 的 .app。
+echo "===== 公证 .app（离线首启）"
+echo "使用 notarytool 凭据：${XIAOTU_NOTARY_PROFILE}（硬性前提已前置检查 ✓）"
+xcrun notarytool submit "$APP_PATH" --keychain-profile "$XIAOTU_NOTARY_PROFILE" --wait \
+  || { echo "notarytool submit .app 失败"; exit 1; }
+xcrun stapler staple "$APP_PATH"
+xcrun stapler validate "$APP_PATH"
+echo ".app 公证与 staple 通过 ✓"
+
 echo "===== 生成 dmg"
 mkdir -p "$OUT_DIR"
 rm -f "$DMG"
@@ -306,6 +317,8 @@ echo "字节数：$SIZE_BYTES"
 echo "SHA256：$SHA256"
 echo "签名：${XIAOTU_SIGN_IDENTITY}（Developer ID ✓）"
 echo "公证：${XIAOTU_NOTARY_PROFILE}（notarytool 已公证 ✓）"
+echo "app staple：已注入 ✓"
+echo "dmg staple：已注入 ✓"
 echo "产品版本：$VERSION"
 echo "构建号：$PLIST_BUILD"
 echo "更新配置：$([ "$UPDATE_CONFIG_COUNT" -eq 3 ] && echo "已注入" || echo "未配置（更新功能关闭）")"
