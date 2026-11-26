@@ -7676,7 +7676,11 @@
       const status = (payload && payload.status) || {};
       render(status);
       if (payload && payload.code === "COOLDOWN") {
-        showNotice("检查过于频繁，请稍后再试", "error");
+        const retryAfter = payload.retry_after || 0;
+        const msg = retryAfter > 0
+          ? `检查过于频繁，请 ${retryAfter} 秒后再试`
+          : "检查过于频繁，请稍后再试";
+        showNotice(msg, "error");
       } else if (payload && payload.update_available) {
         showNotice("发现新版本，可点「安装更新」完成替换", "ok");
       } else if (payload && payload.ok === false) {
