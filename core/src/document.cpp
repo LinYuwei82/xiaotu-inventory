@@ -558,15 +558,19 @@ void enforce_credit_limit(sqlite3* conn, const DocumentDefinition& definition,
   {
     // 已占用要沿合并链汇总：台账按下单时的档案 id 记账，客户被并入保留档案后，
     // 新旧欠款都折算到同一棵合并树下，避免跨档案漏算导致额度被稀释。
+    // 防御：深度上限 32（与 follow_merged 一致），防止脏数据成环死循环；
+    // partner_id<=0 时退回按原始档案 id 单点汇总（镜像兜底场景）。
+    const std::int64_t seed = partner_id > 0 ? partner_id : input.partner_id;
     Stmt stmt(conn,
-              "WITH RECURSIVE merge_chain(id) AS ("
-              " SELECT ?"
+              "WITH RECURSIVE merge_chain(id, depth) AS ("
+              " SELECT ?, 0"
               " UNION ALL"
-              " SELECT p.id FROM partner p JOIN merge_chain mc ON p.merged_into = mc.id)"
+              " SELECT p.id, mc.depth + 1 FROM partner p JOIN merge_chain mc"
+              " ON p.merged_into = mc.id AND mc.depth < 32)"
               " SELECT COALESCE(SUM(amount_cents - settled_cents), 0) FROM ar_ap_entry"
               " WHERE direction = 1 AND status IN ('OPEN', 'PARTIAL')"
               " AND partner_id IN (SELECT id FROM merge_chain);");
-    stmt.bind(1, partner_id);
+    stmt.bind(1, seed);
     if (stmt.step()) used = stmt.i64(0);
   }
   const std::int64_t after = used + validated.total_amount;

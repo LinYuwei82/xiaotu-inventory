@@ -4040,6 +4040,57 @@ int main() {
         }
         check(merged_over_limit, "合并后为被并档案出库应连同保留档案欠款一起卡额度");
       }
+
+      // D2：合并链成环（脏数据场景）时 CTE 必须有深度上限，否则写事务内无限循环
+      // 会占死全局写锁拖垮整个服务。构造 2 节点环，验证查询能终止。
+      {
+        xiaotu::CustomerService cycle_customers(db);
+        const auto ca = cycle_customers.create(xiaotu::gen::CustomerRow{
+            .code = "C-CYCLE-A", .name = "环客户 A", .credit_limit_cents = 100000});
+        const auto cb = cycle_customers.create(xiaotu::gen::CustomerRow{
+            .code = "C-CYCLE-B", .name = "环客户 B", .credit_limit_cents = 0});
+        // 绕过 API 直接构造脏数据环：A.merged_into=B, B.merged_into=A
+        db.write([&](sqlite3* conn) {
+          sqlite3_exec(conn,
+                       ("UPDATE partner SET merged_into = " + std::to_string(cb.id) +
+                        " WHERE id = " + std::to_string(ca.id) + ";")
+                           .c_str(),
+                       nullptr, nullptr, nullptr);
+          sqlite3_exec(conn,
+                       ("UPDATE partner SET merged_into = " + std::to_string(ca.id) +
+                        " WHERE id = " + std::to_string(cb.id) + ";")
+                           .c_str(),
+                       nullptr, nullptr, nullptr);
+        });
+        auto cycle_item =
+            items.create(xiaotu::gen::ItemRow{.code = "CYCLE001", .name = "成环商品"});
+        {
+          xiaotu::DocInput stock_in;
+          stock_in.doc_type = "OTH_IN";
+          stock_in.warehouse_id = warehouse_list.at(0).id;
+          stock_in.doc_date = kToday;
+          stock_in.partner = "期初";
+          stock_in.lines.push_back(xiaotu::DocLineInput{
+              .item_id = cycle_item.id, .qty = q(100), .price_cents = 10000});
+          documents.save_and_approve(stock_in);
+        }
+        xiaotu::DocInput cycle_sale;
+        cycle_sale.doc_type = "SAL_OUT";
+        cycle_sale.warehouse_id = warehouse_list.at(0).id;
+        cycle_sale.doc_date = kToday;
+        cycle_sale.partner_id = ca.id;
+        cycle_sale.partner = ca.name;
+        cycle_sale.lines.push_back(xiaotu::DocLineInput{
+            .item_id = cycle_item.id, .qty = q(1), .price_cents = 10000});
+        bool cycle_terminated = false;
+        try {
+          documents.save_and_approve(cycle_sale);
+          cycle_terminated = true;  // 查询正常返回，未死循环
+        } catch (const std::exception&) {
+          cycle_terminated = true;  // 抛异常也算终止（不应无限循环）
+        }
+        check(cycle_terminated, "合并链成环时额度查询必须能终止（深度上限 32）");
+      }
     }
   } catch (const std::exception& error) {
     std::cerr << "异常: " << error.what() << std::endl;
