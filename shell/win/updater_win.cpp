@@ -1,12 +1,20 @@
-// 小兔进销存 Windows 桌面壳 —— 自动更新桥接层
+// 小兔进销存 Windows 桌面壳 —— 自动更新桥接层（P1：core/update_engine 薄端口）
 //
-// 实现：
-//   WinHTTP 拉 manifest.json（Schema v2 统一清单）→ nlohmann::json 解析
-//   → Ed25519 验签（OpenSSL，覆盖整个清单对象）→ 取 platforms.windows 判定
-//   → WinHTTP 拉 artifacts.setup 安装包 → BCrypt SHA256 校验
-//   → ShellExecute 跑 ISCC /VERYSILENT → ISCC 自动关壳、覆盖、启新壳
+// 实现（见 docs/更新模块拆分重构方案.md §5）：
+//   状态机与五条内置规则全部在 core/update_engine；本文件只提供：
+//   - WinTransport：WinHTTP 拉清单 / 下载（写 .part → 进度回调 → 原子改名）
+//   - WinHasher：BCrypt SHA256（小写 hex）
+//   - WinInstaller：ShellExecuteW 跑 ISCC /VERYSILENT（/CLOSEAPPLICATIONS 关壳、
+//     /RESTARTAPPLICATIONS 装完拉起新壳——平台语义，不进引擎）
+//   - SystemClock：UTC 秒
+//   - WinStore：读写 %LOCALAPPDATA%\com.simem.xiaotu\updater_win.json，
+//     检测旧格式键（download_state / pending_local_path / download_progress）
+//     时按 §5.3 一次性迁移为引擎 schema 并回写
+//   桥方法按 §5.4 映射旧返回码；statusJson 按 §5.4 补回旧壳独有键。
 
 #include "updater_win.h"
+
+#include <windows.h>
 
 #include <winhttp.h>
 #include <bcrypt.h>
@@ -16,13 +24,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <random>
-#include <sstream>
+#include <vector>
 
 #include "xiaotu/update.h"
-#include "xiaotu/update_signature.h"
+#include "xiaotu/update_engine.h"
 #include "xiaotu/log.h"
-#include "win_encoding/encoding.h"
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "bcrypt.lib")
@@ -201,7 +209,7 @@ static bool winhttpGet(const std::string& url, std::string& out_body,
 
 // ---- BCrypt SHA256 ----
 
-std::string UpdaterWin::sha256File(const std::wstring& path) {
+static std::string sha256File(const std::wstring& path) {
   BCRYPT_ALG_HANDLE algo = nullptr;
   BCRYPT_HASH_HANDLE hash = nullptr;
   BYTE* hash_out = nullptr;
@@ -248,131 +256,198 @@ std::string UpdaterWin::sha256File(const std::wstring& path) {
   return result;
 }
 
-// ---- v2 统一清单解析 ----
-//
-// manifest.json 是三平台共用的统一清单：签名覆盖整个对象，客户端只取
-// platforms.windows 与其中需要的键；未知字段、未知 artifacts key 一律忽略。
-// 安装版读 artifacts.setup（绿色包 artifacts.portable 由下载页消费）。
+// ---- 平台端口 + 引擎（方案 §5.1） ----
 
-namespace {
+struct UpdaterWin::Impl
+    : xiaotu::ITransport,
+      xiaotu::IHasher,
+      xiaotu::IInstaller,
+      xiaotu::IClock,
+      xiaotu::IStore {
+  std::unique_ptr<xiaotu::UpdateEngine> engine;
 
-struct V2Windows {
-  std::string version;
-  std::int64_t build = 0;
-  std::string setup_url;
-  std::string setup_sha256;
-  std::int64_t setup_size = 0;
-  std::string notes_url;             // 发行说明页（可选）
-  int rollout_percent = 100;
-  bool mandatory = false;
-  std::string mandatory_reason;
-  std::string mandatory_deadline;
+  static std::wstring statusPath() { return appDataDir() + L"\\updater_win.json"; }
+
+  // ITransport::fetch —— 拉清单；错误串沿用旧壳 "CODE:detail" 口径
+  bool fetch(const std::string& url, std::string& body, std::string& err) override {
+    std::string code, detail;
+    if (winhttpGet(url, body, code, detail)) return true;
+    err = code + (detail.empty() ? "" : ":" + detail);
+    return false;
+  }
+
+  // ITransport::download —— 写 dest.part → 进度回调 → 原子改名；
+  // 失败/取消留下的半截文件由引擎统一删除（规则 3）。
+  bool download(const std::string& url, const fs::path& dest,
+                const xiaotu::ProgressFn& on_progress, const xiaotu::CancelFn& cancel,
+                std::string& err) override {
+    const std::wstring dest_w = dest.native();
+    const std::wstring part_w = dest_w + L".part";
+    FILE* f = nullptr;
+    _wfopen_s(&f, part_w.c_str(), L"wb");
+    if (!f) {
+      err = "FILE_OPEN";
+      return false;
+    }
+    std::int64_t downloaded = 0;
+    std::int64_t total = 0;
+    std::string body_unused;  // 逐块写文件，不累积
+    std::string code, detail;
+    const auto on_chunk = [&](const std::string& chunk) -> bool {
+      if (cancel && cancel()) return false;
+      fwrite(chunk.data(), 1, chunk.size(), f);
+      downloaded += static_cast<std::int64_t>(chunk.size());
+      if (on_progress) on_progress(downloaded, total);
+      return true;
+    };
+    bool ok = winhttpGet(url, body_unused, code, detail, &total, on_chunk);
+    fclose(f);
+    if (!ok) {
+      _wremove(part_w.c_str());
+      err = code + (detail.empty() ? "" : ":" + detail);
+      return false;
+    }
+    _wremove(dest_w.c_str());
+    if (_wrename(part_w.c_str(), dest_w.c_str()) != 0) {
+      err = "RENAME_FAILED";
+      return false;
+    }
+    return true;
+  }
+
+  // IHasher::sha256_file
+  bool sha256_file(const fs::path& p, std::string& hex, std::string& err) override {
+    hex = sha256File(p.native());
+    if (hex.empty()) {
+      err = "SHA256_COMPUTE_FAILED";
+      return false;
+    }
+    return true;
+  }
+
+  // IInstaller::install —— ISCC 静默安装语义（平台事实，不进引擎）：
+  // /CLOSEAPPLICATIONS 让 Restart Manager 先关掉正在运行的壳，否则 exe 被占用，
+  // 静默安装会无声失败（表现为「点安装没反应」）；/RESTARTAPPLICATIONS 装完拉起新壳。
+  xiaotu::InstallResult install(const xiaotu::PendingPackage& pkg) override {
+    const std::wstring path = pkg.path.native();
+    if (path.empty() || GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      return {false, "FAILED", "PENDING_MISSING"};
+    }
+    std::wstring params =
+        L"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS";
+    HINSTANCE ret = ShellExecuteW(nullptr, L"open", path.c_str(), params.c_str(), nullptr, SW_HIDE);
+    if (reinterpret_cast<INT_PTR>(ret) <= 32) {
+      return {false, "FAILED", "ShellExecute=" + std::to_string(reinterpret_cast<INT_PTR>(ret))};
+    }
+    return {true, "STARTED", ""};
+  }
+
+  // IClock::now_epoch
+  std::int64_t now_epoch() const override { return epochNow(); }
+
+  // IStore::load —— 读 updater_win.json；旧格式键按 §5.3 一次性迁移为引擎 schema。
+  // 迁移结果回写由引擎 load() 末尾的 persist 完成（新文件不再有旧键）。
+  bool load(std::string& out_json, std::string& err) override {
+    FILE* f = nullptr;
+    _wfopen_s(&f, statusPath().c_str(), L"rb, ccs=UTF-8");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return false; }
+    std::string text(static_cast<std::size_t>(sz), '\0');
+    const size_t got = fread(text.data(), 1, text.size(), f);
+    fclose(f);
+    text.resize(got);
+    nlohmann::json j;
+    try {
+      j = nlohmann::json::parse(text);
+    } catch (...) {
+      err = "STATUS_FILE_CORRUPT";
+      return false;  // 损坏文件按空状态起步，下次 persist 覆盖
+    }
+    if (!j.is_object()) return false;
+    // 旧格式判定：有 download_state、没有引擎的 state 键。
+    if (!j.contains("state") && j.contains("download_state")) {
+      std::string ds;
+      if (j.contains("download_state") && j["download_state"].is_string())
+        ds = j["download_state"].get<std::string>();
+      const char* state = "IDLE";
+      if (ds == "RUNNING") state = "DOWNLOADING";
+      else if (ds == "DONE") state = "DONE";
+      else if (ds == "FAILED") state = "FAILED";
+      j["state"] = state;
+      if (j.contains("pending_local_path") && j["pending_local_path"].is_string())
+        j["pending_path"] = j["pending_local_path"];
+      // download_progress "a/b (x%)" → bytes_done / bytes_total；
+      // DONE 态旧壳不落盘进度，按 pending_size 补齐（避免重启后显示 0 B）。
+      long long done = 0, total = 0;
+      if (j.contains("download_progress") && j["download_progress"].is_string()) {
+        sscanf(j["download_progress"].get<std::string>().c_str(), "%lld/%lld", &done, &total);
+      }
+      std::int64_t pending_size = 0;
+      if (j.contains("pending_size") && j["pending_size"].is_number_integer())
+        pending_size = j["pending_size"].get<std::int64_t>();
+      if (std::string(state) == "DONE" && pending_size > 0) { done = pending_size; total = pending_size; }
+      if (done > 0) j["bytes_done"] = done;
+      if (total > 0) j["bytes_total"] = total;
+      j.erase("download_state");
+      j.erase("pending_local_path");
+      j.erase("download_progress");
+    }
+    out_json = j.dump();
+    return true;
+  }
+
+  // IStore::save
+  bool save(const std::string& json, std::string& err) override {
+    FILE* f = nullptr;
+    _wfopen_s(&f, statusPath().c_str(), L"wb, ccs=UTF-8");
+    if (!f) {
+      err = "STATUS_FILE_WRITE_FAILED";
+      return false;
+    }
+    fwrite(json.data(), 1, json.size(), f);
+    fclose(f);
+    return true;
+  }
 };
-
-// 非抛出的字段读取：类型不对视为缺省（未知/缺省一律忽略）。
-bool v2_read_string(const nlohmann::json& object, const char* key, std::string& out) {
-  const auto it = object.find(key);
-  if (it == object.end() || !it->is_string()) return false;
-  out = it->get<std::string>();
-  return true;
-}
-
-bool v2_read_int(const nlohmann::json& object, const char* key, std::int64_t& out) {
-  const auto it = object.find(key);
-  if (it == object.end() || !it->is_number_integer()) return false;
-  out = it->get<std::int64_t>();
-  return true;
-}
-
-bool v2_read_bool(const nlohmann::json& object, const char* key, bool& out) {
-  const auto it = object.find(key);
-  if (it == object.end() || !it->is_boolean()) return false;
-  out = it->get<bool>();
-  return true;
-}
-
-// 提取 platforms.windows；失败时 err_code 给出稳定错误码。
-bool parse_v2_windows(const nlohmann::json& manifest, V2Windows& out, std::string& err_code) {
-  const auto platforms = manifest.find("platforms");
-  if (platforms == manifest.end() || !platforms->is_object()) {
-    err_code = "PLATFORMS_MISSING";
-    return false;
-  }
-  const auto windows = platforms->find("windows");
-  if (windows == platforms->end() || !windows->is_object()) {
-    err_code = "PLATFORM_WINDOWS_MISSING";
-    return false;
-  }
-  const auto artifacts = windows->find("artifacts");
-  if (artifacts == windows->end() || !artifacts->is_object() ||
-      artifacts->find("setup") == artifacts->end() || !(*artifacts)["setup"].is_object()) {
-    err_code = "ARTIFACT_SETUP_MISSING";
-    return false;
-  }
-  const nlohmann::json& setup = (*artifacts)["setup"];
-
-  // 必填键：version / build / artifacts.setup 的 url、sha256、size。
-  if (!v2_read_string(*windows, "version", out.version) ||
-      !v2_read_int(*windows, "build", out.build) ||
-      !v2_read_string(setup, "url", out.setup_url) ||
-      !v2_read_string(setup, "sha256", out.setup_sha256) ||
-      !v2_read_int(setup, "size", out.setup_size)) {
-    err_code = "FIELD_MISSING_OR_INVALID";
-    return false;
-  }
-  // 可选键：rollout_percent 缺省全量，mandatory 缺省 false。
-  std::int64_t rollout = 100;
-  if (v2_read_int(*windows, "rollout_percent", rollout) &&
-      rollout >= 1 && rollout <= 100) {
-    out.rollout_percent = static_cast<int>(rollout);
-  }
-  v2_read_bool(*windows, "mandatory", out.mandatory);
-  v2_read_string(*windows, "mandatory_reason", out.mandatory_reason);
-  v2_read_string(*windows, "mandatory_deadline", out.mandatory_deadline);
-  v2_read_string(*windows, "notes_url", out.notes_url);
-  return true;
-}
-
-}  // namespace
 
 // ---- UpdaterWin 单例 ----
 
-UpdaterWin::UpdaterWin() {
-  loadStatus();
-  if (status_.install_id.empty()) status_.install_id = generateUuid();
-  if (status_.channel.empty()) status_.channel = "stable";
-  // 安装更新后新版本启动时，旧 pending 状态（manifest_version 等）仍留在磁盘上，
-  // 前端只看 manifest_version 是否非空来判定 update_available，必须在启动时对比版本号
-  // 主动清掉已被安装覆盖的 pending，否则会一直提示"待安装 1.0.4"。
-  // 2026-11-19 用户从 1.0.3 在线更新到 1.0.4 后仍显示"待安装版本 1.0.4"即因此。
-  if (!status_.manifest_version.empty()) {
-    xiaotu::ProductVersion remote{}, local{};
-    if (xiaotu::parse_product_version(status_.manifest_version, remote) &&
-        xiaotu::parse_product_version(xiaotu::current_product_version(), local)) {
-      const int cmp = xiaotu::compare_product_version(remote, local);
-      if (cmp <= 0 || (cmp == 0 && status_.manifest_build <= xiaotu::current_build_number())) {
-        status_.manifest_version.clear();
-        status_.manifest_build = 0;
-        status_.manifest_sha256.clear();
-        status_.manifest_size = 0;
-        status_.manifest_setup_url.clear();
-        status_.notes_url.clear();
-        status_.mandatory = false;
-        status_.mandatory_reason.clear();
-        status_.mandatory_deadline.clear();
-        status_.pending_local_path.clear();
-        status_.pending_size = 0;
-        // 版本比较清残留只影响显示状态，不改变 last_result（那是上次检查的事实）。
-        persistStatus();
-      }
-    }
-  }
+UpdaterWin::UpdaterWin() : impl_(std::make_unique<Impl>()) {
+  xiaotu::EngineConfig cfg;
+  cfg.platform = "windows";
+  cfg.channel = "stable";
+  // install_id 只用于灰度分桶：先给一个随机值，load() 读到落盘 id 会覆盖，
+  // 首次运行生成的这个随引擎首次 persist 固定下来。
+  cfg.install_id = generateUuid();
+  // 旧壳行为对齐（§5.2）：checkNow 无手动冷却；自动间隔 24h 兜底，
+  // 实际节奏由本壳 autoCheckLoop 的 24h±2h 抖动 / 失败退避控制；
+  // 旧 v2 路径不查 min_os，保持行为不变。
+  cfg.manual_cooldown_seconds = 0;
+  cfg.auto_check_interval_seconds = 86400;
+  cfg.ignore_min_os = true;
+  cfg.download_dir = fs::path(downloadDir());
+  cfg.public_key_base64 = XIAOTU_UPDATE_PUBKEY;
+  if (cfg.public_key_base64.empty())
+    log_warn("更新：未配置 XIAOTU_UPDATE_PUBKEY，跳过 Ed25519 验签");
+
+  xiaotu::UpdateEngine::Deps deps;
+  deps.transport = impl_.get();
+  deps.hasher = impl_.get();
+  deps.installer = impl_.get();
+  deps.clock = impl_.get();
+  deps.store = impl_.get();
+  impl_->engine = std::make_unique<xiaotu::UpdateEngine>(deps, std::move(cfg));
+  // load() 内含：旧格式迁移、崩溃恢复（下载/安装中断回退）、
+  // 已装覆盖的残留 pending 清理（1.0.4「装完仍提示待安装」回归点）。
+  impl_->engine->load();
 }
 
 UpdaterWin::~UpdaterWin() {
   auto_check_stop_ = true;
   if (auto_check_thread_.joinable()) auto_check_thread_.join();
-  download_cancel_ = true;
   if (download_thread_.joinable()) download_thread_.join();
 }
 
@@ -381,118 +456,13 @@ UpdaterWin& UpdaterWin::instance() {
   return inst;
 }
 
-void UpdaterWin::persistStatus() {
-  nlohmann::json j;
-  j["enabled"] = status_.enabled;
-  j["auto_check"] = status_.auto_check;
-  j["prefetch"] = status_.prefetch;
-  j["last_check_epoch"] = status_.last_check_epoch;
-  j["install_id"] = status_.install_id;
-  j["channel"] = status_.channel;
-  j["skipped_version"] = status_.skipped_version;
-  j["skip_until_epoch"] = status_.skip_until_epoch;
-  j["pending_local_path"] = status_.pending_local_path;
-  j["pending_size"] = status_.pending_size;
-  // 待更新信息也落盘：重启后卡片仍能显示待安装版本，下载无需重新检查。
-  j["manifest_version"] = status_.manifest_version;
-  j["manifest_build"] = status_.manifest_build;
-  j["manifest_sha256"] = status_.manifest_sha256;
-  j["manifest_size"] = status_.manifest_size;
-  j["manifest_setup_url"] = status_.manifest_setup_url;
-  j["notes_url"] = status_.notes_url;
-  j["download_state"] = status_.download_state;
-  j["last_result"] = status_.last_result;
-  j["last_error"] = status_.last_error;
-  std::wstring path = appDataDir() + L"\\updater_win.json";
-  FILE* f = nullptr;
-  _wfopen_s(&f, path.c_str(), L"wb, ccs=UTF-8");
-  if (f) {
-    auto text = j.dump(2);
-    fwrite(text.data(), 1, text.size(), f);
-    fclose(f);
-  }
-}
-
-void UpdaterWin::loadStatus() {
-  std::wstring path = appDataDir() + L"\\updater_win.json";
-  FILE* f = nullptr;
-  _wfopen_s(&f, path.c_str(), L"rb, ccs=UTF-8");
-  if (!f) return;
-  fseek(f, 0, SEEK_END);
-  long sz = ftell(f);
-  fseek(f, 0, SEEK_SET);
-  if (sz <= 0) { fclose(f); return; }
-  std::string text(sz, '\0');
-  fread(text.data(), 1, sz, f);
-  fclose(f);
-  try {
-    auto j = nlohmann::json::parse(text);
-    if (j.contains("enabled")) status_.enabled = j["enabled"];
-    if (j.contains("auto_check")) status_.auto_check = j["auto_check"];
-    if (j.contains("prefetch")) status_.prefetch = j["prefetch"];
-    if (j.contains("last_check_epoch")) status_.last_check_epoch = j["last_check_epoch"];
-    if (j.contains("install_id")) status_.install_id = j["install_id"];
-    if (j.contains("channel")) status_.channel = j["channel"];
-    if (j.contains("skipped_version")) status_.skipped_version = j["skipped_version"];
-    if (j.contains("skip_until_epoch")) status_.skip_until_epoch = j["skip_until_epoch"];
-    if (j.contains("pending_local_path")) status_.pending_local_path = j["pending_local_path"];
-    if (j.contains("pending_size")) status_.pending_size = j["pending_size"];
-    if (j.contains("manifest_version")) status_.manifest_version = j["manifest_version"];
-    if (j.contains("manifest_build")) status_.manifest_build = j["manifest_build"];
-    if (j.contains("manifest_sha256")) status_.manifest_sha256 = j["manifest_sha256"];
-    if (j.contains("manifest_size")) status_.manifest_size = j["manifest_size"];
-    if (j.contains("manifest_setup_url")) status_.manifest_setup_url = j["manifest_setup_url"];
-    if (j.contains("notes_url")) status_.notes_url = j["notes_url"];
-    if (j.contains("download_state")) status_.download_state = j["download_state"];
-    if (j.contains("last_result")) status_.last_result = j["last_result"];
-    if (j.contains("last_error")) status_.last_error = j["last_error"];
-  } catch (...) { /* ignore corrupt */ }
-}
-
-std::string UpdaterWin::statusJson() const {
-  std::lock_guard<std::mutex> lock(status_mutex_);
-  nlohmann::json j;
-  j["enabled"] = status_.enabled;
-  j["auto_check"] = status_.auto_check;
-  j["prefetch"] = status_.prefetch;
-  j["channel"] = status_.channel;
-  j["last_check_epoch"] = status_.last_check_epoch;
-  j["next_check_epoch"] = status_.next_check_epoch;
-  j["manifest_version"] = status_.manifest_version;
-  j["manifest_build"] = status_.manifest_build;
-  j["manifest_sha256"] = status_.manifest_sha256;
-  j["manifest_size"] = status_.manifest_size;
-  j["pending_local_path"] = status_.pending_local_path;
-  j["pending_size"] = status_.pending_size;
-  j["mandatory"] = status_.mandatory;
-  j["mandatory_reason"] = status_.mandatory_reason;
-  j["mandatory_deadline"] = status_.mandatory_deadline;
-  j["notes_url"] = status_.notes_url;
-  j["download_state"] = status_.download_state;
-  j["download_progress"] = status_.download_progress;
-  j["consecutive_failures"] = status_.consecutive_failures;
-  j["last_result"] = status_.last_result;
-  j["last_error"] = status_.last_error;
-  return j.dump();
-}
-
-void UpdaterWin::recordOutcome(const std::string& code, const std::string& error, bool failure) {
-  std::lock_guard<std::mutex> lock(status_mutex_);
-  status_.last_result = code;
-  status_.last_error = error;
-  if (failure) status_.consecutive_failures++;
-  persistStatus();
-}
-
 void UpdaterWin::start(const std::string& manifest_url, const std::string& channel) {
   {
-    std::lock_guard<std::mutex> lock(status_mutex_);
+    std::lock_guard<std::mutex> lock(url_mutex_);
     manifest_url_ = manifest_url;
-    if (!channel.empty()) status_.channel = channel;
-    if (manifest_url.empty()) return;
-    status_.enabled = true;
-    persistStatus();
   }
+  if (manifest_url.empty()) return;
+  impl_->engine->configure(manifest_url, channel);
   // 只启动一个自动检查线程：线程保存在成员里，析构时 join。重复调用 start 不会再起线程。
   if (auto_check_thread_.joinable()) return;
   auto_check_stop_ = false;
@@ -506,15 +476,15 @@ void UpdaterWin::autoCheckLoop() {
   while (!auto_check_stop_) {
     std::string url;
     {
-      std::lock_guard<std::mutex> lock(status_mutex_);
+      std::lock_guard<std::mutex> lock(url_mutex_);
       url = manifest_url_;
     }
     if (url.empty()) break;
 
-    // 只在 auto_check=true 时自动检查
+    // 只在 auto_check=true 时自动检查（开关位由引擎落盘，跨重启保持）
     {
-      std::lock_guard<std::mutex> lock(status_mutex_);
-      if (!status_.auto_check || !status_.enabled) {
+      const auto st = impl_->engine->status();
+      if (!st.value("auto_check", true) || !st.value("enabled", true)) {
         // 等 1 分钟再看
         for (int i = 0; i < 60 && !auto_check_stop_; ++i)
           std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -526,11 +496,7 @@ void UpdaterWin::autoCheckLoop() {
 
     // 与 macOS 壳 / core 同一口径：失败按 1 分钟 → 10 分钟 → 1 小时退避，
     // 成功一次即回到 24h±2h。否则清单 404 时仍按天重试，界面会长时间停在旧状态。
-    int failures = 0;
-    {
-      std::lock_guard<std::mutex> lock(status_mutex_);
-      failures = status_.consecutive_failures;
-    }
+    const int failures = impl_->engine->status().value("consecutive_failures", 0);
     int wait;
     if (failures > 0) {
       wait = static_cast<int>(xiaotu::check_retry_delay(failures));
@@ -543,137 +509,52 @@ void UpdaterWin::autoCheckLoop() {
   }
 }
 
-bool UpdaterWin::fetchManifest(const std::string& url, std::string& out_body,
-                               std::string& err_code, std::string& err_detail) {
-  return winhttpGet(url, out_body, err_code, err_detail);
-}
-
 void UpdaterWin::checkNow(Completion cb) {
-  if (manifest_url_.empty()) {
-    recordOutcome("UPDATE_UNAVAILABLE", "未配置清单地址", false);
+  std::string url;
+  {
+    std::lock_guard<std::mutex> lock(url_mutex_);
+    url = manifest_url_;
+  }
+  if (url.empty()) {
     if (cb) cb("UPDATE_UNAVAILABLE", "未配置清单地址");
     return;
   }
 
-  std::string body, err_code, err_detail;
-  if (!fetchManifest(manifest_url_, body, err_code, err_detail)) {
-    recordOutcome("FETCH_FAILED", err_code + ":" + err_detail, true);
-    if (cb) cb("FETCH_FAILED", err_code + ":" + err_detail);
-    return;
-  }
+  const bool judged = impl_->engine->check(/*manual=*/true);
+  const auto st = impl_->engine->status();
+  const std::string state = st.value("state", "");
+  const std::string last_result = st.value("last_result", "");
+  const std::string last_error = st.value("last_error", "");
 
-  // 解析 + Ed25519 验签（trust anchor 公钥由 CMake 编译期注入 XIAOTU_UPDATE_PUBKEY）
-  nlohmann::json j;
-  try {
-    j = nlohmann::json::parse(body);
-  } catch (const nlohmann::json::exception& e) {
-    recordOutcome("MANIFEST_PARSE_ERROR", e.what(), true);
-    if (cb) cb("MANIFEST_PARSE_ERROR", e.what());
-    return;
-  }
-
-  if (!std::string(XIAOTU_UPDATE_PUBKEY).empty()) {
-    if (!xiaotu::verify_manifest_signature(j, XIAOTU_UPDATE_PUBKEY)) {
-      recordOutcome("SIGNATURE_INVALID", "Ed25519 验签失败", true);
-      if (cb) cb("SIGNATURE_INVALID", "");
-      return;
-    }
-  } else {
-    log_warn("更新：未配置 XIAOTU_UPDATE_PUBKEY，跳过 Ed25519 验签");
-  }
-
-  // v2：channel 在顶层；platform 由只取 platforms.windows 隐含，无需再比。
-  std::string manifest_channel;
-  if (!v2_read_string(j, "channel", manifest_channel) || manifest_channel != status_.channel) {
-    recordOutcome("NO_UPDATE", "channel mismatch", false);
-    if (cb) cb("NO_UPDATE", "channel mismatch");
-    return;
-  }
-
-  V2Windows pw;
-  std::string pw_err;
-  if (!parse_v2_windows(j, pw, pw_err)) {
-    recordOutcome("MANIFEST_INVALID", pw_err, true);
-    if (cb) cb("MANIFEST_INVALID", pw_err);
-    return;
-  }
-
-  // 更新判定（v2 规则）：先比 version；同版本再比 build，build <= 本机 → 无更新。
-  xiaotu::ProductVersion remote_version;
-  xiaotu::ProductVersion local_version;
-  if (!xiaotu::parse_product_version(pw.version, remote_version) ||
-      !xiaotu::parse_product_version(xiaotu::current_product_version(), local_version)) {
-    recordOutcome("MANIFEST_INVALID", "MANIFEST_VERSION_INVALID", true);
-    if (cb) cb("MANIFEST_INVALID", "MANIFEST_VERSION_INVALID");
-    return;
-  }
-  const int version_cmp = xiaotu::compare_product_version(remote_version, local_version);
-  bool update_available =
-      version_cmp > 0 || (version_cmp == 0 && pw.build > current_build_number());
-
-  if (update_available && !pw.mandatory) {
-    // 灰度分桶与跳过记录沿用 core 同一规则；强制更新不受两者限制。
-    if (!xiaotu::rollout_allows(pw.rollout_percent,
-                                xiaotu::rollout_bucket(status_.install_id, pw.build))) {
-      update_available = false;
-    } else if (status_.skipped_version == pw.version &&
-               epochNow() < status_.skip_until_epoch) {
-      update_available = false;
-    }
-  }
-
-  {
-    std::lock_guard<std::mutex> lock(status_mutex_);
-    status_.consecutive_failures = 0;
-    status_.last_check_epoch = epochNow();
-    if (update_available) {
-      // 清单换了包（新版本或同版本重签）：旧的 pending 包必须作废。
-      // 否则界面显示待安装 1.0.14、点安装却拉起上一版本的旧包；旧包若已被
-      // 杀软截断或清理成 0 字节，/CLOSEAPPLICATIONS 先关掉本程序、安装器
-      // 自身又起不来，就表现为「点安装更新直接闪退」。
-      if (!pw.setup_sha256.empty() && pw.setup_sha256 != status_.manifest_sha256) {
-        status_.pending_local_path.clear();
-        status_.pending_size = 0;
-        if (status_.download_state != "RUNNING") status_.download_state = "IDLE";
-      }
-      status_.manifest_version = pw.version;
-      status_.manifest_build = pw.build;
-      status_.manifest_sha256 = pw.setup_sha256;
-      status_.manifest_size = pw.setup_size;
-      status_.manifest_setup_url = pw.setup_url;
-      status_.notes_url = pw.notes_url;
-      status_.mandatory = pw.mandatory;
-      status_.mandatory_reason = pw.mandatory_reason;
-      status_.mandatory_deadline = pw.mandatory_deadline;
-      status_.last_result = "UPDATE_AVAILABLE";
-      status_.last_error.clear();
+  if (judged) {
+    // 判定码映射（§5.4）：可用更新回版本号；其余「无更新」类（含已跳过、
+    // 灰度未命中、通道不符）统一 NO_UPDATE，与旧壳前端文案一致。
+    if (last_result == "UPDATE_AVAILABLE") {
+      if (cb) cb("UPDATE_AVAILABLE", st.value("version", ""));
     } else {
-      // 无更新（含已跳过、灰度未命中、通道不符）：必须清掉上一次的待更新信息，
-      // 否则前端按 manifest_version 判定会把“已是最新”误报成“发现新版本”，
-      // 且残留的 mandatory 会让用户反复看到强制升级弹窗。
-      status_.manifest_version.clear();
-      status_.manifest_build = 0;
-      status_.manifest_sha256.clear();
-      status_.manifest_size = 0;
-      status_.manifest_setup_url.clear();
-      status_.notes_url.clear();
-      status_.mandatory = false;
-      status_.mandatory_reason.clear();
-      status_.mandatory_deadline.clear();
-      status_.pending_local_path.clear();
-      status_.pending_size = 0;
-      status_.last_result = "NO_UPDATE";
-      status_.last_error.clear();
-      if (status_.download_state != "RUNNING") status_.download_state = "IDLE";
+      if (cb) cb("NO_UPDATE", "");
     }
-    persistStatus();
+    return;
   }
 
-  if (update_available) {
-    if (cb) cb("UPDATE_AVAILABLE", pw.version);
-  } else {
+  // 未得到判定：下载/安装进行中（引擎拒绝重入）按无更新回，不改写检查记录。
+  if (state == "DOWNLOADING" || state == "INSTALLING") {
     if (cb) cb("NO_UPDATE", "");
+    return;
   }
+
+  // 检查失败：把引擎错误串映射回旧壳返回码（§5.4）。
+  std::string code;
+  if (last_error == "MANIFEST_JSON_INVALID") {
+    code = "MANIFEST_PARSE_ERROR";
+  } else if (last_error == "MANIFEST_SIGNATURE_INVALID") {
+    code = "SIGNATURE_INVALID";
+  } else if (last_error.rfind("MANIFEST_", 0) == 0) {
+    code = "MANIFEST_INVALID";  // parse_manifest 的稳定错误码
+  } else {
+    code = "FETCH_FAILED";  // HTTP_* 等传输错误
+  }
+  if (cb) cb(code, last_error);
 }
 
 void UpdaterWin::downloadUpdate(Completion cb) {
@@ -685,154 +566,33 @@ void UpdaterWin::downloadUpdate(Completion cb) {
   // 上一轮线程已结束但还没回收：先 join，再复用成员（不能 detach，否则析构时可能访问已销毁的 this）。
   if (download_thread_.joinable()) download_thread_.join();
 
-  std::string url, expected_sha256;
-  std::int64_t expected_size = 0;
-  {
-    std::lock_guard<std::mutex> lock(status_mutex_);
-    url = status_.manifest_setup_url;
-    expected_sha256 = status_.manifest_sha256;
-    expected_size = status_.manifest_size;
-  }
-  if (expected_sha256.empty()) {
-    recordOutcome("NO_PENDING_UPDATE", "清单未给出安装包 SHA256", false);
+  const auto st = impl_->engine->status();
+  const std::string state = st.value("state", "IDLE");
+  // 旧壳口径：清单没给出待更新包（sha/url 缺失、无待更新版本）→ NO_PENDING_UPDATE。
+  if (state != "UPDATE_AVAILABLE" && state != "FAILED" && state != "DONE") {
     log_warn("更新：下载被拒，没有待更新版本");
     if (cb) cb("NO_PENDING_UPDATE", "");
     return;
   }
-
-  // 正常路径直接用检查时缓存的 artifacts.setup.url，不再二次拉清单：
-  // 少一次网络往返，也避免清单短暂不可达时把已确认的更新弄丢。
-  if (url.empty()) {
-    std::string body;
-    std::string err_code, err_detail;
-    if (!winhttpGet(manifest_url_, body, err_code, err_detail)) {
-      recordOutcome("FETCH_FAILED", err_code + ":" + err_detail, true);
-      if (cb) cb("FETCH_FAILED", err_code + ":" + err_detail);
-      return;
-    }
-    nlohmann::json j;
-    try {
-      j = nlohmann::json::parse(body);
-    } catch (const nlohmann::json::exception& e) {
-      recordOutcome("MANIFEST_INVALID", e.what(), true);
-      if (cb) cb("MANIFEST_INVALID", e.what());
-      return;
-    }
-    V2Windows pw;
-    std::string pw_err;
-    if (!parse_v2_windows(j, pw, pw_err) || pw.setup_url.empty()) {
-      recordOutcome("MANIFEST_INVALID", pw_err.empty() ? "缺少 artifacts.setup.url" : pw_err, true);
-      if (cb) cb("MANIFEST_INVALID", pw_err.empty() ? "缺少 artifacts.setup.url" : pw_err);
-      return;
-    }
-    url = pw.setup_url;
-    std::lock_guard<std::mutex> lock(status_mutex_);
-    status_.manifest_setup_url = url;
-    persistStatus();
+  if (st.value("manifest_setup_url", "").empty() || st.value("manifest_sha256", "").empty()) {
+    if (cb) cb("NO_PENDING_UPDATE", "");
+    return;
   }
 
-  download_cancel_ = false;
   download_running_ = true;
-  {
-    std::lock_guard<std::mutex> lock(status_mutex_);
-    status_.download_state = "RUNNING";
-    status_.download_progress.clear();
-    status_.last_result = "DOWNLOAD_STARTED";
-    status_.last_error.clear();
-    persistStatus();
-  }
-  log_info("更新：开始下载 " + expected_sha256.substr(0, 12) + "…");
-
-  download_thread_ = std::thread([this, url, expected_sha256, expected_size, cb] {
-    // 目标文件放在下载目录，文件名用 build 号
-    std::wstring dir = downloadDir();
-    std::wstring target = dir + L"\\xiaotu-inventory-setup.exe.part";
-    std::wstring final_name = dir + L"\\xiaotu-inventory-setup.exe";
-
-    std::int64_t downloaded = 0;
-    std::string err_code, err_detail;
-    bool ok = true;
-
-    // 先写 .part，下完再 rename
-    FILE* f = nullptr;
-    _wfopen_s(&f, target.c_str(), L"wb");
-    if (!f) {
-      ok = false; err_code = "FILE_OPEN"; err_detail = "";
-    }
-
-    if (ok) {
-      std::int64_t total = expected_size;
-      std::string body_unused;  // 下载时逐块 on_chunk 直接写文件，不累积
-      auto on_chunk = [&](const std::string& chunk) -> bool {
-        if (download_cancel_) return false;
-        fwrite(chunk.data(), 1, chunk.size(), f);
-        downloaded += chunk.size();
-        // 更新进度
-        {
-          std::lock_guard<std::mutex> lock(status_mutex_);
-          char prog[64];
-          if (total > 0) snprintf(prog, sizeof(prog), "%lld/%lld (%.0f%%)", downloaded, total,
-                                   downloaded * 100.0 / total);
-          else snprintf(prog, sizeof(prog), "%lld bytes", downloaded);
-          status_.download_progress = prog;
-        }
-        return true;
-      };
-
-      ok = winhttpGet(url, body_unused, err_code, err_detail, &total, on_chunk);
-      fclose(f);
-      if (download_cancel_) {
-        _wremove(target.c_str());
-        ok = false; err_code = "CANCELED"; err_detail = "";
-      }
-    }
-
-    if (ok) {
-      // rename
-      _wremove(final_name.c_str());
-      if (_wrename(target.c_str(), final_name.c_str()) != 0) {
-        ok = false; err_code = "RENAME_FAILED";
-      }
-    }
-
-    if (ok) {
-      // SHA256 校验
-      std::string actual = sha256File(final_name);
-      if (actual.empty()) {
-        ok = false; err_code = "SHA256_COMPUTE_FAILED";
-      } else if (actual != expected_sha256) {
-        ok = false; err_code = "SHA256_MISMATCH";
-        err_detail = actual;
-        _wremove(final_name.c_str());
-      }
-    }
-
-    {
-      std::lock_guard<std::mutex> lock(status_mutex_);
-      download_running_ = false;
-      if (ok) {
-        status_.download_state = "DONE";
-        status_.pending_local_path = win_encoding::wide_to_utf8(final_name);
-        status_.pending_size = downloaded;
-        status_.last_result = "DOWNLOADED";
-        status_.last_error.clear();
-      } else {
-        status_.download_state = "FAILED";
-        status_.last_result = err_code == "CANCELED" ? "CANCELED" : "DOWNLOAD_FAILED";
-        status_.last_error = err_code + (err_detail.empty() ? "" : ":" + err_detail);
-      }
-      persistStatus();
-    }
-
+  download_thread_ = std::thread([this, cb] {
+    const bool ok = impl_->engine->download_pending();
+    download_running_ = false;
+    const auto st2 = impl_->engine->status();
+    const std::string last_result = st2.value("last_result", "");
     if (ok) {
       log_info("更新：下载完成并通过 SHA256 校验");
-    } else if (err_code != "CANCELED") {
-      log_warn("更新：下载失败 " + err_code + " " + err_detail);
-    }
-
-    if (cb) {
-      std::string code = ok ? "DOWNLOADED" : (err_code == "CANCELED" ? "CANCELED" : "FAILED");
-      cb(code, err_detail);
+      if (cb) cb("DOWNLOADED", "");
+    } else if (last_result == "CANCELED") {
+      if (cb) cb("CANCELED", "");
+    } else {
+      log_warn("更新：下载失败 " + st2.value("last_error", ""));
+      if (cb) cb("FAILED", st2.value("last_error", ""));
     }
   });
 }
@@ -842,94 +602,69 @@ void UpdaterWin::cancelPrefetch(Completion cb) {
     if (cb) cb("NOT_RUNNING", "");
     return;
   }
-  download_cancel_ = true;
+  // 引擎置取消标志，transport 的分块回调读到后中断；半截文件由引擎删除。
+  impl_->engine->cancel_download();
   if (cb) cb("CANCELED", "");
 }
 
 void UpdaterWin::installUpdate(Completion cb) {
-  std::wstring path;
-  std::string expected_sha256;
-  std::int64_t expected_size = 0;
-  {
-    std::lock_guard<std::mutex> lock(status_mutex_);
-    path = win_encoding::utf8_to_wide(status_.pending_local_path);
-    expected_sha256 = status_.manifest_sha256;
-    expected_size = status_.manifest_size;
+  // 引擎在进入 INSTALLING 前强制重校验大小 + SHA256（规则 2）：
+  // 下载完成后文件可能被杀软隔离、截断或清理，安装器带 /CLOSEAPPLICATIONS，
+  // 一旦拉起就会先关掉本程序——坏包照跑就表现为「点安装直接闪退、回不来」。
+  const auto res = impl_->engine->try_install();
+  if (res.started) {
+    log_info("更新：已启动安装程序，等待静默安装接管");
+    if (cb) cb("STARTED", "");
+    return;
   }
-  if (path.empty() || GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
-    recordOutcome("NO_PENDING_UPDATE", "没有已下载的安装包", false);
+  if (res.code == "NO_PENDING_UPDATE") {
     if (cb) cb("NO_PENDING_UPDATE", "");
-    return;
-  }
-  // 启动安装器前重新校验包体：下载完成后文件可能被杀软隔离、截断或清理。
-  // 安装器带 /CLOSEAPPLICATIONS，一旦拉起就会先关掉本程序；坏包装不上又
-  // 不会重启，用户看到的就是「点安装直接闪退、程序再也回不来」。
-  // 校验不过宁可拒绝安装，也不能让本程序先死掉。
-  bool package_invalid = false;
-  std::string invalid_reason;
-  if (expected_size > 0) {
-    WIN32_FILE_ATTRIBUTE_DATA fad{};
-    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) {
-      const std::int64_t actual =
-          (static_cast<std::int64_t>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
-      if (actual != expected_size) {
-        package_invalid = true;
-        invalid_reason = "SIZE_MISMATCH:" + std::to_string(actual);
-      }
-    }
-  }
-  if (!package_invalid && !expected_sha256.empty()) {
-    const std::string actual = sha256File(path);
-    if (actual.empty()) {
-      package_invalid = true;
-      invalid_reason = "SHA256_COMPUTE_FAILED";
-    } else if (actual != expected_sha256) {
-      package_invalid = true;
-      invalid_reason = "SHA256_MISMATCH";
-    }
-  }
-  if (package_invalid) {
-    _wremove(path.c_str());
-    {
-      std::lock_guard<std::mutex> lock(status_mutex_);
-      status_.pending_local_path.clear();
-      status_.pending_size = 0;
-      status_.download_state = "FAILED";
-      status_.last_result = "DOWNLOAD_FAILED";
-      status_.last_error = "PACKAGE_INVALID_BEFORE_INSTALL:" + invalid_reason;
-      persistStatus();
-    }
-    recordOutcome("NO_PENDING_UPDATE", "安装包校验失败，请重新下载", false);
-    log_warn("更新：安装前校验失败，已丢弃坏包 " + invalid_reason);
+  } else if (res.code == "VERIFY_FAILED") {
+    log_warn("更新：安装前校验失败，已丢弃坏包 " + res.error);
     if (cb) cb("NO_PENDING_UPDATE", "PACKAGE_INVALID");
-    return;
+  } else if (res.code == "UNAVAILABLE") {
+    if (cb) cb("UPDATE_UNAVAILABLE", res.error);
+  } else {
+    log_warn("更新：启动安装程序失败 " + res.error);
+    if (cb) cb("OPEN_FAILED", res.error);
   }
-  // ISCC 静默安装：/CLOSEAPPLICATIONS 让 Restart Manager 关掉正在运行的壳，
-  // 否则 exe 被占用，静默安装会直接失败且没有任何可见提示（表现为「点安装没反应」）；
-  // /RESTARTAPPLICATIONS 装完再由安装器拉起新壳。
-  std::wstring params =
-      L"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS";
-  HINSTANCE ret = ShellExecuteW(nullptr, L"open", path.c_str(), params.c_str(), nullptr, SW_HIDE);
-  if (reinterpret_cast<INT_PTR>(ret) <= 32) {
-    std::string detail = "ShellExecute=" + std::to_string(reinterpret_cast<INT_PTR>(ret));
-    recordOutcome("OPEN_FAILED", detail, false);
-    log_warn("更新：启动安装程序失败 " + detail);
-    if (cb) cb("OPEN_FAILED", detail);
-    return;
-  }
-  recordOutcome("INSTALL_STARTED", "", false);
-  log_info("更新：已启动安装程序，等待静默安装接管");
-  if (cb) cb("STARTED", "");
 }
 
 void UpdaterWin::setOptions(bool auto_check, bool prefetch, Completion cb) {
-  {
-    std::lock_guard<std::mutex> lock(status_mutex_);
-    status_.auto_check = auto_check;
-    status_.prefetch = prefetch;
-    persistStatus();
-  }
+  // enabled 恒为 true：旧壳没有关总开关的入口，start() 即启用。
+  impl_->engine->set_options(true, auto_check, prefetch);
   if (cb) cb("UPDATED", "");
+}
+
+std::string UpdaterWin::statusJson() const {
+  // 引擎统一 status_json + 旧壳独有键适配（§5.4），
+  // 前端 normalizeWinUpdateStatus 不改即可读。
+  auto j = nlohmann::json::parse(impl_->engine->status_json(), nullptr, false);
+  if (j.is_discarded() || !j.is_object()) j = nlohmann::json::object();
+
+  const std::string state = j.value("state", "IDLE");
+  std::string download_state = "IDLE";
+  if (state == "DOWNLOADING") download_state = "RUNNING";
+  else if (state == "DONE" || state == "INSTALLING") download_state = "DONE";
+  else if (state == "FAILED") download_state = "FAILED";
+
+  std::string download_progress;
+  if (download_state == "RUNNING" || download_state == "DONE") {
+    const std::int64_t done = j.value("bytes_done", static_cast<std::int64_t>(0));
+    const std::int64_t total = j.value("bytes_total", static_cast<std::int64_t>(0));
+    if (total > 0) {
+      char buf[64];
+      snprintf(buf, sizeof(buf), "%lld/%lld (%.0f%%)",
+               static_cast<long long>(done), static_cast<long long>(total),
+               done * 100.0 / total);
+      download_progress = buf;
+    }
+  }
+
+  j["download_state"] = download_state;
+  j["download_progress"] = download_progress;
+  j["pending_local_path"] = j.value("pending_path", "");
+  return j.dump();
 }
 
 void UpdaterWin::checkMinSupportedVersion(Completion cb) {

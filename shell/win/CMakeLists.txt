@@ -121,6 +121,7 @@ if (TARGET xiaotu_core)
 else()
   add_library(xiaotu_core_updater STATIC
     "${_repo_root}/core/src/update.cpp"
+    "${_repo_root}/core/src/update_engine.cpp"
     "${_repo_root}/core/src/update_signature.cpp"
     "${_repo_root}/core/src/log.cpp")
   target_include_directories(xiaotu_core_updater PUBLIC

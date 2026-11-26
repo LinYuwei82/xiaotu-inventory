@@ -97,17 +97,17 @@ $env:XIAOTU_SHELL_STARTUP_TIMEOUT = '60'; .\xiaotu-shell.exe
 
 ## 自动更新桥（`updater_win`）
 
-`updater_win.cpp` / `updater_win.h` 实现与 macOS 同规范的壳内自动更新，**零新增第三方依赖**：
+`updater_win.cpp` / `updater_win.h` 是 `core/update_engine` 的平台端口（重构方案见 [docs/更新模块拆分重构方案.md](../../docs/更新模块拆分重构方案.md) §5）：状态机、清单判定与进度聚合都在引擎侧，壳只提供 WinHTTP / BCrypt / ShellExecute 与旧文件迁移，**零新增第三方依赖**：
 
 | 环节 | 实现 |
 | --- | --- |
 | 拉清单 | WinHTTP GET `manifest.json`（Schema v2 统一清单，只取 `platforms.windows`） |
-| 验签 | `xiaotu::verify_manifest_signature`（OpenSSL Ed25519，trust anchor 编译期注入） |
-| 判定 | 先比 `version`、同版本再比 `build`；通道匹配、灰度分桶、`mandatory` |
-| 校验包 | BCrypt 计算 SHA256，与清单逐字节比对 |
+| 验签 | 引擎调 `xiaotu::verify_manifest_signature`（OpenSSL Ed25519，trust anchor 编译期注入） |
+| 判定 | 引擎复用 `core/update` 纯函数：先比 `version`、同版本再比 `build`；通道匹配、灰度分桶、`mandatory` |
+| 校验包 | BCrypt 计算 SHA256，与清单逐字节比对；安装前引擎强制重校验 |
 | 安装 | `ShellExecute` 跑 Inno Setup `/VERYSILENT /RESTARTAPPLICATIONS`，自动关壳、覆盖、启新壳 |
 | 定时 | 启动 30 秒后首查，之后 24h±2h；失败按 1 分钟 / 10 分钟 / 1 小时退避 |
-| 持久化 | `%LOCALAPPDATA%\com.simem.xiaotu\updater.json` |
+| 持久化 | `%LOCALAPPDATA%\com.simem.xiaotu\updater_win.json`（旧格式键启动时一次性迁移） |
 | 握手 | `checkMinSupportedVersion` 读服务端 `/api/health` 的 `min_supported_version` |
 
 对外暴露：`main.cpp` 用 `AddHostObjectToScript("updater_win", ...)` 把 `UpdaterWin` 挂到 `window.chrome.webview.hostObjects.updater_win`，可用 `checkNow()` / `downloadUpdate()` / `installUpdate()` / `cancelPrefetch()` / `setOptions(auto, prefetch)` / `statusJson()`。
