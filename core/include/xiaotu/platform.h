@@ -29,4 +29,9 @@ inline std::string path_to_utf8(const std::filesystem::path& path) {
   return win_encoding::path_to_utf8(path);
 }
 
+// UTF-8 窄串 → std::filesystem::path（与 path_to_utf8 互逆，Windows 上不走 ANSI 代码页）。
+inline std::filesystem::path path_from_utf8(std::string_view utf8) {
+  return win_encoding::path_from_utf8(utf8);
+}
+
 }  // namespace xiaotu

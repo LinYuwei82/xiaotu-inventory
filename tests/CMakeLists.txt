@@ -76,6 +76,13 @@ target_compile_definitions(xiaotu_update_smoke PRIVATE
 
 add_test(NAME update_smoke COMMAND xiaotu_update_smoke)
 
+# 编排层（update_engine）回归：假依赖驱动状态机全路径 + 五条内置规则 + 1.0.15 三 bug。
+add_executable(xiaotu_update_engine_smoke
+               "${CMAKE_CURRENT_SOURCE_DIR}/update_engine_smoke.cpp")
+target_link_libraries(xiaotu_update_engine_smoke PRIVATE xiaotu_core Threads::Threads)
+
+add_test(NAME update_engine_smoke COMMAND xiaotu_update_engine_smoke)
+
 add_executable(xiaotu_update_service_smoke
                "${CMAKE_CURRENT_SOURCE_DIR}/update_service_smoke.cpp")
 target_link_libraries(xiaotu_update_service_smoke PRIVATE xiaotu_server Threads::Threads)

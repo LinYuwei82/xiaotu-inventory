@@ -103,6 +103,7 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/stock_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/token_hash.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/update.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/update_engine.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/update_signature.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/user_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/xlsx_reader.cpp"
