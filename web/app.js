@@ -3654,19 +3654,39 @@
         showNotice("请填写要下推的数量", "error");
         return;
       }
-      try {
-        const result = await api("POST", "/api/documents/" + convertingId + "/convert", {
+      const submit = async (confirmCredit) =>
+        api("POST", "/api/documents/" + convertingId + "/convert", {
           warehouse_id: Number(convertWarehouse.value || 0),
           doc_date: convertDate.value,
           request_id: convertRequestId,
+          confirm_credit: confirmCredit,
           lines,
         });
+      const finish = async (result) => {
         showNotice(config.convertNotice + result.doc_no, "ok");
         convertCard.hidden = true;
         convertingId = 0;
         await reload();
+      };
+      try {
+        await finish(await submit(false));
       } catch (error) {
-        showNotice(error.message, "error");
+        if (error.code !== "CREDIT_LIMIT_WARNING") {
+          showNotice(error.message, "error");
+          return;
+        }
+        // 下推超额度：与手工审核同口径，二次确认后带 confirm_credit 重试；
+        // 首次被拦截未生成单据，重试复用同一 request_id 属同一下推动作。
+        const ok = await askConfirm(error.message + "。仍要继续下推吗？", {
+          okText: "继续下推",
+          cancelText: "取消",
+        });
+        if (!ok) return;
+        try {
+          await finish(await submit(true));
+        } catch (retryError) {
+          showNotice(retryError.message, "error");
+        }
       }
     }
 
