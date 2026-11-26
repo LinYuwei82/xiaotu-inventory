@@ -147,6 +147,10 @@ function URLDownloadToFile(pCaller: LongWord; szURL, szFileName: String;
   dwReserved: LongWord; lpfnCB: LongWord): Integer;
   external 'URLDownloadToFileW@urlmon.dll stdcall';
 
+{ 等待用：Inno 脚本自带的 Sleep 要 6.3+，CI 的 Inno 版本不保证，直接导入 kernel32。 }
+procedure KernelSleep(dwMilliseconds: LongWord);
+  external 'Sleep@kernel32.dll stdcall';
+
 var
   DataDirPage: TInputDirWizardPage;
   WebView2SetupPath: String;
@@ -180,7 +184,17 @@ end;
   结果就是窗口消失后再也不回来（用户看到的是「点安装更新就闪退」）。 }
 function RestartAfterSilent: Boolean;
 begin
-  Result := WizardSilent and WasInstalled and HasShell;
+  { 静默覆盖更新（updater_win 调 /VERYSILENT）装完要把新壳拉起来：
+    壳是安装脚本 taskkill 掉的，不在 Restart Manager 管理内，/RESTARTAPPLICATIONS
+    不会替我们重启；而下面带 skipifsilent 的「启动应用」项在静默模式下会被跳过，
+    结果就是窗口消失后再也不回来（用户看到的是「点安装更新就闪退」）。
+
+    注意 WasInstalled 单靠不住：用户跑「绿色解压版」时壳不在 {app} 目录，
+    WasInstalled=False，但 taskkill 按映像名照样杀掉它——装完不重启就是必现闪退。
+    updater 拉起安装时永远带 /RESTARTAPPLICATIONS，据此识别「更新触发的静默安装」，
+    首次静默部署（不带该参数）仍然不会莫名弹窗起应用。 }
+  Result := WizardSilent and HasShell and
+    (WasInstalled or (Pos('/RESTARTAPPLICATIONS', GetCmdTail) > 0));
 end;
 
 { WebView2 Runtime 检测：机器级 x64/x86 与用户级注册表任一存在且版本非空即视为已安装。 }
@@ -311,13 +325,22 @@ begin
            '请手动安装：{#WebView2Url}', mbError, MB_OK, IDOK);
 
   // 静默覆盖更新（updater_win 调 /VERYSILENT）时，壳文件会被占用导致安装失败。
-  // 这里在安装开始前强制 kill 旧壳，释放文件锁；安装完后 [Run] 段的
+  // 这里在安装开始前强制关闭旧壳，释放文件锁；安装完后 [Run] 段的
   // RestartAfterSilent 会拉起新壳（不能依赖 skipifsilent 那一项）。
   // WasInstalled 必须在覆盖前取，用来区分「真升级」与「首次静默安装」。
+  //
+  // 必须先发不带 /F 的温和关闭（对 GUI 进程即 WM_CLOSE）：壳收到 WM_CLOSE 会走
+  // 正常退出流程，WebView2 运行时随之干净退出。直接 /F 强杀会把
+  // msedgewebview2.exe（不是壳的子进程，/T 也杀不到）留成僵尸，继续锁住
+  // 数据目录下的 webview2 用户目录，新壳启动创建环境失败 → 又是「闪退」。
+  // 温和关闭等 2 秒后仍存活才 /F 兜底。
   if CurStep = ssInstall then
   begin
     WasInstalled := FileExists(ExpandConstant('{app}\{#AppExeName}'));
+    Exec('taskkill.exe', '/IM xiaotu-shell.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    KernelSleep(2000);
     Exec('taskkill.exe', '/F /IM xiaotu-shell.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    KernelSleep(500);
   end;
 end;
 
