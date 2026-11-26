@@ -4,8 +4,11 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-// 自研更新预检查：负责 24h±2h 调度、清单获取、跳过与失败计数；
-// 下载与安装交给 Sparkle（可用时）。无 UI，状态通过 status 暴露给后续界面。
+// 自研更新预检查（P2 起为 core/update_engine 的薄端口，见
+// docs/更新模块拆分重构方案.md §6）：清单获取、验签、判定、下载编排、进度
+// 持久化与装前重校验都在引擎里；本类保留 24h±2h 定时器、prefetch 门控、
+// Sparkle 旁路、回滚/恢复模式与 min_supported 握手，状态通过 status 暴露。
+// 无 UI。
 @interface XiaotuUpdater : NSObject
 
 + (instancetype)shared;
