@@ -1,0 +1,75 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:720px;margin:40px auto;padding:0 20px;line-height:1.7;color:#222}h1{border-bottom:2px solid #eee;padding-bottom:8px}h2{margin-top:1.5em;color:#111}table{border-collapse:collapse;width:100%;margin:1em 0}th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}th{background:#f6f8fa}code{background:#f0f0f0;padding:1px 6px;border-radius:3px;font-size:.9em}pre{background:#f6f8fa;padding:12px 16px;border-radius:6px;overflow-x:auto}pre code{background:none;padding:0}blockquote{border-left:4px solid #ddd;margin:1em 0;padding:0 16px;color:#666}</style></head><body>
+<h2 id="小兔进销存-1.0.15">小兔进销存 1.0.15</h2>
+<h3 id="本次更新重点windows">本次更新（重点：Windows）</h3>
+<ul>
+<li><strong>修复「点安装更新后程序直接消失」</strong>（Windows）：
+<ul>
+<li>静默安装完成后必定重新拉起新版本；此前使用绿色解压版的机器升级时程序被关掉后不会自动回来，本次修复。</li>
+<li>更新安装前先把旧程序温和关闭，避免 WebView2
+运行环境残留导致新版本启动失败；温和关闭不生效时才强制结束。</li>
+<li>启动安装器前对已下载的安装包重新校验大小与
+SHA-256：包体损坏或被安全软件截断时拒绝安装并提示重新下载，程序不会再"先关掉自己再装失败"。</li>
+<li>服务端发布新包后，本机缓存的旧安装包自动作废并重新下载，不会再误装旧包。</li>
+</ul></li>
+<li><strong>更新状态显示修复</strong>：重启应用后，已下载完成的安装包不再显示为「0
+B」，改为显示真实大小。</li>
+<li>macOS 功能无变化，与 Windows 同步版本号。</li>
+</ul>
+<h3 id="构建与分发">构建与分发</h3>
+<ul>
+<li>双平台同步更新到 1.0.15，构建号 <code>11</code>。</li>
+</ul>
+<h3 id="下载">下载</h3>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>平台</th>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>macOS（Apple Silicon）</td>
+<td><code>xiaotu-1.0.15-macos-arm64.dmg</code></td>
+<td>Developer ID 签名 + 公证，<code>.app</code> 与 DMG 均已 staple</td>
+</tr>
+<tr>
+<td>Windows</td>
+<td><code>xiaotu-1.0.15-win64-setup.exe</code></td>
+<td>Inno Setup 安装包</td>
+</tr>
+<tr>
+<td>Windows</td>
+<td><code>xiaotu-1.0.15-win64-portable.zip</code></td>
+<td>绿色版</td>
+</tr>
+</tbody>
+</table>
+<h3 id="校验">校验</h3>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">shasum</span> <span class="at">-a</span> 256 xiaotu-1.0.15-macos-arm64.dmg</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="co"># 期望：见 stable/manifest.json 的 platforms.macos.artifacts.dmg.sha256</span></span></code></pre></div>
+<h3 id="升级说明">升级说明</h3>
+<ul>
+<li><strong>曾遇到「点安装更新就闪退」的 Windows
+用户</strong>：本次请从官网下载页手动下载
+<code>xiaotu-1.0.15-win64-setup.exe</code>
+双击安装（覆盖安装，数据不丢）；装好后应用内更新即恢复正常。</li>
+<li>1.0.14 用户可直接在应用内「检查更新 →
+安装更新」；升级前请先备份。</li>
+<li>Windows 安装包尚未启用 Authenticode 签名，首次运行仍可能出现
+SmartScreen 提示，选择「更多信息 → 仍要运行」即可。</li>
+</ul>
+<h3 id="系统要求">系统要求</h3>
+<ul>
+<li>macOS 13 及以上（Apple Silicon）</li>
+<li>Windows 10/11 64 位；桌面窗口需要 WebView2
+Runtime（安装包可自动安装）</li>
+</ul>
+</body></html>
