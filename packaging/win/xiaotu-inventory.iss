@@ -178,16 +178,16 @@ begin
   Result := not HasShell;
 end;
 
-; 静默覆盖更新（updater_win 调 /VERYSILENT）装完要把新壳拉起来：
-; 壳是安装脚本 taskkill 掉的，不在 Restart Manager 管理内，/RESTARTAPPLICATIONS
-; 不会替我们重启；而下面带 skipifsilent 的「启动应用」项在静默模式下会被跳过，
-; 结果就是窗口消失后再也不回来（用户看到的是「点安装更新就闪退」）。
-;
-; 注意 WasInstalled 单靠不住：用户跑「绿色解压版」时壳不在 app 安装目录，
-; WasInstalled=False，但 taskkill 按映像名照样杀掉它——装完不重启就是必现闪退。
-; updater 拉起安装时永远带 /RESTARTAPPLICATIONS，据此识别「更新触发的静默安装」，
-; 首次静默部署（不带该参数）仍然不会莫名弹窗起应用。
-; （这里必须用 ; 行注释：Inno 的 { } 块注释不能嵌套，注释里出现 {app} 会提前闭合。）
+// 静默覆盖更新（updater_win 调 /VERYSILENT）装完要把新壳拉起来：
+// 壳是安装脚本 taskkill 掉的，不在 Restart Manager 管理内，/RESTARTAPPLICATIONS
+// 不会替我们重启；而下面带 skipifsilent 的「启动应用」项在静默模式下会被跳过，
+// 结果就是窗口消失后再也不回来（用户看到的是「点安装更新就闪退」）。
+//
+// 注意 WasInstalled 单靠不住：用户跑「绿色解压版」时壳不在 app 安装目录，
+// WasInstalled=False，但 taskkill 按映像名照样杀掉它——装完不重启就是必现闪退。
+// updater 拉起安装时永远带 /RESTARTAPPLICATIONS，据此识别「更新触发的静默安装」，
+// 首次静默部署（不带该参数）仍然不会莫名弹窗起应用。
+// （[Code] 段只能用 // 或 { } 注释；{ } 不能嵌套，注释里出现 {app} 会提前闭合。）
 function RestartAfterSilent: Boolean;
 begin
   Result := WizardSilent and HasShell and
