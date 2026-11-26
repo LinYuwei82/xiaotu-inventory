@@ -383,7 +383,10 @@ struct UpdaterWin::Impl
       // DONE 态旧壳不落盘进度，按 pending_size 补齐（避免重启后显示 0 B）。
       long long done = 0, total = 0;
       if (j.contains("download_progress") && j["download_progress"].is_string()) {
+#pragma warning(push)
+#pragma warning(disable : 4996)  // 输入为自己读回的 JSON 字符串，sscanf 无越界风险
         sscanf(j["download_progress"].get<std::string>().c_str(), "%lld/%lld", &done, &total);
+#pragma warning(pop)
       }
       std::int64_t pending_size = 0;
       if (j.contains("pending_size") && j["pending_size"].is_number_integer())
