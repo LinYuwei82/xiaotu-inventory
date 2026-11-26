@@ -40,7 +40,18 @@ std::string next_settle_no(sqlite3* conn, const std::string& date, int direction
     const std::string last = stmt.text(0);
     const std::size_t dash = last.rfind('-');
     if (dash != std::string::npos) {
-      sequence = std::stoi(last.substr(dash + 1)) + 1;
+      // 脏单号（后缀非数字或溢出）不能让 std::stoi 抛异常变成 500，回落从 1 重新计数。
+      const std::string suffix = last.substr(dash + 1);
+      bool digits = !suffix.empty() && suffix.size() <= 9;
+      for (char c : suffix) {
+        if (c < '0' || c > '9') {
+          digits = false;
+          break;
+        }
+      }
+      if (digits) {
+        sequence = std::stoi(suffix) + 1;
+      }
     }
   }
   std::string number = std::to_string(sequence);

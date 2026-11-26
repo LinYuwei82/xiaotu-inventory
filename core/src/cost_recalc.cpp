@@ -111,11 +111,6 @@ CostRecalcResult CostRecalcService::recalculate(std::int64_t item_id,
                                    : mul_qty_price(qty, price);
             line.regular = amount;
             line.has_regular = true;
-          } else if (ends_with(biz_type, "_IN")) {
-            // 调拨入库腿：金额与出库腿一致。
-            amount = line.has_regular ? -line.regular : stored_amount;
-            line.in_leg = amount;
-            line.has_in_leg = true;
           } else if (biz_type == "PUR_IN") {
             amount = mul_qty_price(qty, price);
             line.regular = amount;
@@ -127,6 +122,11 @@ CostRecalcResult CostRecalcService::recalculate(std::int64_t item_id,
                                    : 0;
             line.regular = amount;
             line.has_regular = true;
+          } else if (ends_with(biz_type, "_IN")) {
+            // 调拨入库腿：金额与出库腿一致。
+            amount = line.has_regular ? -line.regular : stored_amount;
+            line.in_leg = amount;
+            line.has_in_leg = true;
           }
         } else if (qty < 0) {
           if (biz_type == "STK_CNT_IN_REVERSE") {

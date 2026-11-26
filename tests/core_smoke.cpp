@@ -4108,6 +4108,85 @@ int main() {
         }
         check(cycle_terminated, "合并链成环时额度查询必须能终止（深度上限 32）");
       }
+
+      // D4：成本重算的入库分支判断顺序。ends_with("_IN") 会抢先命中 PUR_IN，
+      // 使按单价重算的采购入库分支沦为死代码。篡改采购入库流水金额后，
+      // 重算应仍按单据单价×数量得出正确金额（与结存一致、无差异）。
+      {
+        const fs::path recalc_dir = dir / "d4-cost-recalc";
+        fs::create_directories(recalc_dir);
+        xiaotu::Db cdb(recalc_dir / "app.db", 2);
+        xiaotu::migrate(cdb);
+        xiaotu::gen::ItemService c_items(cdb);
+        xiaotu::gen::WarehouseService c_warehouses(cdb);
+        xiaotu::DocumentEngine c_docs(cdb);
+        const auto c_item =
+            c_items.create(xiaotu::gen::ItemRow{.code = "D4-001", .name = "采购商品"});
+        const std::int64_t c_wh = c_warehouses.list().at(0).id;
+        xiaotu::DocInput cin;
+        cin.doc_type = "PUR_IN";
+        cin.warehouse_id = c_wh;
+        cin.doc_date = kToday;
+        cin.partner = "期初供应商";
+        cin.lines.push_back(
+            xiaotu::DocLineInput{.item_id = c_item.id, .qty = q(10), .price_cents = 1000});
+        c_docs.save_and_approve(cin);
+        cdb.read([&](sqlite3* conn) {
+          xiaotu::Stmt bal(conn,
+                           "SELECT amount_cents FROM stock_balance WHERE item_id = ?"
+                           " AND warehouse_id = ?;");
+          bal.bind(1, c_item.id).bind(2, c_wh);
+          check(bal.step() && bal.i64(0) == 10000, "采购入库结存金额应为 10000 分");
+        });
+        // 篡改采购入库流水的存量金额：重算若走 ends_with("_IN") 分支会直接沿用
+        // 被篡改值报出差异；走 PUR_IN 专属分支则按单价重算、与结存一致。
+        cdb.write([&](sqlite3* conn) {
+          xiaotu::Stmt upd(conn,
+                           "UPDATE stock_ledger SET amount_cents = 1"
+                           " WHERE item_id = ? AND biz_type = 'PUR_IN';");
+          upd.bind(1, c_item.id).run();
+        });
+        xiaotu::CostRecalcService c_recalc(cdb);
+        const auto c_result = c_recalc.recalculate(c_item.id);
+        check(c_result.difference_count == 0,
+              "篡改采购入库流水金额后重算应按单价还原、无差异");
+      }
+
+      // D5：结算单号续号遇到脏后缀（非数字）时不得让 std::stoi 抛异常冒泡成 500。
+      {
+        const fs::path settle_dir = dir / "d5-settle-no";
+        fs::create_directories(settle_dir);
+        xiaotu::Db ddb(settle_dir / "app.db", 2);
+        xiaotu::migrate(ddb);
+        xiaotu::CustomerService d_customers(ddb);
+        xiaotu::SettlementService d_settlements(ddb);
+        const auto d_customer = d_customers.create(xiaotu::gen::CustomerRow{
+            .code = "D5-C", .name = "脏单号客户"});
+        const std::string d_key = "C:" + std::to_string(d_customer.id);
+        xiaotu::SettlementCreateInput d_in;
+        d_in.direction = 1;
+        d_in.partner_key = d_key;
+        d_in.amount_cents = 100;
+        d_in.account_id = 1;
+        d_in.method = "CASH";
+        d_in.settled_on = kToday;
+        const auto d_first = d_settlements.create(d_in);
+        // 把首张单号改成非数字后缀，使其成为同前缀倒序的首行，逼续号逻辑读脏值。
+        ddb.write([&](sqlite3* conn) {
+          xiaotu::Stmt upd(conn, "UPDATE settlement SET settle_no = ? WHERE id = ?;");
+          upd.bind(1, "SK" + kTodayYmd + "-ZZZZ").bind(2, d_first.id).run();
+        });
+        bool d_ok = false;
+        std::string d_no;
+        try {
+          d_no = d_settlements.create(d_in).settle_no;
+          d_ok = true;
+        } catch (const std::exception&) {
+          d_ok = false;
+        }
+        check(d_ok, "脏单号后缀不应让续号抛异常");
+        check(d_no == "SK" + kTodayYmd + "-0001", "脏单号应回落从 0001 重新计数");
+      }
     }
   } catch (const std::exception& error) {
     std::cerr << "异常: " << error.what() << std::endl;
