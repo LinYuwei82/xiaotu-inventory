@@ -1,6 +1,6 @@
 ## 小兔进销存 1.0.13
 
-### 本次更新（macOS）
+### 本次更新（macOS 与 Windows）
 
 - **安全与缺陷修复批次**：
   - 零金额库存流水：v40 迁移放宽约束，赠品 0 价入库、零成本出库、盘盈 0 价等合法流水不再被拦；数量与金额同为 0 的无效流水仍拒绝。老版本数据库升级可平滑穿过旧约束。
@@ -15,15 +15,15 @@
 
 ### 构建与分发
 
-- 本次为 macOS 单平台更新，构建号 `9`；Windows 仍为 1.0.12（构建号 `8`）。
+- 双平台同步更新到 1.0.13，构建号 `9`。
 
 ### 下载
 
 | 平台 | 文件 | 说明 |
 | --- | --- | --- |
 | macOS（Apple Silicon） | `xiaotu-1.0.13-macos-arm64.dmg` | Developer ID 签名 + 公证，`.app` 与 DMG 均已 staple |
-| Windows | `xiaotu-1.0.12-win64-setup.exe` | 本次未更新 |
-| Windows | `xiaotu-1.0.12-win64-portable.zip` | 本次未更新 |
+| Windows | `xiaotu-1.0.13-win64-setup.exe` | NSIS 安装包 |
+| Windows | `xiaotu-1.0.13-win64-portable.zip` | 绿色版 |
 
 ### 校验
 
