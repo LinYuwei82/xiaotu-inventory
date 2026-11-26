@@ -126,7 +126,7 @@ nlohmann::json detail_to_json(const DocDetail& detail) {
 // 乐观锁版本：老客户端不带 version，返回 -1 表示跳过校验（core 会写日志）。
 std::int64_t request_version(const httplib::Request& req) {
   if (req.has_param("version")) {
-    return std::stoll(req.get_param_value("version"));
+    return parse_id(req.get_param_value("version"));
   }
   if (req.body.empty()) return -1;
   try {
@@ -325,7 +325,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
   server.Get(R"(/api/documents/(\d+))",
              guard("document.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const auto id = std::stoll(req.matches[1].str());
+                     const auto id = parse_id(req.matches[1].str());
                      json_ok(res, detail_to_json(services.docs.detail(id)));
                    }));
 
@@ -334,7 +334,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
   server.Get(R"(/api/documents/(\d+)/export)",
              guard("document.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const std::int64_t id = std::stoll(req.matches[1].str());
+                     const std::int64_t id = parse_id(req.matches[1].str());
                      const DocDetail detail = services.docs.detail(id);
                      std::map<std::int64_t, gen::ItemRow> items;
                      for (const auto& row : services.item.list()) items[row.id] = row;
@@ -466,7 +466,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
   server.Put(R"(/api/documents/(\d+))",
              guard("document.write",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const auto id = std::stoll(req.matches[1].str());
+                     const auto id = parse_id(req.matches[1].str());
                      const DocInput input = input_from_json(json_body(req));
                      if (!input.request_id.empty()) {
                        current_context().audit_request_id = input.request_id;
@@ -478,7 +478,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
   server.Delete(R"(/api/documents/(\d+))",
                 guard("document.write",
                       [&services](const httplib::Request& req, httplib::Response& res) {
-                        const auto id = std::stoll(req.matches[1].str());
+                        const auto id = parse_id(req.matches[1].str());
                         // DELETE 带不了 body，版本走查询参数；不传按老客户端放行。
                         const std::int64_t version =
                             req.has_param("version")
@@ -493,7 +493,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
   server.Post(R"(/api/documents/(\d+)/approve)",
               guard("document.write",
                     [&services](const httplib::Request& req, httplib::Response& res) {
-                      const auto id = std::stoll(req.matches[1].str());
+                      const auto id = parse_id(req.matches[1].str());
                       require_doc_audit(services.docs.detail(id).doc_type);
                       const bool confirm_credit =
                           req.has_param("confirm_credit") &&
@@ -505,7 +505,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
   server.Post(R"(/api/documents/(\d+)/reverse)",
               guard("document.write",
                     [&services](const httplib::Request& req, httplib::Response& res) {
-                      const auto id = std::stoll(req.matches[1].str());
+                      const auto id = parse_id(req.matches[1].str());
                       require_doc_audit(services.docs.detail(id).doc_type);
                       services.docs.reverse(id, request_version(req));
                       nlohmann::json body;
@@ -516,7 +516,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
   server.Post(R"(/api/documents/(\d+)/convert)",
               guard("document.write",
                     [&services](const httplib::Request& req, httplib::Response& res) {
-                      const auto id = std::stoll(req.matches[1].str());
+                      const auto id = parse_id(req.matches[1].str());
                       const nlohmann::json body = json_body(req);
                       OrderConvertInput input;
                       input.warehouse_id = body.value("warehouse_id", std::int64_t{0});
@@ -590,7 +590,7 @@ void register_document_routes(httplib::Server& server, Services& services) {
   server.Post(R"(/api/documents/(\d+)/close)",
               guard("document.write",
                     [&services](const httplib::Request& req, httplib::Response& res) {
-                      const auto id = std::stoll(req.matches[1].str());
+                      const auto id = parse_id(req.matches[1].str());
                       services.docs.close_order(id);
                       json_ok(res, nlohmann::json{{"ok", true}});
                     }));

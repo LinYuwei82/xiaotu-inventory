@@ -59,7 +59,7 @@ void register_user_routes(httplib::Server& server, Services& services) {
   server.Put(R"(/api/users/(\d+))",
              guard("user.write",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const std::int64_t id = std::stoll(req.matches[1].str());
+                     const std::int64_t id = parse_id(req.matches[1].str());
                      const UserInput input = from_json(json_body(req));
                      // 停用账号重新启用同样占用额度。
                      if (input.active && !services.users.get(id).active) {
@@ -72,7 +72,7 @@ void register_user_routes(httplib::Server& server, Services& services) {
   server.Delete(R"(/api/users/(\d+))",
                 guard("user.write",
                       [&services](const httplib::Request& req, httplib::Response& res) {
-                        services.users.remove(std::stoll(req.matches[1].str()));
+                        services.users.remove(parse_id(req.matches[1].str()));
                         nlohmann::json ok;
                         ok["ok"] = true;
                         json_ok(res, ok);

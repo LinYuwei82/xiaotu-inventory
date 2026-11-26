@@ -572,7 +572,7 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
   if (target.key == "fund-ledger") {
     const std::string account_param = param_text(req, "account_id");
     const std::int64_t account_id =
-        account_param == "all" ? -1 : (account_param.empty() ? 0 : std::stoll(account_param));
+        account_param == "all" ? -1 : (account_param.empty() ? 0 : parse_id(account_param));
     const std::string from = param_text(req, "from");
     const std::string to = param_text(req, "to");
     render.subtitle = period_label(from, to) + "；账户 " +
@@ -932,7 +932,7 @@ void register_print_routes(httplib::Server& server, Services& services) {
   server.Get(R"(/api/print-templates/(\d+))",
              guard("print.template.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const auto id = std::stoll(req.matches[1].str());
+                     const auto id = parse_id(req.matches[1].str());
                      json_ok(res, template_to_json(services.print_templates.get(id)));
                    }));
 
@@ -947,7 +947,7 @@ void register_print_routes(httplib::Server& server, Services& services) {
   server.Put(R"(/api/print-templates/(\d+))",
              guard("print.template.write",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const auto id = std::stoll(req.matches[1].str());
+                     const auto id = parse_id(req.matches[1].str());
                      const auto updated = services.print_templates.update(
                          id, template_from_json(json_body(req)));
                      json_ok(res, template_to_json(updated));
@@ -956,7 +956,7 @@ void register_print_routes(httplib::Server& server, Services& services) {
   server.Delete(R"(/api/print-templates/(\d+))",
                 guard("print.template.write",
                       [&services](const httplib::Request& req, httplib::Response& res) {
-                        const auto id = std::stoll(req.matches[1].str());
+                        const auto id = parse_id(req.matches[1].str());
                         services.print_templates.remove(id);
                         json_ok(res, nlohmann::json{{"ok", true}});
                       }));
@@ -964,7 +964,7 @@ void register_print_routes(httplib::Server& server, Services& services) {
   server.Post(R"(/api/print-templates/(\d+)/default)",
               guard("print.template.write",
                     [&services](const httplib::Request& req, httplib::Response& res) {
-                      const auto id = std::stoll(req.matches[1].str());
+                      const auto id = parse_id(req.matches[1].str());
                       json_ok(res, template_to_json(services.print_templates.set_default(id)));
                     }));
 

@@ -146,7 +146,7 @@ void register_partner_routes(httplib::Server& server, Services& services) {
                      int limit = 50;
                      if (req.has_param("limit")) {
                        try {
-                         limit = std::stoi(req.get_param_value("limit"));
+                         limit = static_cast<int>(parse_id(req.get_param_value("limit")));
                        } catch (const std::exception&) {
                          limit = 50;
                        }

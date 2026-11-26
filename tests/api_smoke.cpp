@@ -500,6 +500,13 @@ void run_server_mode(const std::filesystem::path& dir) {
     check(bad_id && bad_id->status == 400, "非法 item_id 应返回 400");
     const auto bad_limit = client.Get("/api/reports/stock-ledger?limit=4294967296");
     check(bad_limit && bad_limit->status == 400, "limit 超出 int 范围应返回 400");
+    // S1/S2 回归：裸 stoll 站点（库存流水查询、路径 id 超长）不得冒泡 500。
+    const auto bad_stock = client.Get("/api/stock/ledger?item_id=abc");
+    check(bad_stock && bad_stock->status == 400, "库存流水非法 item_id 应返回 400");
+    const auto huge_path = client.Get("/api/items/99999999999999999999");
+    check(huge_path && (huge_path->status == 400 || huge_path->status == 404) &&
+              huge_path->body.find("stoll") == std::string::npos,
+          "路径 id 超出 int64 应返回 400/404 而非 500");
   }
 
   const auto csv = client.Get("/api/reports/stock-balance?format=csv");
@@ -696,6 +703,13 @@ void run_server_mode(const std::filesystem::path& dir) {
         remark_created ? nlohmann::json::parse(remark_created->body).value("id", 0LL) : 0;
     check(remark_id > 0, "带备注的草稿应返回 id");
     const std::string remark_path = "/api/documents/" + std::to_string(remark_id);
+
+    // S1 回归：version 查询参数非法要走 400，不得冒泡成 500 或回显内部异常文本。
+    const auto bad_version =
+        client.Post(remark_path + "/reverse?version=abc", "{}", "application/json");
+    check(bad_version && bad_version->status == 400 &&
+              bad_version->body.find("stoll") == std::string::npos,
+          "非法 version 应返回 400 且不回显内部异常文本");
 
     const auto remark_detail = client.Get(remark_path);
     check(remark_detail && remark_detail->status == 200 &&

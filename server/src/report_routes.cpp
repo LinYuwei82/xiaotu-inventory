@@ -629,10 +629,10 @@ void register_report_routes(httplib::Server& server, Services& services) {
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      const std::int64_t warehouse_id =
                          req.has_param("warehouse_id")
-                             ? std::stoll(req.get_param_value("warehouse_id"))
+                             ? parse_id(req.get_param_value("warehouse_id"))
                              : 0;
                      const std::int64_t item_id =
-                         req.has_param("item_id") ? std::stoll(req.get_param_value("item_id")) : 0;
+                         req.has_param("item_id") ? parse_id(req.get_param_value("item_id")) : 0;
                      const bool hide_zero = req.has_param("hide_zero") &&
                                             req.get_param_value("hide_zero") != "0";
                      const auto rows = services.stock.balances(warehouse_id, item_id, hide_zero);
@@ -1864,7 +1864,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      std::int64_t account_id = 0;
                      if (req.has_param("account_id")) {
                        const std::string value = req.get_param_value("account_id");
-                       account_id = value == "all" ? -1 : std::stoll(value);
+                       account_id = value == "all" ? -1 : parse_id(value);
                      }
                      const std::string from =
                          req.has_param("from") ? req.get_param_value("from") : "";
@@ -2002,10 +2002,10 @@ void register_report_routes(httplib::Server& server, Services& services) {
              guard("stock.read",
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      const std::int64_t item_id =
-                         req.has_param("item_id") ? std::stoll(req.get_param_value("item_id")) : 0;
+                         req.has_param("item_id") ? parse_id(req.get_param_value("item_id")) : 0;
                      const std::int64_t warehouse_id =
                          req.has_param("warehouse_id")
-                             ? std::stoll(req.get_param_value("warehouse_id"))
+                             ? parse_id(req.get_param_value("warehouse_id"))
                              : 0;
                      const CostRecalcResult result =
                          services.cost_recalc.recalculate(item_id, warehouse_id);

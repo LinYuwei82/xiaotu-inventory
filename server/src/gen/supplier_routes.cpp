@@ -61,7 +61,7 @@ void register_supplier_routes(httplib::Server& server, Services& services) {
   server.Put(R"(/api/suppliers/(\d+))",
              guard("supplier.write",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const std::int64_t id = std::stoll(req.matches[1].str());
+                     const std::int64_t id = parse_id(req.matches[1].str());
                      const auto body = json_body(req);
                      json_ok(res, to_json(services.supplier.update(id, from_json(body))));
                    }));
@@ -69,7 +69,7 @@ void register_supplier_routes(httplib::Server& server, Services& services) {
   server.Delete(R"(/api/suppliers/(\d+))",
                 guard("supplier.write",
                       [&services](const httplib::Request& req, httplib::Response& res) {
-                        const std::int64_t id = std::stoll(req.matches[1].str());
+                        const std::int64_t id = parse_id(req.matches[1].str());
                         services.supplier.remove(id);
                         nlohmann::json ok;
                         ok["ok"] = true;

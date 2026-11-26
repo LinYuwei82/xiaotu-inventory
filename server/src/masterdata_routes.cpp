@@ -385,7 +385,7 @@ void register_masterdata_routes(httplib::Server& server, Services& services) {
   server.Put(R"(/api/items/(\d+)/barcodes)",
              guard("item.write",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const std::int64_t id = std::stoll(req.matches[1].str());
+                     const std::int64_t id = parse_id(req.matches[1].str());
                      const auto body = json_body(req);
                      if (!body.contains("barcodes") || !body["barcodes"].is_array()) {
                        throw AppError("INVALID_INPUT", "barcodes 应为条码数组");
@@ -443,7 +443,7 @@ void register_masterdata_routes(httplib::Server& server, Services& services) {
   server.Put(R"(/api/item-categories/(\d+))",
              guard("item.write",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const std::int64_t id = std::stoll(req.matches[1].str());
+                     const std::int64_t id = parse_id(req.matches[1].str());
                      const auto body = json_body(req);
                      ItemCategoryService categories(services.db);
                      categories.update(id, body.value("parent_id", std::int64_t{0}),
@@ -464,7 +464,7 @@ void register_masterdata_routes(httplib::Server& server, Services& services) {
   server.Delete(R"(/api/item-categories/(\d+))",
                 guard("item.write",
                       [&services](const httplib::Request& req, httplib::Response& res) {
-                        const std::int64_t id = std::stoll(req.matches[1].str());
+                        const std::int64_t id = parse_id(req.matches[1].str());
                         ItemCategoryService categories(services.db);
                         categories.remove(id);
                         json_ok(res, nlohmann::json{{"ok", true}});

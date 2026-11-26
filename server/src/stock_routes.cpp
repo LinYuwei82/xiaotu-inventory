@@ -57,7 +57,7 @@ void register_stock_routes(httplib::Server& server, Services& services) {
                    [&services](const httplib::Request& req, httplib::Response& res) {
                      std::int64_t item_id = 0;
                      if (req.has_param("item_id")) {
-                       item_id = std::stoll(req.get_param_value("item_id"));
+                       item_id = parse_id(req.get_param_value("item_id"));
                      }
                      nlohmann::json list = nlohmann::json::array();
                      const auto settings = services.settings.load();

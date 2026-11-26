@@ -56,7 +56,7 @@ void register_item_routes(httplib::Server& server, Services& services) {
   server.Put(R"(/api/items/(\d+))",
              guard("item.write",
                    [&services](const httplib::Request& req, httplib::Response& res) {
-                     const std::int64_t id = std::stoll(req.matches[1].str());
+                     const std::int64_t id = parse_id(req.matches[1].str());
                      const auto body = json_body(req);
                      json_ok(res, to_json(services.item.update(id, from_json(body))));
                    }));
@@ -64,7 +64,7 @@ void register_item_routes(httplib::Server& server, Services& services) {
   server.Delete(R"(/api/items/(\d+))",
                 guard("item.write",
                       [&services](const httplib::Request& req, httplib::Response& res) {
-                        const std::int64_t id = std::stoll(req.matches[1].str());
+                        const std::int64_t id = parse_id(req.matches[1].str());
                         services.item.remove(id);
                         nlohmann::json ok;
                         ok["ok"] = true;
