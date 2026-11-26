@@ -525,7 +525,11 @@ int main(int argc, char** argv) {
       url = dev_url + "/?api=" + base + "#t=" + token;
       std::cout << "开发态前端: " << dev_url << "（修改 web/ 后刷新即可，无需重新编译）" << std::endl;
 #endif
-      std::cout << "服务地址: " << base << "\n访问地址: " << url << std::endl;
+      // 一次性访问地址含 bootstrap token：走 stderr 而不是 stdout，
+      // 避免服务化/launchd 场景把令牌写进日志；Windows 壳的 stdout/stderr
+      // 汇入同一管道，解析 /#t= 不受影响。
+      std::cout << "服务地址: " << base << std::endl;
+      std::cerr << "访问地址: " << url << std::endl;
 #if defined(XIAOTU_HAS_WEBVIEW)
       const int code = xiaotu::platform::run_webview(url, "小兔进销存");
       http.stop();

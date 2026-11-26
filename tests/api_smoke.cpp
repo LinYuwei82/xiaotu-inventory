@@ -1164,6 +1164,26 @@ void run_server_mode(const std::filesystem::path& dir) {
           "诊断信息不应包含口令、令牌或 CSRF");
   }
 
+  // S6：同机反代部署下 remote_addr 恒为回环，仅查回环会让任意远程访客
+  // 都"看起来像本机"。带 X-Forwarded-For 时必须校验最后一跳（真实客户端 IP）：
+  // 非回环 → 403 拦在路由前；回环或无该头 → 放行到鉴权（无令牌 401）。
+  {
+    httplib::Client raw("127.0.0.1", port);
+    const auto remote_via_proxy = raw.Post(
+        "/api/system/shutdown",
+        httplib::Headers{{"X-Forwarded-For", "203.0.113.9, 8.8.8.8"}}, "", "text/plain");
+    check(remote_via_proxy && remote_via_proxy->status == 403,
+          "反代转发来的非回环客户端不应通过关闭端点的回环门禁");
+    const auto local_via_proxy = raw.Post(
+        "/api/system/shutdown", httplib::Headers{{"X-Forwarded-For", "127.0.0.1"}}, "",
+        "text/plain");
+    check(local_via_proxy && local_via_proxy->status == 401,
+          "反代转发且最后一跳为回环时应放行到鉴权（无令牌 401）");
+    const auto direct = raw.Post("/api/system/shutdown", "", "text/plain");
+    check(direct && direct->status == 401, "直连回环无令牌应返回 401");
+    check(http.serving(), "关闭端点的越权尝试不应真的停掉服务");
+  }
+
   http.stop();
 }
 

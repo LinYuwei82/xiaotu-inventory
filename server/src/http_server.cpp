@@ -258,15 +258,43 @@ std::string query_text(const httplib::Request& req) {
   return text;
 }
 
-// 反向代理终结 TLS 时按 X-Forwarded-Proto 决定是否加 Secure。
+// 反向代理终结 TLS 时按 X-Forwarded-Proto 决定是否加 Secure，
+// 但只在本机反代（remote_addr 为回环）时才采信该头：直连客户端自报
+// X-Forwarded-Proto 不能左右会话 Cookie 的 Secure 属性。
 // max_age_seconds 与空闲超时一致，服务端续期时同步延长。
 std::string cookie_attributes(const httplib::Request& req, int max_age_seconds) {
   std::string attributes =
       "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" + std::to_string(max_age_seconds);
-  if (req.get_header_value("X-Forwarded-Proto") == "https") {
+  if (is_loopback_address(req.remote_addr) &&
+      req.get_header_value("X-Forwarded-Proto") == "https") {
     attributes += "; Secure";
   }
   return attributes;
+}
+
+// 关闭端点的回环门禁：同机反代部署下 remote_addr 恒为代理回环地址，
+// 仅查 remote_addr 会让任意远程访客都"看起来像本机"。若请求带了
+// X-Forwarded-For，再校验代理追加的最后一跳（真实客户端 IP）也是回环；
+// 直连请求不带该头，仅按 remote_addr 判定。
+bool shutdown_from_local_origin(const httplib::Request& req) {
+  if (!is_loopback_address(req.remote_addr)) {
+    return false;
+  }
+  const std::string xff = req.get_header_value("X-Forwarded-For");
+  if (xff.empty()) {
+    return true;
+  }
+  const std::size_t comma = xff.rfind(',');
+  std::string_view last = comma == std::string::npos
+                              ? std::string_view(xff)
+                              : std::string_view(xff).substr(comma + 1);
+  while (!last.empty() && (last.front() == ' ' || last.front() == '\t')) {
+    last.remove_prefix(1);
+  }
+  while (!last.empty() && (last.back() == ' ' || last.back() == '\t')) {
+    last.remove_suffix(1);
+  }
+  return is_loopback_address(last);
 }
 
 }  // namespace
@@ -463,7 +491,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         // 优雅关闭：只允许回环地址；未登录时用一次性令牌（X-Xiaotu-Shutdown-Token）
         // 鉴权，具体判定在路由内完成。已登录时继续走下面的 CSRF / 强制改密检查。
         if (path == "/api/system/shutdown" && req.method == "POST") {
-          if (!is_loopback_address(req.remote_addr)) {
+          if (!shutdown_from_local_origin(req)) {
             json_error(res, 403, "FORBIDDEN", "仅允许本机访问");
             return httplib::Server::HandlerResponse::Handled;
           }
@@ -1326,7 +1354,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
   // 所在的连接/任务队列，造成死锁；在途请求由 httplib 的任务队列排空后自然完成。
   server_->Post("/api/system/shutdown", [this](const httplib::Request& req,
                                                httplib::Response& res) {
-    if (!is_loopback_address(req.remote_addr)) {
+    if (!shutdown_from_local_origin(req)) {
       json_error(res, 403, "FORBIDDEN", "仅允许本机访问");
       return;
     }
