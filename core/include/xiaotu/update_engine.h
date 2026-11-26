@@ -124,6 +124,10 @@ struct EngineConfig {
   std::int64_t manual_cooldown_seconds = 300;
   // 自动检查间隔（秒）；检查成功后 next_check_epoch = now + 该值。
   std::int64_t auto_check_interval_seconds = 6 * 3600;
+  // 检查成功后 next_check_epoch 的 ±抖动（秒）；0 表示不抖动。
+  std::int64_t auto_check_jitter_seconds = 0;
+  // 从未检查过时的首轮延迟（秒）；<=0 表示立即可查。
+  std::int64_t first_check_delay_seconds = 0;
   std::filesystem::path download_dir;
   // 清单验签公钥（base64）；为空表示跳过验签（仅测试场景）。
   std::string public_key_base64;
@@ -178,6 +182,11 @@ class UpdateEngine {
 
   // 跳过当前待更新版本 N 天（1–30）。返回是否生效。
   bool skip_current(int days);
+  // 跳过指定版本 N 天（1–30）：作废当前 pending 并记 SKIPPED。
+  // mac 壳的 skipVersion 桥带显式版本串，用它保持旧口径。
+  bool skip_version(const std::string& version, int days);
+  // 清空下次检查时间，让下一次自动检查立即可跑（resume 桥用）。
+  void invalidate_schedule();
 
   // 唯一对外状态口径（字段集合见 update_engine_smoke 的快照断言）。
   std::string status_json() const;

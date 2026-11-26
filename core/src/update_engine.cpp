@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <random>
 #include <system_error>
 #include <utility>
 
@@ -369,6 +370,11 @@ void UpdateEngine::load() {
     st_->state = st_->manifest_version.empty() ? UpdateState::kIdle
                                                : UpdateState::kUpdateAvailable;
   }
+  // 从未检查过（新装/迁移）：first_check_delay 秒后做首轮检查，
+  // 避免新装用户等满一个完整周期；<=0 表示立即可查（win 壳口径）。
+  if (st_->next_check_epoch <= 0) {
+    st_->next_check_epoch = now() + cfg_.first_check_delay_seconds;
+  }
   persist_locked();
 }
 
@@ -439,6 +445,13 @@ bool UpdateEngine::check(bool manual) {
   }
   st_->consecutive_failures = 0;
   st_->next_check_epoch = t + cfg_.auto_check_interval_seconds;
+  if (cfg_.auto_check_jitter_seconds > 0) {
+    // 24h±Nh 抖动（mac 壳口径）：避免全网同一时刻打 CDN。
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    std::uniform_int_distribution<std::int64_t> dist(-cfg_.auto_check_jitter_seconds,
+                                                     cfg_.auto_check_jitter_seconds);
+    st_->next_check_epoch += dist(rng);
+  }
 
   // 规则 1：清单 sha256 变化 → 作废旧 pending（防误装旧包）。
   const std::string old_sha = st_->manifest_sha256;
@@ -460,7 +473,10 @@ bool UpdateEngine::check(bool manual) {
 
   const UpdateQuery q = build_query_locked();
   const UpdateDecision dec = evaluate_manifest(manifest, q, t);
-  st_->last_result = dec.code;
+  // 两壳旧口径：可用更新一律记 UPDATE_AVAILABLE（前端只认这个码），
+  // 强制与否由 mandatory 字段表达；evaluate_manifest 的 UPDATE_REQUIRED
+  // 仅服务端自查使用，透传会让壳把强制更新误判成「无更新」。
+  st_->last_result = dec.update_available ? "UPDATE_AVAILABLE" : dec.code;
   if (!dec.update_available) {
     // 无可用更新（含已装覆盖/跳过/不在灰度）：清掉待更新信息，保留 skipped_*。
     clear_manifest_locked();
@@ -636,13 +652,12 @@ InstallResult UpdateEngine::try_install() {
 
 void UpdateEngine::cancel_download() { cancel_flag_ = true; }
 
-bool UpdateEngine::skip_current(int days) {
-  if (!valid_skip_days(days)) return false;
+bool UpdateEngine::skip_version(const std::string& version, int days) {
+  if (!valid_skip_days(days) || version.empty()) return false;
   std::string pending_file;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (st_->manifest_version.empty()) return false;
-    st_->skipped_version = st_->manifest_version;
+    st_->skipped_version = version;
     st_->skip_until_epoch = now() + static_cast<std::int64_t>(days) * 86400;
     pending_file = st_->pending_path;
     clear_manifest_locked();
@@ -653,6 +668,22 @@ bool UpdateEngine::skip_current(int days) {
   }
   if (!pending_file.empty()) remove_quiet(path_from_utf8(pending_file));
   return true;
+}
+
+bool UpdateEngine::skip_current(int days) {
+  std::string version;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (st_->manifest_version.empty()) return false;
+    version = st_->manifest_version;
+  }
+  return skip_version(version, days);
+}
+
+void UpdateEngine::invalidate_schedule() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  st_->next_check_epoch = 0;
+  persist_locked();
 }
 
 std::string UpdateEngine::status_json() const {

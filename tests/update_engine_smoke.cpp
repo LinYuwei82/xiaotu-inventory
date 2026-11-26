@@ -537,6 +537,63 @@ void test_configure_and_options() {
   check(rs["auto_check"] == false && rs["prefetch"] == false, "options: 开关跨重启恢复");
 }
 
+// 强制更新：last_result 沿用两壳旧口径 UPDATE_AVAILABLE（前端只认这个码），
+// 强制与否由 mandatory 字段表达；UPDATE_REQUIRED 透传会让壳误判「无更新」。
+void test_mandatory_result_code() {
+  Harness h;
+  nlohmann::json body = nlohmann::json::parse(h.transport.manifest_body);
+  body["platforms"]["windows"]["mandatory"] = true;
+  body["platforms"]["windows"]["mandatory_reason"] = "SECURITY";
+  h.transport.manifest_body = body.dump();
+  check(h.engine->check(true), "mandatory: check ok");
+  auto s = h.status();
+  check(s["last_result"] == "UPDATE_AVAILABLE", "mandatory: last_result=UPDATE_AVAILABLE");
+  check(s["mandatory"] == true, "mandatory: mandatory 位");
+  check(s["mandatory_reason"] == "SECURITY", "mandatory: reason 透传");
+}
+
+// skip_version：对任意版本记跳过（mac 桥带显式版本串），不依赖当前 pending。
+void test_skip_version_arbitrary() {
+  Harness h;
+  check(h.engine->skip_version("9.9.9", 7), "skipver: 无 pending 也能记跳过");
+  check(h.status()["skipped_version"] == "9.9.9", "skipver: 版本记录");
+  check(!h.engine->skip_version("", 7), "skipver: 空版本非法");
+  check(!h.engine->skip_version("9.9.9", 0), "skipver: 0 天非法");
+  h.clock.epoch += 8 * 86400;
+  check(h.engine->check(false), "skipver: 到期后重查");
+  check(h.status()["last_result"] == "UPDATE_AVAILABLE", "skipver: 到期恢复提示");
+}
+
+// 首轮延迟 + 检查成功后的 ±抖动（mac 壳 24h±2h 口径）。
+void test_jitter_and_first_delay() {
+  Harness h;
+  h.cfg.first_check_delay_seconds = 30;
+  h.cfg.auto_check_jitter_seconds = 7200;
+  FakeStore fresh;
+  FakeClock clock;
+  xiaotu::UpdateEngine::Deps d{&h.transport, &h.hasher, &h.installer, &clock, &fresh};
+  xiaotu::UpdateEngine e(d, h.cfg);
+  e.load();
+  check(e.status()["next_check_epoch"] == clock.epoch + 30, "first: 首轮延迟 30s 落盘");
+  clock.epoch += 29;
+  check(!e.check(false), "first: 延迟未到被挡");
+  clock.epoch += 1;
+  check(e.check(false), "first: 到期放行");
+  const std::int64_t base = clock.epoch + 3600;
+  const std::int64_t next = e.status()["next_check_epoch"];
+  check(next >= base - 7200 && next <= base + 7200, "jitter: next_check_epoch 在 ±2h 内");
+}
+
+// invalidate_schedule：resume 桥清空排期后立即检查。
+void test_invalidate_schedule() {
+  Harness h;
+  check(h.engine->check(false), "inv: check ok");
+  h.clock.epoch += 60;
+  check(!h.engine->check(false), "inv: 间隔未到被挡");
+  h.engine->invalidate_schedule();
+  check(h.engine->check(false), "inv: 清空后立即放行");
+}
+
 // 统一 status_json 字段集合快照（前端契约，方案 2.4）。
 void test_status_json_field_snapshot() {
   Harness h;
@@ -586,6 +643,10 @@ int main() {
   test_skip_flow();
   test_install_guards();
   test_configure_and_options();
+  test_mandatory_result_code();
+  test_skip_version_arbitrary();
+  test_jitter_and_first_delay();
+  test_invalidate_schedule();
   test_status_json_field_snapshot();
   test_state_names();
 
