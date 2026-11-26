@@ -533,6 +533,10 @@ void UpdaterWin::checkNow(Completion cb) {
     // 判定码映射（§5.4）：可用更新回版本号；其余「无更新」类（含已跳过、
     // 灰度未命中、通道不符）统一 NO_UPDATE，与旧壳前端文案一致。
     if (last_result == "UPDATE_AVAILABLE") {
+      // 与 macOS 壳对齐：prefetch 开启时检出更新即后台预取（无头会话/无人
+      // 点面板也能走通 下载→验签→pending 链路），安装仍须用户显式确认。
+      // downloadUpdate 自带并发与状态防护，重复触发返回 ALREADY_RUNNING。
+      if (st.value("prefetch", true)) downloadUpdate(nullptr);
       if (cb) cb("UPDATE_AVAILABLE", st.value("version", ""));
     } else {
       if (cb) cb("NO_UPDATE", "");
