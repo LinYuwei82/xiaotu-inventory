@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>用户手册（图文版）- 小兔进销存</title>
+<style>
+  :root{
+    --ink:#1f2937; --ink-2:#4b5563; --muted:#6b7280; --line:#e5e7eb;
+    --bg:#f6f7f9; --card:#ffffff; --brand:#2563eb; --brand-dark:#1e3a8a;
+    --brand-soft:#eff6ff; --amber:#b45309; --amber-soft:#fffbeb;
+    --green:#047857; --green-soft:#ecfdf5; --red:#b91c1c; --red-soft:#fef2f2;
+    --radius:14px; --shadow:0 10px 30px rgba(15,23,42,.08);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; color:var(--ink); background:var(--bg);
+    font-family:"PingFang SC","Microsoft YaHei","Hiragino Sans GB","Noto Sans SC",system-ui,-apple-system,sans-serif;
+    font-size:16px; line-height:1.75; -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--brand); text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* ===== 封面 hero ===== */
+  .hero{
+    background:
+      radial-gradient(900px 360px at 88% -10%, rgba(96,165,250,.35), transparent 60%),
+      radial-gradient(700px 300px at 0% 110%, rgba(251,191,36,.20), transparent 60%),
+      linear-gradient(135deg,#0f172a 0%,#172554 55%,#1e3a8a 100%);
+    color:#fff; padding:52px 24px 46px;
+  }
+  .hero-inner{max-width:1180px; margin:0 auto}
+  .brandline{display:flex; align-items:center; gap:12px; font-weight:700; letter-spacing:.06em; font-size:15px; opacity:.92}
+  .brand-mark{
+    width:34px; height:34px; border-radius:10px; display:inline-flex; align-items:center; justify-content:center;
+    background:linear-gradient(145deg,#fbbf24,#f59e0b); color:#3b2300; font-weight:900; font-size:18px;
+    box-shadow:0 6px 18px rgba(245,158,11,.35);
+  }
+  .hero h1{font-size:46px; line-height:1.18; margin:22px 0 10px; letter-spacing:.02em}
+  .hero-sub{font-size:19px; color:#dbeafe; margin:0 0 22px}
+  .chips{display:flex; flex-wrap:wrap; gap:10px; margin:20px 0 18px}
+  .chip{
+    display:inline-flex; align-items:center; gap:8px; padding:7px 14px; border-radius:999px;
+    background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.18); font-size:14px; color:#eff6ff;
+  }
+  .hero-note{font-size:14px; color:#c7d2fe; margin:0; max-width:820px}
+
+  /* ===== 布局：sticky 目录 + 正文 ===== */
+  .wrap{max-width:1180px; margin:0 auto; padding:34px 24px 70px; display:grid; grid-template-columns:244px minmax(0,1fr); gap:34px}
+  .toc{position:sticky; top:22px; align-self:start; background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:18px 16px; box-shadow:var(--shadow)}
+  .toc h2{font-size:13px; letter-spacing:.12em; color:var(--muted); margin:0 0 10px; font-weight:700}
+  .toc ol{list-style:none; margin:0; padding:0; counter-reset:toc}
+  .toc li{margin:2px 0}
+  .toc a{display:block; padding:5px 8px; border-radius:8px; color:var(--ink-2); font-size:14px; line-height:1.45}
+  .toc a:hover{background:var(--brand-soft); color:var(--brand); text-decoration:none}
+  .toc .sub a{padding-left:18px; font-size:13px; color:var(--muted)}
+  main{min-width:0}
+
+  /* ===== 开始之前 lead 卡 ===== */
+  .lead{
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:22px 24px;
+    box-shadow:var(--shadow); margin-bottom:28px;
+  }
+  .lead p{margin:0 0 10px}
+  .lead p:last-child{margin-bottom:0}
+  .three{display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:16px}
+  .mini{border:1px solid var(--line); border-radius:12px; padding:14px 15px; background:#fbfcfe}
+  .mini b{display:block; margin-bottom:4px; color:var(--ink)}
+  .mini span{font-size:14px; color:var(--ink-2)}
+
+  /* ===== 章节 ===== */
+  section{
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+    padding:30px 32px; margin-bottom:26px; box-shadow:var(--shadow); scroll-margin-top:20px;
+  }
+  section:target{outline:3px solid #bfdbfe; outline-offset:2px}
+  .sec-head{display:flex; align-items:flex-start; gap:14px; margin-bottom:8px}
+  .sec-num{
+    flex:0 0 auto; width:42px; height:42px; border-radius:12px; display:flex; align-items:center; justify-content:center;
+    background:var(--brand-soft); color:var(--brand); font-weight:900; font-size:19px; border:1px solid #dbeafe;
+  }
+  h2{font-size:27px; line-height:1.3; margin:0}
+  h3{font-size:19px; line-height:1.45; margin:28px 0 10px; padding-left:11px; border-left:4px solid #93c5fd}
+  h4{font-size:16px; margin:18px 0 6px}
+  p{margin:8px 0}
+  .sub{color:var(--muted); font-size:14.5px}
+
+  /* ===== 步骤列表 ===== */
+  ol.steps{list-style:none; counter-reset:step; padding:0; margin:12px 0}
+  ol.steps>li{counter-increment:step; position:relative; padding:0 0 14px 42px; margin:0}
+  ol.steps>li::before{
+    content:counter(step); position:absolute; left:0; top:1px; width:26px; height:26px; border-radius:50%;
+    background:var(--brand); color:#fff; font-size:13px; font-weight:800; display:flex; align-items:center; justify-content:center;
+    box-shadow:0 4px 10px rgba(37,99,235,.28);
+  }
+  ol.steps>li:last-child{padding-bottom:2px}
+  ul{padding-left:22px; margin:8px 0}
+  li{margin:4px 0}
+
+  /* ===== 代码 ===== */
+  code{
+    font-family:Consolas,"Courier New",monospace; background:#f1f5f9; border:1px solid #e2e8f0;
+    padding:1px 6px; border-radius:6px; font-size:14px; color:#0f172a;
+  }
+  pre{
+    background:#0f172a; color:#e2e8f0; border-radius:12px; padding:16px 18px; overflow:auto;
+    font-family:Consolas,"Courier New",monospace; font-size:13.5px; line-height:1.65; margin:12px 0;
+  }
+  pre code{background:none; border:0; padding:0; color:inherit; font-size:inherit}
+
+  /* ===== 提示框 ===== */
+  .callout{border-radius:12px; padding:14px 16px 14px 18px; margin:14px 0; border:1px solid; font-size:14.8px}
+  .callout b{display:block; margin-bottom:3px}
+  .note{background:var(--brand-soft); border-color:#bfdbfe; color:#1e3a8a}
+  .warn{background:var(--amber-soft); border-color:#fde68a; color:#78350f}
+  .good{background:var(--green-soft); border-color:#a7f3d0; color:#065f46}
+  .danger{background:var(--red-soft); border-color:#fecaca; color:#7f1d1d}
+
+  /* ===== 图片 ===== */
+  figure{margin:18px 0 22px}
+  figure img{display:block; width:100%; height:auto; border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 24px rgba(15,23,42,.09)}
+  figcaption{font-size:13.5px; color:var(--muted); margin-top:8px; line-height:1.6}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start}
+  .grid2 figure{margin:0}
+  .shot-small{max-width:760px}
+
+  /* ===== 表格 ===== */
+  table{width:100%; border-collapse:collapse; margin:12px 0; font-size:14.5px}
+  th,td{border:1px solid var(--line); padding:9px 11px; text-align:left; vertical-align:top}
+  th{background:#f8fafc; color:#334155; font-weight:700}
+  tbody tr:nth-child(even) td{background:#fcfdff}
+
+  /* ===== 常见问题 Q/A ===== */
+  .q{border-left:4px solid #f59e0b; background:#fffdf7; border-radius:0 10px 10px 0; padding:12px 16px; margin:14px 0}
+  .q h3{margin:0 0 5px; font-size:16px; color:#92400e; border-left:0; padding-left:0}
+  .q p{margin:0; font-size:14.8px; color:#4b5563}
+
+  /* ===== 一页纸速查卡片 ===== */
+  .quick{border:1px solid #bfdbfe; background:var(--brand-soft); border-radius:12px; padding:16px 18px; margin:14px 0}
+  .quick table{background:#fff; border-radius:10px; overflow:hidden; margin:0}
+
+  .footer{max-width:1180px; margin:0 auto; padding:0 24px 48px; color:var(--muted); font-size:13.5px}
+  .to-top{display:inline-block; margin-top:16px; font-size:14px}
+
+  @media (max-width:980px){
+    .wrap{grid-template-columns:1fr; padding-top:22px}
+    .toc{position:static}
+    .hero h1{font-size:34px}
+    .three{grid-template-columns:1fr}
+    .grid2{grid-template-columns:1fr}
+    section{padding:24px 20px}
+    .hero{padding:38px 20px 34px}
+  }
+
+  /* ===== 打印（A4）===== */
+  @page{size:A4; margin:16mm 14mm}
+  @media print{
+    body{background:#fff; font-size:11.5pt}
+    .hero{background:#fff; color:#111; padding:0 0 16pt; border-bottom:2px solid #111}
+    .hero h1{font-size:28pt; margin:10pt 0 4pt}
+    .hero-sub{color:#333}
+    .chip{background:#f2f2f2; border-color:#ddd; color:#333}
+    .hero-note{color:#555}
+    .wrap{display:block; padding:0; max-width:none}
+    .toc{position:static; background:none; border:0; border-bottom:1px solid #ddd; border-radius:0; box-shadow:none; padding:0 0 12pt; margin:0 0 16pt}
+    .toc h2{margin:0 0 8pt}
+    .toc a{color:#111; font-size:10.5pt; padding:2pt 0}
+    .toc .sub a{padding-left:14pt; color:#444; font-size:9.5pt}
+    section{box-shadow:none; border:0; padding:0; margin:0 0 16pt; page-break-inside:auto}
+    section:target{outline:none}
+    .lead{box-shadow:none; border:0; padding:0; margin:0 0 16pt}
+    figure{page-break-inside:avoid}
+    figure img{box-shadow:none; max-width:100%}
+    .callout{page-break-inside:avoid}
+    .quick{page-break-inside:avoid}
+    table{page-break-inside:avoid}
+    .q{page-break-inside:avoid}
+    h2{font-size:18pt; page-break-after:avoid}
+    h3{font-size:13pt; page-break-after:avoid}
+    pre{background:#f5f5f5; color:#111; border:1px solid #ccc}
+    .footer{display:none}
+    .to-top{display:none}
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <div class="brandline"><span class="brand-mark">兔</span> 小兔进销存</div>
+    <h1>用户手册</h1>
+    <p class="hero-sub">单机优先、网络可用——从安装、开单、查库存到报表、备份，一本讲清楚。</p>
+    <div class="chips">
+      <span class="chip">适用版本 1.0.13</span>
+      <span class="chip">macOS 14 / 15 · Apple Silicon</span>
+      <span class="chip">Windows 10 / 11</span>
+      <span class="chip">更新日期 2026-11-26</span>
+    </div>
+    <p class="hero-note">本手册按当前正式发行包的实际界面编写，单机版 · 网络版通用。文中截图均取自独立的演示数据环境，商品、客户、供应商、门店名称与金额均为虚构示例，与任何真实门店无关。</p>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="toc" aria-label="目录">
+    <h2>目录</h2>
+    <ol>
+      <li><a href="#start">开始之前</a></li>
+      <li><a href="#install">1. 安装</a></li>
+      <li><a href="#login">2. 第一次打开</a></li>
+      <li class="sub"><a href="#login-nodata">2.1 还没有数据——直接进</a></li>
+      <li class="sub"><a href="#login-choose">2.2 有数据但没口令——让你选</a></li>
+      <li class="sub"><a href="#login-gate">2.3 已经设过口令——先输口令</a></li>
+      <li class="sub"><a href="#login-keychain">2.4 macOS 有"钥匙串记住 30 天"</a></li>
+      <li class="sub"><a href="#login-forgot">2.5 忘记口令怎么办</a></li>
+      <li><a href="#ui">3. 界面长什么样</a></li>
+      <li><a href="#master">4. 真正用之前，先建好这些</a></li>
+      <li><a href="#purchase">5. 开第一张单：采购入库</a></li>
+      <li><a href="#sales">6. 开销售出库单</a></li>
+      <li><a href="#stock">7. 看库存</a></li>
+      <li><a href="#docs">8. 其他单据一览</a></li>
+      <li><a href="#reports">9. 报表</a></li>
+      <li><a href="#print">10. 打印</a></li>
+      <li><a href="#backup">11. 备份是命根子</a></li>
+      <li><a href="#network">12. 网络版（多人一起用）</a></li>
+      <li><a href="#update">13. 软件更新</a></li>
+      <li><a href="#faq">14. 常见问题</a></li>
+      <li><a href="#quick">15. 一页纸速查</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <!-- ============ 开始之前 ============ -->
+    <section id="start">
+      <div class="sec-head"><div class="sec-num">0</div><div><h2>开始之前</h2></div></div>
+
+      <h3>这是什么</h3>
+      <p>小兔进销存是一套<strong>单机优先、网络可用</strong>的进销存软件。一套 C++ 代码，两种运行形态——双击就是单机版，加参数就是网络版，数据文件、商品档案、单据、库存都在同一个本地目录里。</p>
+
+      <h3>给谁看</h3>
+      <p>门店里实际录商品、开单、查库存、打印报表的同事。不需要懂电脑原理，按步骤照做就行。</p>
+
+      <h3>两种用法先确认</h3>
+      <div class="three">
+        <div class="mini"><b>一台电脑用（单机版）</b><span>装完双击打开，数据只在这台电脑上。从第 1 节开始看。</span></div>
+        <div class="mini"><b>几台电脑一起用（网络版）</b><span>选一台当服务器，其他电脑用浏览器访问。先装好单机版，再看第 12 节。</span></div>
+        <div class="mini"><b>只想先试试</b><span>装好直接打开，不设口令也行，以后随时在「系统参数」里改。</span></div>
+      </div>
+
+      <h3>数据存哪里（重要！）</h3>
+      <p>所有数据——商品、客户、供应商、单据、库存、报表、备份——都在这个目录：</p>
+      <pre><code>~/Library/Application Support/com.simem.xiaotu/</code></pre>
+      <p>里面的 <code>app.db</code> 是数据库，<code>backups/</code> 是自动备份。<strong>不要删这个目录，不要往 iCloud Drive / OneDrive 放</strong>。多人同时写、同步冲突或断网都可能损坏数据库。需要多台电脑共用时，用第 12 节的网络版，数据只放服务器本机磁盘。</p>
+
+      <h3>术语先认识几个</h3>
+      <table>
+        <thead><tr><th style="width:160px">词</th><th>是什么意思</th></tr></thead>
+        <tbody>
+          <tr><td>商品档案</td><td>所有要管理的东西的清单，比如"农夫山泉 550ml"</td></tr>
+          <tr><td>仓库</td><td>货实际存放的地方。只有一个仓库时，所有单据都选它</td></tr>
+          <tr><td>单据</td><td>一次业务动作的记录，比如"今天从华源食品进了 100 瓶水"</td></tr>
+          <tr><td>草稿</td><td>还没生效的单据，可以随便改、可以删，不碰库存和账款</td></tr>
+          <tr><td>审核</td><td>让单据正式生效。审核后才会计入库存和应收应付</td></tr>
+          <tr><td>反审核</td><td>把已审核的单据撤回。系统会补一笔反向记录还原库存和账款</td></tr>
+          <tr><td>移动加权平均</td><td>每次进货后，把原来的库存金额 + 本次进货金额除以总数量，得到新的平均单价；出库按这个平均价结转成本</td></tr>
+          <tr><td>往来单位</td><td>和你有钱款关系的对象，供应商和客户都属于往来单位</td></tr>
+          <tr><td>应收 / 应付</td><td>客户欠你的钱是应收，你欠供应商的是应付</td></tr>
+          <tr><td>核销</td><td>收到客户的钱、或付钱给供应商之后，把这笔钱和对应单据勾掉</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ============ 1. 安装 ============ -->
+    <section id="install">
+      <div class="sec-head"><div class="sec-num">1</div><div><h2>安装</h2><p class="sub">macOS 版不需要装数据库、编译器或其他软件，整个安装就是拖文件；Windows 版见 1.4 节。</p></div></div>
+
+      <h3>1.1 拖进应用程序</h3>
+      <ol class="steps">
+        <li>双击 <code>xiaotu-1.0.13-macos-arm64.dmg</code>。</li>
+        <li>在弹出的窗口里，把左边的「小兔进销存」图标<strong>拖到右边的「应用程序」文件夹图标上</strong>。</li>
+        <li>等它拷贝完成，打开「应用程序」文件夹就能看到它了。</li>
+      </ol>
+
+      <h3>1.2 第一次打开</h3>
+      <p>正式发行包已用 Apple Developer ID 签名并公证；从 1.0.13 起 <code>.app</code> 本体也内置公证票据（staple），拖入「应用程序」后<strong>即使断网首启</strong>也能正常双击打开。</p>
+      <p>如果用的是更早的包（或系统仍弹「无法打开，因为 Apple 无法检查其是否包含恶意软件」），<strong>这是 Gatekeeper 的常规拦截，不是中毒</strong>。三种处理方式任选：</p>
+      <ul>
+        <li><strong>方式 A（最稳）</strong>：打开「系统设置 → 隐私与安全性」，滚到页面底部找到「已阻止使用 小兔进销存」，点「仍要打开」，再确认一次。</li>
+        <li><strong>方式 B</strong>：在「应用程序」里按住 Control 点「小兔进销存」图标，选「打开」，在弹窗里再点「打开」。</li>
+        <li><strong>方式 C（终端）</strong>：
+          <pre><code>xattr -d com.apple.quarantine /Applications/小兔进销存.app</code></pre>
+        </li>
+      </ul>
+      <p>搞定之后双击就能直接打开，不会再拦。</p>
+
+      <h3>1.3 卸载</h3>
+      <ol class="steps">
+        <li>先退出「小兔进销存」。</li>
+        <li>打开「应用程序」文件夹，把「小兔进销存」拖进废纸篓。</li>
+        <li><strong>数据目录不会自动删除</strong>，还在 <code>~/Library/Application Support/com.simem.xiaotu/</code>。</li>
+        <li>确认以后不再用了，再手动删那个目录。</li>
+      </ol>
+      <div class="callout warn"><b>卸载前先备份</b>如果只是换电脑或重装系统，按第 11 节把整个数据目录复制到移动硬盘再卸载。</div>
+
+      <h3>1.4 Windows 版安装</h3>
+      <p>Windows 客户端（网络版）双击 <code>xiaotu-1.0.13-win64-setup.exe</code>，按向导下一步即可；绿色版解压到任意目录、双击 <code>xiaotu-shell.exe</code> 也能用。</p>
+      <p><strong>关于 WebView2</strong>：程序运行需要 Microsoft Edge WebView2 Runtime。如果电脑上没装，安装向导的「附加任务」页会出现一项「下载并安装 WebView2 运行环境（桌面窗口必需，需要联网）」，<strong>保持勾选</strong>，安装时会自动联网下载并静默装好；万一下载失败也不影响主程序安装，完成页仍会保留这个手动安装入口。已经装过的电脑不会显示这一项。</p>
+    </section>
+
+    <!-- ============ 2. 第一次打开 ============ -->
+    <section id="login">
+      <div class="sec-head"><div class="sec-num">2</div><div><h2>第一次打开</h2><p class="sub">程序启动时看两件事：<strong>这台电脑上有没有业务数据</strong>，以及<strong>有没有设过本机口令</strong>。不同情况走不同流程。</p></div></div>
+
+      <h3 id="login-nodata">2.1 还没有数据——直接进</h3>
+      <p>新装第一次打开，窗口直接停在「商品」列表页，显示"暂无数据"。<strong>正常</strong>，还没录任何东西。直接去第 4 节建商品。</p>
+
+      <h3 id="login-choose">2.2 有数据但没口令——让你选</h3>
+      <p>电脑里已经有业务数据、但还没有设过本机口令时，会弹这个页面：</p>
+      <figure>
+        <img src="images/manual/01-首次启动.png" alt="首次启动时询问是否设置本机口令" />
+        <figcaption>图 2-1　已有数据但没口令时的选择页。设了口令以后每次启动先要输；点"跳过"保持双击直接进入。</figcaption>
+      </figure>
+      <ul>
+        <li><strong>设口令</strong>：会生成一个 8–128 字符的口令；输两次确认，记好它。</li>
+        <li><strong>跳过</strong>：这台电脑以后双击直接进主界面，不用输口令。随时可以进「系统参数」里再设。</li>
+      </ul>
+
+      <h3 id="login-gate">2.3 已经设过口令——先输口令</h3>
+      <p>每次启动先出这个页面：</p>
+      <figure>
+        <img src="images/manual/02-门禁页.png" alt="单机版门禁页" />
+        <figcaption>图 2-2　本机口令页。只有口令框，没有用户名；程序内部用内置管理员身份进入。</figcaption>
+      </figure>
+      <p>输对了，程序自动打开窗口；输错 5 次会锁 15 分钟，等时间到再试，或让管理员按第 2.4 节重置。</p>
+
+      <h3 id="login-keychain">2.4 macOS 有"钥匙串记住 30 天"</h3>
+      <p>macOS 版比 Windows 版多一个便利：第一次输对口令后，程序把服务端签发的<strong>随机凭据</strong>存进 macOS 钥匙串。之后 30 天内双击直接进主界面，不再问口令。</p>
+      <p>钥匙串里存的是<strong>随机凭据，不是口令本身</strong>。改了口令、凭据到期、或系统时间被往回拨，都会回到口令页重新输入。</p>
+      <figure>
+        <img src="images/manual/14-系统参数-本机免输.png" alt="系统参数里的本机免输开关" />
+        <figcaption>图 2-3　本机免输设置。三档：30 天免输（默认）、每次都要输、清除本机记忆。</figcaption>
+      </figure>
+      <ul>
+        <li><strong>每次都要输</strong>：保存后立即作废当前凭据，之后每次启动都回口令页。</li>
+        <li><strong>清除本机记忆</strong>：立即作废当前凭据并清掉钥匙串里的那一枚。下次启动要重新输口令。</li>
+      </ul>
+      <p>钥匙串一直弹授权框？到「钥匙串访问」里搜 <code>com.simem.xiaotu.local-remember</code>，删掉这条就行。</p>
+
+      <h3 id="login-forgot">2.5 忘记口令怎么办</h3>
+      <p>不要删数据目录，也不要重装。请电脑管理员重置：</p>
+      <pre><code>XIAOTU_PASSWORD='新的口令' \
+  /Applications/小兔进销存.app/Contents/MacOS/xiaotu-inventory \
+  --data ~/Library/Application\ Support/com.simem.xiaotu \
+  --set-password admin</code></pre>
+      <p>看到"口令已更新"即可。重置只改口令，不动商品、单据和库存。</p>
+      <div class="callout danger"><b>不要用"删数据目录"来解决忘记口令</b>删除数据目录会连同商品、单据、库存和备份一起删掉，无法从软件里恢复。</div>
+    </section>
+
+    <!-- ============ 3. 界面长什么样 ============ -->
+    <section id="ui">
+      <div class="sec-head"><div class="sec-num">3</div><div><h2>界面长什么样</h2><p class="sub">左侧是功能菜单，中间是当前页面，右上角是本页能做的事。</p></div></div>
+      <figure>
+        <img src="images/manual/03-主界面.png" alt="主界面与经营看板" />
+        <figcaption>图 3-1　主界面（经营看板）。左侧菜单按业务分组；左下角显示「单机版/网络版」和版本号。</figcaption>
+      </figure>
+
+      <h3>3.1 左侧菜单分组</h3>
+      <p>菜单一次只展开一个组，点一下组名就切换。当前页所在的组会自动展开；下次打开回到上次看的页面。</p>
+      <table>
+        <thead><tr><th style="width:110px">分组</th><th>里面有什么</th><th style="width:230px">什么时候用</th></tr></thead>
+        <tbody>
+          <tr><td>经营看板</td><td>首页</td><td>随时点开看概览</td></tr>
+          <tr><td>采购</td><td>采购入库、采购退货、采购订单</td><td>进货、退货、先订后到</td></tr>
+          <tr><td>销售</td><td>销售出库、销售退货、销售订单</td><td>卖货、退货、先订后送</td></tr>
+          <tr><td>库存</td><td>库存余额、库存流水、其他入库、其他出库、调拨、盘点</td><td>查库存、调货、盘库</td></tr>
+          <tr><td>财务</td><td>收付款、对账单、成本调整、资金账户</td><td>登记收款付款、对账</td></tr>
+          <tr><td>报表</td><td>单独入口</td><td>随时点开看汇总、导出</td></tr>
+          <tr><td>基础资料</td><td>商品、客户、供应商、仓库、计量单位、职员、商品分类、期初导入</td><td>开单前先把资料建好</td></tr>
+          <tr><td>系统</td><td>用户、审计日志、系统参数、打印模板、备份与恢复、关于与诊断</td><td>账号、备份、打印设置</td></tr>
+        </tbody>
+      </table>
+
+      <h3>3.2 常见操作在哪里</h3>
+      <ul>
+        <li><strong>右上角按钮</strong>：随页面变化，常见的有「新增」「导入」「导出 Excel」「导出 CSV」「下载模板」「刷新」「打印」。</li>
+        <li><strong>筛选区</strong>：列表上方的下拉框、搜索框和「重置」。输入编码、名称或条码后按回车即可筛选。</li>
+        <li><strong>每一行右侧</strong>：「编辑」「审核」「反审核」「打印」「删除」等操作。</li>
+        <li><strong>列表底部</strong>：数据多时出现分页，部分列表还可以调每页条数。</li>
+        <li><strong>关闭窗口</strong>：如果还有没保存的内容，软件会先弹确认，避免误关。</li>
+      </ul>
+
+      <h3>3.3 找不到某个功能怎么办</h3>
+      <ul>
+        <li>先看左侧分组是否展开。「经营看板」「销售报表」「报表」单独挂在分组上方，不在任何组里。</li>
+        <li>单机版窗口没有后退/前进按钮，换页面请用左侧菜单；网络版用浏览器打开时，浏览器的前进/后退可以正常用。</li>
+        <li>页面地址带 <code>#/</code> 和短名（例如 <code>#/purchase</code>），刷新后留在原页。</li>
+      </ul>
+    </section>
+
+    <!-- ============ 4. 真正用之前，先建好这些 ============ -->
+    <section id="master">
+      <div class="sec-head"><div class="sec-num">4</div><div><h2>真正用之前，先建好这些</h2><p class="sub">开单时商品、客户、供应商、仓库都是从下拉选的，不能凭空选。<strong>第一件事就是把这些资料建好</strong>。顺序不限，但建议按下面的来：计量单位 → 仓库 → 商品分类 → 商品 → 客户/供应商。</p></div></div>
+
+      <h3>4.1 计量单位</h3>
+      <p>常见的：瓶、件、包、箱、千克、米、台、个。点「基础资料 → 计量单位 → 新增」，填编码和名称，保存。商品建完了也可以回来补，不影响。</p>
+
+      <h3>4.2 仓库</h3>
+      <p>至少保留一个默认仓库（比如"主仓库"）。只有一个仓库时，所有单据都选它。多个仓库就多建几个，采购入库时进哪个、销售出库时从哪个，一目了然。</p>
+
+      <h3>4.3 商品</h3>
+      <p>点「基础资料 → 商品」，右上角「新增」。</p>
+      <figure>
+        <img src="images/manual/04-商品列表.png" alt="商品列表" />
+        <figcaption>图 4-1　商品列表。上方按分类筛选、按编码/名称/条码搜索；右上角有导入、导出和「新增」。</figcaption>
+      </figure>
+      <p>一条商品记录长什么样（演示数据）：</p>
+      <table>
+        <thead><tr><th>编码</th><th>名称</th><th>规格</th><th>单位</th><th>分类</th><th>主条码</th><th>税率</th><th>零售价</th></tr></thead>
+        <tbody>
+          <tr><td>SP-3002</td><td>农夫山泉 550ml</td><td>550ml/瓶</td><td>瓶</td><td>食品/饮料</td><td>6921168500185</td><td>13%</td><td>3.00</td></tr>
+          <tr><td>SP-3003</td><td>蜂蜜柚子茶 500ml</td><td>500ml/瓶</td><td>瓶</td><td>食品/饮料</td><td>6921168500192</td><td>13%</td><td>5.50</td></tr>
+          <tr><td>SP-3101</td><td>可乐 330ml 罐装</td><td>330ml/罐</td><td>罐</td><td>食品/饮料</td><td>6921168500208</td><td>13%</td><td>3.50</td></tr>
+          <tr><td>SP-5001</td><td>A4 复印纸（500 张/包）</td><td>500 张</td><td>包</td><td>办公用品</td><td>6901234567890</td><td>13%</td><td>28.00</td></tr>
+        </tbody>
+      </table>
+      <figure>
+        <img src="images/manual/05-商品编辑.png" alt="新增商品表单" />
+        <figcaption>图 4-2　新增商品表单。必填项有红色星号；税率按实际填，不确定就问会计。</figcaption>
+      </figure>
+      <ul>
+        <li><strong>必填</strong>：编码、名称、单位。编码不能重复。</li>
+        <li><strong>建议填</strong>：规格、分类、税率、零售价、条码（有条码枪的，把光标放在条码框里扫一下即可）。</li>
+        <li><strong>可空</strong>：备注。一个商品可以保存多个条码。</li>
+      </ul>
+      <p><strong>修改 / 停用 / 批量导入</strong>：</p>
+      <ul>
+        <li><strong>修改</strong>：列表行点「编辑」。开过单的商品，改名称/规格前先确认不影响历史单据。</li>
+        <li><strong>停用</strong>：不再卖的商品优先「停用」，不要删除。停用后新单据选不到，历史单据照常能查。</li>
+        <li><strong>批量导入</strong>：点「下载模板」，按模板填好后再点「导入」。导入前软件会自动备份数据库；导入失败会中止，不会写一半。单次最多 5000 行、5MB。</li>
+      </ul>
+
+      <h3>4.4 客户 / 供应商</h3>
+      <p>新增方式和商品类似：基础资料 → 客户（或供应商） → 新增。填编码、名称、联系人、电话、税号、地址。</p>
+      <ul>
+        <li><strong>信用额度</strong>（客户）：填 0 或留空表示不限制；填了金额后，超额度开单会提示或拦截，取决于系统参数。客户档案合并后，额度与已占用金额按整条合并链汇总计算，原档案的欠款不会漏计。</li>
+        <li>客户和供应商合表存储（<code>partner</code>），以后开采购单选供应商、开销售单选客户，不会混。</li>
+      </ul>
+
+      <h3>4.5 期初导入</h3>
+      <p>开店时已经有的库存、应收、应付、资金账户余额，用「期初导入」一次性录进来。期初成本单价必须大于 0，零成本商品请审核后走「其他入库」入账。四类期初可以依次导入，但<strong>同一类不能导第二次</strong>；有了业务流水之后一律拒绝导入（不覆盖、不追加）。重来只能清空数据目录重建（先备份！）。</p>
+
+      <h3>4.6 批量导入</h3>
+      <p>商品、客户、供应商、期初导入都支持批量。流程统一：点「下载模板」 → 按模板填 → 点「导入」。导入前软件会自动备份数据库，导入失败中止不写一半。</p>
+    </section>
+
+    <!-- ============ 5. 开第一张单：采购入库 ============ -->
+    <section id="purchase">
+      <div class="sec-head"><div class="sec-num">5</div><div><h2>开第一张单：采购入库</h2><p class="sub">从供应商进货，货到仓库——这是最基础的一张单。</p></div></div>
+      <figure>
+        <img src="images/manual/06-采购入库单.png" alt="采购入库单，正在编辑一张草稿" />
+        <figcaption>图 5-1　采购入库。上方是正在编辑的单据，绿色提示表示这是一张草稿；下方列表可以看到草稿、已审核等状态。</figcaption>
+      </figure>
+
+      <p><strong>完整示例</strong>：今天从「华源食品」进了两批货，都进「主仓库」。</p>
+      <table>
+        <thead><tr><th style="width:130px">表头字段</th><th style="width:150px">填的值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>仓库</td><td>主仓库</td><td>从下拉选，必须先建仓库</td></tr>
+          <tr><td>单据日期</td><td>2026-11-17</td><td>默认今天，可以改</td></tr>
+          <tr><td>供应商</td><td>华源食品</td><td>从下拉选，必须先建供应商</td></tr>
+        </tbody>
+      </table>
+      <p>明细表：</p>
+      <table>
+        <thead><tr><th style="width:40px">#</th><th>商品</th><th>数量</th><th>单价（元）</th><th>单位</th><th>金额（元）</th><th>税额（13%）</th><th>价税合计（元）</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>农夫山泉 550ml</td><td>100</td><td>2.00</td><td>瓶</td><td>200.00</td><td>26.00</td><td>226.00</td></tr>
+          <tr><td>2</td><td>蜂蜜柚子茶 500ml</td><td>50</td><td>4.00</td><td>瓶</td><td>200.00</td><td>26.00</td><td>226.00</td></tr>
+          <tr><td><strong>合计</strong></td><td></td><td></td><td></td><td></td><td><strong>400.00</strong></td><td><strong>52.00</strong></td><td><strong>452.00</strong></td></tr>
+        </tbody>
+      </table>
+      <ul>
+        <li>金额 = 数量 × 单价；税额 = 金额 × 税率%；价税合计 = 金额 + 税额。这些都是系统自动算的，你只填数量和单价。</li>
+        <li>单价默认按<strong>含税价</strong>计算，税额和价税合计自动算。如果你们按不含税价核算，先去「系统 → 系统参数」确认成本口径，再开始正式开单。</li>
+      </ul>
+
+      <h3>5.1 备注</h3>
+      <figure>
+        <img src="images/manual/07-备注输入框.png" alt="单据备注输入框" />
+        <figcaption>图 5-2　单据备注输入框。最多 200 字，可留空；搜索能命中，导出 Excel/CSV 也会带。</figcaption>
+      </figure>
+      <p>备注跟着单据保存，方便以后按关键词查。</p>
+
+      <h3>5.2 保存 vs 保存并审核</h3>
+      <ul>
+        <li><strong>保存（草稿）</strong>：临时存一下，库存和账款<strong>都不变</strong>。以后可以继续编辑、审核、删除。</li>
+        <li><strong>保存并审核</strong>：让单据正式生效。主仓库农夫山泉多 100 瓶、蜂蜜柚子茶多 50 瓶；同时生成应付 452.00 元给华源食品。审核后<strong>不能直接编辑</strong>，要改的话先反审核（见下节）。</li>
+      </ul>
+
+      <h3>5.3 草稿 / 已审核 / 反审核</h3>
+      <table>
+        <thead><tr><th style="width:120px">状态</th><th>能做什么</th><th>对库存/往来影响</th></tr></thead>
+        <tbody>
+          <tr><td>草稿</td><td>编辑、删除、审核</td><td>不影响，不产生应收应付</td></tr>
+          <tr><td>已审核</td><td>反审核、打印</td><td>已增加/扣减库存，已记应收应付</td></tr>
+        </tbody>
+      </table>
+      <ul>
+        <li>草稿只是临时保存，建议当天确认后及时审核，避免时间久了忘记。</li>
+        <li>反审核会把库存和往来一起冲回。如果后面已经用了这批货，软件可能不允许反审核——先处理后面的单据，再回来反审核。</li>
+        <li>已经有核销记录的应收应付，先到「收付款」撤销对应收付款单，才能反审核原单据。</li>
+      </ul>
+
+      <h3>5.4 单据列表与筛选</h3>
+      <figure>
+        <img src="images/manual/09-单据筛选栏.png" alt="单据筛选栏，金额条件已展开" />
+        <figcaption>图 5-3　单据筛选栏。关键词匹配单号、往来单位、业务员、备注；日期含首含尾；金额可以展开后填上下限。</figcaption>
+      </figure>
+      <ul>
+        <li>关键词搜单号、往来单位、业务员、备注。</li>
+        <li>日期范围可以精确到天。</li>
+        <li>金额范围——比如想找本月 &gt;1000 元的采购单，先选日期再填金额下限。</li>
+      </ul>
+    </section>
+
+    <!-- ============ 6. 开销售出库单 ============ -->
+    <section id="sales">
+      <div class="sec-head"><div class="sec-num">6</div><div><h2>开销售出库单</h2><p class="sub">和采购入库类似，只是方向反了——货从仓库出、客户付（或欠）钱。</p></div></div>
+      <figure>
+        <img src="images/manual/08-销售出库单.png" alt="销售出库单，正在编辑一张草稿" />
+        <figcaption>图 6-1　销售出库。选客户、业务员，填商品、数量、售价；保存并审核后才会扣库存、记应收。</figcaption>
+      </figure>
+
+      <p><strong>步骤</strong>：</p>
+      <ol class="steps">
+        <li>点左侧「销售 → 销售出库」。</li>
+        <li>选客户、出库仓库、日期和业务员（可不填）。</li>
+        <li>选商品，填数量和售价。售价可以改，改完合计自动更新。</li>
+        <li>点「<strong>保存并审核</strong>」。</li>
+      </ol>
+      <p>承接采购示例：刚才进了 100 瓶农夫山泉，现在卖 30 瓶给"好邻居便利店"，单价 3.00。审核后主仓库农夫山泉结存变成 70 瓶；客户产生应收 101.70 元（30 × 3.00 × 1.13）。</p>
+
+      <h3>6.1 库存不足怎么办</h3>
+      <p>销售出库、采购退货、调拨的源仓库都必须有足够库存。先到「库存余额」页看实际结存；确实不够就先做采购入库或其他入库。不建议长期打开「允许负库存出库」——账容易弄乱。</p>
+
+      <h3>6.2 信用额度拦截（如果设了）</h3>
+      <p>客户信用额度如果设了数字（不是 0），超过额度开销售单会按系统参数提示或拦截。<strong>订单下推同样受此限制</strong>：警告模式下会弹出「超出信用额度，是否仍要继续」，确认后放行并写入审计；拦截模式下需先收款或提高额度。想临时放宽，让管理员改系统参数或提高额度。</p>
+    </section>
+
+    <!-- ============ 7. 看库存 ============ -->
+    <section id="stock">
+      <div class="sec-head"><div class="sec-num">7</div><div><h2>看库存</h2><p class="sub">开单之后，库存自动跟着变。什么时候看？随时。</p></div></div>
+
+      <h3>7.1 库存余额</h3>
+      <figure>
+        <img src="images/manual/11-库存余额.png" alt="库存余额" />
+        <figcaption>图 7-1　库存余额页。按商品、仓库筛选，看结存数量和结存金额。</figcaption>
+      </figure>
+      <p><strong>余额示例（主仓库，2026-11-17）：</strong></p>
+      <table>
+        <thead><tr><th>商品</th><th>仓库</th><th>结存数量</th><th>单位</th><th>平均成本（元）</th><th>结存金额（元）</th></tr></thead>
+        <tbody>
+          <tr><td>农夫山泉 550ml</td><td>主仓库</td><td>70</td><td>瓶</td><td>1.95</td><td>136.50</td></tr>
+          <tr><td>蜂蜜柚子茶 500ml</td><td>主仓库</td><td>50</td><td>瓶</td><td>4.00</td><td>200.00</td></tr>
+          <tr><td>A4 复印纸（500 张/包）</td><td>主仓库</td><td>12</td><td>包</td><td>25.00</td><td>300.00</td></tr>
+        </tbody>
+      </table>
+      <div class="callout note"><b>结存怎么算</b>结存数量 = 期初 + 入库 − 出库。<strong>平均成本</strong>由移动加权平均自动算出（每次进货后重算），你不能改。结存金额 = 数量 × 平均成本。</div>
+
+      <h3>7.2 库存流水</h3>
+      <p>想追查某个商品为什么多了/少了？点「库存流水」，按日期和单据号核对每一笔入库、出库、调拨、盘点的明细。</p>
+
+      <h3>7.3 负数库存？</h3>
+      <p>按产品设计，结存默认不会出现负数。销售出库、采购退货、调拨在源仓库库存不够时会直接拦截。如果因为历史数据或盘点调整出现了负数，先盘点校正，再考虑是否打开「允许负库存出库」（不推荐长期用）。</p>
+    </section>
+
+    <!-- ============ 8. 其他单据一览 ============ -->
+    <section id="docs">
+      <div class="sec-head"><div class="sec-num">8</div><div><h2>其他单据一览</h2><p class="sub">采购入库和销售出库只是最常用的两张，还有 8 种单据覆盖其他场景。</p></div></div>
+      <table>
+        <thead><tr><th style="width:170px">单据</th><th>什么时候用</th></tr></thead>
+        <tbody>
+          <tr><td>采购退货</td><td>把进错的货退给供应商，冲减库存和应付</td></tr>
+          <tr><td>销售退货</td><td>客户把货退回来，增加库存、冲减应收</td></tr>
+          <tr><td>采购订单</td><td>先订货、后到货。订单本身不占库存，<strong>转采购入库</strong>后才生效</td></tr>
+          <tr><td>销售订单</td><td>先订货、后发货。订单本身不占库存，<strong>转销售出库</strong>后才生效</td></tr>
+          <tr><td>调拨</td><td>把货从一个仓库转到另一个仓库，总数量不变</td></tr>
+          <tr><td>盘点</td><td>按实盘数调整账面，差异自动生成调整流水</td></tr>
+          <tr><td>其他入库 / 其他出库</td><td>赠品、报损、内部领用等不涉及往来单位的出入库</td></tr>
+          <tr><td>成本调整单</td><td>只调整金额不调整数量，修正账面成本和实际成本的差异</td></tr>
+        </tbody>
+      </table>
+
+      <h3>销售订单 → 销售出库（可以部分转）</h3>
+      <figure>
+        <img src="images/manual/10-订单转出库.png" alt="销售订单转出库" />
+        <figcaption>图 8-1　销售订单列表里的「转出库」入口。可以部分转，剩余数量留在订单上。</figcaption>
+      </figure>
+      <p>客户先订货、还没发货时先录销售订单（不占库存、不记应收）。等实际发货时，在订单列表点「转出库」，每行填本次出库数量，确认后自动生成销售出库单。订单状态变成「部分出库」或「已全部出库」。也可以点「关闭」结束订单。下推带幂等保护：双击或网络重试只会生成一张出库单，已下推数量不会重复累计。</p>
+
+      <h3>收付款</h3>
+      <p>客户回款、供应商付款，用「收付款」单登记。可以按整单核销，也可以按部分核销。收付款会自动更新资金账户余额。</p>
+
+      <h3>对账单</h3>
+      <p>按客户或供应商选一段时间，导出往来明细，方便月底对账。</p>
+    </section>
+
+    <!-- ============ 9. 报表 ============ -->
+    <section id="reports">
+      <div class="sec-head"><div class="sec-num">9</div><div><h2>报表</h2><p class="sub">先选日期，再查询；看完可以导出，也可以直接打印。</p></div></div>
+      <figure>
+        <img src="images/manual/12-报表.png" alt="报表页" />
+        <figcaption>图 9-1　报表页。上方选择开始/结束日期，点「查询」刷新；每个报表区块都有自己的「导出 CSV / 导出 Excel / 打印」。</figcaption>
+      </figure>
+
+      <p><strong>「报表」页包含</strong>：</p>
+      <table>
+        <thead><tr><th style="width:220px">报表</th><th>看什么</th></tr></thead>
+        <tbody>
+          <tr><td>库存余额表</td><td>每个商品、每个仓库的数量和结存金额，月末盘点最常用</td></tr>
+          <tr><td>库存流水明细</td><td>期间内每一笔出入库流水</td></tr>
+          <tr><td>收发明细</td><td>按商品看期初、入库、出库、期末</td></tr>
+          <tr><td>进销存汇总</td><td>按商品跨仓库汇总，数量与金额双口径，满足「期初 + 入库 − 出库 = 期末」</td></tr>
+          <tr><td>销售毛利</td><td>收入取单据金额，成本取审核写入的库存流水</td></tr>
+          <tr><td>应收应付余额与账龄</td><td>看谁欠我们、我们欠谁，以及欠了多久</td></tr>
+        </tbody>
+      </table>
+
+      <p><strong>「销售报表」页</strong>（单独入口）：按客户、按业务员、按单据明细查看销售情况，适合算提成和做周报。</p>
+
+      <h3>报表数字对不上怎么办</h3>
+      <ul>
+        <li>先确认日期范围是否包含当天。</li>
+        <li>再确认单据是否已审核。<strong>草稿不计入库存和毛利</strong>。</li>
+        <li>应收应付类报表只统计升级到当前版本之后审核的单据；库存类报表覆盖全部历史。</li>
+      </ul>
+    </section>
+
+    <!-- ============ 10. 打印 ============ -->
+    <section id="print">
+      <div class="sec-head"><div class="sec-num">10</div><div><h2>打印</h2><p class="sub">单据和报表都能打印，也能存成 PDF 发给客户。</p></div></div>
+      <figure>
+        <img src="images/manual/13-打印预览.png" alt="采购入库单打印预览" />
+        <figcaption>图 10-1　打印预览。抬头来自「系统参数」里的公司名称、电话和地址；单据内容自动带入。</figcaption>
+      </figure>
+
+      <p><strong>步骤</strong>：</p>
+      <ol class="steps">
+        <li>在单据列表点这一行的「打印」，或在报表区块点「打印」。</li>
+        <li>先看预览：单号、日期、往来单位、商品、数量、金额是否完整。</li>
+        <li>如果提示「打印内容超出纸张，可能被裁切」，点「继续」直接打印，或点「返回调整」检查纸张和边距。</li>
+        <li>桌面版已关闭系统页眉页脚；网络版用浏览器打印时，请在对话框取消勾选「页眉和页脚」。</li>
+        <li>没有打印机时，选「保存为 PDF」，可以先生成 PDF 发给客户。</li>
+      </ol>
+
+      <p><strong>想改抬头？</strong> 到「系统 → 系统参数」填公司名称、电话、地址；想调模板，到「系统 → 打印模板」。改完先打印一张试。</p>
+
+      <div class="callout note"><b>Windows 版</b>从 1.0.11 起，「保存为 PDF」按当前打印模板的纸型和边距生成 PDF，不再固定用默认纸型；个别模板整体缩小 6.25% 的问题也已修正。</div>
+    </section>
+
+    <!-- ============ 11. 备份是命根子 ============ -->
+    <section id="backup">
+      <div class="sec-head"><div class="sec-num">11</div><div><h2>备份是命根子</h2><p class="sub"><strong>数据丢了就没了。</strong> 每天自动备份，换电脑前再手工复制一份到移动硬盘。</p></div></div>
+
+      <h3>11.1 自动备份</h3>
+      <p>软件在两种情况下自动备份：</p>
+      <ul>
+        <li><strong>每次启动</strong>：把当前数据库完整复制一份到 <code>backups/</code>，文件名带时间戳。</li>
+        <li><strong>升级 / 数据库结构变更前</strong>：先把旧库备份，升级失败可以直接回退。</li>
+      </ul>
+
+      <h3>11.2 从备份恢复</h3>
+      <figure>
+        <img src="images/manual/15-备份恢复.png" alt="备份与恢复页面" />
+        <figcaption>图 11-1　「系统 → 备份与恢复」。先选中一份备份，点「预检查」，确认可用后再点「恢复到该备份」。</figcaption>
+      </figure>
+      <ol class="steps">
+        <li>点「预检查」，看备份日期、数据量和是否可恢复。</li>
+        <li>确认无误后点「恢复到该备份」。</li>
+        <li>恢复前软件会自动再做一份安全备份。</li>
+        <li>恢复完成后重新登录，核对商品和库存。</li>
+      </ol>
+      <div class="callout warn"><b>恢复会覆盖当前数据</b>恢复前先把当前数据目录整体复制一份到移动硬盘；如果只是误删了一张单，先问维护人员能否从备份里单独找回，不要直接整库恢复。</div>
+
+      <h3>11.3 恢复模式一键回退</h3>
+      <p>如果新版本连续 3 次启动都没稳定（一打开就崩、界面白屏），程序会自动进入恢复模式：</p>
+      <ol class="steps">
+        <li>「系统 → 关于与诊断」会出现「一键回退」按钮。</li>
+        <li>点它，程序把安装前自动保留的旧版本 <code>.app</code> 替换回来，清理新版本残留。</li>
+        <li>重启即用旧版本，数据不变。</li>
+      </ol>
+      <div class="callout note"><b>回退前先看这里</b>升级成功并稳定启动 3 次后，旧版本副本会自动删除。升级含数据库结构变更时，先用升级前的自动备份恢复数据，再回退程序。</div>
+
+      <h3>11.4 换电脑</h3>
+      <ol class="steps">
+        <li>先完全退出软件（网络版先停掉服务器）。</li>
+        <li>把<strong>整个</strong>数据目录复制到移动硬盘——<code>app.db</code> 和 <code>backups/</code> 一起带上，不要只复制 <code>app.db</code>。</li>
+        <li>在新电脑上装好同版本软件。</li>
+        <li>把数据目录放回相同位置（或启动时用 <code>--data</code> 指定新路径）。</li>
+        <li>打开软件核对数据。</li>
+      </ol>
+    </section>
+
+    <!-- ============ 12. 网络版（多人一起用） ============ -->
+    <section id="network">
+      <div class="sec-head"><div class="sec-num">12</div><div><h2>网络版（多人一起用）</h2><p class="sub">一台电脑当服务器，其他电脑用浏览器访问，数据只放服务器上。</p></div></div>
+      <p>网络版需要一台电脑当<strong>服务器</strong>，数据只放这台电脑上；其他电脑<strong>不用装软件</strong>，用浏览器访问。服务器电脑建议放在收银台或办公室，不要随手关机。</p>
+      <div class="callout note"><b>请管理员操作</b>以下命令请让电脑管理员在服务器电脑上执行。</div>
+
+      <h3>12.1 第一步：给管理员设口令（只做一次）</h3>
+      <p>打开终端（Terminal），依次执行：</p>
+      <pre><code>cd /Applications/小兔进销存.app/Contents/MacOS
+XIAOTU_PASSWORD='你自己定的口令' ./xiaotu-server --server --port 8080 --set-password admin</code></pre>
+
+      <h3>12.2 第二步：启动网络服务</h3>
+      <pre><code>./xiaotu-server --server --port 8080</code></pre>
+      <p>看到类似 <code>监听 0.0.0.0:8080</code> 就表示服务已启动。<strong>这个终端窗口不要关</strong>——关掉窗口，所有客户端都会断开。第一次启动时 macOS 可能弹防火墙提示，点「允许」。</p>
+
+      <h3>12.3 第三步：客户端连接</h3>
+      <p>在同一局域网的另一台电脑上，打开 Safari 或 Chrome，地址栏输入：</p>
+      <pre><code>http://服务器电脑的IP:8080/</code></pre>
+      <p>服务器 IP 怎么查：在服务器终端执行 <code>ipconfig getifaddr en0</code>，返回一串数字比如 <code>192.168.1.20</code>。其他电脑访问 <code>http://192.168.1.20:8080/</code> 即可。</p>
+
+      <h3>12.4 连不上怎么办</h3>
+      <p>按顺序排查：</p>
+      <ol class="steps">
+        <li>两台电脑是否连<strong>同一个路由器 / 交换机</strong>。</li>
+        <li>服务器终端窗口是否<strong>还开着</strong>。</li>
+        <li>地址是否用了服务器的<strong>局域网 IP</strong>，不是 127.0.0.1。</li>
+        <li>macOS 防火墙是否允许小兔进销存接收传入连接（系统设置 → 网络 → 防火墙 → 允许的应用）。</li>
+        <li>端口 8080 被占了？换一个：<code>./xiaotu-server --server --port 8081</code>，客户端地址也改成 <code>:8081</code>。</li>
+      </ol>
+
+      <h3>12.5 重要提醒</h3>
+      <div class="callout danger"><b>不要混用</b><strong>不要</strong>各自开单机版去碰同一份数据。单机版写本地、网络版走 HTTP，两套实例并发写同一份 <code>app.db</code> 会损坏数据库。</div>
+    </section>
+
+    <!-- ============ 13. 软件更新 ============ -->
+    <section id="update">
+      <div class="sec-head"><div class="sec-num">13</div><div><h2>软件更新</h2><p class="sub">macOS 版支持在线自动更新。</p></div></div>
+      <p><strong>怎么升级</strong>：</p>
+      <ol class="steps">
+        <li>先按第 11 章做一次备份，尤其是网络版。</li>
+        <li>在「系统 → 关于与诊断 → 软件更新」点「检查更新」，或设置自动检查。</li>
+        <li>下载完成后重启程序，新版本自动替换旧版本（数据不变）。更新全程由程序自己完成安装，<strong>不需要</strong>再手动打开 dmg 拖拽覆盖。</li>
+        <li>手动「检查更新」最少间隔 1 分钟；程序每 24 小时也会自动检查一次。</li>
+        <li>如果新版本有恢复模式（见 11.3 节），旧版本已自动保留一份副本，随时能回退。</li>
+      </ol>
+
+      <h3>没联网或想手动更</h3>
+      <p>从官网下载新的 <code>.dmg</code>，按第 1.1 节的步骤<strong>重新安装</strong>（覆盖旧版本），数据会保留。<strong>不要先卸载旧版</strong>，覆盖安装即可。</p>
+    </section>
+
+    <!-- ============ 14. 常见问题 ============ -->
+    <section id="faq">
+      <div class="sec-head"><div class="sec-num">14</div><div><h2>常见问题</h2><p class="sub">先按这里的顺序排查；涉及命令的，请让电脑管理员操作。</p></div></div>
+
+      <div class="q">
+        <h3>双击图标没反应，或窗口一片空白</h3>
+        <p>先确认安装的是正式签名包；仍被拦截时按第 1.2 节处理。</p>
+      </div>
+
+      <div class="q">
+        <h3>提示端口被占用，网络版起不来</h3>
+        <p>8080 被别的程序或另一个小兔服务占了。先确认没有重复打开服务窗口；还是不行就换端口（见 12.4 节）。</p>
+      </div>
+
+      <div class="q">
+        <h3>局域网里其他电脑打不开</h3>
+        <p>见 12.4 节的 5 步排查。</p>
+      </div>
+
+      <div class="q">
+        <h3>审核不了，提示库存不足</h3>
+        <p>销售出库、采购退货、调拨的源仓库库存不够。先确认仓库选对，再到「库存余额」页看实际结存。</p>
+      </div>
+
+      <div class="q">
+        <h3>反审核提示已有核销记录</h3>
+        <p>先到「收付款」找到对应单据，撤销核销，再回来反审核。</p>
+      </div>
+
+      <div class="q">
+        <h3>忘记本机口令（单机版）</h3>
+        <p>见第 2.5 节。用 <code>--set-password</code> 重设，不需要恢复码，不会删数据。</p>
+      </div>
+
+      <div class="q">
+        <h3>登录提示「稍后再试」</h3>
+        <p>同一账号连续输错 5 次会锁 15 分钟。等时间到再试，或让管理员重置。</p>
+      </div>
+
+      <div class="q">
+        <h3>提示「已有实例在使用该数据目录」</h3>
+        <p>同一份数据目录不能同时开两个程序。先关掉另一个窗口；异常退出后锁文件残留的，删除提示里的 <code>app.lock</code> 后重试。</p>
+      </div>
+
+      <div class="q">
+        <h3>界面顶部提示数据目录在同步盘</h3>
+        <p>数据目录被放进了 iCloud Drive 或 OneDrive。退出程序，把整个数据目录拷到本地磁盘默认位置后再启动。</p>
+      </div>
+
+      <div class="q">
+        <h3>报表里没有很早以前的数据</h3>
+        <p>应收应付、账龄和对账单只统计升级到当前版本之后审核的单据；库存类报表覆盖全部历史。</p>
+      </div>
+
+      <div class="q">
+        <h3>打印出来没有反应</h3>
+        <p>桌面版先在预览里确认纸张和方向；网络版如果浏览器拦截了打印窗口，请允许本站弹出窗口后重试，或换用 Chrome。</p>
+      </div>
+
+      <div class="q">
+        <h3>钥匙串一直弹授权框</h3>
+        <p>到「钥匙串访问」里搜 <code>com.simem.xiaotu.local-remember</code>，删掉这条就行。</p>
+      </div>
+    </section>
+
+    <!-- ============ 15. 一页纸速查 ============ -->
+    <section id="quick">
+      <div class="sec-head"><div class="sec-num">15</div><div><h2>一页纸速查</h2><p class="sub">第一次用按这个顺序做，不容易漏。</p></div></div>
+
+      <div class="quick">
+        <table>
+          <thead><tr><th style="width:60px">步骤</th><th>做什么</th><th style="width:280px">去哪做</th></tr></thead>
+          <tbody>
+            <tr><td>①</td><td>安装 dmg：拖「小兔进销存」进「应用程序」</td><td>Finder</td></tr>
+            <tr><td>②</td><td>第一次启动，决定要不要设本机口令</td><td>启动后弹窗</td></tr>
+            <tr><td>③</td><td>建<strong>计量单位</strong>：瓶、件、包、箱</td><td>基础资料 → 计量单位</td></tr>
+            <tr><td>④</td><td>建<strong>仓库</strong>：至少一个默认仓库</td><td>基础资料 → 仓库</td></tr>
+            <tr><td>⑤</td><td>建<strong>商品</strong>：编码、名称、单位必填</td><td>基础资料 → 商品</td></tr>
+            <tr><td>⑥</td><td>建<strong>供应商</strong>和<strong>客户</strong></td><td>基础资料 → 供应商 / 客户</td></tr>
+            <tr><td>⑦</td><td>开第一张<strong>采购入库单</strong>，保存并审核</td><td>采购 → 采购入库</td></tr>
+            <tr><td>⑧</td><td>开第一张<strong>销售出库单</strong>，保存并审核</td><td>销售 → 销售出库</td></tr>
+            <tr><td>⑨</td><td>查库存、看报表、每周备份</td><td>库存 / 报表 / 系统 → 备份与恢复</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><strong>最后三条铁律</strong>：</p>
+      <ol class="steps">
+        <li>不要把数据目录放 iCloud Drive / 网盘。</li>
+        <li>不要删数据目录来解决忘记口令。</li>
+        <li>升级前先备份。</li>
+      </ol>
+
+      <a class="to-top" href="#start">返回顶部 ↑</a>
+    </section>
+  </main>
+</div>
+
+<footer class="footer">
+  <p>小兔进销存 macOS 用户手册 · 适用于 1.0.13 · 2026-11-26</p>
+</footer>
+
+</body>
+</html>
