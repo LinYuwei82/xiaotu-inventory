@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "xiaotu/apply_update.h"
 #include "xiaotu/audit.h"
 #include "xiaotu/backup.h"
 #include "xiaotu/config.h"
@@ -67,6 +68,13 @@ struct Options {
   bool partner_preview = false;
   std::string partner_preview_format = "text";
   bool show_help = false;
+  // --apply-update：Windows 更新协助器内部模式（不进 --help，用户不直接使用）。
+  bool apply_update = false;
+  std::filesystem::path apply_package;
+  unsigned long apply_wait_pid = 0;
+  std::filesystem::path apply_result;
+  std::filesystem::path apply_relaunch;
+  std::vector<std::string> apply_relaunch_args;
 };
 
 void print_usage(const char* program) {
@@ -124,6 +132,17 @@ Options parse_args(int argc, char** argv) {
       options.partner_preview = true;
     } else if (arg == "--partner-preview-format" && i + 1 < argc) {
       options.partner_preview_format = argv[++i];
+    } else if (arg == "--apply-update" && i + 1 < argc) {
+      options.apply_update = true;
+      options.apply_package = argv[++i];
+    } else if (arg == "--wait-pid" && i + 1 < argc) {
+      options.apply_wait_pid = std::strtoul(argv[++i], nullptr, 10);
+    } else if (arg == "--result" && i + 1 < argc) {
+      options.apply_result = argv[++i];
+    } else if (arg == "--relaunch" && i + 1 < argc) {
+      options.apply_relaunch = argv[++i];
+    } else if (arg == "--relaunch-arg" && i + 1 < argc) {
+      options.apply_relaunch_args.push_back(argv[++i]);
     } else if (arg == "--version") {
       std::cout << XIAOTU_VERSION << std::endl;
       std::exit(0);
@@ -224,6 +243,17 @@ int main(int argc, char** argv) {
     if (options.show_help) {
       print_usage(argv[0]);
       return 0;
+    }
+
+    // ---- 更新协助器：最早分支，不加载配置、不抢实例锁、不开数据库 ----
+    if (options.apply_update) {
+      xiaotu::ApplyUpdateOptions apply;
+      apply.package = options.apply_package;
+      apply.wait_pid = options.apply_wait_pid;
+      apply.result = options.apply_result;
+      apply.relaunch = options.apply_relaunch;
+      apply.relaunch_args = options.apply_relaunch_args;
+      return xiaotu::run_apply_update(apply);
     }
 
     // ---- 配置解析：命令行 > 环境变量 > config.toml > 内置默认 ----
