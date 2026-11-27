@@ -253,13 +253,29 @@ class TestPublishWindows(unittest.TestCase):
 
     def test_notes_only_skips_build_and_artifact(self):
         """NOTES_ONLY 模式不需要 BUILD 和安装包（需要拉线上清单）。"""
-        if not _has_network("https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json"):
+        url = "https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json"
+        if not _has_network(url):
             self.skipTest("需要网络访问 dl.xiaotu.online")
-        release_notes = REPO / "docs" / f"release-notes-{VERSION}.html"
+        # 用线上清单的统一版本做 NOTES_VERSION：发布前窗口 VERSION.txt 先升、
+        # 线上清单还是旧版，脚本的版本一致性守卫会正确中止（那是预期行为），
+        # 若这里用仓库 VERSION 就会在每次发版前误报失败。
+        import json
+        import urllib.request
+        try:
+            with urllib.request.urlopen(url, timeout=15) as resp:
+                live = json.load(resp)
+        except Exception as exc:  # noqa: BLE001
+            self.skipTest(f"拉取线上清单失败：{exc}")
+        versions = {v.get("version") for v in live.get("platforms", {}).values()}
+        if len(versions) != 1:
+            self.skipTest(f"线上清单各平台版本不一致：{versions}")
+        live_version = versions.pop()
+        release_notes = REPO / "docs" / f"release-notes-{live_version}.html"
         if not release_notes.exists():
-            self.skipTest(f"docs/release-notes-{VERSION}.html 不存在")
+            self.skipTest(f"docs/release-notes-{live_version}.html 不存在")
         self.r.run(self.script, env_override={
             "NOTES_ONLY": "true",
+            "NOTES_VERSION": live_version,
             "BUILD": "",  # 空 BUILD 也应过
             "OSS_SKIP": "true",
             "RELEASE_NOTES_FILE": str(release_notes),
