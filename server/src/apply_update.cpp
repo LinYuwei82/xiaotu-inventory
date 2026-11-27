@@ -180,6 +180,10 @@ int apply_zip_update(const ApplyUpdateOptions& options, const std::filesystem::p
   std::error_code ec;
   const std::filesystem::path staging =
       options.package.parent_path() / ("apply-staging-" + std::to_string(::GetCurrentProcessId()));
+  auto drop_staging = [&staging] {
+    std::error_code ignored;
+    std::filesystem::remove_all(staging, ignored);
+  };
   std::filesystem::remove_all(staging, ec);
   std::filesystem::create_directories(staging, ec);
   if (ec) {
@@ -188,16 +192,21 @@ int apply_zip_update(const ApplyUpdateOptions& options, const std::filesystem::p
   }
   // Win10 1803+ 自带 bsdtar，能解 zip；失败即报错，不做多级回落
   // （绿色包由同一发布链产出，zip 格式可控）。
+  // 命令行首 token 必须是程序路径（argv[0] 约定），否则 bsdtar 参数解析错位。
+  const std::wstring tar_exe = L"C:\\Windows\\System32\\tar.exe";
   const RunResult tar = run_and_wait(
-      L"C:\\Windows\\System32\\tar.exe",
-      L"-xf " + quote_arg(options.package.wstring()) + L" -C " + quote_arg(staging.wstring()),
+      tar_exe,
+      quote_arg(tar_exe) + L" -xf " + quote_arg(options.package.wstring()) +
+          L" -C " + quote_arg(staging.wstring()),
       staging.parent_path());
   if (!tar.started) {
     *error = tar.error;
+    drop_staging();
     return 1;
   }
   if (tar.exit_code != 0) {
     *error = "tar 解压失败，退出码 " + std::to_string(tar.exit_code);
+    drop_staging();
     return 1;
   }
   // 定位载荷：zip 内与壳同名的 exe（可能在根或一层子目录里）。
@@ -212,6 +221,7 @@ int apply_zip_update(const ApplyUpdateOptions& options, const std::filesystem::p
   }
   if (payload.empty()) {
     *error = "解压包里找不到 xiaotu-shell.exe";
+    drop_staging();
     return 1;
   }
   const std::filesystem::path new_root = payload.parent_path();
@@ -222,6 +232,7 @@ int apply_zip_update(const ApplyUpdateOptions& options, const std::filesystem::p
   std::filesystem::rename(app_dir, backup, ec);
   if (ec) {
     *error = "备份旧目录失败（可能被占用）：" + ec.message();
+    drop_staging();
     return 1;
   }
   bool copied = false;
@@ -252,6 +263,7 @@ int apply_zip_update(const ApplyUpdateOptions& options, const std::filesystem::p
         }
       }
     }
+    if (ec) copied = false;  // increment 失败会静默退出循环，必须补判
   }
   if (!copied) {
     // 回滚：删掉半成品，把备份搬回去。
@@ -260,12 +272,15 @@ int apply_zip_update(const ApplyUpdateOptions& options, const std::filesystem::p
     std::filesystem::rename(backup, app_dir, ignored);
     if (ignored) {
       *error = "覆盖失败且回滚失败，旧版本目录在 " + path_to_utf8(backup);
+      drop_staging();
       return 2;
     }
+    drop_staging();
     *error = "拷贝新文件失败：" + ec.message();
     return 1;
   }
   std::filesystem::remove_all(backup, ec);  // 成功则清掉备份，失败不影响结果
+  drop_staging();
   return 0;
 }
 
