@@ -20,6 +20,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -29,6 +30,7 @@
 #include "WebView2.h"
 #include "updater_win.h"
 #include "win_encoding/encoding.h"
+#include "xiaotu/log.h"
 #include "nlohmann/json.hpp"
 
 // OpenSSL base64 编解码 —— shell 已链接 OpenSSL::SSL OpenSSL::Crypto
@@ -1220,6 +1222,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   QueryPerformanceFrequency(&g_boot_freq);
   QueryPerformanceCounter(&g_boot_t0);
   boot_log(L"WinMain入口");
+  // 更新模块的 log_info/log_warn 落盘（GUI 子系统无 stderr，不初始化日志即全丢）。
+  // 与 server 分文件写（shell.log），避免两进程各自轮转同一 app.log 竞态。
+  {
+    std::wstring logs_dir = app_data_dir() + L"\\logs";
+    ensure_directory(logs_dir);
+    xiaotu::init_logging(xiaotu::LogOptions{
+        .directory = std::filesystem::path(win_encoding::wide_to_utf8(logs_dir)),
+        .file_name = "shell.log"});
+  }
   SetProcessDPIAware();
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 

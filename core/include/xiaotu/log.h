@@ -16,6 +16,7 @@ enum class LogLevel { Debug = 0, Info = 1, Warn = 2, Error = 3 };
 
 struct LogOptions {
   std::filesystem::path directory;                 // 为空则只写标准错误
+  std::string file_name = "app.log";               // 壳与 server 分文件，避免双进程轮转竞争
   LogLevel level = LogLevel::Info;
   std::int64_t max_bytes = 5 * 1024 * 1024;        // 单个文件上限
   int keep_files = 3;                              // 保留 app.log + 3 个滚动文件

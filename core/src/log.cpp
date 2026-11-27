@@ -17,6 +17,7 @@ namespace {
 
 struct LogState {
   std::filesystem::path directory;
+  std::string file_name = "app.log";
   LogLevel level = LogLevel::Info;
   std::int64_t max_bytes = 5 * 1024 * 1024;
   int keep_files = 3;
@@ -51,7 +52,7 @@ std::string format_line(LogLevel level, std::string_view message) {
 }
 
 void rotate_locked() {
-  const std::filesystem::path base = g_state.directory / "app.log";
+  const std::filesystem::path base = g_state.directory / g_state.file_name;
   std::error_code error;
   if (!std::filesystem::exists(base, error)) {
     return;
@@ -59,9 +60,9 @@ void rotate_locked() {
   for (int index = g_state.keep_files; index >= 1; --index) {
     const std::filesystem::path source =
         index == 1 ? base
-                   : g_state.directory / ("app.log." + std::to_string(index - 1));
+                   : g_state.directory / (g_state.file_name + "." + std::to_string(index - 1));
     const std::filesystem::path target =
-        g_state.directory / ("app.log." + std::to_string(index));
+        g_state.directory / (g_state.file_name + "." + std::to_string(index));
     if (!std::filesystem::exists(source, error)) {
       continue;
     }
@@ -78,7 +79,7 @@ void write_locked(const std::string& line) {
     std::fflush(stderr);
     return;
   }
-  const std::filesystem::path path = g_state.directory / "app.log";
+  const std::filesystem::path path = g_state.directory / g_state.file_name;
   std::error_code error;
   const std::uintmax_t size =
       std::filesystem::exists(path, error) ? std::filesystem::file_size(path, error) : 0;
@@ -126,6 +127,9 @@ void init_logging(const LogOptions& options) {
   std::lock_guard<std::mutex> lock(g_mutex);
   g_state = LogState{};
   g_state.level = options.level;
+  if (!options.file_name.empty()) {
+    g_state.file_name = options.file_name;
+  }
   g_state.max_bytes = std::max<std::int64_t>(options.max_bytes, 1024);
   g_state.keep_files = std::max(options.keep_files, 1);
   if (!options.directory.empty()) {
