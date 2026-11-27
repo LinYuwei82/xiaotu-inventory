@@ -13,11 +13,22 @@
 static BOOL XiaotuConfirmExitIfDirty(void);
 
 @interface XiaotuAppDelegate : NSObject <NSApplicationDelegate>
+- (void)showAboutPanel:(id)sender;
 @end
 
 @implementation XiaotuAppDelegate
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
   return YES;
+}
+
+// 关于面板：Version/构建号由标准面板自动读 Info.plist（CFBundleShortVersionString /
+// CFBundleVersion，打包脚本注入），credits 补应用简介与主页，与 Windows 壳关于框对齐。
+- (void)showAboutPanel:(id)sender {
+  (void)sender;
+  NSString* credits =
+      @"<p>小微企业进销存与库存管理</p>"
+       "<p><a href=\"https://xiaotu.online\">https://xiaotu.online</a></p>";
+  [NSApp orderFrontStandardAboutPanelWithOptions:@{NSAboutPanelOptionCredits : credits}];
 }
 
 // Cmd+Q 与窗口关闭是两条独立路径，必须都走同一个判断，只拦一条等于没拦。
@@ -625,9 +636,10 @@ void EnsureShellWindow(const std::string& title) {
   [NSApp setMainMenu:menubar];
 
   NSMenu* app_menu = [[NSMenu alloc] init];
-  [app_menu addItemWithTitle:[@"关于 " stringByAppendingString:app_name]
-                      action:@selector(orderFrontStandardAboutPanel:)
-               keyEquivalent:@""];
+  NSMenuItem* about_item = [[NSMenuItem alloc] initWithTitle:[@"关于 " stringByAppendingString:app_name]
+                                                      action:@selector(showAboutPanel:)
+                                               keyEquivalent:@""];
+  [app_menu addItem:about_item];
   [app_menu addItem:[NSMenuItem separatorItem]];
   [app_menu addItemWithTitle:[@"隐藏 " stringByAppendingString:app_name]
                       action:@selector(hide:)
