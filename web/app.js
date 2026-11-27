@@ -8934,9 +8934,20 @@
     const bootMark = (stage) =>
       console.debug("[xiaotu] 启动打点 " + stage + " +" + Math.round(performance.now() - bootT0) + "ms");
     try {
+      // 启动并行化（方案：启动速度优化 P0-2）：health 与 me 同时发；
+      // pages.json 不依赖登录态，提前取，脚本加载仍在登录成功后。
+      // 走登录/门禁分支时 pagesPromise 可能无人 await，挂空 catch 防 unhandled rejection。
+      const pagesPromise = fetch(API_BASE + "/gen/pages.json").then((r) => r.json());
+      pagesPromise.catch(() => {});
       // health 免登录，先拿单机版门禁状态；网络版这些字段恒为 false。
-      const health = await api("GET", "/api/health");
-      bootMark("health就绪");
+      const [health, me0] = await Promise.all([
+        api("GET", "/api/health"),
+        api("GET", "/api/me").catch((error) => {
+          if (error.status !== 401) throw error;
+          return null;
+        }),
+      ]);
+      bootMark("health与me就绪");
       state.edition = health.edition || "";
       const isLocal = health.mode === "local";
       const localGate = health.local_gate || {};
@@ -8946,13 +8957,7 @@
       document.getElementById("health").textContent =
         "v" + health.version + " · schema v" + health.schema_version;
 
-      let me = null;
-      try {
-        me = await api("GET", "/api/me");
-      } catch (error) {
-        if (error.status !== 401) throw error;
-      }
-      bootMark("me就绪");
+      let me = me0;
       if (!me) {
         // 已设本机口令：先试钥匙串里的长期凭据，失败再出门禁页；
         // 启动链接里的一次性 token 不参与自动登录。
@@ -9013,12 +9018,11 @@
       warningNode.textContent = health.data_dir_warning || "";
       warningNode.hidden = !health.data_dir_warning;
 
-      const pages = await (await fetch(API_BASE + "/gen/pages.json")).json();
+      const pages = await pagesPromise;
       bootMark("pages.json就绪");
       state.pages = pages;
-      for (const page of pages) {
-        await loadScript(page.script);
-      }
+      // 各 gen 页脚本相互独立（分别注册 window.XiaotuPages[key]），并行加载。
+      await Promise.all(pages.map((page) => loadScript(page.script)));
       bootMark("页面脚本加载完成");
 
       const all = [
