@@ -667,24 +667,30 @@ void show_error(const std::wstring& text, UINT icon = MB_ICONERROR) {
 
 // 关于框：版本与构建号是编译期宏（CMakeLists 注入，与更新引擎上报值同源），
 // 直接读 exe 版本资源的话第四段恒为 0，会把构建号显示成丢失。
+#ifndef XIAOTU_WSTR
+#define XIAOTU_WSTR2(x) L##x
+#define XIAOTU_WSTR(x) XIAOTU_WSTR2(x)
+#endif
+
 void show_about() {
+  // CMake 注入的版本宏是窄字符串字面量，这里统一转成宽字符再拼接。
   std::wstring build = L"开发构建";
 #ifdef XIAOTU_BUILD_STR
-#define XIAOTU_STR2(x) #x
-#define XIAOTU_STR(x) XIAOTU_STR2(x)
-  build = XIAOTU_BUILD_STR;
+  build = XIAOTU_WSTR(XIAOTU_BUILD_STR);
 #endif
-  std::wstring text = std::wstring(kWindowTitle) + L" " +
+  std::wstring version =
 #ifdef XIAOTU_VERSION
-                      XIAOTU_VERSION
+      XIAOTU_WSTR(XIAOTU_VERSION)
 #else
-                      L"(dev)"
+      L"(dev)"
 #endif
-                      + L"（构建 " + build + L"）\n\n" +
+      ;
+  std::wstring text = std::wstring(kWindowTitle) + L" " + version +
+                      L"（构建 " + build + L"）\n\n" +
                       L"小兔进销存 —— 小微企业进销存与库存管理\n\n" +
                       L"Copyright © 2026 si_mem. 保留所有权利。";
-  MessageBoxW(g_app.hwnd, text.c_str(), L"关于 " + std::wstring(kWindowTitle),
-              MB_OK | MB_ICONINFORMATION);
+  std::wstring title = std::wstring(L"关于 ") + kWindowTitle;
+  MessageBoxW(g_app.hwnd, text.c_str(), title.c_str(), MB_OK | MB_ICONINFORMATION);
 }
 
 std::wstring output_tail(size_t limit = 1200) {
