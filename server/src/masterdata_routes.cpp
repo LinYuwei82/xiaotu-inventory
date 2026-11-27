@@ -332,7 +332,7 @@ void register_masterdata_routes(httplib::Server& server, Services& services) {
                      sql += " ORDER BY i.code;";
                      nlohmann::json list = nlohmann::json::array();
                      std::vector<std::int64_t> item_ids;
-                     services.db.read([&](sqlite3* conn) {
+                     services.db.read([&](Conn& conn) {
                        Stmt stmt(conn, sql);
                        for (std::size_t i = 0; i < bindings.size(); ++i) {
                          stmt.bind(static_cast<std::int64_t>(i + 1), bindings[i]);
@@ -366,7 +366,7 @@ void register_masterdata_routes(httplib::Server& server, Services& services) {
                        for (std::size_t i = 0; i < item_ids.size(); ++i) {
                          index_of.emplace(item_ids[i], i);
                        }
-                       services.db.read([&](sqlite3* conn) {
+                       services.db.read([&](Conn& conn) {
                          Stmt stmt(conn,
                                    "SELECT item_id, barcode FROM item_barcode WHERE item_id IN (" +
                                        ids + ") ORDER BY item_id, is_primary DESC, id;");

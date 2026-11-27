@@ -1,6 +1,6 @@
 #include "xiaotu/setting_service.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <string>
 
@@ -11,13 +11,13 @@
 namespace xiaotu {
 namespace {
 
-std::string read_value(sqlite3* conn, const char* key) {
+std::string read_value(Conn& conn, const char* key) {
   Stmt stmt(conn, "SELECT value FROM app_setting WHERE key = ?;");
   stmt.bind(1, key);
   return stmt.step() ? stmt.text(0) : std::string{};
 }
 
-int read_int(sqlite3* conn, const char* key, int fallback) {
+int read_int(Conn& conn, const char* key, int fallback) {
   const std::string text = read_value(conn, key);
   if (text.empty()) {
     return fallback;
@@ -59,7 +59,7 @@ std::string json_escape(const std::string& text) {
   return out;
 }
 
-void save_one(sqlite3* conn, const char* key, const std::string& value) {
+void save_one(Conn& conn, const char* key, const std::string& value) {
   const std::string previous = read_value(conn, key);
   if (previous == value) {
     return;
@@ -77,7 +77,7 @@ void save_one(sqlite3* conn, const char* key, const std::string& value) {
 
 SystemSettings SettingService::load() const {
   SystemSettings out;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     out.company.name = read_value(conn, "company_name");
     out.company.phone = read_value(conn, "company_phone");
     out.company.address = read_value(conn, "company_address");
@@ -96,7 +96,7 @@ SystemSettings SettingService::load() const {
 
 SessionPolicy SettingService::session_policy() const {
   SessionPolicy out;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     out.idle_minutes = read_int(conn, "session_idle_minutes", 30);
     out.absolute_hours = read_int(conn, "session_absolute_hours", 12);
   });
@@ -121,7 +121,7 @@ SystemSettings SettingService::update(const SystemSettings& input) {
   if (input.cost_basis != "INCLUSIVE" && input.cost_basis != "NET") {
     throw AppError("INVALID_INPUT", "成本口径只支持 INCLUSIVE 或 NET");
   }
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     save_one(conn, "company_name", input.company.name);
     save_one(conn, "company_phone", input.company.phone);
     save_one(conn, "company_address", input.company.address);

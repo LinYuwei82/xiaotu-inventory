@@ -1,6 +1,6 @@
 #include "xiaotu/document.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -23,7 +23,7 @@ namespace xiaotu {
 namespace {
 
 // 单据数额度只在新建（含草稿与下推）时校验；存量单据仍可查询、审核与导出。
-void enforce_document_quota(sqlite3* conn) {
+void enforce_document_quota(Conn& conn) {
   std::int64_t current = 0;
   Stmt count(conn, "SELECT COUNT(*) FROM doc_header;");
   if (count.step()) {
@@ -49,7 +49,7 @@ std::int64_t moving_average_hook(const DocLineInput& line, std::int64_t balance_
 }
 
 // 系统参数缺失或脏值一律按默认的含税口径处理。
-CostBasis current_cost_basis(sqlite3* conn) {
+CostBasis current_cost_basis(Conn& conn) {
   Stmt stmt(conn, "SELECT value FROM app_setting WHERE key = 'cost_basis';");
   return stmt.step() && stmt.text(0) == "NET" ? CostBasis::Net : CostBasis::Inclusive;
 }
@@ -279,7 +279,7 @@ struct BalanceState {
   std::int64_t amount = 0;
 };
 
-BalanceState read_balance(sqlite3* conn, std::int64_t warehouse_id, std::int64_t item_id) {
+BalanceState read_balance(Conn& conn, std::int64_t warehouse_id, std::int64_t item_id) {
   BalanceState state;
   Stmt balance(conn,
                "SELECT qty, amount_cents FROM stock_balance WHERE warehouse_id = ? AND item_id = ?;");
@@ -295,12 +295,12 @@ BalanceState read_balance(sqlite3* conn, std::int64_t warehouse_id, std::int64_t
 // 正常出库/反审核仍由 ensure_available / REVERSE_WOULD_NEGATIVE 给出更具体的
 // 提示；这里是最后的兜底，覆盖盘点、成本调整和将来新增的写入路径。
 // 负库存开关：按 app_setting 的显式 '1' 放行数量为负；任何其他值都按拒绝处理。
-bool allow_negative_stock(sqlite3* conn) {
+bool allow_negative_stock(Conn& conn) {
   Stmt stmt(conn, "SELECT value FROM app_setting WHERE key = 'allow_negative_stock';");
   return stmt.step() && stmt.text(0) == "1";
 }
 
-void apply_balance_delta(sqlite3* conn, std::int64_t warehouse_id, std::int64_t item_id,
+void apply_balance_delta(Conn& conn, std::int64_t warehouse_id, std::int64_t item_id,
                          std::int64_t delta_qty, std::int64_t delta_amount) {
   const BalanceState current = read_balance(conn, warehouse_id, item_id);
   const std::int64_t next_qty = current.qty + delta_qty;
@@ -338,7 +338,7 @@ void apply_balance_delta(sqlite3* conn, std::int64_t warehouse_id, std::int64_t 
       .bind(4, warehouse_id)
       .bind(5, item_id)
       .run();
-  if (sqlite3_changes(conn) == 0) {
+  if (conn.changes() == 0) {
     Stmt insert(conn,
                 "INSERT INTO stock_balance (warehouse_id, item_id, qty, amount_cents, updated_at)"
                 " VALUES (?, ?, ?, ?, ?);");
@@ -352,7 +352,7 @@ void apply_balance_delta(sqlite3* conn, std::int64_t warehouse_id, std::int64_t 
 }
 
 // 追加流水并同步结存；调用方必须处于同一个写事务内。
-void write_move(sqlite3* conn, const std::string& biz_type, std::int64_t doc_id,
+void write_move(Conn& conn, const std::string& biz_type, std::int64_t doc_id,
                 std::int64_t line_id, std::int64_t warehouse_id, std::int64_t item_id,
                 const std::string& biz_time, std::int64_t delta_qty, std::int64_t delta_amount) {
   Stmt ledger(conn,
@@ -375,7 +375,7 @@ void write_move(sqlite3* conn, const std::string& biz_type, std::int64_t doc_id,
 }
 
 // 出库/调拨前校验可用数量：不足则整单事务回滚，不会出现半途扣减或负数结存。
-void ensure_available(sqlite3* conn, std::int64_t warehouse_id, std::int64_t item_id,
+void ensure_available(Conn& conn, std::int64_t warehouse_id, std::int64_t item_id,
                       std::int64_t need) {
   const BalanceState balance = read_balance(conn, warehouse_id, item_id);
   if (balance.qty >= need) {
@@ -395,7 +395,7 @@ void ensure_available(sqlite3* conn, std::int64_t warehouse_id, std::int64_t ite
 }
 
 // 负库存开关：按 app_setting 的显式 '1' 放行；任何其他值都按拒绝处理。
-void apply_in_or_out(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
+void apply_in_or_out(Conn& conn, const DocumentDefinition& definition, std::int64_t doc_id,
                      std::int64_t line_id, std::int64_t warehouse_id, const std::string& biz_time,
                      const DocLineInput& line) {
   const BalanceState balance = read_balance(conn, warehouse_id, line.item_id);
@@ -412,7 +412,7 @@ void apply_in_or_out(sqlite3* conn, const DocumentDefinition& definition, std::i
 }
 
 // 调拨：源仓按移动加权平均出库，目标仓按同一成本入库，两侧同一事务。
-void apply_transfer(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
+void apply_transfer(Conn& conn, const DocumentDefinition& definition, std::int64_t doc_id,
                     std::int64_t line_id, std::int64_t warehouse_id,
                     std::int64_t target_warehouse_id, const std::string& biz_time,
                     const DocLineInput& line) {
@@ -428,7 +428,7 @@ void apply_transfer(sqlite3* conn, const DocumentDefinition& definition, std::in
 }
 
 // 盘点：明细数量为实盘数，按差额写调整流水；差额为 0 不写。
-void apply_stocktake(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
+void apply_stocktake(Conn& conn, const DocumentDefinition& definition, std::int64_t doc_id,
                      std::int64_t line_id, std::int64_t warehouse_id, const std::string& biz_time,
                      const DocLineInput& line) {
   const BalanceState balance = read_balance(conn, warehouse_id, line.item_id);
@@ -449,9 +449,9 @@ void apply_stocktake(sqlite3* conn, const DocumentDefinition& definition, std::i
 }
 
 // 成本调整：数量不变，只改结存金额；零库存不允许留下金额，调整后金额不能为负。
-void ensure_warehouse(sqlite3* conn, std::int64_t warehouse_id);
+void ensure_warehouse(Conn& conn, std::int64_t warehouse_id);
 
-void apply_cost_adjust(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
+void apply_cost_adjust(Conn& conn, const DocumentDefinition& definition, std::int64_t doc_id,
                        std::int64_t line_id, const std::string& biz_time,
                        const DocLineInput& line) {
   ensure_warehouse(conn, line.warehouse_id);
@@ -467,7 +467,7 @@ void apply_cost_adjust(sqlite3* conn, const DocumentDefinition& definition, std:
              0, line.adjust_cents);
 }
 
-void apply_stock_move(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
+void apply_stock_move(Conn& conn, const DocumentDefinition& definition, std::int64_t doc_id,
                       std::int64_t line_id, std::int64_t warehouse_id,
                       std::int64_t target_warehouse_id, const std::string& biz_time,
                       const DocLineInput& line) {
@@ -491,7 +491,7 @@ void apply_stock_move(sqlite3* conn, const DocumentDefinition& definition, std::
   }
 }
 
-void ensure_warehouse(sqlite3* conn, std::int64_t warehouse_id) {
+void ensure_warehouse(Conn& conn, std::int64_t warehouse_id) {
   if (warehouse_id == 0) {
     throw AppError("INVALID_INPUT", "请选择仓库");
   }
@@ -530,7 +530,7 @@ std::string cents_text(std::int64_t cents) {
 // 合并过的客户由既有 partner 解析跟到保留的那条。额度 0 视为不限制；
 // mode=warn 时首次返回 CREDIT_LIMIT_WARNING 由界面二次确认，确认后放行并写审计；
 // mode=reject 直接拒绝。
-void enforce_credit_limit(sqlite3* conn, const DocumentDefinition& definition,
+void enforce_credit_limit(Conn& conn, const DocumentDefinition& definition,
                           const DocInput& input, const ValidatedDoc& validated,
                           std::int64_t doc_id, bool confirm_credit, const std::string& mode) {
   if (definition.doc_type != "SAL_OUT" || input.partner_id <= 0) return;
@@ -607,7 +607,7 @@ std::string normalize_biz_category(const DocumentDefinition& definition,
   return category;
 }
 
-ValidatedDoc validate_document(sqlite3* conn, const DocInput& input,
+ValidatedDoc validate_document(Conn& conn, const DocInput& input,
                                const DocumentDefinition& definition, bool require_lines,
                                bool ensure_partner) {
   const bool cost_adjust = definition.stock_mode == StockMode::CostAdjust;
@@ -763,14 +763,14 @@ void compute_line_tax(std::int64_t amount_cents, std::int64_t rate_bp, bool incl
   tax_cents = div_round(amount_cents * rate_bp, 10000);
 }
 
-std::int64_t default_tax_rate(sqlite3* conn, std::int64_t item_id) {
+std::int64_t default_tax_rate(Conn& conn, std::int64_t item_id) {
   Stmt stmt(conn, "SELECT tax_rate_bp FROM item WHERE id = ?;");
   stmt.bind(1, item_id);
   if (!stmt.step()) return 0;
   return stmt.i64(0);
 }
 
-std::vector<std::int64_t> insert_lines(sqlite3* conn, std::int64_t doc_id,
+std::vector<std::int64_t> insert_lines(Conn& conn, std::int64_t doc_id,
                                        std::vector<DocLineInput>& lines, bool cost_adjust) {
   std::vector<std::int64_t> line_ids;
   line_ids.reserve(lines.size());
@@ -839,7 +839,7 @@ void ensure_doc_version(std::int64_t doc_id, std::int64_t current, std::int64_t 
 }
 
 // 幂等键：同一个 request_id 只生成一张单据，重复提交返回首次创建的那张。
-bool find_doc_by_request(sqlite3* conn, const std::string& request_id, std::int64_t& id,
+bool find_doc_by_request(Conn& conn, const std::string& request_id, std::int64_t& id,
                          std::string& doc_no, std::int64_t& version) {
   if (request_id.empty()) return false;
   Stmt stmt(conn, "SELECT id, doc_no, version FROM doc_header WHERE request_id = ?;");
@@ -851,7 +851,7 @@ bool find_doc_by_request(sqlite3* conn, const std::string& request_id, std::int6
   return true;
 }
 
-void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
+void insert_header(Conn& conn, std::int64_t id, const std::string& doc_no,
                    std::string_view doc_type, PartnerKind partner_kind, const DocInput& input,
                    std::int64_t warehouse_id, const ValidatedDoc& validated, bool approved,
                    std::string_view order_status) {
@@ -928,7 +928,7 @@ void insert_header(sqlite3* conn, std::int64_t id, const std::string& doc_no,
       .run();
 }
 
-void apply_stock_moves(sqlite3* conn, const DocumentDefinition& definition, std::int64_t doc_id,
+void apply_stock_moves(Conn& conn, const DocumentDefinition& definition, std::int64_t doc_id,
                        std::int64_t warehouse_id, std::int64_t target_warehouse_id,
                        const std::string& biz_time, const std::vector<DocLineInput>& lines,
                        const std::vector<std::int64_t>& line_ids) {
@@ -944,7 +944,7 @@ std::string doc_detail(const std::string& doc_type, const ValidatedDoc& validate
 }
 
 // 审核时生成往来台账：销售应收、采购应付，退货为负数（红字）。
-void create_ar_ap_entry(sqlite3* conn, const DocumentDefinition& definition,
+void create_ar_ap_entry(Conn& conn, const DocumentDefinition& definition,
                         const DocInput& input, const ValidatedDoc& validated,
                         std::int64_t doc_id, const std::string& doc_no) {
   if (definition.finance_direction == 0) {
@@ -975,7 +975,7 @@ void create_ar_ap_entry(sqlite3* conn, const DocumentDefinition& definition,
 }
 
 // 反审核：已核销必须拦截；未核销则作废台账，不物理删除。
-void void_ar_ap_entry(sqlite3* conn, std::int64_t doc_id) {
+void void_ar_ap_entry(Conn& conn, std::int64_t doc_id) {
   std::int64_t entry_id = 0;
   std::int64_t settled = 0;
   {
@@ -999,7 +999,7 @@ void void_ar_ap_entry(sqlite3* conn, std::int64_t doc_id) {
 }
 
 // 反审核销售出库单时，把来源订单行的已转数量退回去；订单状态按剩余量重算。
-void release_order_conversions(sqlite3* conn, std::int64_t doc_id) {
+void release_order_conversions(Conn& conn, std::int64_t doc_id) {
   struct Link {
     std::int64_t order_line_id;
     std::int64_t qty;
@@ -1064,7 +1064,7 @@ DocumentEngine::Created DocumentEngine::save_and_approve(const DocInput& input,
   }
 
   Created created;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     // 幂等：同一个 request_id 只生成一张单据，重复提交直接返回首次创建的那张。
     if (find_doc_by_request(conn, input.request_id, created.id, created.doc_no,
                             created.version)) {
@@ -1114,7 +1114,7 @@ DocumentEngine::Created DocumentEngine::save_draft(const DocInput& input) {
   }
 
   Created created;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     // 幂等：重复提交返回首次创建的草稿。
     if (find_doc_by_request(conn, input.request_id, created.id, created.doc_no,
                             created.version)) {
@@ -1144,7 +1144,7 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
     throw AppError("UNKNOWN_DOC_TYPE", "未知单据类型: " + input.doc_type);
   }
 
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     std::string status;
     std::string doc_type;
     std::string doc_no;
@@ -1197,7 +1197,7 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
       update.bind(14, input.version);
     }
     update.run();
-    if (sqlite3_changes(conn) == 0) {
+    if (conn.changes() == 0) {
       throw AppError("VERSION_CONFLICT", "单据已被他人修改，请刷新后重试");
     }
 
@@ -1211,7 +1211,7 @@ void DocumentEngine::update_draft(std::int64_t doc_id, const DocInput& input) {
 }
 
 void DocumentEngine::delete_draft(std::int64_t doc_id, std::int64_t expected_version) {
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     std::string status;
     std::string doc_no;
     std::int64_t current_version = 0;
@@ -1234,7 +1234,7 @@ void DocumentEngine::delete_draft(std::int64_t doc_id, std::int64_t expected_ver
     if (expected_version >= 0) {
       Stmt header(conn, "DELETE FROM doc_header WHERE id = ? AND version = ?;");
       header.bind(1, doc_id).bind(2, expected_version).run();
-      if (sqlite3_changes(conn) == 0) {
+      if (conn.changes() == 0) {
         throw AppError("VERSION_CONFLICT", "单据已被他人修改，请刷新后重试");
       }
     } else {
@@ -1247,7 +1247,7 @@ void DocumentEngine::delete_draft(std::int64_t doc_id, std::int64_t expected_ver
 
 void DocumentEngine::approve(std::int64_t doc_id, bool confirm_credit,
                              std::int64_t expected_version) {
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     DocInput input;
     std::string status;
     std::string doc_no;
@@ -1335,7 +1335,7 @@ void DocumentEngine::approve(std::int64_t doc_id, bool confirm_credit,
       update.bind(8, expected_version);
     }
     update.run();
-    if (sqlite3_changes(conn) == 0) {
+    if (conn.changes() == 0) {
       throw AppError("VERSION_CONFLICT", "单据已被他人修改，请刷新后重试");
     }
     if (definition->role == DocumentRole::Order) {
@@ -1354,7 +1354,7 @@ void DocumentEngine::approve(std::int64_t doc_id, bool confirm_credit,
 
 DocDetail DocumentEngine::detail(std::int64_t doc_id) {
   DocDetail detail;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     {
       Stmt header(conn,
                   "SELECT id, doc_no, doc_type, doc_date, warehouse_id, target_warehouse_id,"
@@ -1425,7 +1425,7 @@ std::vector<DocSummary> DocumentEngine::list(std::string_view doc_type, int limi
   }
 
   std::vector<DocSummary> documents;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT h.id, h.doc_no, h.doc_date, w.name, h.customer, h.total_qty,"
               " h.total_amount_cents, h.status, h.order_status, h.created_at,"
@@ -1518,7 +1518,7 @@ DocListPage DocumentEngine::list_page(const DocListQuery& query) {
 
   const std::int64_t offset =
       static_cast<std::int64_t>(result.page - 1) * static_cast<std::int64_t>(result.page_size);
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     {
       Stmt totals(conn,
                   "SELECT COUNT(*), COALESCE(SUM(h.total_amount_cents), 0)"
@@ -1573,7 +1573,7 @@ DocListPage DocumentEngine::list_page(const DocListQuery& query) {
 }
 
 void DocumentEngine::reverse(std::int64_t doc_id, std::int64_t expected_version) {
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     std::string doc_type;
     std::string status;
     std::string doc_no;
@@ -1696,7 +1696,7 @@ void DocumentEngine::reverse(std::int64_t doc_id, std::int64_t expected_version)
       update.bind(2, expected_version);
     }
     update.run();
-    if (sqlite3_changes(conn) == 0) {
+    if (conn.changes() == 0) {
       throw AppError("VERSION_CONFLICT", "单据已被他人修改，请刷新后重试");
     }
     release_order_conversions(conn, doc_id);
@@ -1717,7 +1717,7 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
   }
 
   OrderConversion result;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     // 幂等：同一个 request_id 只生成一张下游单据，重复提交直接返回首次创建的那张。
     // 必须放在 enforce_document_quota 之前，避免回放时误扣配额。
     std::int64_t replay_version = 0;
@@ -1901,7 +1901,7 @@ OrderConversion DocumentEngine::convert_order(std::int64_t order_id,
 }
 
 void DocumentEngine::close_order(std::int64_t order_id) {
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     std::string doc_type;
     std::string status;
     std::string order_status;

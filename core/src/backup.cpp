@@ -2,6 +2,8 @@
 
 #include <sqlite3.h>
 
+#include "xiaotu/db.h"
+
 #include <algorithm>
 #include <chrono>
 #include <ctime>
@@ -50,9 +52,42 @@ std::string file_modified_text(const std::filesystem::path& path) {
   return buffer;
 }
 
+// 备份文件校验是 SQLite 文件级特性，直接用裸连接与 sqlite3 C API，
+// 不经过 Db/Conn 抽象（PostgreSQL 后端的备份实现另说）。
+class RawStmt {
+ public:
+  RawStmt(sqlite3* db, const char* sql) : db_(db) {
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt_, nullptr) != SQLITE_OK) {
+      stmt_ = nullptr;
+    }
+  }
+  ~RawStmt() {
+    if (stmt_ != nullptr) {
+      sqlite3_finalize(stmt_);
+    }
+  }
+  bool ok() const { return stmt_ != nullptr; }
+  void bind_text(int index, std::string_view value) {
+    sqlite3_bind_text(stmt_, index, value.data(), static_cast<int>(value.size()), SQLITE_TRANSIENT);
+  }
+  bool step() { return sqlite3_step(stmt_) == SQLITE_ROW; }
+  std::int64_t i64(int column) const { return sqlite3_column_int64(stmt_, column); }
+  std::string text(int column) const {
+    const auto* data = sqlite3_column_text(stmt_, column);
+    return data != nullptr ? std::string(reinterpret_cast<const char*>(data)) : std::string();
+  }
+
+ private:
+  sqlite3* db_ = nullptr;
+  sqlite3_stmt* stmt_ = nullptr;
+};
+
 bool has_table(sqlite3* connection, const char* name) {
-  Stmt stmt(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?;");
-  stmt.bind(1, name);
+  RawStmt stmt(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?;");
+  if (!stmt.ok()) {
+    return false;
+  }
+  stmt.bind_text(1, name);
   return stmt.step() && stmt.i64(0) > 0;
 }
 
@@ -258,7 +293,7 @@ void update_failure_status(const std::filesystem::path& directory, std::string_v
 // 备份成功/失败都写 audit_log；数据库不可写时退化为日志，不影响主流程。
 void audit_backup(Db& db, bool success, std::string_view tag, std::string_view detail) {
   try {
-    db.write([&](sqlite3* connection) {
+    db.write([&](Conn& connection) {
       audit_write(connection, "backup", "database", 0, tag,
                   success ? detail : ("失败：" + std::string(detail)));
     });
@@ -333,8 +368,10 @@ void verify_database(const std::filesystem::path& path) {
   }
   std::string result;
   try {
-    Stmt stmt(connection, "PRAGMA integrity_check;");
-    result = stmt.step() ? stmt.text(0) : std::string{};
+    RawStmt stmt(connection, "PRAGMA integrity_check;");
+    if (stmt.ok()) {
+      result = stmt.step() ? stmt.text(0) : std::string{};
+    }
   } catch (const AppError& error) {
     sqlite3_close(connection);
     throw AppError("BACKUP_INVALID", "备份文件无法读取：" + std::string(error.what()));
@@ -354,7 +391,7 @@ BackupResult backup_database(Db& db, const std::filesystem::path& directory,
   const std::string name = "app-" + timestamp_tag() + "-" + std::string(tag);
   const std::filesystem::path target = unique_path(directory, name);
   const std::string target_text = target.string();
-  db.write_raw([&](sqlite3* connection) {
+  db.write_raw([&](Conn& connection) {
     Stmt stmt(connection, "VACUUM INTO ?;");
     stmt.bind(1, target_text);
     stmt.run();
@@ -392,7 +429,7 @@ void audit_restore(const std::filesystem::path& database_path, std::string_view 
       log_warn("恢复审计跳过：目标库 schema 早于 v5，没有 audit_log");
       return;
     }
-    db.write([&](sqlite3* conn) {
+    db.write([&](Conn& conn) {
       audit_write_as(conn, actor, "restore", "database", 0, source_name, detail);
     });
   } catch (const std::exception& error) {
@@ -496,16 +533,16 @@ int backup_schema_version(const std::filesystem::path& backup) {
 
   int version = 0;
   try {
-    Stmt migrations(connection, "SELECT COALESCE(MAX(version), 0) FROM schema_migration;");
-    if (migrations.step()) {
+    RawStmt migrations(connection, "SELECT COALESCE(MAX(version), 0) FROM schema_migration;");
+    if (migrations.ok() && migrations.step()) {
       version = static_cast<int>(migrations.i64(0));
     }
   } catch (...) {
     // 旧库可能还没有 schema_migration 表，退回 user_version。
   }
   try {
-    Stmt pragma(connection, "PRAGMA user_version;");
-    if (pragma.step()) {
+    RawStmt pragma(connection, "PRAGMA user_version;");
+    if (pragma.ok() && pragma.step()) {
       version = std::max(version, static_cast<int>(pragma.i64(0)));
     }
   } catch (...) {
@@ -629,8 +666,8 @@ BackupInspection inspect_backup(const std::filesystem::path& backup) {
     return result;
   }
   try {
-    Stmt integrity(connection, "PRAGMA integrity_check;");
-    result.integrity_ok = integrity.step() && integrity.text(0) == "ok";
+    RawStmt integrity(connection, "PRAGMA integrity_check;");
+    result.integrity_ok = integrity.ok() && integrity.step() && integrity.text(0) == "ok";
   } catch (const std::exception&) {
     result.integrity_ok = false;
   }
@@ -848,11 +885,18 @@ BackupResult run_manual_backup(Db& db, const std::filesystem::path& data_dir,
 bool database_writable(Db& db) {
   bool writable = false;
   try {
-    db.write_raw([&](sqlite3* connection) {
-      if (sqlite3_exec(connection, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) != SQLITE_OK) {
+    db.write_raw([&](Conn& connection) {
+      try {
+        exec_sql(connection, "BEGIN IMMEDIATE;");
+      } catch (...) {
         return;
       }
-      writable = sqlite3_exec(connection, "ROLLBACK;", nullptr, nullptr, nullptr) == SQLITE_OK;
+      try {
+        exec_sql(connection, "ROLLBACK;");
+        writable = true;
+      } catch (...) {
+        writable = false;
+      }
     });
   } catch (...) {
     writable = false;

@@ -1,6 +1,6 @@
 #include "xiaotu/finance_service.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <string>
 #include <vector>
@@ -24,7 +24,7 @@ std::string mark_list(std::size_t count) {
 std::vector<ArApRow> FinanceService::entries(int direction, std::string_view partner_key,
                                              std::string_view status) const {
   std::vector<ArApRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     // 按单位筛选时展开历史键：C:/S: 与新 P: 属于同一 partner 维度。
     const std::vector<std::string> aliases =
         partner_key.empty() ? std::vector<std::string>{}

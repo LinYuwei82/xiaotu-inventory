@@ -1,6 +1,6 @@
 #include "xiaotu/masterdata_io.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <algorithm>
 #include <cctype>
@@ -90,7 +90,7 @@ struct PartnerRecord {
 
 std::vector<ItemRecord> load_items(Db& db) {
   std::vector<ItemRecord> records;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT id, code, name, spec, unit, unit_id, status, is_deleted,"
               " category_id, tax_rate_bp, barcode FROM item ORDER BY code;");
@@ -128,7 +128,7 @@ std::vector<ItemRecord> load_items(Db& db) {
 
 std::vector<PartnerRecord> load_partners(Db& db, const char* table, bool with_credit) {
   std::vector<PartnerRecord> records;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     // 客户额度以 partner 为准，导出也读 partner；没有 partner 时回落到镜像。
     const std::string sql =
         with_credit
@@ -737,7 +737,7 @@ ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
 
     report.outcome.backup = backup_before_import(db, kind, backup_dir).path.filename().string();
     const std::string name = safe_filename(filename);
-    db.write([&](sqlite3* conn) {
+    db.write([&](Conn& conn) {
       for (const auto& plan : plans) {
         gen::ItemRow row;
         if (plan.current != nullptr) {
@@ -783,7 +783,7 @@ ImportReport import_master(Db& db, MasterKind kind, std::string_view bytes,
 
   report.outcome.backup = backup_before_import(db, kind, backup_dir).path.filename().string();
   const std::string name = safe_filename(filename);
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     for (const auto& plan : plans) {
       gen::SupplierRow row;
       if (plan.current != nullptr) {

@@ -1,6 +1,6 @@
 #include "xiaotu/audit.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <string>
 
@@ -8,12 +8,12 @@
 
 namespace xiaotu {
 
-void audit_write(sqlite3* conn, std::string_view action, std::string_view entity,
+void audit_write(Conn& conn, std::string_view action, std::string_view entity,
                  std::int64_t entity_id, std::string_view entity_no, std::string_view detail) {
   audit_write_as(conn, current_user(), action, entity, entity_id, entity_no, detail);
 }
 
-void audit_write_as(sqlite3* conn, std::string_view actor, std::string_view action,
+void audit_write_as(Conn& conn, std::string_view actor, std::string_view action,
                     std::string_view entity, std::int64_t entity_id,
                     std::string_view entity_no, std::string_view detail) {
   // 来源 IP 与请求号取自当前请求上下文：CLI / 无请求场景下为空串，不编造。
@@ -37,7 +37,7 @@ void audit_write_as(sqlite3* conn, std::string_view actor, std::string_view acti
 
 std::vector<AuditRow> audit_recent(Db& db, int limit) {
   std::vector<AuditRow> rows;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT id, at, actor, action, entity, entity_id, entity_no, detail,"
               " client_ip, request_id FROM audit_log"
@@ -139,7 +139,7 @@ AuditPage audit_query(Db& db, const AuditFilter& filter) {
 
   const AuditWhere where = build_where(filter);
 
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt count_stmt(conn, "SELECT COUNT(*)" + where.sql + ";");
     apply_binds(count_stmt, where.binds);
     if (count_stmt.step()) {
@@ -164,7 +164,7 @@ AuditPage audit_query(Db& db, const AuditFilter& filter) {
 std::vector<AuditRow> audit_all(Db& db, const AuditFilter& filter) {
   std::vector<AuditRow> rows;
   const AuditWhere where = build_where(filter);
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn, "SELECT id, at, actor, action, entity, entity_id, entity_no, detail,"
                     " client_ip, request_id" +
                         where.sql + " ORDER BY id DESC;");

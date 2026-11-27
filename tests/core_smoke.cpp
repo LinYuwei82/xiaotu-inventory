@@ -119,7 +119,7 @@ int main() {
         xiaotu::Db pool_db(dir / "pool.db", 1, std::chrono::milliseconds(80));
         std::latch started(1);
         std::thread holder([&] {
-          pool_db.read([&](sqlite3*) {
+          pool_db.read([&](xiaotu::Conn&) {
             started.count_down();
             std::this_thread::sleep_for(std::chrono::milliseconds(400));
           });
@@ -127,7 +127,7 @@ int main() {
         started.wait();
         bool busy = false;
         try {
-          pool_db.read([](sqlite3*) {});
+          pool_db.read([](xiaotu::Conn&) {});
         } catch (const xiaotu::AppError& error) {
           busy = error.code() == "DB_BUSY";
         }
@@ -137,7 +137,7 @@ int main() {
         // 写锁同理：占住写连接时，其他写入不能无限排队。
         std::latch writing(1);
         std::thread writer([&] {
-          pool_db.write([&](sqlite3*) {
+          pool_db.write([&](xiaotu::Conn&) {
             writing.count_down();
             std::this_thread::sleep_for(std::chrono::milliseconds(400));
           });
@@ -145,7 +145,7 @@ int main() {
         writing.wait();
         bool write_busy = false;
         try {
-          pool_db.write([](sqlite3*) {});
+          pool_db.write([](xiaotu::Conn&) {});
         } catch (const xiaotu::AppError& error) {
           write_busy = error.code() == "DB_BUSY";
         }
@@ -154,7 +154,7 @@ int main() {
       }
 
       // v28 无数据情形：空库只建表，不产生任何 partner / 映射行。
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt partner_count(conn, "SELECT COUNT(*) FROM partner;");
         check(partner_count.step() && partner_count.i64(0) == 0,
               "空库迁移后 partner 应为 0 行");
@@ -172,7 +172,7 @@ int main() {
         xiaotu::migrate(empty_db);
         check(empty_db.schema_version() == xiaotu::target_schema_version(),
               "空库迁移后应等于目标 schema 版本");
-        empty_db.read([&](sqlite3* conn) {
+        empty_db.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM schema_migration;");
           xiaotu::Stmt max_version(conn, "SELECT MAX(version) FROM schema_migration;");
           check(count.step() && count.i64(0) == xiaotu::target_schema_version(),
@@ -196,22 +196,28 @@ int main() {
                         static_cast<unsigned long long>(hash));
           return std::string(buffer);
         };
-        chain_db.write_raw([&](sqlite3* conn) {
-          char* error = nullptr;
-          sqlite3_exec(conn,
-                       "CREATE TABLE schema_migration ("
-                       "  version    INTEGER PRIMARY KEY,"
-                       "  name       TEXT NOT NULL,"
-                       "  checksum   TEXT NOT NULL,"
-                       "  applied_at TEXT NOT NULL"
-                       ");",
-                       nullptr, nullptr, &error);
-          check(error == nullptr, "应能创建 schema_migration");
-          if (error) sqlite3_free(error);
-          sqlite3_exec(conn, migrations.front().sql, nullptr, nullptr, &error);
-          check(error == nullptr, "v1 应能单独执行");
-          if (error) {
-            sqlite3_free(error);
+        chain_db.write_raw([&](xiaotu::Conn& conn) {
+          bool created = true;
+          try {
+            xiaotu::exec_sql(conn,
+                             "CREATE TABLE schema_migration ("
+                             "  version    INTEGER PRIMARY KEY,"
+                             "  name       TEXT NOT NULL,"
+                             "  checksum   TEXT NOT NULL,"
+                             "  applied_at TEXT NOT NULL"
+                             ");");
+          } catch (...) {
+            created = false;
+          }
+          check(created, "应能创建 schema_migration");
+          bool v1_ok = true;
+          try {
+            xiaotu::exec_sql(conn, migrations.front().sql);
+          } catch (...) {
+            v1_ok = false;
+          }
+          check(v1_ok, "v1 应能单独执行");
+          if (!v1_ok) {
             return;
           }
           xiaotu::Stmt insert(conn,
@@ -224,7 +230,7 @@ int main() {
         xiaotu::migrate(chain_db);
         check(chain_db.schema_version() == xiaotu::target_schema_version(),
               "v1 库应逐版升到目标 schema 版本");
-        chain_db.read([&](sqlite3* conn) {
+        chain_db.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn, "SELECT version FROM schema_migration ORDER BY version;");
           std::vector<int> versions;
           while (stmt.step()) versions.push_back(static_cast<int>(stmt.i64(0)));
@@ -630,7 +636,7 @@ int main() {
             "应有三张采购入库单，期初与首笔采购被反审核为 VOIDED");
 
       // v35 数据缝：批次/保质期只为将来预留。两列存在、默认空串，现有单据与流水写入后仍为空。
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         const auto empty_default = [&](const char* table, const char* column) {
           xiaotu::Stmt stmt(conn, std::string("PRAGMA table_info(") + table + ");");
           while (stmt.step()) {
@@ -840,7 +846,7 @@ int main() {
       const auto supplier_doc_detail = documents.detail(supplier_doc_created.id);
       check(supplier_doc_detail.partner_id == supplier.id, "采购单据应记录供应商 id");
       check(supplier_doc_detail.partner == "测试供应商", "单据往来单位应取供应商档案名称");
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt key(conn, "SELECT partner_key FROM ar_ap_entry WHERE doc_id = ?;");
         key.bind(1, supplier_doc_created.id);
         check(key.step(), "采购审核后应生成应付记录");
@@ -861,7 +867,7 @@ int main() {
           xiaotu::DocLineInput{.item_id = supplier_item.id, .qty = q(1), .price_cents = 500});
       const auto supplier_doc2_created = documents.save_and_approve(supplier_doc2);
       check(supplier_doc2_created.id > 0, "同一供应商的第二张单据应审核成功");
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt map(conn,
                          "SELECT COUNT(*), MIN(partner_id) FROM partner_legacy_map"
                          " WHERE side = 'supplier' AND legacy_id = ?;");
@@ -973,7 +979,7 @@ int main() {
             "应收金额应为 4000 分且未核销");
       check(ar_rows.at(0).partner_id == customer.id && ar_rows.at(0).partner_name == "测试客户档案",
             "应收应引用客户档案");
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt key(conn, "SELECT partner_key FROM ar_ap_entry WHERE doc_id = ?;");
         key.bind(1, customer_sale_doc.id);
         check(key.step() && key.text(0) == "P:" + std::to_string(customer.id),
@@ -1600,7 +1606,7 @@ int main() {
             .code = "PREV-S2", .name = "预览同名乙", .phone = "13900000002"});
         const std::string customer_key = "C:" + std::to_string(preview_customer.id);
         const std::string supplier_key = "S:" + std::to_string(preview_supplier.id);
-        db.write([&](sqlite3* conn) {
+        db.write([&](xiaotu::Conn& conn) {
           for (const auto& [key, direction, amount] :
                std::vector<std::tuple<std::string, int, std::int64_t>>{
                    {customer_key, 1, 1200}, {supplier_key, -1, 800}, {"T:预览测试甲", 1, 300}}) {
@@ -1636,7 +1642,7 @@ int main() {
           if (unit.name == "预览测试甲" && unit.keys.size() == 3) found_three_keys = true;
         }
         check(found_three_keys, "同名 C:/S:/T: 三个 key 应列入多 key 清单");
-        db.write([&](sqlite3* conn) {
+        db.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn,
                             "DELETE FROM ar_ap_entry WHERE partner_key IN (?, ?, 'T:预览测试甲');");
           stmt.bind(1, customer_key).bind(2, supplier_key).run();
@@ -2076,7 +2082,7 @@ int main() {
       check(documents.detail(partial.doc_id).remark == "订单备注A",
             "转出应原样继承订单备注，不拼来源单号");
       // 订单确认后没有界面改备注的入口；这里直接改库，模拟「之后订单备注变了」。
-      db.write([&](sqlite3* conn) {
+      db.write([&](xiaotu::Conn& conn) {
         xiaotu::Stmt changed(conn, "UPDATE doc_header SET remark = '订单备注B' WHERE id = ?;");
         changed.bind(1, order.id).run();
       });
@@ -2120,7 +2126,7 @@ int main() {
       check(no_more, "已全部转出的订单应拒绝继续转出");
 
       // 模拟用户把下游单据的备注手工改过：反审核 + 重转不应覆盖它。
-      db.write([&](sqlite3* conn) {
+      db.write([&](xiaotu::Conn& conn) {
         xiaotu::Stmt edited(
             conn, "UPDATE doc_header SET remark = '手工改备注' WHERE id = ?;");
         edited.bind(1, partial.doc_id).run();
@@ -2188,7 +2194,7 @@ int main() {
           items.create(xiaotu::gen::ItemRow{.code = "PO001", .name = "采购订单商品"});
       auto ap_entries = [&](std::int64_t doc_id) {
         std::int64_t count = 0;
-        db.read([&](sqlite3* conn) {
+        db.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn, "SELECT COUNT(*) FROM ar_ap_entry WHERE doc_id = ?;");
           stmt.bind(1, doc_id);
           if (stmt.step()) count = stmt.i64(0);
@@ -2358,7 +2364,7 @@ int main() {
       check(stock.ledger(other.id).size() == 2, "其他出入库应各写一条库存流水");
 
       std::int64_t other_entries = 0;
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt stmt(conn,
                           "SELECT COUNT(*) FROM ar_ap_entry WHERE doc_id IN (?, ?);");
         stmt.bind(1, other_in_doc.id).bind(2, other_out_doc.id);
@@ -2498,7 +2504,7 @@ int main() {
           ++approved_docs;
         } else if (detail.status == "DRAFT") {
           ++draft_docs;
-          db.read([&](sqlite3* conn) {
+          db.read([&](xiaotu::Conn& conn) {
             xiaotu::Stmt stmt(conn, "SELECT COUNT(*) FROM ar_ap_entry WHERE doc_id = ?;");
             stmt.bind(1, doc_id);
             if (stmt.step()) draft_entries += stmt.i64(0);
@@ -2559,7 +2565,7 @@ int main() {
 
       std::int64_t reverse_entries = 0;
       std::string reverse_entry_status;
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt stmt(conn,
                           "SELECT COUNT(*), COALESCE(MAX(status), '') FROM ar_ap_entry"
                           " WHERE doc_id = ?;");
@@ -2579,7 +2585,7 @@ int main() {
       check(healthy.qty_difference_count == 0, "健康数据重算数量应一致");
       check(healthy.difference_count == 0, "健康数据重算金额应无差异");
 
-      db.write([&](sqlite3* conn) {
+      db.write([&](xiaotu::Conn& conn) {
         xiaotu::Stmt stmt(conn,
                   "UPDATE stock_balance SET amount_cents = amount_cents + 12345"
                   " WHERE item_id = ?;");
@@ -2649,7 +2655,7 @@ int main() {
       bool negative_rejected = false;
       std::string negative_message;
       try {
-        db.write([&](sqlite3* conn) {
+        db.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt update(conn, "UPDATE stock_balance SET qty = -1 WHERE item_id = ?;");
           update.bind(1, claimed.id).run();
         });
@@ -2684,7 +2690,7 @@ int main() {
       settings.update(setting);
       bool negative_blocked_again = false;
       try {
-        db.write([&](sqlite3* conn) {
+        db.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt update(conn, "UPDATE stock_balance SET qty = -1 WHERE item_id = ?;");
           update.bind(1, oversell_item.id).run();
         });
@@ -2797,7 +2803,7 @@ int main() {
       check(confirmed.id > 0, "二次确认后应允许继续出库");
       {
         std::int64_t audited = 0;
-        db.read([&](sqlite3* conn) {
+        db.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn,
                             "SELECT COUNT(*) FROM audit_log"
                             " WHERE action = 'credit_over_limit' AND entity_id = ?;");
@@ -2825,7 +2831,7 @@ int main() {
       {
         std::int64_t partner_limit = 0;
         std::int64_t mirror_limit = 0;
-        db.read([&](sqlite3* conn) {
+        db.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt partner(conn, "SELECT credit_limit_cents FROM partner WHERE id = ?;");
           partner.bind(1, credit_customer.id);
           if (partner.step()) partner_limit = partner.i64(0);
@@ -2841,7 +2847,7 @@ int main() {
                               xiaotu::gen::CustomerRow{.code = "C-CREDIT",
                                                        .name = "额度客户",
                                                        .credit_limit_cents = 100000});
-      db.write([&](sqlite3* conn) {
+      db.write([&](xiaotu::Conn& conn) {
         xiaotu::Stmt partner(conn, "UPDATE partner SET credit_limit_cents = 10000 WHERE id = ?;");
         partner.bind(1, credit_customer.id).run();
         xiaotu::Stmt mirror(conn,
@@ -2870,7 +2876,7 @@ int main() {
       }
 
       // 历史分裂修补：partner 为 0、镜像非 0 时并回 partner，且可重复执行。
-      db.write([&](sqlite3* conn) {
+      db.write([&](xiaotu::Conn& conn) {
         xiaotu::Stmt partner(conn, "UPDATE partner SET credit_limit_cents = 0 WHERE id = ?;");
         partner.bind(1, credit_customer.id).run();
         xiaotu::Stmt mirror(conn,
@@ -2878,13 +2884,13 @@ int main() {
         mirror.bind(1, credit_customer.id).run();
       });
       std::size_t repaired = 0;
-      db.write([&](sqlite3* conn) {
+      db.write([&](xiaotu::Conn& conn) {
         repaired = xiaotu::repair_customer_credit_mirror(conn);
       });
       check(repaired == 1, "partner 额度为 0 而镜像非 0 时应并回 partner");
       {
         std::int64_t partner_limit = 0;
-        db.read([&](sqlite3* conn) {
+        db.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn, "SELECT credit_limit_cents FROM partner WHERE id = ?;");
           stmt.bind(1, credit_customer.id);
           if (stmt.step()) partner_limit = stmt.i64(0);
@@ -2892,7 +2898,7 @@ int main() {
         check(partner_limit == 666600, "修补后 partner 应等于镜像值");
       }
       repaired = 0;
-      db.write([&](sqlite3* conn) {
+      db.write([&](xiaotu::Conn& conn) {
         repaired = xiaotu::repair_customer_credit_mirror(conn);
       });
       check(repaired == 0, "重复修补应幂等");
@@ -2933,7 +2939,7 @@ int main() {
               "同一 request_id 重复提交应返回首次创建的单据");
         check(first.version == 1 && replay.version == 1, "新建即审核的单据版本应为 1");
         std::int64_t headers = 0;
-        db.read([&](sqlite3* conn) {
+        db.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn, "SELECT COUNT(*) FROM doc_header WHERE request_id = ?;");
           stmt.bind(1, "req-idem-1");
           if (stmt.step()) headers = stmt.i64(0);
@@ -2973,7 +2979,7 @@ int main() {
       auto last_restore_audit = [](const std::filesystem::path& path) {
         xiaotu::AuditRow row;
         xiaotu::Db db(path);
-        db.read([&](sqlite3* conn) {
+        db.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(
               conn,
               "SELECT id, at, actor, action, entity, entity_id, entity_no, detail FROM audit_log"
@@ -3044,9 +3050,10 @@ int main() {
       {
         xiaotu::Db mig(dir / "v28-migrate.db", 2);
         xiaotu::migrate(mig);
-        mig.write_raw([&](sqlite3* conn) {
-          const int rc =
-              sqlite3_exec(conn,
+        mig.write_raw([&](xiaotu::Conn& conn) {
+          bool rollback_ok = true;
+          try {
+            xiaotu::exec_sql(conn,
                            "DROP TABLE partner_merge_log;"
                            "DROP TABLE partner_legacy_map;"
                            "DROP TABLE partner;"
@@ -3065,9 +3072,11 @@ int main() {
                            "DELETE FROM app_setting WHERE key IN"
                            " ('cost_basis', 'cost_basis_changed_at');"
                            "DELETE FROM schema_migration WHERE version >= 28;"
-                           "PRAGMA user_version = 27;",
-                           nullptr, nullptr, nullptr);
-          check(rc == SQLITE_OK, "模拟库应能回退到 v27 结构");
+                           "PRAGMA user_version = 27;");
+          } catch (...) {
+            rollback_ok = false;
+          }
+          check(rollback_ok, "模拟库应能回退到 v27 结构");
         });
         check(mig.schema_version() == 27, "回退后模拟库应为 v27");
 
@@ -3086,7 +3095,7 @@ int main() {
         const auto sup_b = mig_suppliers.create(
             xiaotu::gen::SupplierRow{.code = "C001", .name = "迁移供应商乙"});
 
-        mig.write([&](sqlite3* conn) {
+        mig.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn,
                             "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
                             " partner_id, partner_name, partner_key, biz_date, due_date,"
@@ -3103,19 +3112,22 @@ int main() {
 
         // 造数据阶段需要写审计，先用最新结构写完；随后回退审计列与 v35 预留列，模拟 v27 老库，
         // 这样迁移 v34 时历史审计行的来源 IP / 请求号会由默认值补成空串。
-        mig.write_raw([&](sqlite3* conn) {
-          const int rc =
-              sqlite3_exec(conn,
-                           "ALTER TABLE audit_log DROP COLUMN client_ip;"
-                           "ALTER TABLE audit_log DROP COLUMN request_id;",
-                           nullptr, nullptr, nullptr);
-          check(rc == SQLITE_OK, "模拟库应能回退审计来源两列");
+        mig.write_raw([&](xiaotu::Conn& conn) {
+          bool rollback_ok = true;
+          try {
+            xiaotu::exec_sql(conn,
+                             "ALTER TABLE audit_log DROP COLUMN client_ip;"
+                             "ALTER TABLE audit_log DROP COLUMN request_id;");
+          } catch (...) {
+            rollback_ok = false;
+          }
+          check(rollback_ok, "模拟库应能回退审计来源两列");
         });
 
         xiaotu::migrate(mig);
         check(mig.schema_version() == 40, "有数据的模拟库应迁到 v40");
 
-        mig.read([&](sqlite3* conn) {
+        mig.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt count(conn, "SELECT COUNT(*) FROM partner;");
           check(count.step() && count.i64(0) == 4, "4 条客户/供应商应 1:1 搬入 partner");
 
@@ -3185,7 +3197,7 @@ int main() {
         const std::string sup_p_key = "P:" + std::to_string(supplier_partner);
         const std::string both_p_key = "P:" + std::to_string(both_partner);
 
-        mig.write([&](sqlite3* conn) {
+        mig.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt both(conn,
                             "INSERT INTO partner (id, code, name, contact, phone, address,"
                             " tax_no, is_customer, is_supplier, credit_limit_cents, credit_days,"
@@ -3222,7 +3234,7 @@ int main() {
           add_entry(both_p_key, -1, 500, "兼买卖单位", both_partner);
         });
 
-        mig.read([&](sqlite3* conn) {
+        mig.read([&](xiaotu::Conn& conn) {
           check(xiaotu::partner_key_direction(conn, cust_key) == 1,
                 "C: 键老数据仍判应收");
           check(xiaotu::partner_key_direction(conn, sup_key) == -1,
@@ -3333,14 +3345,14 @@ int main() {
         check(t_independent, "T: 键应保持按名称独立");
 
         // 档案不存在时不产出悬空 P:，退回 T: 文本键。
-        mig.read([&](sqlite3* conn) {
+        mig.read([&](xiaotu::Conn& conn) {
           check(xiaotu::partner_key_for_archive(conn, xiaotu::PartnerSide::Supplier, 987654321,
                                                 "无档案单位", true) == "T:无档案单位",
                 "档案不存在时应回落到 T: 文本键");
         });
 
         // 兼买卖单位补一条应收后，方向以台账两边都有为准，默认应收。
-        mig.write([&](sqlite3* conn) {
+        mig.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn,
                             "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
                             " partner_id, partner_name, partner_key, biz_date, due_date,"
@@ -3353,25 +3365,25 @@ int main() {
               .bind(4, kToday + " 00:00:00")
               .run();
         });
-        mig.read([&](sqlite3* conn) {
+        mig.read([&](xiaotu::Conn& conn) {
           check(xiaotu::partner_key_direction(conn, both_p_key) == 1,
                 "兼买卖单位台账两边都有时默认应收，不按角色硬推");
         });
 
         // 来源标记：历史迁移默认 MANUAL，首次引用补建 AUTO_ARCHIVE，归并预览能区分。
-        mig.read([&](sqlite3* conn) {
+        mig.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt origins(conn, "SELECT COUNT(*) FROM partner WHERE origin <> 'MANUAL';");
           check(origins.step() && origins.i64(0) == 0, "历史迁移记录应默认为 MANUAL");
         });
         const auto auto_customer = mig_customers.create(
             xiaotu::gen::CustomerRow{.code = "SRC-A", .name = "来源标记单位"});
         std::int64_t auto_partner = 0;
-        mig.write([&](sqlite3* conn) {
+        mig.write([&](xiaotu::Conn& conn) {
           auto_partner = xiaotu::ensure_partner_for_archive(
               conn, xiaotu::PartnerSide::Customer, auto_customer.id);
           check(auto_partner == auto_customer.id, "自动补建客户应沿用档案 id");
         });
-        mig.read([&](sqlite3* conn) {
+        mig.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt origin(conn, "SELECT origin FROM partner WHERE id = ?;");
           origin.bind(1, auto_partner);
           check(origin.step() && origin.text(0) == "AUTO_ARCHIVE",
@@ -3380,7 +3392,7 @@ int main() {
 
         const std::int64_t manual_partner =
             (customer_max > auto_customer.id ? customer_max : auto_customer.id) + 9000;
-        mig.write([&](sqlite3* conn) {
+        mig.write([&](xiaotu::Conn& conn) {
           // 手工创建的 partner 不写 origin，走默认 MANUAL。
           xiaotu::Stmt partner(conn,
                                "INSERT INTO partner (id, code, name, contact, phone, address,"
@@ -3424,7 +3436,7 @@ int main() {
 
         // 供应商合并：沿用 partner_legacy_map 的 S: 历史键，合并后账龄归到保留档案。
         std::int64_t sup_b_partner = 0;
-        mig.read([&](sqlite3* conn) {
+        mig.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn,
                             "SELECT partner_id FROM partner_legacy_map"
                             " WHERE side = 'supplier' AND legacy_id = ?;");
@@ -3432,7 +3444,7 @@ int main() {
           if (stmt.step()) sup_b_partner = stmt.i64(0);
         });
         check(sup_b_partner > 0, "供应商乙应有 partner 映射");
-        mig.write([&](sqlite3* conn) {
+        mig.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn,
                             "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
                             " partner_id, partner_name, partner_key, biz_date, due_date,"
@@ -3482,7 +3494,7 @@ int main() {
               "撤销供应商合并后账龄应回到两条档案");
 
         // 合并动作：两条客户档案合并后，台账、账龄与对账单归到保留档案一行且金额相加。
-        mig.write([&](sqlite3* conn) {
+        mig.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn,
                             "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
                             " partner_id, partner_name, partner_key, biz_date, due_date,"
@@ -3510,7 +3522,7 @@ int main() {
             mig, cust_a.id, {static_cast<std::int64_t>(cust_b.id)}, "test");
         check(merged.log_id > 0 && merged.target_id == cust_a.id,
               "合并应写入日志并返回保留档案");
-        mig.read([&](sqlite3* conn) {
+        mig.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt source(conn, "SELECT merged_into FROM partner WHERE id = ?;");
           source.bind(1, cust_b.id);
           check(source.step() && source.i64(0) == cust_a.id,
@@ -3553,7 +3565,7 @@ int main() {
 
         // 撤销：没有新业务写入，完整回到合并前两条档案。
         xiaotu::partner_merge_undo(mig, merged.log_id, "test");
-        mig.read([&](sqlite3* conn) {
+        mig.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt target(conn, "SELECT merged_into FROM partner WHERE id = ?;");
           target.bind(1, cust_a.id);
           check(target.step() && target.i64(0) == 0, "撤销后保留档案 merged_into 应清零");
@@ -3579,7 +3591,7 @@ int main() {
         // 合并后新写业务：撤销被拒绝且不做半截撤销。
         const auto merged_again = xiaotu::partner_merge(
             mig, cust_a.id, {static_cast<std::int64_t>(cust_b.id)}, "test");
-        mig.write([&](sqlite3* conn) {
+        mig.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn,
                             "INSERT INTO ar_ap_entry (id, doc_id, doc_no, doc_type, direction,"
                             " partner_id, partner_name, partner_key, biz_date, due_date,"
@@ -3604,7 +3616,7 @@ int main() {
           undo_rejected = error.code() == "MERGE_UNDO_BLOCKED";
         }
         check(undo_rejected, "合并后新写业务再撤销应被拒绝");
-        mig.read([&](sqlite3* conn) {
+        mig.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt source(conn, "SELECT merged_into FROM partner WHERE id = ?;");
           source.bind(1, cust_b.id);
           check(source.step() && source.i64(0) == cust_a.id,
@@ -3628,7 +3640,7 @@ int main() {
         // 幂等：每次启动都会跑 migrate，已应用的 v40 只能跳过。
         xiaotu::migrate(ldb);
         check(ldb.schema_version() == 40, "重复迁移应保持 v40，不重复建 token 表");
-        ldb.read([&](sqlite3* conn) {
+        ldb.read([&](xiaotu::Conn& conn) {
           bool has_type_date = false;
           bool has_type_status = false;
           // 注：读连接在迁移前已打开，先做一次普通查询让连接加载最新 schema；
@@ -3659,7 +3671,7 @@ int main() {
         });
 
         // 老数据默认空：按老列写入（不带 remark）的历史行应自动落空串。
-        ldb.write([&](sqlite3* conn) {
+        ldb.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt legacy(
               conn,
               "INSERT INTO doc_header (id, doc_no, doc_type, doc_date, warehouse_id, status,"
@@ -3668,7 +3680,7 @@ int main() {
               " '2026-01-01 00:00:00');");
           legacy.bind(1, xiaotu::next_id()).run();
         });
-        ldb.read([&](sqlite3* conn) {
+        ldb.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt old(conn,
                            "SELECT remark FROM doc_header WHERE doc_no = 'OLD-REMARK-1';");
           check(old.step() && old.text(0).empty(), "按老列写入的历史行备注应为空串");
@@ -3842,7 +3854,7 @@ int main() {
         const auto sale_doc = z_docs.save_and_approve(zero_cost_sale);
         check(sale_doc.id > 0, "零成本库存的销售出库应能审核");
 
-        zdb.read([&](sqlite3* conn) {
+        zdb.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt ledger(conn,
                               "SELECT COUNT(*) FROM stock_ledger WHERE amount_cents = 0"
                               " AND qty <> 0;");
@@ -3853,7 +3865,7 @@ int main() {
         // 新约束边界：qty=0 且金额=0 无意义，应被 CHECK 拒绝；
         // qty=0 且金额非 0（成本调整腿）应可写入。
         bool all_zero_rejected = false;
-        zdb.write([&](sqlite3* conn) {
+        zdb.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt bad(conn,
                            "INSERT INTO stock_ledger (id, doc_id, doc_line_id, biz_type,"
                            " biz_time, warehouse_id, item_id, qty, amount_cents, created_at)"
@@ -3871,7 +3883,7 @@ int main() {
         });
         check(all_zero_rejected, "数量与金额同时为 0 的流水应被拒绝");
 
-        zdb.write([&](sqlite3* conn) {
+        zdb.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt ok(conn,
                           "INSERT INTO stock_ledger (id, doc_id, doc_line_id, biz_type,"
                           " biz_time, warehouse_id, item_id, qty, amount_cents, created_at)"
@@ -3883,7 +3895,7 @@ int main() {
               .bind(4, gift_item.id)
               .run();
         });
-        zdb.read([&](sqlite3* conn) {
+        zdb.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt kept(conn,
                            "SELECT COUNT(*) FROM stock_ledger WHERE qty = 0"
                            " AND amount_cents = 5;");
@@ -3900,7 +3912,7 @@ int main() {
         xiaotu::migrate_to(ldb, 12);
         check(ldb.schema_version() == 12, "老库模拟应停在 v12");
 
-        ldb.write([&](sqlite3* conn) {
+        ldb.write([&](xiaotu::Conn& conn) {
           // v1 已预置 id=1 的默认仓库，老库只补商品与流水。
           xiaotu::Stmt it(conn,
                           "INSERT INTO item (id, code, name, created_at, updated_at)"
@@ -3925,7 +3937,7 @@ int main() {
         xiaotu::migrate(ldb);
         check(ldb.schema_version() == 40, "带零金额流水的老库应一路迁到 v40");
 
-        ldb.read([&](sqlite3* conn) {
+        ldb.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt kept(conn,
                             "SELECT biz_type, qty, amount_cents FROM stock_ledger"
                             " WHERE id = 1;");
@@ -3937,7 +3949,7 @@ int main() {
                 "零金额盘点流水应穿过 v15 方向改写");
         });
         bool pragma_off = false;
-        ldb.write([&](sqlite3* conn) {
+        ldb.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt p(conn, "PRAGMA ignore_check_constraints;");
           pragma_off = p.step() && p.i64(0) == 0;
         });
@@ -3998,7 +4010,7 @@ int main() {
         const auto push_doc = documents.convert_order(push_order_doc.id, push_convert);
         check(push_doc.doc_no.rfind("XSCK", 0) == 0, "二次确认后下推应生成销售出库单");
         std::int64_t push_audited = 0;
-        db.read([&](sqlite3* conn) {
+        db.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn,
                             "SELECT COUNT(*) FROM audit_log"
                             " WHERE action = 'credit_over_limit' AND entity_id = ?;");
@@ -4067,17 +4079,13 @@ int main() {
         const auto cb = cycle_customers.create(xiaotu::gen::CustomerRow{
             .code = "C-CYCLE-B", .name = "环客户 B", .credit_limit_cents = 0});
         // 绕过 API 直接构造脏数据环：A.merged_into=B, B.merged_into=A
-        db.write([&](sqlite3* conn) {
-          sqlite3_exec(conn,
-                       ("UPDATE partner SET merged_into = " + std::to_string(cb.id) +
-                        " WHERE id = " + std::to_string(ca.id) + ";")
-                           .c_str(),
-                       nullptr, nullptr, nullptr);
-          sqlite3_exec(conn,
-                       ("UPDATE partner SET merged_into = " + std::to_string(ca.id) +
-                        " WHERE id = " + std::to_string(cb.id) + ";")
-                           .c_str(),
-                       nullptr, nullptr, nullptr);
+        db.write([&](xiaotu::Conn& conn) {
+          xiaotu::exec_sql(conn, "UPDATE partner SET merged_into = " +
+                                     std::to_string(cb.id) + " WHERE id = " +
+                                     std::to_string(ca.id) + ";");
+          xiaotu::exec_sql(conn, "UPDATE partner SET merged_into = " +
+                                     std::to_string(ca.id) + " WHERE id = " +
+                                     std::to_string(cb.id) + ";");
         });
         auto cycle_item =
             items.create(xiaotu::gen::ItemRow{.code = "CYCLE001", .name = "成环商品"});
@@ -4131,7 +4139,7 @@ int main() {
         cin.lines.push_back(
             xiaotu::DocLineInput{.item_id = c_item.id, .qty = q(10), .price_cents = 1000});
         c_docs.save_and_approve(cin);
-        cdb.read([&](sqlite3* conn) {
+        cdb.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt bal(conn,
                            "SELECT amount_cents FROM stock_balance WHERE item_id = ?"
                            " AND warehouse_id = ?;");
@@ -4140,7 +4148,7 @@ int main() {
         });
         // 篡改采购入库流水的存量金额：重算若走 ends_with("_IN") 分支会直接沿用
         // 被篡改值报出差异；走 PUR_IN 专属分支则按单价重算、与结存一致。
-        cdb.write([&](sqlite3* conn) {
+        cdb.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt upd(conn,
                            "UPDATE stock_ledger SET amount_cents = 1"
                            " WHERE item_id = ? AND biz_type = 'PUR_IN';");
@@ -4172,7 +4180,7 @@ int main() {
         d_in.settled_on = kToday;
         const auto d_first = d_settlements.create(d_in);
         // 把首张单号改成非数字后缀，使其成为同前缀倒序的首行，逼续号逻辑读脏值。
-        ddb.write([&](sqlite3* conn) {
+        ddb.write([&](xiaotu::Conn& conn) {
           xiaotu::Stmt upd(conn, "UPDATE settlement SET settle_no = ? WHERE id = ?;");
           upd.bind(1, "SK" + kTodayYmd + "-ZZZZ").bind(2, d_first.id).run();
         });

@@ -56,8 +56,8 @@ struct DocumentDefinition {
   // 交易单据留空。
   std::string order_converts_to;
   // 审核 / 反审核的附加动作（往来账、库存占用等），M0 为空。
-  std::function<void(sqlite3*, std::int64_t)> on_approve;
-  std::function<void(sqlite3*, std::int64_t)> on_reverse;
+  std::function<void(Conn&, std::int64_t)> on_approve;
+  std::function<void(Conn&, std::int64_t)> on_reverse;
   // 审核 / 反审核（含保存并审核）需要的权限码；成本调整单单独用 cost.adjust，
   // 起草、改草稿与删除草稿仍走 document.write。
   std::string write_permission = "document.write";

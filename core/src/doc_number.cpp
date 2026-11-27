@@ -1,17 +1,16 @@
 #include "xiaotu/doc_number.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <string>
 
-#include "xiaotu/db.h"
 #include "xiaotu/error.h"
 
 namespace xiaotu {
 
-std::string allocate_doc_no(sqlite3* conn, std::string_view prefix, std::string_view doc_date) {
+std::string allocate_doc_no(Conn& conn, std::string_view prefix, std::string_view doc_date) {
   std::string period(doc_date);
   period.erase(std::remove(period.begin(), period.end(), '-'), period.end());
   if (period.size() != 8) {

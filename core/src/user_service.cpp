@@ -1,6 +1,6 @@
 #include "xiaotu/user_service.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <optional>
 #include <string>
@@ -53,7 +53,7 @@ void validate_password(std::string_view password) {
   }
 }
 
-std::int64_t role_id_of(sqlite3* conn, std::string_view role) {
+std::int64_t role_id_of(Conn& conn, std::string_view role) {
   Stmt stmt(conn, "SELECT id FROM app_role WHERE code = ?;");
   stmt.bind(1, role);
   if (!stmt.step()) {
@@ -63,7 +63,7 @@ std::int64_t role_id_of(sqlite3* conn, std::string_view role) {
 }
 
 // 用户名唯一性覆盖软删除行：唯一索引不区分 is_deleted，提前拦下给出可读错误。
-void ensure_username_free(sqlite3* conn, std::string_view username, std::int64_t exclude_id) {
+void ensure_username_free(Conn& conn, std::string_view username, std::int64_t exclude_id) {
   Stmt stmt(conn, "SELECT 1 FROM app_user WHERE username = ? AND id <> ? LIMIT 1;");
   stmt.bind(1, username).bind(2, exclude_id);
   if (stmt.step()) {
@@ -71,7 +71,7 @@ void ensure_username_free(sqlite3* conn, std::string_view username, std::int64_t
   }
 }
 
-void ensure_user_exists(sqlite3* conn, std::int64_t id) {
+void ensure_user_exists(Conn& conn, std::int64_t id) {
   Stmt stmt(conn, "SELECT 1 FROM app_user WHERE id = ? AND is_deleted = 0 LIMIT 1;");
   stmt.bind(1, id);
   if (!stmt.step()) {
@@ -81,7 +81,7 @@ void ensure_user_exists(sqlite3* conn, std::int64_t id) {
 
 // 改密、停用、删除都让该用户已登录的会话立即失效。直接删会话表而不是
 // 依赖查询时的状态判断，是为了与用户变更落在同一个事务里，不留时间窗。
-void revoke_sessions(sqlite3* conn, std::int64_t user_id) {
+void revoke_sessions(Conn& conn, std::int64_t user_id) {
   Stmt stmt(conn, "DELETE FROM app_session WHERE user_id = ?;");
   stmt.bind(1, user_id).run();
 }
@@ -90,7 +90,7 @@ void revoke_sessions(sqlite3* conn, std::int64_t user_id) {
 
 std::vector<UserRow> UserService::list() const {
   std::vector<UserRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn, std::string(kSelect) + " WHERE u.is_deleted = 0 ORDER BY u.id;");
     while (stmt.step()) {
       rows.push_back(read_row(stmt));
@@ -101,7 +101,7 @@ std::vector<UserRow> UserService::list() const {
 
 UserRow UserService::get(std::int64_t id) const {
   std::optional<UserRow> row;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn, std::string(kSelect) + " WHERE u.id = ? AND u.is_deleted = 0 LIMIT 1;");
     stmt.bind(1, id);
     if (stmt.step()) {
@@ -116,7 +116,7 @@ UserRow UserService::get(std::int64_t id) const {
 
 UserRow UserService::find_by_username(std::string_view username) const {
   std::optional<UserRow> row;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn, std::string(kSelect) + " WHERE u.username = ? AND u.is_deleted = 0 LIMIT 1;");
     stmt.bind(1, username);
     if (stmt.step()) {
@@ -134,7 +134,7 @@ UserRow UserService::create(const UserInput& input) {
   validate_password(input.password);
   const std::string hash = hash_password(input.password);
   std::int64_t id = 0;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     ensure_username_free(conn, input.username, 0);
     const std::int64_t role_id = role_id_of(conn, input.role);
     const AuditStamp stamp = audit_stamp();
@@ -152,7 +152,7 @@ UserRow UserService::create(const UserInput& input) {
         .bind(8, stamp.at)
         .bind(9, stamp.by)
         .run();
-    id = sqlite3_last_insert_rowid(conn);
+    id = conn.last_insert_id();
     audit_write(conn, "create", "user", id, input.username,
                 "{\"role\":\"" + input.role + "\"}");
   });
@@ -166,7 +166,7 @@ UserRow UserService::update(std::int64_t id, const UserInput& input) {
   }
   const std::string new_hash =
       input.password.empty() ? std::string{} : hash_password(input.password);
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     ensure_user_exists(conn, id);
     if (id == kBuiltinAdminId) {
       if (input.role != "admin") {
@@ -244,7 +244,7 @@ UserRow UserService::authenticate(std::string_view username, std::string_view pa
   Outcome outcome = Outcome::ok;
   std::int64_t locked_minutes = 0;
 
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     std::string hash;
     std::int64_t failed = 0;
     bool found = false;
@@ -319,7 +319,7 @@ UserRow UserService::authenticate(std::string_view username, std::string_view pa
 
 bool UserService::has_password(std::int64_t id) const {
   bool found = false;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT password_hash FROM app_user WHERE id = ? AND is_deleted = 0 LIMIT 1;");
     stmt.bind(1, id);
@@ -338,7 +338,7 @@ void UserService::set_password(std::int64_t id, std::string_view password,
   // 不再触发改密页，避免每次跑 --set-password 后登录都弹一次。
   const std::string must_change =
       force_change_on_first_set ? "CASE WHEN password_hash = '' THEN 1 ELSE 0 END" : "0";
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     ensure_user_exists(conn, id);
     Stmt stmt(conn,
               "UPDATE app_user SET password_hash = ?,"
@@ -356,7 +356,7 @@ void UserService::change_password(std::int64_t id, std::string_view old_password
                                   std::string_view new_password) {
   validate_password(new_password);
   const std::string hash = hash_password(new_password);
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     ensure_user_exists(conn, id);
     std::string username;
     std::string stored;
@@ -388,7 +388,7 @@ void UserService::remove(std::int64_t id) {
   if (id == kBuiltinAdminId) {
     throw AppError("USER_PROTECTED", "内置管理员不能删除");
   }
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     std::string username;
     {
       Stmt stmt(conn, "SELECT username FROM app_user WHERE id = ?;");
@@ -405,7 +405,7 @@ void UserService::remove(std::int64_t id) {
 
 std::int64_t UserService::count_active() const {
   std::int64_t count = 0;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT COUNT(*) FROM app_user WHERE is_deleted = 0 AND status = 1;");
     if (stmt.step()) {

@@ -658,7 +658,7 @@ void render_report(Services& services, const PrintTargetDef& target, const httpl
   if (!value.empty()) {
     direction = (value == "-1" || value == "AP") ? -1 : 1;
   } else {
-    services.db.read([&](sqlite3* conn) {
+    services.db.read([&](Conn& conn) {
       direction = partner_key_direction(conn, partner_key);
     });
   }

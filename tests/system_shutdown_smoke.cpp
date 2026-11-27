@@ -2,7 +2,7 @@
 // HTTP 鉴权语义（无凭据 401、错误令牌 401、非管理员会话 403、正确令牌/管理员 200）
 // 以及服务在收到关闭请求后真的停止 listen。
 #include <httplib.h>
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <chrono>
 #include <filesystem>
@@ -17,7 +17,6 @@
 
 #include <nlohmann/json.hpp>
 
-#include "xiaotu/db.h"
 #include "xiaotu/http_server.h"
 #include "xiaotu/migrations.h"
 #include "xiaotu/permissions.h"
@@ -53,7 +52,7 @@ unsigned int file_mode(const std::filesystem::path& path) {
 }
 
 void clear_must_change(xiaotu::Db& db, std::int64_t id) {
-  db.write([&](sqlite3* conn) {
+  db.write([&](xiaotu::Conn& conn) {
     xiaotu::exec_sql(conn, "UPDATE app_user SET must_change_password = 0 WHERE id = " +
                                std::to_string(id) + ";");
   });
@@ -71,7 +70,7 @@ std::string body_field(const httplib::Result& result, const char* key) {
 
 std::string last_shutdown_detail(xiaotu::Db& db) {
   std::string detail;
-  db.read([&](sqlite3* conn) {
+  db.read([&](xiaotu::Conn& conn) {
     xiaotu::Stmt stmt(conn,
                       "SELECT detail FROM audit_log WHERE action = 'shutdown'"
                       " ORDER BY id DESC LIMIT 1;");

@@ -1,6 +1,6 @@
 #include "xiaotu/settlement_service.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <algorithm>
 #include <set>
@@ -26,7 +26,7 @@ std::string mark_list(std::size_t count) {
   return marks;
 }
 
-std::string next_settle_no(sqlite3* conn, const std::string& date, int direction) {
+std::string next_settle_no(Conn& conn, const std::string& date, int direction) {
   std::string compact = date;
   compact.erase(std::remove(compact.begin(), compact.end(), '-'), compact.end());
   // 收款 SK、付款 FK；老单号 HX 原样保留，互不影响。
@@ -66,7 +66,7 @@ bool valid_method(const std::string& method) {
          method == "ALIPAY" || method == "OTHER";
 }
 
-void ensure_account(sqlite3* conn, std::int64_t account_id) {
+void ensure_account(Conn& conn, std::int64_t account_id) {
   if (account_id <= 0) {
     throw AppError("INVALID_INPUT", "请选择资金账户");
   }
@@ -79,7 +79,7 @@ void ensure_account(sqlite3* conn, std::int64_t account_id) {
 }
 
 // C:<id> 客户、S:<id> 供应商、P:<id> 合表档案；T: 文本键没有档案，返回空由调用方回落到单据名称。
-std::string partner_name_of(sqlite3* conn, const std::string& key) {  try {
+std::string partner_name_of(Conn& conn, const std::string& key) {  try {
     if (key.rfind("C:", 0) == 0) {
       Stmt stmt(conn, "SELECT name FROM customer WHERE id = ? AND is_deleted = 0;");
       stmt.bind(1, std::stoll(key.substr(2)));
@@ -111,7 +111,7 @@ struct EntryState {
   std::string status;
 };
 
-EntryState load_entry(sqlite3* conn, std::int64_t entry_id) {
+EntryState load_entry(Conn& conn, std::int64_t entry_id) {
   Stmt stmt(conn,
             "SELECT id, amount_cents, settled_cents, partner_key, partner_name, direction, status"
             " FROM ar_ap_entry WHERE id = ?;");
@@ -130,7 +130,7 @@ EntryState load_entry(sqlite3* conn, std::int64_t entry_id) {
   return state;
 }
 
-void apply_allocation(sqlite3* conn, std::int64_t entry_id, std::int64_t amount) {
+void apply_allocation(Conn& conn, std::int64_t entry_id, std::int64_t amount) {
   Stmt update(conn, "UPDATE ar_ap_entry SET settled_cents = settled_cents + ? WHERE id = ?;");
   update.bind(1, amount).bind(2, entry_id).run();
   // 状态由缓存金额派生：0 未核销，全额已核销，其余为部分核销。
@@ -164,7 +164,7 @@ SettlementRow SettlementService::create(const SettlementCreateInput& input) {
   }
 
   SettlementRow created;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     ensure_account(conn, input.account_id);
 
     std::vector<EntryState> entries;
@@ -281,7 +281,7 @@ SettlementRow SettlementService::create(const SettlementCreateInput& input) {
 
 SettlementRow SettlementService::reverse(std::int64_t settlement_id) {
   SettlementRow created;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     SettlementRow original;
     {
       Stmt stmt(conn,
@@ -384,7 +384,7 @@ SettlementRow SettlementService::reverse(std::int64_t settlement_id) {
 std::vector<SettlementRow> SettlementService::list(int direction,
                                                    std::string_view partner_key) const {
   std::vector<SettlementRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     // 按单位筛选时展开历史键：C:/S: 与新 P: 属于同一 partner 维度。
     const std::vector<std::string> aliases =
         partner_key.empty() ? std::vector<std::string>{}
@@ -423,7 +423,7 @@ std::vector<FundLedgerRow> SettlementService::ledger(std::int64_t account_id,
                                                      std::string_view from,
                                                      std::string_view to) const {
   std::vector<FundLedgerRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     // account_id > 0：指定账户；0：历史「未指定账户」；-1：全部账户（含未指定）。
     const bool all_accounts = account_id < 0;
     std::int64_t opening = 0;
@@ -496,7 +496,7 @@ std::vector<FundLedgerRow> SettlementService::ledger(std::int64_t account_id,
 std::vector<FundBalanceRow> SettlementService::account_balances(
     std::string_view as_of) const {
   std::vector<FundBalanceRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     const std::string cut = as_of.empty() ? std::string("9999-12-31") : std::string(as_of);
     Stmt stmt(conn,
               "SELECT a.id, a.code, a.name, a.kind, a.opening_cents,"

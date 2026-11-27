@@ -81,6 +81,7 @@ add_library(xiaotu_core STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/crud.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/customer_service.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/db.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/db_sqlite.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/doc_number.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/document.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/edition.cpp"

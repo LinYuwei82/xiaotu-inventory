@@ -24,13 +24,13 @@ struct AuditRow {
 };
 
 // 审计日志只追加：谁、什么时候、对什么对象做了什么、变更摘要。
-// 必须在业务写事务内调用（传入同一个 sqlite3*），业务失败时随事务一起回滚。
-void audit_write(sqlite3* conn, std::string_view action, std::string_view entity,
+// 必须在业务写事务内调用（传入同一个 Conn&），业务失败时随事务一起回滚。
+void audit_write(Conn& conn, std::string_view action, std::string_view entity,
                  std::int64_t entity_id, std::string_view entity_no,
                  std::string_view detail = {});
 
 // 登录等尚无会话的场景：actor 由调用方显式给出，不走当前请求上下文。
-void audit_write_as(sqlite3* conn, std::string_view actor, std::string_view action,
+void audit_write_as(Conn& conn, std::string_view actor, std::string_view action,
                     std::string_view entity, std::int64_t entity_id,
                     std::string_view entity_no, std::string_view detail = {});
 

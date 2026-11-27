@@ -1,13 +1,12 @@
 #include "xiaotu/partner_resolve.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <exception>
 #include <set>
 #include <string>
 #include <vector>
 
-#include "xiaotu/db.h"
 
 namespace xiaotu {
 namespace {
@@ -21,7 +20,7 @@ bool numeric_id(std::string_view text) {
 }
 
 // 合并链：source.merged_into 指向保留档案。最多跟随 32 层，避免脏数据成环时死循环。
-std::int64_t follow_merged(sqlite3* conn, std::int64_t partner_id) {
+std::int64_t follow_merged(Conn& conn, std::int64_t partner_id) {
   for (int depth = 0; depth < 32 && partner_id > 0; ++depth) {
     Stmt stmt(conn, "SELECT merged_into FROM partner WHERE id = ?;");
     stmt.bind(1, partner_id);
@@ -34,7 +33,7 @@ std::int64_t follow_merged(sqlite3* conn, std::int64_t partner_id) {
 }
 
 // 目标 partner 及其全部被合并进来的下游 source id。
-std::vector<std::int64_t> merge_subtree(sqlite3* conn, std::int64_t root_id) {
+std::vector<std::int64_t> merge_subtree(Conn& conn, std::int64_t root_id) {
   std::vector<std::int64_t> ids{root_id};
   std::set<std::int64_t> seen{root_id};
   for (std::size_t index = 0; index < ids.size(); ++index) {
@@ -48,14 +47,14 @@ std::vector<std::int64_t> merge_subtree(sqlite3* conn, std::int64_t root_id) {
   return ids;
 }
 
-bool partner_code_taken(sqlite3* conn, const std::string& code) {
+bool partner_code_taken(Conn& conn, const std::string& code) {
   Stmt stmt(conn, "SELECT 1 FROM partner WHERE code = ?;");
   stmt.bind(1, code);
   return stmt.step();
 }
 
 // 档案编码与已有 partner 撞车时追加后缀；极端情况下多试几次，仍冲突则由唯一索引兜底。
-std::string unique_partner_code(sqlite3* conn, const std::string& code,
+std::string unique_partner_code(Conn& conn, const std::string& code,
                                 const std::string& suffix) {
   if (!partner_code_taken(conn, code)) return code;
   std::string candidate = code + suffix;
@@ -67,7 +66,7 @@ std::string unique_partner_code(sqlite3* conn, const std::string& code,
 
 }  // namespace
 
-std::int64_t find_partner_for_archive(sqlite3* conn, PartnerSide side,
+std::int64_t find_partner_for_archive(Conn& conn, PartnerSide side,
                                       std::int64_t archive_id) {
   if (archive_id <= 0) return 0;
   if (side == PartnerSide::Customer) {
@@ -83,7 +82,7 @@ std::int64_t find_partner_for_archive(sqlite3* conn, PartnerSide side,
   return stmt.step() ? follow_merged(conn, stmt.i64(0)) : 0;
 }
 
-std::int64_t ensure_partner_for_archive(sqlite3* conn, PartnerSide side,
+std::int64_t ensure_partner_for_archive(Conn& conn, PartnerSide side,
                                         std::int64_t archive_id) {
   if (archive_id <= 0) return 0;
 
@@ -196,7 +195,7 @@ std::int64_t ensure_partner_for_archive(sqlite3* conn, PartnerSide side,
   return 0;
 }
 
-std::string partner_key_for_archive(sqlite3* conn, PartnerSide side, std::int64_t archive_id,
+std::string partner_key_for_archive(Conn& conn, PartnerSide side, std::int64_t archive_id,
                                     const std::string& name, bool ensure) {
   if (archive_id > 0) {
     const std::int64_t partner_id =
@@ -208,7 +207,7 @@ std::string partner_key_for_archive(sqlite3* conn, PartnerSide side, std::int64_
   return "T:（未指定）";
 }
 
-std::string partner_dimension_key(sqlite3* conn, std::string_view partner_key) {
+std::string partner_dimension_key(Conn& conn, std::string_view partner_key) {
   const std::string key(partner_key);
   if (key.rfind("P:", 0) == 0 && numeric_id(key.substr(2))) {
     const std::int64_t partner_id = std::stoll(key.substr(2));
@@ -232,7 +231,7 @@ std::string partner_dimension_key(sqlite3* conn, std::string_view partner_key) {
   return key;
 }
 
-std::vector<std::string> partner_key_aliases(sqlite3* conn, std::string_view partner_key) {
+std::vector<std::string> partner_key_aliases(Conn& conn, std::string_view partner_key) {
   const std::string key(partner_key);
   const std::string dimension = partner_dimension_key(conn, key);
   if (dimension.rfind("P:", 0) != 0 || !numeric_id(dimension.substr(2))) {

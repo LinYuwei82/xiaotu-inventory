@@ -241,7 +241,7 @@ int main() {
       xiaotu::gen::CustomerService legacy_customers(db);
       const auto unmapped = legacy_customers.create(
           xiaotu::gen::CustomerRow{.code = "RC-UNMAPPED", .name = "无档案客户"});
-      db.write([&](sqlite3* conn) {
+      db.write([&](xiaotu::Conn& conn) {
         // 还原历史形态：销售单据的 partner_id 清回 0，并补一条没有 partner 档案的客户单据；
         // 采购单据留一个已有值（哨兵），验证「有值不动」。
         xiaotu::exec_sql(conn,
@@ -296,7 +296,7 @@ int main() {
           }
         }
         std::vector<std::string> keys;
-        db.read([&](sqlite3* conn) {
+        db.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn,
                             "SELECT partner_key FROM ar_ap_entry"
                             " UNION SELECT partner_key FROM settlement ORDER BY 1;");
@@ -398,7 +398,7 @@ int main() {
 
       const auto count_rows = [&](const char* sql) {
         std::int64_t value = -1;
-        db.read([&](sqlite3* conn) {
+        db.read([&](xiaotu::Conn& conn) {
           xiaotu::Stmt stmt(conn, sql);
           if (stmt.step()) value = stmt.i64(0);
         });
@@ -412,7 +412,7 @@ int main() {
       check(count_rows(filled_sql) == 0, "回填前客户单据的 partner_id 应全为 0");
 
       const auto before = snapshot();
-      db.write([&](sqlite3* conn) {
+      db.write([&](xiaotu::Conn& conn) {
         xiaotu::exec_sql(conn, xiaotu::partner_id_backfill_sql());
       });
       const auto after = snapshot();
@@ -432,7 +432,7 @@ int main() {
             "客户单据应回填到 partner.id（与客户档案 id 相同）");
 
       // 幂等：重复执行回填不应再改任何行，报表也保持不变。
-      db.write([&](sqlite3* conn) {
+      db.write([&](xiaotu::Conn& conn) {
         xiaotu::exec_sql(conn, xiaotu::partner_id_backfill_sql());
       });
       const auto again = snapshot();

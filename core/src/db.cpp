@@ -1,178 +1,110 @@
 #include "xiaotu/db.h"
 
-#include <sqlite3.h>
-
 #include <algorithm>
-#include <cstdio>
 #include <ctime>
 #include <utility>
 
+#include "db_sqlite.h"
 #include "xiaotu/error.h"
 #include "xiaotu/platform.h"
 
 namespace xiaotu {
-namespace {
 
-std::string sqlite_message(sqlite3* db) {
-  return db != nullptr ? std::string(sqlite3_errmsg(db)) : std::string("unknown sqlite error");
-}
+// ---- Conn ----
 
-void check_ok(sqlite3* db, int rc, std::string_view what) {
-  if (rc != SQLITE_OK && rc != SQLITE_DONE && rc != SQLITE_ROW) {
-    throw AppError("DB_ERROR", std::string(what) + ": " + sqlite_message(db));
-  }
-}
+int Conn::changes() const { return raw_.changes(); }
 
-void open_connection(const std::filesystem::path& file, int flags, sqlite3** out) {
-  sqlite3* db = nullptr;
-  const int rc = sqlite3_open_v2(path_to_utf8(file).c_str(), &db,
-                                 flags | SQLITE_OPEN_FULLMUTEX, nullptr);
-  if (rc != SQLITE_OK) {
-    const std::string message = sqlite_message(db);
-    sqlite3_close(db);
-    throw AppError("DB_OPEN", "打开数据库失败: " + message);
-  }
-  *out = db;
-}
+std::int64_t Conn::last_insert_id() const { return raw_.last_insert_id(); }
 
-}  // namespace
+// ---- Stmt ----
 
-Stmt::Stmt(sqlite3* db, std::string_view sql) : db_(db) {
-  const int rc = sqlite3_prepare_v2(db, sql.data(), static_cast<int>(sql.size()), &stmt_, nullptr);
-  if (rc != SQLITE_OK) {
-    throw AppError("DB_PREPARE", "SQL 准备失败: " + sqlite_message(db) + " | " + std::string(sql));
-  }
-}
+Stmt::Stmt(Conn& conn, std::string_view sql) : impl_(conn.raw_.prepare(sql)) {}
 
-Stmt::~Stmt() {
-  if (stmt_ != nullptr) {
-    sqlite3_finalize(stmt_);
-  }
-}
+Stmt::~Stmt() = default;
 
 Stmt& Stmt::bind(std::int64_t index, std::int64_t value) {
-  check_ok(db_, sqlite3_bind_int64(stmt_, static_cast<int>(index), value), "绑定整数参数");
+  impl_->bind_i64(static_cast<int>(index), value);
   return *this;
 }
 
 Stmt& Stmt::bind(std::int64_t index, std::string_view value) {
-  check_ok(db_,
-           sqlite3_bind_text(stmt_, static_cast<int>(index), value.data(),
-                             static_cast<int>(value.size()), SQLITE_TRANSIENT),
-           "绑定文本参数");
+  impl_->bind_text(static_cast<int>(index), value);
   return *this;
 }
 
-bool Stmt::step() {
-  const int rc = sqlite3_step(stmt_);
-  if (rc == SQLITE_ROW) {
-    return true;
-  }
-  if (rc == SQLITE_DONE) {
-    return false;
-  }
-  throw AppError("DB_STEP", "SQL 执行失败: " + sqlite_message(db_));
-}
+bool Stmt::step() { return impl_->step(); }
 
 void Stmt::run() {
   while (step()) {
   }
 }
 
-std::int64_t Stmt::i64(int column) const {
-  return sqlite3_column_int64(stmt_, column);
-}
+std::int64_t Stmt::i64(int column) const { return impl_->i64(column); }
 
-std::string Stmt::text(int column) const {
-  const auto* data = sqlite3_column_text(stmt_, column);
-  const int size = sqlite3_column_bytes(stmt_, column);
-  if (data == nullptr) {
-    return {};
-  }
-  return std::string(reinterpret_cast<const char*>(data), static_cast<std::size_t>(size));
-}
+std::string Stmt::text(int column) const { return impl_->text(column); }
+
+// ---- Db ----
 
 Db::Db(std::filesystem::path file, int read_connections, std::chrono::milliseconds wait_timeout)
     : file_(std::move(file)), wait_timeout_(wait_timeout) {
   if (file_.has_parent_path()) {
     std::filesystem::create_directories(file_.parent_path());
   }
-
-  open_connection(file_, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, &write_);
-  exec_sql(write_, "PRAGMA journal_mode=WAL;");
-  exec_sql(write_, "PRAGMA synchronous=NORMAL;");
-  exec_sql(write_, "PRAGMA busy_timeout=5000;");
-  exec_sql(write_, "PRAGMA foreign_keys=ON;");
+  // 当前唯一后端是 SQLite；接入 PostgreSQL 时改为按配置选择工厂。
+  backend_ = make_sqlite_backend(file_, read_connections);
 
   const int count = std::max(1, read_connections);
-  reads_.reserve(static_cast<std::size_t>(count));
-  read_busy_.reserve(static_cast<std::size_t>(count));
-  for (int i = 0; i < count; ++i) {
-    sqlite3* reader = nullptr;
-    open_connection(file_, SQLITE_OPEN_READONLY, &reader);
-    exec_sql(reader, "PRAGMA busy_timeout=5000;");
-    exec_sql(reader, "PRAGMA foreign_keys=ON;");
-    exec_sql(reader, "PRAGMA query_only=ON;");
-    reads_.push_back(reader);
-    read_busy_.push_back(false);
+  for (auto& conn : backend_->create_read_conns(count)) {
+    reads_.push_back(ReadSlot{std::move(conn), false});
   }
 }
 
-Db::~Db() {
-  for (sqlite3* reader : reads_) {
-    sqlite3_close(reader);
-  }
-  reads_.clear();
-  read_busy_.clear();
-  if (write_ != nullptr) {
-    sqlite3_close(write_);
-    write_ = nullptr;
-  }
-}
+Db::~Db() = default;
 
-void Db::write(const std::function<void(sqlite3*)>& fn) {
+void Db::write(const std::function<void(Conn&)>& fn) {
   // 写锁不能无限等：一次大导入占住写连接时，其他写请求（保存单据、记审计）
   // 会全部堆在这里，客户端也拿不到任何反馈。超时让调用方回 503 重试。
   std::unique_lock<std::timed_mutex> lock(write_mutex_, std::defer_lock);
   if (!lock.try_lock_for(wait_timeout_)) {
     throw AppError("DB_BUSY", "数据库繁忙，请稍后重试");
   }
-  exec_sql(write_, "BEGIN IMMEDIATE;");
+  Conn conn{backend_->write_conn()};
+  conn.raw_.begin_write();
   try {
-    fn(write_);
-    exec_sql(write_, "COMMIT;");
+    fn(conn);
+    conn.raw_.commit();
   } catch (...) {
-    try {
-      exec_sql(write_, "ROLLBACK;");
-    } catch (...) {
-    }
+    conn.raw_.rollback();
     throw;
   }
 }
 
-void Db::write_raw(const std::function<void(sqlite3*)>& fn) {
+void Db::write_raw(const std::function<void(Conn&)>& fn) {
   std::unique_lock<std::timed_mutex> lock(write_mutex_, std::defer_lock);
   if (!lock.try_lock_for(wait_timeout_)) {
     throw AppError("DB_BUSY", "数据库繁忙，请稍后重试");
   }
-  fn(write_);
+  Conn conn{backend_->write_conn()};
+  fn(conn);
 }
 
-void Db::read(const std::function<void(sqlite3*)>& fn) const {
-  std::size_t index = read_busy_.size();
+void Db::read(const std::function<void(Conn&)>& fn) const {
+  std::size_t index = reads_.size();
   {
     std::unique_lock<std::mutex> lock(pool_mutex_);
     // 不能无限等：读连接被长导出占满时，包括会话校验在内的所有读请求都会挂住，
     // 整个服务失去响应。超时后让调用方回 503，由前端重试。
-    const bool acquired = pool_cv_.wait_for(lock, wait_timeout_, [this] {
-      return std::any_of(read_busy_.begin(), read_busy_.end(), [](bool busy) { return !busy; });
-    });
+    const bool acquired =
+        pool_cv_.wait_for(lock, wait_timeout_, [this] {
+          return std::any_of(reads_.begin(), reads_.end(),
+                             [](const ReadSlot& slot) { return !slot.busy; });
+        });
     if (!acquired) {
       throw AppError("DB_BUSY", "数据库繁忙，请稍后重试");
     }
-    for (std::size_t i = 0; i < read_busy_.size(); ++i) {
-      if (!read_busy_[i]) {
-        read_busy_[i] = true;
+    for (std::size_t i = 0; i < reads_.size(); ++i) {
+      if (!reads_[i].busy) {
+        reads_[i].busy = true;
         index = i;
         break;
       }
@@ -182,21 +114,19 @@ void Db::read(const std::function<void(sqlite3*)>& fn) const {
   auto release = [&] {
     {
       std::lock_guard<std::mutex> lock(pool_mutex_);
-      read_busy_[index] = false;
+      reads_[index].busy = false;
     }
     pool_cv_.notify_one();
   };
 
-  sqlite3* conn = reads_[index];
+  IConn& raw = *reads_[index].conn;
+  Conn conn{raw};
   try {
-    exec_sql(conn, "BEGIN;");
+    raw.begin_read();
     fn(conn);
-    exec_sql(conn, "COMMIT;");
+    raw.commit();
   } catch (...) {
-    try {
-      exec_sql(conn, "ROLLBACK;");
-    } catch (...) {
-    }
+    raw.rollback();
     release();
     throw;
   }
@@ -205,24 +135,11 @@ void Db::read(const std::function<void(sqlite3*)>& fn) const {
 
 std::int64_t Db::schema_version() const {
   std::int64_t version = 0;
-  read([&](sqlite3* conn) {
-    Stmt stmt(conn, "PRAGMA user_version;");
-    if (stmt.step()) {
-      version = stmt.i64(0);
-    }
-  });
+  read([&](Conn& conn) { version = conn.raw_.schema_version(); });
   return version;
 }
 
-void exec_sql(sqlite3* db, std::string_view sql) {
-  char* error = nullptr;
-  const int rc = sqlite3_exec(db, std::string(sql).c_str(), nullptr, nullptr, &error);
-  if (rc != SQLITE_OK) {
-    const std::string message = error != nullptr ? std::string(error) : sqlite_message(db);
-    sqlite3_free(error);
-    throw AppError("DB_EXEC", "SQL 执行失败: " + message + " | " + std::string(sql));
-  }
-}
+void exec_sql(Conn& conn, std::string_view sql) { conn.raw_.exec(sql); }
 
 std::string now_text() {
   std::time_t now = std::time(nullptr);

@@ -1,6 +1,6 @@
 #include "xiaotu/report_service.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <algorithm>
 #include <functional>
@@ -9,7 +9,6 @@
 #include <utility>
 #include <vector>
 
-#include "xiaotu/db.h"
 #include "xiaotu/partner_resolve.h"
 #include "xiaotu/qty.h"
 
@@ -17,11 +16,11 @@ namespace xiaotu {
 namespace {
 
 // 往来档案名称：优先按 partner_key 前缀查档案，查不到再回落到台账上的名称快照。
-std::string archive_name(sqlite3* conn, const std::string& partner_key) {
+std::string archive_name(Conn& conn, const std::string& partner_key) {
   return partner_key_name(conn, partner_key);
 }
 
-std::string ledger_name(sqlite3* conn, const std::string& partner_key) {
+std::string ledger_name(Conn& conn, const std::string& partner_key) {
   Stmt entry(conn,
              "SELECT partner_name FROM ar_ap_entry WHERE partner_key = ?"
              " ORDER BY id DESC LIMIT 1;");
@@ -45,7 +44,7 @@ struct StatementRaw {
 // 采购报表统一取数：采购入库与采购退货都取已审核单据的明细行。
 // 退货行数量、金额取负；单价保持正数（退货单价）。limit <= 0 表示不限行数。
 // 回调返回 false 时立即停止；返回 false 表示中途被调用方终止。
-bool for_each_purchase_row(sqlite3* conn, const ReportFilter& filter, std::int64_t limit,
+bool for_each_purchase_row(Conn& conn, const ReportFilter& filter, std::int64_t limit,
                            const std::function<bool(const PurchaseDetailRow&)>& sink) {
   Stmt stmt(conn,
             "SELECT h.doc_date, h.doc_no, h.doc_type,"
@@ -102,7 +101,7 @@ bool for_each_purchase_row(sqlite3* conn, const ReportFilter& filter, std::int64
   return true;
 }
 
-std::vector<PurchaseDetailRow> load_purchase_rows(sqlite3* conn, const ReportFilter& filter,
+std::vector<PurchaseDetailRow> load_purchase_rows(Conn& conn, const ReportFilter& filter,
                                                   std::int64_t limit) {
   std::vector<PurchaseDetailRow> rows;
   for_each_purchase_row(conn, filter, limit, [&](const PurchaseDetailRow& row) {
@@ -146,7 +145,7 @@ std::string mark_list(std::size_t count) {
 
 }  // namespace
 
-std::string partner_key_name(sqlite3* conn, std::string_view partner_key) {
+std::string partner_key_name(Conn& conn, std::string_view partner_key) {
   const std::string key(partner_key);
   // 合并后历史键（P:/C:/S:）统一按保留档案取名；T: 或映射缺失时再回落原表。
   const std::string dimension = partner_dimension_key(conn, key);
@@ -171,7 +170,7 @@ std::string partner_key_name(sqlite3* conn, std::string_view partner_key) {
   return stmt.step() ? stmt.text(0) : std::string{};
 }
 
-int partner_key_direction(sqlite3* conn, std::string_view partner_key) {
+int partner_key_direction(Conn& conn, std::string_view partner_key) {
   const std::string key(partner_key);
   if (key.rfind("S:", 0) == 0) return -1;
   if (key.rfind("C:", 0) == 0 || key.rfind("T:", 0) == 0) return 1;
@@ -214,7 +213,7 @@ bool ReportService::stream_stock_ledger(
     const ReportFilter& filter,
     const std::function<bool(const LedgerDetailRow&)>& sink) const {
   bool completed = true;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT l.id, l.biz_time, l.biz_type, h.doc_no, h.doc_date, i.code, i.name,"
               " w.name, l.qty, l.amount_cents, COALESCE(h.biz_category, '')"
@@ -277,7 +276,7 @@ std::vector<LedgerDetailRow> ReportService::stock_ledger(const ReportFilter& fil
 std::vector<GoodsFlowRow> ReportService::goods_flow(const ReportFilter& filter) const {
   const std::string from_start = filter.from.empty() ? std::string{} : filter.from + " 00:00:00";
   std::vector<GoodsFlowRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT item_id, item_code, item_name, unit, warehouse_code, warehouse_name,"
               " opening_qty, in_qty, out_qty, opening_qty + in_qty - out_qty AS closing_qty,"
@@ -342,7 +341,7 @@ std::vector<InventorySummaryRow> ReportService::inventory_summary(
     const ReportFilter& filter) const {
   const std::string from_start = filter.from.empty() ? std::string{} : filter.from + " 00:00:00";
   std::vector<InventorySummaryRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT item_id, item_code, item_name, unit,"
               " opening_qty, in_qty, out_qty, opening_qty + in_qty - out_qty AS closing_qty,"
@@ -405,7 +404,7 @@ std::vector<InventorySummaryRow> ReportService::inventory_summary(
 
 std::vector<SalesProfitRow> ReportService::sales_profit(const ReportFilter& filter) const {
   std::vector<SalesProfitRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               " SELECT i.id, i.code, i.name, i.unit,"
               " SUM(CASE WHEN h.doc_type = 'SAL_RET' THEN -l.qty ELSE l.qty END) AS qty,"
@@ -450,7 +449,7 @@ std::vector<SalesProfitRow> ReportService::sales_profit(const ReportFilter& filt
 
 std::vector<PurchaseDetailRow> ReportService::purchase_detail(const ReportFilter& filter) const {
   std::vector<PurchaseDetailRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     rows = load_purchase_rows(conn, filter, filter.limit);
   });
   return rows;
@@ -460,7 +459,7 @@ bool ReportService::stream_purchase_detail(
     const ReportFilter& filter,
     const std::function<bool(const PurchaseDetailRow&)>& sink) const {
   bool completed = true;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     completed = for_each_purchase_row(conn, filter, filter.limit, sink);
   });
   return completed;
@@ -470,7 +469,7 @@ std::vector<PurchaseSupplierSummaryRow> ReportService::purchase_summary_by_suppl
     const ReportFilter& filter) const {
   // 汇总需要全部明细，不受分页 limit 影响；键 = 供应商名称 + ID，天然按名称升序。
   std::map<std::string, PurchaseSupplierSummaryRow> grouped;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     for (const auto& row : load_purchase_rows(conn, filter, 0)) {
       const std::string key = row.supplier + '\x1f' + std::to_string(row.partner_id);
       auto& summary = grouped[key];
@@ -502,7 +501,7 @@ std::vector<PurchaseItemSummaryRow> ReportService::purchase_summary_by_item(
     const ReportFilter& filter) const {
   // 键 = 商品编码 + ID，按商品编码升序输出。
   std::map<std::string, PurchaseItemSummaryRow> grouped;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     for (const auto& row : load_purchase_rows(conn, filter, 0)) {
       const std::string key = row.item_code + '\x1f' + std::to_string(row.item_id);
       auto& summary = grouped[key];
@@ -534,7 +533,7 @@ std::vector<PurchaseItemSummaryRow> ReportService::purchase_summary_by_item(
 
 PurchaseSummaryTotals ReportService::purchase_summary_totals(const ReportFilter& filter) const {
   PurchaseSummaryTotals totals;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     for (const auto& row : load_purchase_rows(conn, filter, 0)) {
       totals.qty += row.qty;
       totals.amount_cents += row.amount_cents;
@@ -556,7 +555,7 @@ std::vector<OtherFlowSummaryRow> ReportService::other_flow_summary(
     const ReportFilter& filter) const {
   // 只统计已审核的其他出入库单据：被反审核的单据连同其回冲行一起排除。
   std::map<std::string, OtherFlowSummaryRow> grouped;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT h.biz_category,"
               " SUM(CASE WHEN l.qty > 0 THEN l.qty ELSE 0 END),"
@@ -616,7 +615,7 @@ ReportTotals ReportService::purchase_detail_totals(const ReportFilter& filter) c
   // 直接在库里聚合，避免导出时把全表明细读进内存；口径与 load_purchase_rows 一致
   // （退货数量与金额取负、同样的关联与筛选）。合计按全量算，不受分页 offset 影响。
   ReportTotals totals;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT COUNT(*),"
               " COALESCE(SUM(CASE WHEN h.doc_type = 'PUR_RET' THEN -l.qty ELSE l.qty END), 0),"
@@ -654,7 +653,7 @@ ReportTotals ReportService::purchase_detail_totals(const ReportFilter& filter) c
 
 ReportTotals ReportService::stock_ledger_totals(const ReportFilter& filter) const {
   ReportTotals totals;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT COUNT(*), COALESCE(SUM(l.qty), 0), COALESCE(SUM(l.amount_cents), 0)"
               " FROM stock_ledger l"
@@ -688,7 +687,7 @@ ReportTotals ReportService::stock_ledger_totals(const ReportFilter& filter) cons
 
 std::vector<AgingRow> ReportService::ar_ap_aging(int direction, std::string_view as_of) const {
   std::vector<AgingRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               // 归集前把历史 C:/S: 键折成 partner 维度，与新 P: 键合并成一行；
               // 合并过的档案沿 merged_into 链折算到保留档案；T: 与查不到归属的键保持自身。
@@ -766,7 +765,7 @@ StatementResult ReportService::partner_statement(std::string_view partner_key, i
 
   const std::string from_text = result.from;
   const std::string to_text = result.to;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     result.partner_name = archive_name(conn, result.partner_key);
     if (result.partner_name.empty()) {
       result.partner_name = ledger_name(conn, result.partner_key);
@@ -892,7 +891,7 @@ std::vector<SalesSummaryRow> ReportService::sales_summary(const ReportFilter& fi
   const std::string name_expression =
       by_salesperson ? "COALESCE(NULLIF(MAX(h.salesperson_name), ''), '未指定业务员')"
                      : "COALESCE(NULLIF(MAX(h.customer), ''), '未指定客户')";  std::vector<SalesSummaryRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT " + group_column + ", " + name_expression +
                   ", COUNT(DISTINCT h.id), COUNT(DISTINCT h.customer_id),"
@@ -951,7 +950,7 @@ bool ReportService::stream_sales_detail(
     const ReportFilter& filter,
     const std::function<bool(const SalesDetailRow&)>& sink) const {
   bool completed = true;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT h.doc_date, h.doc_no,"
               " COALESCE(NULLIF(h.customer, ''), '未指定客户'),"
@@ -1025,7 +1024,7 @@ std::vector<SalesDetailRow> ReportService::sales_detail(const ReportFilter& filt
 
 SalesDetailTotals ReportService::sales_detail_totals(const ReportFilter& filter) const {
   SalesDetailTotals totals;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT COUNT(*),"
               " SUM(CASE WHEN h.doc_type = 'SAL_RET' THEN -l.qty ELSE l.qty END),"
@@ -1069,7 +1068,7 @@ SalesDetailTotals ReportService::sales_detail_totals(const ReportFilter& filter)
 DashboardResult ReportService::dashboard(std::string_view today) const {  DashboardResult result;
   result.today = std::string(today);
   result.month_start = result.today.size() >= 7 ? result.today.substr(0, 7) + "-01" : "";
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     const auto sales_range = [&](const std::string& from, const std::string& to,
                                  std::int64_t* sales, std::int64_t* returns,
                                  std::int64_t* cost) {

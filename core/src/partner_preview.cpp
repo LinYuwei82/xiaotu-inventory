@@ -218,7 +218,7 @@ PartnerPreviewReport partner_merge_preview(const Db& db) {
   std::map<std::string, LedgerAgg> ledger;
   std::map<std::string, std::string> origin_by_key;
 
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     {
       Stmt stmt(conn,
                 "SELECT id, code, name, COALESCE(tax_no, ''), COALESCE(phone, '')"

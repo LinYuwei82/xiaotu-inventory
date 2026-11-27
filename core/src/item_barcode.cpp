@@ -1,6 +1,6 @@
 #include "xiaotu/item_barcode.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <string>
 #include <unordered_set>
@@ -21,13 +21,13 @@ std::string trimmed(const std::string& value) {
   return value.substr(begin, end - begin + 1);
 }
 
-std::string item_code(sqlite3* conn, std::int64_t item_id) {
+std::string item_code(Conn& conn, std::int64_t item_id) {
   Stmt stmt(conn, "SELECT code FROM item WHERE id = ?;");
   stmt.bind(1, item_id);
   return stmt.step() ? stmt.text(0) : std::string{};
 }
 
-void ensure_unused(sqlite3* conn, std::int64_t item_id, const std::string& barcode) {
+void ensure_unused(Conn& conn, std::int64_t item_id, const std::string& barcode) {
   {
     Stmt stmt(conn,
               "SELECT i.code FROM item_barcode b JOIN item i ON i.id = b.item_id"
@@ -52,7 +52,7 @@ void ensure_unused(sqlite3* conn, std::int64_t item_id, const std::string& barco
 
 std::vector<ItemBarcodeRow> item_barcodes(Db& db, std::int64_t item_id) {
   std::vector<ItemBarcodeRow> rows;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT barcode, is_primary FROM item_barcode WHERE item_id = ?"
               " ORDER BY is_primary DESC, id;");
@@ -80,7 +80,7 @@ std::vector<std::string> normalize_barcodes(const std::vector<std::string>& raw)
   return codes;
 }
 
-void replace_item_barcodes(sqlite3* conn, std::int64_t item_id,
+void replace_item_barcodes(Conn& conn, std::int64_t item_id,
                            const std::vector<std::string>& raw) {
   const std::string code = item_code(conn, item_id);
   if (code.empty()) {
@@ -114,7 +114,7 @@ void replace_item_barcodes(sqlite3* conn, std::int64_t item_id,
 
 void replace_item_barcodes(Db& db, std::int64_t item_id,
                            const std::vector<std::string>& raw) {
-  db.write([&](sqlite3* conn) { replace_item_barcodes(conn, item_id, raw); });
+  db.write([&](Conn& conn) { replace_item_barcodes(conn, item_id, raw); });
 }
 
 }  // namespace xiaotu

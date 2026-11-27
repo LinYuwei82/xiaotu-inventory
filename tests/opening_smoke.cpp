@@ -1,4 +1,4 @@
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -6,7 +6,6 @@
 #include <string>
 #include <vector>
 
-#include "xiaotu/db.h"
 #include "xiaotu/error.h"
 #include "xiaotu/gen/customer_service.h"
 #include "xiaotu/gen/item_service.h"
@@ -37,7 +36,7 @@ std::string xlsx(const std::vector<std::string>& header,
 
 std::int64_t count_rows(xiaotu::Db& db, const std::string& sql) {
   std::int64_t value = 0;
-  db.read([&](sqlite3* conn) {
+  db.read([&](xiaotu::Conn& conn) {
     xiaotu::Stmt stmt(conn, sql);
     if (stmt.step()) value = stmt.i64(0);
   });
@@ -101,7 +100,7 @@ int main() {
     {
       std::int64_t qty = 0;
       std::int64_t amount = 0;
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt stmt(conn,
                           "SELECT qty, amount_cents FROM stock_balance"
                           " WHERE warehouse_id = 1 AND item_id = ?;");
@@ -116,7 +115,7 @@ int main() {
     {
       std::string category;
       std::string status;
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt stmt(conn,
                           "SELECT biz_category, status FROM doc_header"
                           " WHERE doc_type = 'OTH_IN';");
@@ -150,7 +149,7 @@ int main() {
       std::int64_t amount = 0;
       std::int64_t doc_id = -1;
       std::int64_t partner_id = 0;
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt stmt(conn,
                           "SELECT opening, direction, amount_cents, doc_id, partner_id"
                           " FROM ar_ap_entry WHERE doc_type = 'OPENING_AR';");
@@ -177,7 +176,7 @@ int main() {
       std::int64_t direction = 0;
       std::int64_t amount = 0;
       std::int64_t partner_id = 0;
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt stmt(conn,
                           "SELECT opening, direction, amount_cents, partner_id"
                           " FROM ar_ap_entry WHERE doc_type = 'OPENING_AP';");
@@ -201,7 +200,7 @@ int main() {
 
     // 资金账户期初：更新已有账户的期初余额，不新建记录。
     std::string account_code;
-    db.read([&](sqlite3* conn) {
+    db.read([&](xiaotu::Conn& conn) {
       xiaotu::Stmt stmt(conn, "SELECT code FROM fund_account WHERE is_deleted = 0 LIMIT 1;");
       if (stmt.step()) account_code = stmt.text(0);
     });
@@ -212,7 +211,7 @@ int main() {
     check(report.ok() && report.inserted == 1, "资金账户期初应更新 1 个账户");
     {
       std::int64_t opening = 0;
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt stmt(conn, "SELECT opening_cents FROM fund_account WHERE code = ?;");
         stmt.bind(1, account_code);
         if (stmt.step()) opening = stmt.i64(0);

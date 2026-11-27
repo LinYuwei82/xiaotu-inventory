@@ -1,6 +1,6 @@
 #include "xiaotu/opening_import.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <cctype>
 #include <cstdint>
@@ -108,14 +108,14 @@ bool valid_date(const std::string& text) {
 // 单据日期取导入当天；时间统一走 audit_stamp 的本地时间。
 std::string today_text() { return audit_stamp().at.substr(0, 10); }
 
-std::unordered_map<std::string, WarehouseRef> load_warehouses(sqlite3* conn) {
+std::unordered_map<std::string, WarehouseRef> load_warehouses(Conn& conn) {
   std::unordered_map<std::string, WarehouseRef> result;
   Stmt stmt(conn, "SELECT id, code, name FROM warehouse WHERE is_deleted = 0;");
   while (stmt.step()) result.emplace(stmt.text(1), WarehouseRef{stmt.i64(0), stmt.text(2)});
   return result;
 }
 
-std::unordered_map<std::string, ItemRef> load_items(sqlite3* conn) {
+std::unordered_map<std::string, ItemRef> load_items(Conn& conn) {
   std::unordered_map<std::string, ItemRef> result;
   Stmt stmt(conn,
             "SELECT i.id, i.code, COALESCE(u.qty_decimals, 4) FROM item i"
@@ -126,28 +126,28 @@ std::unordered_map<std::string, ItemRef> load_items(sqlite3* conn) {
   return result;
 }
 
-std::unordered_map<std::string, PartnerRef> load_partners(sqlite3* conn, const char* table) {
+std::unordered_map<std::string, PartnerRef> load_partners(Conn& conn, const char* table) {
   std::unordered_map<std::string, PartnerRef> result;
   Stmt stmt(conn, "SELECT id, code, name FROM " + std::string(table) + " WHERE is_deleted = 0;");
   while (stmt.step()) result.emplace(stmt.text(1), PartnerRef{stmt.i64(0), stmt.text(2)});
   return result;
 }
 
-std::unordered_map<std::string, AccountRef> load_accounts(sqlite3* conn) {
+std::unordered_map<std::string, AccountRef> load_accounts(Conn& conn) {
   std::unordered_map<std::string, AccountRef> result;
   Stmt stmt(conn, "SELECT id, code FROM fund_account WHERE is_deleted = 0;");
   while (stmt.step()) result.emplace(stmt.text(1), AccountRef{stmt.i64(0)});
   return result;
 }
 
-std::int64_t scalar_count(sqlite3* conn, const std::string& sql) {
+std::int64_t scalar_count(Conn& conn, const std::string& sql) {
   Stmt stmt(conn, sql);
   return stmt.step() ? stmt.i64(0) : 0;
 }
 
 // 有业务流水之后拒绝导入期初：返回空串表示可导入，否则返回判定依据。
 // 期初自身生成的单据/台账不算业务流水，否则四类期初无法依次导入。
-std::string business_blocker(sqlite3* conn, OpeningKind kind) {
+std::string business_blocker(Conn& conn, OpeningKind kind) {
   constexpr const char* kBusinessDocs =
       "SELECT COUNT(*) FROM doc_header WHERE status = 'APPROVED'"
       " AND NOT (doc_type = 'OTH_IN' AND biz_category = 'OPENING');";
@@ -201,7 +201,7 @@ OpeningReport import_stock(Db& db, const SheetTable& table, const ColumnMap& col
   std::vector<OpeningIssue> issues;
   std::vector<std::pair<std::int64_t, std::vector<DocLineInput>>> batches;
   std::unordered_map<std::string, int> seen;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     const std::string blocker = business_blocker(conn, OpeningKind::Stock);
     if (!blocker.empty()) {
       reject(issues, 1, "库存期初", blocker + "；如需重来请清空数据目录重建后再导入");
@@ -291,7 +291,7 @@ OpeningReport import_stock(Db& db, const SheetTable& table, const ColumnMap& col
   }
   {
     const std::string name = filename.empty() ? "库存期初.xlsx" : std::string(filename);
-    db.write([&](sqlite3* conn) {
+    db.write([&](Conn& conn) {
       audit_write(conn, "import", "opening_stock", 0, name,
                   "库存期初导入 " + std::to_string(report.inserted) + " 行，生成 " +
                       std::to_string(report.doc_nos.size()) + " 张期初入库单");
@@ -315,7 +315,7 @@ OpeningReport import_receivable_payable(Db& db, OpeningKind kind, const SheetTab
     std::string due_date;
   };
   std::vector<Entry> entries;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     const std::string blocker = business_blocker(conn, kind);
     if (!blocker.empty()) {
       reject(issues, 1, "期初", blocker + "；如需重来请清空数据目录重建后再导入");
@@ -357,7 +357,7 @@ OpeningReport import_receivable_payable(Db& db, OpeningKind kind, const SheetTab
 
   report.backup = backup_before_import(db, kind, backup_dir);
   const std::string name = filename.empty() ? "期初.xlsx" : std::string(filename);
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     const AuditStamp stamp = audit_stamp();
     for (const auto& entry : entries) {
       const std::int64_t id = next_id();
@@ -399,7 +399,7 @@ OpeningReport import_fund(Db& db, const SheetTable& table, const ColumnMap& colu
   std::vector<OpeningIssue> issues;
   std::vector<std::pair<std::int64_t, std::int64_t>> updates;  // id -> cents
   std::unordered_map<std::string, int> seen;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     const std::string blocker = business_blocker(conn, OpeningKind::Fund);
     if (!blocker.empty()) {
       reject(issues, 1, "资金账户期初", blocker + "；如需重来请清空数据目录重建后再导入");
@@ -435,7 +435,7 @@ OpeningReport import_fund(Db& db, const SheetTable& table, const ColumnMap& colu
 
   report.backup = backup_before_import(db, OpeningKind::Fund, backup_dir);
   const std::string name = filename.empty() ? "资金账户期初.xlsx" : std::string(filename);
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     const AuditStamp stamp = audit_stamp();
     for (const auto& update : updates) {
       Stmt stmt(conn,
@@ -501,7 +501,7 @@ std::vector<std::string> opening_columns(OpeningKind kind) {
 
 std::string opening_blocker(Db& db, OpeningKind kind) {
   std::string reason;
-  db.read([&](sqlite3* conn) { reason = business_blocker(conn, kind); });
+  db.read([&](Conn& conn) { reason = business_blocker(conn, kind); });
   return reason;
 }
 

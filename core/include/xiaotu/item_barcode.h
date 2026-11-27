@@ -21,7 +21,7 @@ std::vector<std::string> normalize_barcodes(const std::vector<std::string>& raw)
 
 // 事务内整体替换某商品的条码：第一项为主码并同步 item.barcode；
 // 与其他商品或其条码冲突时抛 AppError("DUPLICATE_BARCODE")。传空列表表示清空。
-void replace_item_barcodes(sqlite3* conn, std::int64_t item_id,
+void replace_item_barcodes(Conn& conn, std::int64_t item_id,
                            const std::vector<std::string>& raw);
 void replace_item_barcodes(Db& db, std::int64_t item_id, const std::vector<std::string>& raw);
 

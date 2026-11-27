@@ -1,6 +1,6 @@
 #include "xiaotu/session_store.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <string>
 
@@ -35,7 +35,7 @@ SessionStore::SessionStore(Db& db) : db_(db) { purge_expired(); }
 
 CreatedSession SessionStore::create(std::int64_t user_id, int idle_minutes) {
   CreatedSession created{.id = random_hex(32), .csrf = random_hex(32)};
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     Stmt stmt(conn,
               "INSERT INTO app_session (token_hash, user_id, csrf, created_at, last_seen_at,"
               " expires_at)"
@@ -65,7 +65,7 @@ std::optional<Session> SessionStore::get(const std::string& id, int idle_minutes
   bool too_old = false;
   bool needs_renew = false;
   bool usable = false;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn, kSelect);
     stmt.bind(1, hours_modifier(absolute_hours))
         .bind(2, kRenewAfterSql)
@@ -94,14 +94,14 @@ std::optional<Session> SessionStore::get(const std::string& id, int idle_minutes
 
   if (needs_renew) {
     // 条件里再判一次时间：并发请求同时认为「该续期」时只有一次真正落库。
-    db_.write([&](sqlite3* conn) {
+    db_.write([&](Conn& conn) {
       Stmt stmt(conn,
                 "UPDATE app_session SET last_seen_at = datetime('now', 'localtime'),"
                 " expires_at = datetime('now', 'localtime', ?)"
                 " WHERE token_hash = ? AND last_seen_at <= datetime('now', 'localtime', ?);");
       stmt.bind(1, minutes_modifier(idle_minutes)).bind(2, digest).bind(3, kRenewAfterSql).run();
       if (renewed != nullptr) {
-        *renewed = sqlite3_changes(conn) > 0;
+        *renewed = conn.changes() > 0;
       }
     });
   }
@@ -112,14 +112,14 @@ void SessionStore::erase(const std::string& id) {
   if (id.empty()) {
     return;
   }
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     Stmt stmt(conn, "DELETE FROM app_session WHERE token_hash = ?;");
     stmt.bind(1, hash_token(id)).run();
   });
 }
 
 void SessionStore::purge_expired() {
-  db_.write([](sqlite3* conn) {
+  db_.write([](Conn& conn) {
     Stmt stmt(conn,
               "DELETE FROM app_session WHERE expires_at <= datetime('now', 'localtime');");
     stmt.run();

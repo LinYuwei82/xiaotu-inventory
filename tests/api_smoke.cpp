@@ -1,7 +1,7 @@
 // HTTP 冒烟：网络版走口令登录，单机版走一次性令牌换取会话；两套形态都验证
 // 健康检查、鉴权拦截、主数据读写、导出与审计埋点。
 #include <httplib.h>
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <chrono>
 #include <filesystem>
@@ -23,7 +23,6 @@
 #include <nlohmann/json.hpp>
 
 #include "xiaotu/audit.h"
-#include "xiaotu/db.h"
 #include "xiaotu/document.h"
 #include "xiaotu/http_server.h"
 #include "xiaotu/migrations.h"
@@ -98,7 +97,7 @@ std::pair<long long, std::string> post_without_content_length(int port, const st
 std::int64_t audit_count(xiaotu::Db& db, const std::string& action,
                          const std::string& entity = {},
                          const std::string& detail_prefix = {}) {  std::int64_t count = 0;
-  db.read([&](sqlite3* conn) {
+  db.read([&](xiaotu::Conn& conn) {
     std::string sql = "SELECT COUNT(*) FROM audit_log WHERE action = ?";
     if (!entity.empty()) {
       sql += " AND entity = ?";
@@ -129,7 +128,7 @@ void open_database(const std::filesystem::path& dir) {
 
 std::string scalar_text(xiaotu::Db& db, const std::string& sql) {
   std::string value;
-  db.read([&](sqlite3* conn) {
+  db.read([&](xiaotu::Conn& conn) {
     xiaotu::Stmt stmt(conn, sql);
     if (stmt.step()) {
       value = stmt.text(0);
@@ -140,7 +139,7 @@ std::string scalar_text(xiaotu::Db& db, const std::string& sql) {
 
 // 测试夹具：直接建库时不希望触发「必须改密」，只重置登录标记。
 void clear_must_change(xiaotu::Db& db, std::int64_t id) {
-  db.write([&](sqlite3* conn) {
+  db.write([&](xiaotu::Conn& conn) {
     xiaotu::exec_sql(conn, "UPDATE app_user SET must_change_password = 0 WHERE id = " +
                                std::to_string(id) + ";");
   });
@@ -363,7 +362,7 @@ void run_server_mode(const std::filesystem::path& dir) {
         "锁定期间的登录尝试应写一条账号锁定原因的失败审计");
 
   // 锁定到期后可登录，且成功登录清零计数与锁定时间。
-  db.write([&](sqlite3* conn) {
+  db.write([&](xiaotu::Conn& conn) {
     xiaotu::exec_sql(conn,
                      "UPDATE app_user SET locked_until = datetime('now', 'localtime',"
                      " '-1 minute') WHERE username = 'lock_user';");
@@ -791,7 +790,7 @@ void run_server_mode(const std::filesystem::path& dir) {
     }
 
     // CLI 路径：没有请求上下文，两列应为空串而不是报错。
-    services.db.write([&](sqlite3* conn) {
+    services.db.write([&](xiaotu::Conn& conn) {
       xiaotu::audit_write(conn, "restore", "backup", 0, "", "CLI 恢复测试");
     });
     const auto cli_audit = client.Get("/api/audit-logs?entity=backup");
@@ -807,12 +806,11 @@ void run_server_mode(const std::filesystem::path& dir) {
     }
 
     // 迁移前的旧行（两列走默认值）读取应正常，值为空串。
-    services.db.write([&](sqlite3* conn) {
-      sqlite3_exec(conn,
-                   "INSERT INTO audit_log (at, actor, action, entity, entity_id, entity_no,"
-                   " detail) VALUES ('2026-01-01 00:00:00', 'system', 'legacy', 'item', 0, '',"
-                   " '历史行');",
-                   nullptr, nullptr, nullptr);
+    services.db.write([&](xiaotu::Conn& conn) {
+      xiaotu::exec_sql(conn,
+                       "INSERT INTO audit_log (at, actor, action, entity, entity_id, entity_no,"
+                       " detail) VALUES ('2026-01-01 00:00:00', 'system', 'legacy', 'item', 0, '',"
+                       " '历史行');");
     });
     const auto legacy = client.Get("/api/audit-logs?entity=item&page_size=200");
     if (legacy) {
@@ -843,16 +841,21 @@ void run_server_mode(const std::filesystem::path& dir) {
     };
     const auto count_of = [&](const std::string& sql) {
       std::int64_t value = 0;
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt stmt(conn, sql);
         if (stmt.step()) value = stmt.i64(0);
       });
       return value;
     };
     const auto fill_to = [&](const std::string& sql, const char* what) {
-      db.write([&](sqlite3* conn) {
-        check(sqlite3_exec(conn, sql.c_str(), nullptr, nullptr, nullptr) == SQLITE_OK,
-              std::string("补足") + what + "额度数据应成功");
+      db.write([&](xiaotu::Conn& conn) {
+        bool ok = true;
+        try {
+          xiaotu::exec_sql(conn, sql);
+        } catch (...) {
+          ok = false;
+        }
+        check(ok, std::string("补足") + what + "额度数据应成功");
       });
     };
     const auto expect_quota = [&](const auto& result, const char* label) {
@@ -1043,7 +1046,7 @@ void run_server_mode(const std::filesystem::path& dir) {
         "修改会话超时后应能重新登录");
   if (relogin_after_timeout) {
     std::int64_t idle_minutes = -1;
-    db.read([&](sqlite3* conn) {
+    db.read([&](xiaotu::Conn& conn) {
       xiaotu::Stmt stmt(
           conn,
           "SELECT CAST((julianday(expires_at) - julianday('now', 'localtime')) * 1440 AS INTEGER)"

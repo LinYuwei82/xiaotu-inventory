@@ -1,6 +1,6 @@
 #include "xiaotu/migrations.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <cstdio>
 #include <limits>
@@ -1150,7 +1150,7 @@ const std::vector<Migration>& all_migrations() {
 std::string_view partner_id_backfill_sql() { return kV36; }
 
 void migrate_to(Db& db, int target_version) {
-  db.write_raw([&](sqlite3* conn) {
+  db.write_raw([&](Conn& conn) {
     exec_sql(conn,
              "CREATE TABLE IF NOT EXISTS schema_migration ("
              "  version    INTEGER PRIMARY KEY,"
@@ -1161,7 +1161,7 @@ void migrate_to(Db& db, int target_version) {
   });
 
   std::map<int, std::string> applied;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn, "SELECT version, checksum FROM schema_migration ORDER BY version;");
     while (stmt.step()) {
       applied[static_cast<int>(stmt.i64(0))] = stmt.text(1);
@@ -1189,7 +1189,7 @@ void migrate_to(Db& db, int target_version) {
       continue;
     }
 
-    db.write_raw([&](sqlite3* conn) {
+    db.write_raw([&](Conn& conn) {
       exec_sql(conn, "BEGIN IMMEDIATE;");
       try {
         if (migration.version == 13 && !ledger_check_suppressed) {
@@ -1235,7 +1235,7 @@ void migrate_to(Db& db, int target_version) {
   // 历史 settlement 一律 account_id=0，不把旧数据强行挂到现金上。
   // fund_account 是 v12 建的，只迁到低版本时不预置。
   if (applied.empty() && target_version >= 12) {
-    db.write_raw([&](sqlite3* conn) {
+    db.write_raw([&](Conn& conn) {
       exec_sql(conn,
                "INSERT OR IGNORE INTO fund_account"
                " (id, code, name, kind, account_no, bank_name, opening_cents,"

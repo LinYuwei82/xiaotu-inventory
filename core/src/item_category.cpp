@@ -1,6 +1,6 @@
 #include "xiaotu/item_category.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <algorithm>
 #include <cctype>
@@ -26,7 +26,7 @@ int depth_of(const std::string& path) {
   return std::max(1, static_cast<int>(std::count(path.begin(), path.end(), '/')) - 1);
 }
 
-ItemCategoryRow load(sqlite3* conn, std::int64_t id) {
+ItemCategoryRow load(Conn& conn, std::int64_t id) {
   Stmt stmt(conn,
             "SELECT id, parent_id, name, path, sort_order, status FROM item_category"
             " WHERE id = ? AND is_deleted = 0;");
@@ -45,7 +45,7 @@ ItemCategoryRow load(sqlite3* conn, std::int64_t id) {
   return row;
 }
 
-void ensure_sibling_unique(sqlite3* conn, std::int64_t parent_id, const std::string& name,
+void ensure_sibling_unique(Conn& conn, std::int64_t parent_id, const std::string& name,
                            std::int64_t exclude_id) {
   Stmt stmt(conn,
             "SELECT 1 FROM item_category"
@@ -67,7 +67,7 @@ std::string validated_name(const std::string& raw) {
   return name;
 }
 
-std::string parent_path(sqlite3* conn, std::int64_t parent_id) {
+std::string parent_path(Conn& conn, std::int64_t parent_id) {
   if (parent_id == 0) return "/";
   const ItemCategoryRow parent = load(conn, parent_id);
   return parent.path;
@@ -77,7 +77,7 @@ std::string parent_path(sqlite3* conn, std::int64_t parent_id) {
 
 std::vector<ItemCategoryRow> ItemCategoryService::list() {
   std::vector<ItemCategoryRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT c.id, c.parent_id, c.name, c.path, c.sort_order, c.status,"
               " (SELECT COUNT(*) FROM item i"
@@ -127,7 +127,7 @@ ItemCategoryRow ItemCategoryService::create(std::int64_t parent_id, const std::s
                                             std::int64_t sort_order, bool status) {
   const std::string clean = validated_name(name);
   ItemCategoryRow created;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     if (parent_id != 0) {
       load(conn, parent_id);  // 父分类必须存在
     }
@@ -167,7 +167,7 @@ ItemCategoryRow ItemCategoryService::update(std::int64_t id, std::int64_t parent
                                             bool status) {
   const std::string clean = validated_name(name);
   ItemCategoryRow updated;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     const ItemCategoryRow current = load(conn, id);
     ensure_sibling_unique(conn, parent_id, clean, id);
     std::string path = current.path;
@@ -216,7 +216,7 @@ ItemCategoryRow ItemCategoryService::update(std::int64_t id, std::int64_t parent
 }
 
 void ItemCategoryService::remove(std::int64_t id) {
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     const ItemCategoryRow current = load(conn, id);
     {
       Stmt children(conn,
@@ -242,7 +242,7 @@ void ItemCategoryService::remove(std::int64_t id) {
 std::vector<std::int64_t> ItemCategoryService::subtree_ids(std::int64_t id) {
   std::vector<std::int64_t> ids;
   if (id == 0) return ids;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     std::string path;
     {
       Stmt stmt(conn, "SELECT path FROM item_category WHERE id = ? AND is_deleted = 0;");

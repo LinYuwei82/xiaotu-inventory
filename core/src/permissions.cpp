@@ -1,6 +1,6 @@
 #include "xiaotu/permissions.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <algorithm>
 #include <string>
@@ -8,7 +8,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "xiaotu/db.h"
 
 namespace xiaotu {
 namespace {
@@ -23,7 +22,7 @@ std::unordered_map<std::string, std::unordered_set<std::string>>& mutable_table(
 
 void load_role_permissions(Db& db) {
   std::unordered_map<std::string, std::unordered_set<std::string>> loaded;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT r.code, p.permission FROM app_role r"
               " JOIN app_role_permission p ON p.role_id = r.id;");

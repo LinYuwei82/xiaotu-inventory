@@ -1,6 +1,6 @@
 #include "xiaotu/print_template.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <algorithm>
 #include <set>
@@ -284,7 +284,7 @@ PrintTemplate template_from_row(const Stmt& stmt) {
   return row;
 }
 
-void load_columns(sqlite3* conn, PrintTemplate& tmpl) {
+void load_columns(Conn& conn, PrintTemplate& tmpl) {
   Stmt stmt(conn,
             "SELECT column_key, position, visible, width_mm, align, font_size_pt, bold"
             " FROM print_template_column WHERE template_id = ? ORDER BY position;");
@@ -374,7 +374,7 @@ const PrintTargetDef& validate_template(PrintTemplate& tmpl) {
 }
 
 // 编码唯一性按全表判断：软删除的记录仍占用唯一索引，提前给出可读错误。
-void ensure_code_free(sqlite3* conn, const std::string& code, std::int64_t exclude_id) {
+void ensure_code_free(Conn& conn, const std::string& code, std::int64_t exclude_id) {
   Stmt stmt(conn, "SELECT is_deleted FROM print_template WHERE code = ? AND id <> ? LIMIT 1;");
   stmt.bind(1, code).bind(2, exclude_id);
   if (stmt.step()) {
@@ -384,7 +384,7 @@ void ensure_code_free(sqlite3* conn, const std::string& code, std::int64_t exclu
   }
 }
 
-void clear_default(sqlite3* conn, const std::string& target_type, const std::string& target_key,
+void clear_default(Conn& conn, const std::string& target_type, const std::string& target_key,
                    std::int64_t exclude_id) {
   Stmt stmt(conn,
             "UPDATE print_template SET is_default = 0"
@@ -393,7 +393,7 @@ void clear_default(sqlite3* conn, const std::string& target_type, const std::str
   stmt.run();
 }
 
-void insert_columns(sqlite3* conn, std::int64_t template_id,
+void insert_columns(Conn& conn, std::int64_t template_id,
                     const std::vector<PrintTemplateColumn>& columns) {
   for (const PrintTemplateColumn& column : columns) {
     Stmt stmt(conn,
@@ -557,7 +557,7 @@ std::vector<PrintRenderColumn> resolved_print_columns(const PrintTemplate& tmpl)
 std::vector<PrintTemplate> PrintTemplateService::list(std::string_view target_type,
                                                       std::string_view target_key) const {
   std::vector<PrintTemplate> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     std::string sql = std::string(kTemplateSelect) + " WHERE is_deleted = 0";
     if (!target_type.empty()) sql += " AND target_type = ?";
     if (!target_key.empty()) sql += " AND target_key = ?";
@@ -581,7 +581,7 @@ std::vector<PrintTemplate> PrintTemplateService::list(std::string_view target_ty
 PrintTemplate PrintTemplateService::get(std::int64_t id) const {
   PrintTemplate tmpl;
   bool found = false;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     {
       Stmt stmt(conn, std::string(kTemplateSelect) + " WHERE id = ? AND is_deleted = 0;");
       stmt.bind(1, id);
@@ -602,7 +602,7 @@ PrintTemplate PrintTemplateService::create(const PrintTemplate& input) {
   PrintTemplate tmpl = input;
   validate_template(tmpl);
   const AuditStamp stamp = audit_stamp();
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     ensure_code_free(conn, tmpl.code, 0);
     {
       std::int64_t current = 0;
@@ -643,7 +643,7 @@ PrintTemplate PrintTemplateService::create(const PrintTemplate& input) {
         .bind(20, tmpl.paper_kind)
         .bind(21, tmpl.scale_mode)
         .run();
-    tmpl.id = sqlite3_last_insert_rowid(conn);
+    tmpl.id = conn.last_insert_id();
     tmpl.version = 1;
     insert_columns(conn, tmpl.id, tmpl.columns);
     audit_write(conn, "create", "print_template", tmpl.id, tmpl.code);
@@ -660,7 +660,7 @@ PrintTemplate PrintTemplateService::update(std::int64_t id, const PrintTemplate&
   PrintTemplate tmpl = input;
   validate_template(tmpl);
   const AuditStamp stamp = audit_stamp();
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     ensure_code_free(conn, tmpl.code, id);
     if (tmpl.is_default) {
       clear_default(conn, tmpl.target_type, tmpl.target_key, id);
@@ -695,7 +695,7 @@ PrintTemplate PrintTemplateService::update(std::int64_t id, const PrintTemplate&
           .bind(20, id)
           .bind(21, tmpl.version)
           .run();
-      if (sqlite3_changes(conn) == 0) {
+      if (conn.changes() == 0) {
         Stmt check(conn, "SELECT 1 FROM print_template WHERE id = ? AND is_deleted = 0;");
         check.bind(1, id);
         if (!check.step()) {
@@ -715,7 +715,7 @@ PrintTemplate PrintTemplateService::update(std::int64_t id, const PrintTemplate&
 }
 
 void PrintTemplateService::remove(std::int64_t id) {
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     std::string code;
     {
       Stmt stmt(conn, "SELECT code FROM print_template WHERE id = ? AND is_deleted = 0;");
@@ -736,7 +736,7 @@ void PrintTemplateService::remove(std::int64_t id) {
 PrintTemplate PrintTemplateService::set_default(std::int64_t id) {
   const PrintTemplate current = get(id);
   const AuditStamp stamp = audit_stamp();
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     clear_default(conn, current.target_type, current.target_key, id);
     Stmt stmt(conn,
               "UPDATE print_template SET is_default = 1, version = version + 1,"
@@ -752,7 +752,7 @@ PrintTemplate PrintTemplateService::resolve(std::string_view target_type,
                                             std::int64_t template_id) const {
   PrintTemplate tmpl;
   bool found = false;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     if (template_id > 0) {
       {
         Stmt stmt(conn, std::string(kTemplateSelect) +

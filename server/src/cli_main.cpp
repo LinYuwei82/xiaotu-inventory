@@ -505,7 +505,7 @@ int main(int argc, char** argv) {
     // 不占启动关键路径、不与首请求抢写锁；migrate 实际升版时保持同步，迁移完立刻修平。
     auto run_credit_mirror_repair = [&db] {
       std::size_t repaired = 0;
-      db.write([&](sqlite3* conn) { repaired = xiaotu::repair_customer_credit_mirror(conn); });
+      db.write([&](xiaotu::Conn& conn) { repaired = xiaotu::repair_customer_credit_mirror(conn); });
       if (repaired > 0) {
         xiaotu::log_info("信用额度镜像修补 " + std::to_string(repaired) + " 条");
         std::cout << "信用额度镜像修补: " << repaired << " 条" << std::endl;

@@ -267,8 +267,8 @@ struct ReportFilter {
 // partner_key_direction 的 P: 分支按 partner 角色位判定；兼买卖时以台账方向为准，
 // 不按档案角色硬推，台账里两边都有或都没有时默认应收（+1）。
 // partner_key_name 查不到返回空，由调用方回落到台账名称快照。
-int partner_key_direction(sqlite3* conn, std::string_view partner_key);
-std::string partner_key_name(sqlite3* conn, std::string_view partner_key);
+int partner_key_direction(Conn& conn, std::string_view partner_key);
+std::string partner_key_name(Conn& conn, std::string_view partner_key);
 
 class ReportService {
  public:

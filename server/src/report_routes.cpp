@@ -1655,7 +1655,7 @@ void register_report_routes(httplib::Server& server, Services& services) {
                      if (!direction_param.empty()) {
                        direction = direction_param == "-1" || direction_param == "AP" ? -1 : 1;
                      } else {
-                       services.db.read([&](sqlite3* conn) {
+                       services.db.read([&](Conn& conn) {
                          direction = partner_key_direction(conn, partner_key);
                        });
                      }

@@ -1,6 +1,6 @@
 #include "xiaotu/cost_recalc.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <map>
 #include <string>
@@ -59,7 +59,7 @@ CostRecalcResult CostRecalcService::recalculate(std::int64_t item_id,
   std::map<std::int64_t, std::pair<std::string, std::string>> item_names;
   std::map<std::int64_t, std::string> warehouse_names;
 
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     {
       Stmt stmt(conn, "SELECT id, code, name FROM item;");
       while (stmt.step()) {

@@ -9,9 +9,8 @@
 #include <iostream>
 #include <string>
 
-#include <sqlite3.h>
-
 #include "xiaotu/db.h"
+
 #include "xiaotu/migrations.h"
 #include "xiaotu/permissions.h"
 #include "xiaotu/session_store.h"
@@ -32,7 +31,7 @@ void check(bool condition, const std::string& message) {
 // 直接按令牌散列写一条会话，用来构造过期、旧时间等状态。
 void insert_session(xiaotu::Db& db, const std::string& token, std::int64_t user_id,
                     const std::string& expires_modifier) {
-  db.write([&](sqlite3* conn) {
+  db.write([&](xiaotu::Conn& conn) {
     xiaotu::Stmt stmt(
         conn,
         "INSERT INTO app_session (token_hash, user_id, csrf, created_at, last_seen_at,"
@@ -45,7 +44,7 @@ void insert_session(xiaotu::Db& db, const std::string& token, std::int64_t user_
 
 std::string column_text(xiaotu::Db& db, const std::string& sql, const std::string& param) {
   std::string value;
-  db.read([&](sqlite3* conn) {
+  db.read([&](xiaotu::Conn& conn) {
     xiaotu::Stmt stmt(conn, sql);
     stmt.bind(1, param);
     if (stmt.step()) {
@@ -57,7 +56,7 @@ std::string column_text(xiaotu::Db& db, const std::string& sql, const std::strin
 
 std::int64_t scalar_count(xiaotu::Db& db, const std::string& sql) {
   std::int64_t value = 0;
-  db.read([&](sqlite3* conn) {
+  db.read([&](xiaotu::Conn& conn) {
     xiaotu::Stmt stmt(conn, sql);
     if (stmt.step()) {
       value = stmt.i64(0);
@@ -68,7 +67,7 @@ std::int64_t scalar_count(xiaotu::Db& db, const std::string& sql) {
 
 std::string read_text(xiaotu::Db& db, const std::string& sql) {
   std::string value;
-  db.read([&](sqlite3* conn) {
+  db.read([&](xiaotu::Conn& conn) {
     xiaotu::Stmt stmt(conn, sql);
     if (stmt.step()) {
       value = stmt.text(0);
@@ -181,7 +180,7 @@ int main() {
       // 访问滑动续期：把最近访问时间推回 2 分钟前，再取一次应延长有效期。
       const auto admin = users.find_by_username("admin");
       const std::string sliding_token = sessions.create(admin.id).id;
-      db.write([&](sqlite3* conn) {
+      db.write([&](xiaotu::Conn& conn) {
         xiaotu::Stmt stmt(conn,
                           "UPDATE app_session SET last_seen_at = datetime('now', 'localtime',"
                           " '-2 minutes'), expires_at = datetime('now', 'localtime', '+1 hour')"
@@ -201,7 +200,7 @@ int main() {
 
       // 绝对上限：签发已超过 12 小时，即使最近访问过也拒绝。
       const std::string absolute_token = sessions.create(admin.id).id;
-      db.write([&](sqlite3* conn) {
+      db.write([&](xiaotu::Conn& conn) {
         xiaotu::Stmt stmt(conn,
                           "UPDATE app_session SET created_at = datetime('now', 'localtime',"
                           " '-13 hours'), last_seen_at = datetime('now', 'localtime',"

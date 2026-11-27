@@ -1,6 +1,4 @@
 // 备份与恢复补强项的冒烟测试：保留策略、schema 兼容性、每日备份与状态。
-#include <sqlite3.h>
-
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -8,9 +6,10 @@
 #include <iostream>
 #include <string>
 
+#include <sqlite3.h>
+
 #include "xiaotu/audit.h"
 #include "xiaotu/backup.h"
-#include "xiaotu/db.h"
 #include "xiaotu/error.h"
 #include "xiaotu/migrations.h"
 

@@ -90,7 +90,7 @@ bool local_page_request(const httplib::Request& req, int port, const std::string
 // 单机版本机口令开关：键不存在=从未询问，'1'=已启用门禁，'0'=已选择跳过。
 constexpr const char* kLocalPasswordSettingKey = "local_password_enabled";
 
-std::string read_setting_value(sqlite3* conn, const char* key) {
+std::string read_setting_value(Conn& conn, const char* key) {
   Stmt stmt(conn, "SELECT value FROM app_setting WHERE key = ?;");
   stmt.bind(1, key);
   return stmt.step() ? stmt.text(0) : std::string{};
@@ -100,7 +100,7 @@ std::string read_setting_value(sqlite3* conn, const char* key) {
 constexpr const char* kLocalRememberSettingKey = "local_remember_enabled";
 constexpr int kLocalRememberDays = 30;
 
-void write_setting_value(sqlite3* conn, const char* key, const std::string& value) {
+void write_setting_value(Conn& conn, const char* key, const std::string& value) {
   Stmt stmt(conn,
             "INSERT INTO app_setting (key, value, updated_at, updated_by)"
             " VALUES (?, ?, ?, 'system')"
@@ -112,7 +112,7 @@ void write_setting_value(sqlite3* conn, const char* key, const std::string& valu
 // 默认 30 天免输；只有显式写 '0' 才表示「每次都要输」。
 bool local_remember_enabled(Db& db) {
   bool enabled = true;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     enabled = read_setting_value(conn, kLocalRememberSettingKey) != "0";
   });
   return enabled;
@@ -120,7 +120,7 @@ bool local_remember_enabled(Db& db) {
 
 bool has_local_remember_token(Db& db) {
   bool exists = false;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn, "SELECT EXISTS(SELECT 1 FROM local_remember_token);");
     exists = stmt.step() && stmt.i64(0) != 0;
   });
@@ -138,7 +138,7 @@ IssuedRememberToken issue_local_remember_token(Db& db, std::int64_t user_id,
   IssuedRememberToken issued;
   issued.token = random_hex(32);
   const std::string digest = hash_token(issued.token);
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     Stmt clear(conn, "DELETE FROM local_remember_token;");
     clear.run();
     Stmt insert(conn,
@@ -161,7 +161,7 @@ IssuedRememberToken issue_local_remember_token(Db& db, std::int64_t user_id,
 
 void clear_local_remember_tokens(Db& db, std::int64_t user_id, const std::string& username,
                                  const char* detail) {
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     Stmt clear(conn, "DELETE FROM local_remember_token;");
     clear.run();
     audit_write_as(conn, username, "remember_clear", "auth", user_id, username, detail);
@@ -181,7 +181,7 @@ bool validate_local_remember_token(Db& db, const std::string& token, std::string
   bool found = false;
   bool expired = false;
   bool rolled_back = false;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT expires_at <= datetime('now'),"
               " issued_at > datetime('now'),"
@@ -199,7 +199,7 @@ bool validate_local_remember_token(Db& db, const std::string& token, std::string
     return false;
   }
   if (expired || rolled_back) {
-    db.write([&](sqlite3* conn) {
+    db.write([&](Conn& conn) {
       Stmt stmt(conn, "DELETE FROM local_remember_token WHERE token_hash = ?;");
       stmt.bind(1, digest).run();
     });
@@ -207,7 +207,7 @@ bool validate_local_remember_token(Db& db, const std::string& token, std::string
                            : "本机免输已过期，请重新输入口令";
     return false;
   }
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     Stmt stmt(conn,
               "UPDATE local_remember_token SET last_used_at = datetime('now')"
               " WHERE token_hash = ?;");
@@ -350,7 +350,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
         }
         try {
           const std::string detail = query_text(req);
-          services_.db.write([&](sqlite3* conn) {
+          services_.db.write([&](Conn& conn) {
             audit_write(conn, "export", "report", 0, req.path, detail);
           });
         } catch (const std::exception& error) {
@@ -876,7 +876,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                     return;
                   }
                   try {
-                    services_.db.write([&](sqlite3* conn) {
+                    services_.db.write([&](Conn& conn) {
                       audit_write(conn, "update_install", "system", 0, result.manifest.version,
                                   "自动替换: " + package.filename().string());
                     });
@@ -1120,7 +1120,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     }
     const SessionPolicy policy = services_.settings.session_policy();
     const CreatedSession session = sessions_.create(admin.id, policy.idle_minutes);
-    services_.db.write([&](sqlite3* conn) {
+    services_.db.write([&](Conn& conn) {
       audit_write_as(conn, admin.username, "login", "auth", admin.id, admin.username,
                      "单机令牌");
     });
@@ -1198,7 +1198,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     const CreatedSession session = sessions_.create(admin.id, policy.idle_minutes);
     res.set_header("Set-Cookie",
                    "sid=" + session.id + cookie_attributes(req, policy.idle_minutes * 60));
-    services_.db.write([&](sqlite3* conn) {
+    services_.db.write([&](Conn& conn) {
       audit_write_as(conn, admin.username, "login", "auth", admin.id, admin.username,
                      "本机免输");
     });
@@ -1232,7 +1232,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
                          return;
                        }
                        const bool enabled = json_body(req).value("enabled", true);
-                       services_.db.write([&](sqlite3* conn) {
+                       services_.db.write([&](Conn& conn) {
                          write_setting_value(conn, kLocalRememberSettingKey,
                                              enabled ? "1" : "0");
                        });
@@ -1379,7 +1379,7 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     // 审计写失败不应阻止关闭。
     try {
       std::string detail = std::string("来源=") + source + " 客户端=" + req.remote_addr;
-      services_.db.write([&](sqlite3* conn) {
+      services_.db.write([&](Conn& conn) {
         audit_write(conn, "shutdown", "system", 0, "", detail);
       });
     } catch (const std::exception& error) {
@@ -1721,7 +1721,7 @@ bool HttpServer::local_password_required() const {
       return false;
     }
     bool enabled = false;
-    services_.db.read([&](sqlite3* conn) {
+    services_.db.read([&](Conn& conn) {
       enabled = read_setting_value(conn, kLocalPasswordSettingKey) == "1";
     });
     return enabled;
@@ -1737,7 +1737,7 @@ bool HttpServer::local_password_prompt_pending() const {
   }
   std::string choice;
   bool has_data = false;
-  services_.db.read([&](sqlite3* conn) {
+  services_.db.read([&](Conn& conn) {
     choice = read_setting_value(conn, kLocalPasswordSettingKey);
     // 只用业务数据判断「老库」：新装会预置仓库、单位等基础种子，不能当作用户数据。
     Stmt stmt(conn,
@@ -1758,7 +1758,7 @@ bool HttpServer::local_password_prompt_pending() const {
 }
 
 void HttpServer::save_local_password_choice(bool enabled) {
-  services_.db.write([&](sqlite3* conn) {
+  services_.db.write([&](Conn& conn) {
     Stmt stmt(conn,
               "INSERT INTO app_setting (key, value, updated_at, updated_by)"
               " VALUES (?, ?, ?, 'system')"

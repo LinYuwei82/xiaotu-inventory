@@ -1,6 +1,6 @@
 #include "xiaotu/partner_merge.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <algorithm>
 #include <exception>
@@ -42,7 +42,7 @@ std::string snapshot_json(const PartnerRow& row) {
   return out.str();
 }
 
-bool load_partner(sqlite3* conn, std::int64_t id, PartnerRow& row) {
+bool load_partner(Conn& conn, std::int64_t id, PartnerRow& row) {
   Stmt stmt(conn,
             "SELECT id, code, name, is_customer, is_supplier, merged_into, origin, status,"
             " is_deleted FROM partner WHERE id = ?;");
@@ -60,7 +60,7 @@ bool load_partner(sqlite3* conn, std::int64_t id, PartnerRow& row) {
   return true;
 }
 
-std::vector<std::string> source_keys_of(sqlite3* conn, const PartnerRow& row) {
+std::vector<std::string> source_keys_of(Conn& conn, const PartnerRow& row) {
   std::vector<std::string> keys;
   keys.push_back("P:" + std::to_string(row.id));
   if (row.is_customer != 0) keys.push_back("C:" + std::to_string(row.id));
@@ -82,7 +82,7 @@ std::string keys_json(const std::vector<std::string>& keys) {
   return out;
 }
 
-std::string maps_json(sqlite3* conn, const std::vector<std::int64_t>& ids) {
+std::string maps_json(Conn& conn, const std::vector<std::int64_t>& ids) {
   std::string out = "[";
   bool first = true;
   for (const std::int64_t id : ids) {
@@ -133,7 +133,7 @@ std::vector<std::int64_t> split_ids(std::string_view text) {
   return ids;
 }
 
-std::int64_t max_id(sqlite3* conn, const char* table) {
+std::int64_t max_id(Conn& conn, const char* table) {
   Stmt stmt(conn, std::string("SELECT COALESCE(MAX(id), 0) FROM ") + table + ";");
   return stmt.step() ? stmt.i64(0) : 0;
 }
@@ -177,7 +177,7 @@ constexpr const char* kLogColumns =
     " source_keys, ledger_mark, settlement_mark, actor, created_at, can_undo,"
     " undo_reason, undone_at, undone_by";
 
-bool load_log(sqlite3* conn, std::int64_t log_id, PartnerMergeLogRow& row) {
+bool load_log(Conn& conn, std::int64_t log_id, PartnerMergeLogRow& row) {
   Stmt stmt(conn, std::string("SELECT ") + kLogColumns +
                       " FROM partner_merge_log WHERE id = ?;");
   stmt.bind(1, log_id);
@@ -214,7 +214,7 @@ std::vector<std::string> parse_key_json(std::string_view json) {
 }
 
 // 撤销判定：目标/源档案状态是否仍与合并时一致，以及源档案名下是否有新业务。
-std::string blocker_of(sqlite3* conn, const PartnerMergeLogRow& log) {
+std::string blocker_of(Conn& conn, const PartnerMergeLogRow& log) {
   if (!log.undone_at.empty()) {
     return "该合并已于 " + log.undone_at + " 撤销，不能重复撤销";
   }
@@ -267,7 +267,7 @@ PartnerMergeOutcome partner_merge(Db& db, std::int64_t target_id,
                                   const std::vector<std::int64_t>& source_ids,
                                   std::string_view actor) {
   PartnerMergeOutcome outcome;
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     PartnerRow target;
     if (!load_partner(conn, target_id, target) || target.is_deleted != 0) {
       throw AppError("NOT_FOUND", "保留档案不存在");
@@ -384,7 +384,7 @@ PartnerMergeOutcome partner_merge(Db& db, std::int64_t target_id,
 
 std::string partner_merge_undo_blocker(Db& db, std::int64_t log_id) {
   std::string reason;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     PartnerMergeLogRow log;
     if (!load_log(conn, log_id, log)) {
       reason = "合并日志不存在";
@@ -397,7 +397,7 @@ std::string partner_merge_undo_blocker(Db& db, std::int64_t log_id) {
 
 PartnerMergeOutcome partner_merge_undo(Db& db, std::int64_t log_id, std::string_view actor) {
   PartnerMergeOutcome outcome;
-  db.write([&](sqlite3* conn) {
+  db.write([&](Conn& conn) {
     PartnerMergeLogRow log;
     if (!load_log(conn, log_id, log)) {
       throw AppError("NOT_FOUND", "合并日志不存在");
@@ -454,7 +454,7 @@ PartnerMergeOutcome partner_merge_undo(Db& db, std::int64_t log_id, std::string_
 
 std::vector<PartnerMergeLogRow> partner_merge_logs(Db& db, int limit) {
   std::vector<PartnerMergeLogRow> rows;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn, std::string("SELECT ") + kLogColumns +
                         " FROM partner_merge_log ORDER BY id DESC LIMIT ?;");
     stmt.bind(1, static_cast<std::int64_t>(limit <= 0 ? 50 : limit));
@@ -465,7 +465,7 @@ std::vector<PartnerMergeLogRow> partner_merge_logs(Db& db, int limit) {
 
 std::vector<PartnerRow> partner_rows(Db& db) {
   std::vector<PartnerRow> rows;
-  db.read([&](sqlite3* conn) {
+  db.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT id, code, name, is_customer, is_supplier, merged_into, origin, status,"
               " is_deleted FROM partner WHERE is_deleted = 0 ORDER BY code;");

@@ -134,7 +134,7 @@ int main() {
         check((*row)[6] == "13.50", "13.5% 应导出为 13.50");
       }
       std::int64_t code_rows = 0;
-      db.read([&](sqlite3* conn) {
+      db.read([&](xiaotu::Conn& conn) {
         xiaotu::Stmt stmt(conn,
                           "SELECT COUNT(*) FROM item_barcode b JOIN item i ON i.id = b.item_id"
                           " WHERE i.code = 'SP010';");

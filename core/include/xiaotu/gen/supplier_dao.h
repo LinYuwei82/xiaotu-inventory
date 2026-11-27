@@ -29,9 +29,9 @@ class SupplierDao {
   std::optional<SupplierRow> find(std::int64_t id);
 
   // 以下为连接级方法，必须由调用方在写事务内使用。
-  static void insert(sqlite3* conn, SupplierRow& row);
-  static void update(sqlite3* conn, const SupplierRow& row);
-  static void soft_delete(sqlite3* conn, std::int64_t id);
+  static void insert(Conn& conn, SupplierRow& row);
+  static void update(Conn& conn, const SupplierRow& row);
+  static void soft_delete(Conn& conn, std::int64_t id);
 
  private:
   Db& db_;

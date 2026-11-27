@@ -1,6 +1,6 @@
 #include "xiaotu/stock_service.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <utility>
 
@@ -9,7 +9,7 @@ namespace xiaotu {
 std::vector<StockBalanceRow> StockService::balances(std::int64_t warehouse_id,
                                                     std::int64_t item_id, bool hide_zero) {
   std::vector<StockBalanceRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT i.id, i.code, i.name, i.unit, w.code, w.name, b.qty, b.amount_cents"
               " FROM stock_balance b"
@@ -43,7 +43,7 @@ std::vector<StockBalanceRow> StockService::balances(std::int64_t warehouse_id,
 
 std::vector<StockLedgerRow> StockService::ledger(std::int64_t item_id, int limit) {
   std::vector<StockLedgerRow> rows;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     Stmt stmt(conn,
               "SELECT l.id, l.biz_type, l.biz_time, h.doc_no, i.code, i.name, w.name, l.qty,"
               " l.amount_cents"

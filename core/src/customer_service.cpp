@@ -1,6 +1,6 @@
 #include "xiaotu/customer_service.h"
 
-#include <sqlite3.h>
+#include "xiaotu/db.h"
 
 #include <string>
 #include <utility>
@@ -15,7 +15,7 @@ namespace xiaotu {
 namespace {
 
 // partner 里的合并目标可能又指向别处，读取额度统一走既有解析。
-std::int64_t resolve_partner(sqlite3* conn, std::int64_t customer_id, bool ensure) {
+std::int64_t resolve_partner(Conn& conn, std::int64_t customer_id, bool ensure) {
   if (customer_id <= 0) return 0;
   std::int64_t partner_id = find_partner_for_archive(conn, PartnerSide::Customer, customer_id);
   if (partner_id == 0 && ensure) {
@@ -28,7 +28,7 @@ std::int64_t resolve_partner(sqlite3* conn, std::int64_t customer_id, bool ensur
 
 std::int64_t CustomerService::credit_limit_cents(std::int64_t customer_id) {
   std::int64_t limit = 0;
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     const std::int64_t partner_id = resolve_partner(conn, customer_id, false);
     if (partner_id > 0) {
       Stmt stmt(conn, "SELECT credit_limit_cents FROM partner WHERE id = ?;");
@@ -47,7 +47,7 @@ std::int64_t CustomerService::credit_limit_cents(std::int64_t customer_id) {
 std::vector<gen::CustomerRow> CustomerService::list() {
   std::vector<gen::CustomerRow> rows = base_.list();
   // 列表展示的额度以 partner 为准；没有 partner 的行保留镜像值。
-  db_.read([&](sqlite3* conn) {
+  db_.read([&](Conn& conn) {
     for (auto& row : rows) {
       const std::int64_t partner_id = resolve_partner(conn, row.id, false);
       if (partner_id <= 0) continue;
@@ -59,7 +59,7 @@ std::vector<gen::CustomerRow> CustomerService::list() {
   return rows;
 }
 
-void set_customer_credit_limit(sqlite3* conn, std::int64_t customer_id, std::int64_t cents) {
+void set_customer_credit_limit(Conn& conn, std::int64_t customer_id, std::int64_t cents) {
   if (customer_id <= 0) {
     throw AppError("INVALID_INPUT", "客户不能为空");
   }
@@ -77,7 +77,7 @@ void set_customer_credit_limit(sqlite3* conn, std::int64_t customer_id, std::int
   }
 }
 
-std::size_t repair_customer_credit_mirror(sqlite3* conn) {
+std::size_t repair_customer_credit_mirror(Conn& conn) {
   std::vector<std::pair<std::int64_t, std::int64_t>> pending;
   {
     Stmt stmt(conn,
@@ -100,7 +100,7 @@ gen::CustomerRow CustomerService::create(gen::CustomerRow input) {
   validate(input);
   // 直接复用生成层的写入逻辑，但把额度写进同一个事务：
   // customer 行负责编码/名称等字段与镜像，partner 才是额度的事实来源。
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     ensure_unique(conn, "customer", "code", input.code, 0, "编码");
     gen::CustomerDao::insert(conn, input);
     set_customer_credit_limit(conn, input.id, input.credit_limit_cents);
@@ -112,7 +112,7 @@ gen::CustomerRow CustomerService::create(gen::CustomerRow input) {
 gen::CustomerRow CustomerService::update(std::int64_t id, gen::CustomerRow input) {
   validate(input);
   input.id = id;
-  db_.write([&](sqlite3* conn) {
+  db_.write([&](Conn& conn) {
     ensure_unique(conn, "customer", "code", input.code, id, "编码");
     gen::CustomerDao::update(conn, input);
     set_customer_credit_limit(conn, id, input.credit_limit_cents);
