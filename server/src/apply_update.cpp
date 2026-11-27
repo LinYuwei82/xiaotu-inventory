@@ -299,8 +299,8 @@ std::string read_product_version(const std::filesystem::path& exe) {
   if (!GetFileVersionInfoW(file.c_str(), 0, size, data.data())) return {};
   void* pointer = nullptr;
   UINT length = 0;
-  // Translation 固定 0x0409/1200，与 version.rc 一致。
-  if (!VerQueryValueW(data.data(), L"\\StringFileInfo\\040904b0\\ProductVersion",
+  // Translation 固定 0x0804/1200（简体中文），与 version.rc 一致。
+  if (!VerQueryValueW(data.data(), L"\\StringFileInfo\\080404b0\\ProductVersion",
                       &pointer, &length) ||
       !pointer || length == 0) {
     return {};
