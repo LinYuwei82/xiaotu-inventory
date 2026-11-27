@@ -7407,6 +7407,42 @@
     bridge.xiaotuUpdateStatus.postMessage({});
   }
 
+  // Windows 更新重启后的一次性结果提示：安装由 server --apply-update 协助器完成，
+  // 协助器写 apply-state.json / install-result.json，壳的 installResult 合并返回。
+  // 启动进入主界面后取一次，按成功/失败/被中断提示用户，随后 ackInstallResult 删文件，不再重复弹。
+  let installResultChecked = false;
+  function maybeReportInstallResultOnce() {
+    if (!isWinWebview() || installResultChecked) return;
+    const hostObjects = window.chrome.webview.hostObjects;
+    if (!hostObjects || !hostObjects.updater_win) return;
+    const updater = hostObjects.updater_win;
+    installResultChecked = true;
+    (async () => {
+      try {
+        const data = JSON.parse((await updater.installResult()) || "{}");
+        const result = data.result || null;
+        const interrupted = !!data.interrupted;
+        if (interrupted) {
+          showNotice("上次更新安装被中断，当前仍是旧版本；可在「设置 → 软件更新」中重试", "warn");
+        } else if (result) {
+          const unchanged =
+            !!result.version_before &&
+            !!result.version_after &&
+            result.version_after === result.version_before;
+          const failed = !!result.error || Number(result.exit_code) !== 0 || unchanged;
+          if (failed) {
+            showNotice("更新安装失败，当前仍是旧版本；可在「设置 → 软件更新」中重试", "error");
+          } else {
+            showNotice(`更新成功，当前版本 ${result.version_after || ""}`, "ok");
+          }
+        }
+        if (result || interrupted) await updater.ackInstallResult();
+      } catch (error) {
+        // 桥不可用或旧壳没有该方法：静默跳过，不打扰用户。
+      }
+    })();
+  }
+
   // 软件更新：状态、下载、安装都在服务端完成；前端只展示结果与发起动作。
   // 不自动安装：下载后仍需管理员点「安装更新」并二次确认。
   // 原生自动更新卡片：由壳内 XiaotuUpdater 提供状态、检查与安装。
@@ -9006,6 +9042,8 @@
 
       // 强制升级拦截：壳内主动取一次状态；浏览器里没有桥，静默跳过。
       requestNativeUpdateStatus(blockMandatoryUpdate);
+      // Windows 更新重启后的一次性安装结果提示；浏览器/mac 静默跳过。
+      maybeReportInstallResultOnce();
 
       // 数据目录位于同步盘时由服务端给出提示，登录后常驻在页面顶部。
       let warningNode = document.getElementById("data-warning");
