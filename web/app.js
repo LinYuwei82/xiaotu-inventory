@@ -8929,9 +8929,14 @@
   }
 
   async function bootstrap() {
+    // 启动耗时打点（方案：启动速度优化 P0-1）：相对 bootstrap 入口的各阶段毫秒数。
+    const bootT0 = performance.now();
+    const bootMark = (stage) =>
+      console.debug("[xiaotu] 启动打点 " + stage + " +" + Math.round(performance.now() - bootT0) + "ms");
     try {
       // health 免登录，先拿单机版门禁状态；网络版这些字段恒为 false。
       const health = await api("GET", "/api/health");
+      bootMark("health就绪");
       state.edition = health.edition || "";
       const isLocal = health.mode === "local";
       const localGate = health.local_gate || {};
@@ -8947,6 +8952,7 @@
       } catch (error) {
         if (error.status !== 401) throw error;
       }
+      bootMark("me就绪");
       if (!me) {
         // 已设本机口令：先试钥匙串里的长期凭据，失败再出门禁页；
         // 启动链接里的一次性 token 不参与自动登录。
@@ -9008,10 +9014,12 @@
       warningNode.hidden = !health.data_dir_warning;
 
       const pages = await (await fetch(API_BASE + "/gen/pages.json")).json();
+      bootMark("pages.json就绪");
       state.pages = pages;
       for (const page of pages) {
         await loadScript(page.script);
       }
+      bootMark("页面脚本加载完成");
 
       const all = [
         ...pages.map((page) => ({
@@ -9055,6 +9063,7 @@
       if (initial) {
         if (hashKey !== initial.key) replaceHash(initial.key);
         mountPage(initial);
+        bootMark("首屏挂载");
       }
     } catch (error) {
       if (error.status === 401) {

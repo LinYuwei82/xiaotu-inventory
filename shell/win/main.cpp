@@ -673,6 +673,27 @@ void ensure_directory(const std::wstring& dir) {
   CreateDirectoryW(dir.c_str(), nullptr);
 }
 
+// 启动耗时打点（方案：启动速度优化 P0-1）：追加写数据目录 shell-boot.log，
+// 毫秒数为相对 WinMain 入口的耗时；任何失败静默，不影响启动。
+constexpr wchar_t kBootLogFileName[] = L"shell-boot.log";
+LARGE_INTEGER g_boot_t0 = {};
+LARGE_INTEGER g_boot_freq = {};
+void boot_log(const wchar_t* stage) {
+  if (g_boot_t0.QuadPart == 0) return;
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  const long long freq = g_boot_freq.QuadPart ? g_boot_freq.QuadPart : 1;
+  const long long ms = static_cast<long long>((now.QuadPart - g_boot_t0.QuadPart) * 1000 / freq);
+  const std::wstring dir = app_data_dir();
+  ensure_directory(dir);
+  FILE* file = nullptr;
+  if (_wfopen_s(&file, (dir + L"\\" + kBootLogFileName).c_str(), L"a, ccs=UTF-8") != 0 ||
+      file == nullptr)
+    return;
+  fwprintf(file, L"%lldms %s\n", ms, stage);
+  fclose(file);
+}
+
 bool parse_timeout_seconds(const wchar_t* text, UINT* out_ms) {
   if (!text || !*text) return false;
   wchar_t* end = nullptr;
@@ -913,6 +934,7 @@ void navigate_when_ready(const std::wstring& url) {
   g_app.pending_url = url;
   if (!g_app.controller_ready || !g_app.webview || g_app.navigated) return;
   g_app.navigated = true;
+  boot_log(L"导航开始");
   g_app.webview->Navigate(url.c_str());
 }
 
@@ -962,6 +984,7 @@ class ControllerCompleted
       return S_OK;
     }
     app_->controller_ready = true;
+    boot_log(L"WebView2就绪");
     // 给前端暴露 updater_win HostObject：
     //   window.chrome.webview.hostObjects.updater_win.checkNow() / .statusJson() 等
     // WebView2 的 AddHostObjectToScript 接收 IDispatch*（VARIANT 的 vt=VT_DISPATCH），
@@ -1110,6 +1133,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case kMsgServerUrl: {
       std::wstring* url = reinterpret_cast<std::wstring*>(lparam);
       if (url) {
+        boot_log(L"拿到访问地址");
         KillTimer(hwnd, kTimerStartup);
         navigate_when_ready(*url);
         delete url;
@@ -1179,6 +1203,9 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
+  QueryPerformanceFrequency(&g_boot_freq);
+  QueryPerformanceCounter(&g_boot_t0);
+  boot_log(L"WinMain入口");
   SetProcessDPIAware();
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
@@ -1245,6 +1272,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     ShowWindow(g_app.hwnd, show == 0 ? SW_SHOWNORMAL : show);
   }
   UpdateWindow(g_app.hwnd);
+  boot_log(L"窗口已显示");
 
   std::wstring error;
   if (!launch_server(&error)) {
@@ -1253,6 +1281,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     CoUninitialize();
     return 1;
   }
+  boot_log(L"server已拉起");
 
   // 先建 WebView2 再等地址：环境初始化与子进程启动并行，缩短首屏时间。
   if (!init_webview()) {
@@ -1260,6 +1289,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     CoUninitialize();
     return 1;
   }
+  boot_log(L"WebView2初始化已发起");
 
   start_reader();
   SetTimer(g_app.hwnd, kTimerStartup, g_startup_timeout_ms, nullptr);

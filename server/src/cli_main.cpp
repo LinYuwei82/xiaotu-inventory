@@ -202,6 +202,14 @@ class DailyBackupScheduler {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // 启动耗时打点（方案：启动速度优化 P0-1）：main 入口起表，各阶段落日志，
+  // 用于量化优化前后差异；日志不可用的早期阶段静默跳过。
+  const auto boot_t0 = std::chrono::steady_clock::now();
+  auto stage_ms = [boot_t0]() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - boot_t0)
+        .count();
+  };
   configure_console_encoding();
   try {
     const Options options = parse_args(argc, argv);
@@ -275,6 +283,7 @@ int main(int argc, char** argv) {
                      " 模式=" + (options.server ? "server" : "local") +
                      " 数据目录=" + data_dir.string() + " 监听=" +
                      (options.server ? listen + ":" + std::to_string(port) : "127.0.0.1:自动"));
+    xiaotu::log_info("启动耗时 阶段=配置与日志 elapsed=" + std::to_string(stage_ms()) + "ms");
 
     // 网络版部署是版本能力：当前版本隐藏时直接拒绝启动，而不是悄悄退回单机。
     if (options.server &&
@@ -385,6 +394,7 @@ int main(int argc, char** argv) {
       throw xiaotu::AppError("NOT_FOUND", "数据库不存在，无法预览：" + database_path.string());
     }
     xiaotu::Db db(database_path, 4);
+    xiaotu::log_info("启动耗时 阶段=数据库打开 elapsed=" + std::to_string(stage_ms()) + "ms");
     if (options.backup) {
       const auto snapshot = xiaotu::run_manual_backup(db, data_dir, backup_dir);
       std::cout << "备份完成: " << snapshot.path.string() << " (" << snapshot.bytes
@@ -441,6 +451,7 @@ int main(int argc, char** argv) {
                        " 字节=" + std::to_string(snapshot.bytes));
     }
     xiaotu::migrate(db);
+    xiaotu::log_info("启动耗时 阶段=迁移 elapsed=" + std::to_string(stage_ms()) + "ms");
     // 历史分裂修补：partner 额度为 0 而 customer 镜像非 0 时并回 partner（幂等）。
     // v28 已搬过数据，这里只兜底被旧版本/外部工具写歪的库。
     {
@@ -452,6 +463,7 @@ int main(int argc, char** argv) {
       }
     }
     xiaotu::load_role_permissions(db);
+    xiaotu::log_info("启动耗时 阶段=角色加载 elapsed=" + std::to_string(stage_ms()) + "ms");
     std::cout << "数据库结构版本: v" << db.schema_version() << std::endl;
     xiaotu::log_info("数据库结构版本 v" + std::to_string(db.schema_version()));
 
@@ -517,6 +529,7 @@ int main(int argc, char** argv) {
       const int port = http.bind("127.0.0.1", 0);
       xiaotu::log_info("监听 127.0.0.1:" + std::to_string(port));
       http.serve_async();
+      xiaotu::log_info("启动耗时 阶段=就绪可访问 elapsed=" + std::to_string(stage_ms()) + "ms");
       const std::string base = "http://127.0.0.1:" + std::to_string(port);
       std::string url = local_url(base, token);
 #if defined(XIAOTU_DEV_WEB)
@@ -551,6 +564,7 @@ int main(int argc, char** argv) {
     const int bound_port = http.bind(listen, port);
     xiaotu::log_info("监听 " + listen + ":" + std::to_string(bound_port));
     http.serve_async();
+    xiaotu::log_info("启动耗时 阶段=就绪可访问 elapsed=" + std::to_string(stage_ms()) + "ms");
     std::cout << "服务地址: http://" << listen << ":" << bound_port << "/\n"
               << "局域网访问时，把监听地址换成本机 IP；使用用户名与口令登录。" << std::endl;
     if (!services.users.has_password(1)) {

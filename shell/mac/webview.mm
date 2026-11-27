@@ -584,6 +584,9 @@ static NSString* XiaotuBlockingHTML(NSString* minimum, NSString* current, NSStri
 namespace xiaotu::platform {
 
 int run_webview(const std::string& url, const std::string& title) {
+  // 启动耗时打点（方案：启动速度优化 P0-1）：server 侧阶段在 cli_main 落日志，
+  // 这里补壳侧三点；NSLog 走统一日志，不新增文件。
+  NSLog(@"[xiaotu] 启动打点 run_webview进入");
   @autoreleasepool {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -701,9 +704,11 @@ int run_webview(const std::string& url, const std::string& title) {
     script_handler.window = window;
     [window center];
     [window makeKeyAndOrderFront:nil];
+    NSLog(@"[xiaotu] 启动打点 窗口已显示");
 
     NSURL* nsurl = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
     [webview loadRequest:[NSURLRequest requestWithURL:nsurl]];
+    NSLog(@"[xiaotu] 启动打点 开始加载页面");
 
     // 更新预检查：清单地址与通道来自 Info.plist；health 只用于读取本地 schema。
     [[XiaotuUpdater shared] noteLaunch];
