@@ -350,6 +350,15 @@ int main(int argc, char** argv) {
       std::cout << "警告: " << data_dir_warning << std::endl;
     }
 
+#if defined(XIAOTU_HAS_WEBVIEW)
+    // 窗口先行（方案：启动速度优化 P1-3）：单机版正常启动先建窗显示 splash，
+    // 数据库打开/迁移等重活跑完后 run_webview 复用同一窗口加载业务页；
+    // 维护命令（--backup/--restore/--set-password/--partner-preview）不开窗口。
+    if (!options.server && !maintenance_only && options.restore_from.empty()) {
+      xiaotu::platform::show_splash("小兔进销存");
+    }
+#endif
+
     if (!options.restore_from.empty()) {
       if (options.backup || options.backup_daily) {
         throw xiaotu::AppError("BAD_ARGUMENT", "--backup / --backup-daily 与 --restore 不能同时使用");

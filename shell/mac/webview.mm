@@ -583,133 +583,181 @@ static NSString* XiaotuBlockingHTML(NSString* minimum, NSString* current, NSStri
 
 namespace xiaotu::platform {
 
+namespace {
+
+// 窗口先行（方案：启动速度优化 P1-3）：窗口与 WebView 只建一次，
+// show_splash 在 server 重初始化之前先建窗并显示 splash，run_webview 复用。
+// 未调用 show_splash 时 run_webview 行为与旧版完全一致。
+NSWindow* g_shell_window = nil;
+WKWebView* g_shell_webview = nil;
+
+// splash 底色与页面 --bg（#f5f6f8）一致，切到业务页无闪白。
+NSString* XiaotuSplashHTML() {
+  return @"<!doctype html><html><head><meta charset=\"utf-8\">"
+         "<style>html,body{height:100%;margin:0;background:#f5f6f8;"
+         "display:flex;align-items:center;justify-content:center;"
+         "font-family:-apple-system,'PingFang SC',sans-serif;color:#64748b;"
+         "font-size:15px}</style></head>"
+         "<body><div>\u5c0f\u5154\u8fdb\u9500\u5b58 \u6b63\u5728\u542f\u52a8\u2026</div></body></html>";
+}
+
+void EnsureShellWindow(const std::string& title) {
+  if (g_shell_window != nil) return;
+  [NSApplication sharedApplication];
+  [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+
+  XiaotuAppDelegate* delegate = [[XiaotuAppDelegate alloc] init];
+  [NSApp setDelegate:delegate];
+
+  NSString* app_name = [NSString stringWithUTF8String:title.c_str()];
+  NSMenu* menubar = [[NSMenu alloc] init];
+  NSMenuItem* app_item = [[NSMenuItem alloc] init];
+  [menubar addItem:app_item];
+  [NSApp setMainMenu:menubar];
+
+  NSMenu* app_menu = [[NSMenu alloc] init];
+  [app_menu addItemWithTitle:[@"关于 " stringByAppendingString:app_name]
+                      action:@selector(orderFrontStandardAboutPanel:)
+               keyEquivalent:@""];
+  [app_menu addItem:[NSMenuItem separatorItem]];
+  [app_menu addItemWithTitle:[@"隐藏 " stringByAppendingString:app_name]
+                      action:@selector(hide:)
+               keyEquivalent:@"h"];
+  [app_menu addItem:[NSMenuItem separatorItem]];
+  [app_menu addItemWithTitle:[@"退出 " stringByAppendingString:app_name]
+                      action:@selector(terminate:)
+               keyEquivalent:@"q"];
+  [app_item setSubmenu:app_menu];
+
+  XiaotuScriptHandler* script_handler = [[XiaotuScriptHandler alloc] init];
+
+  NSMenuItem* file_item = [[NSMenuItem alloc] init];
+  [menubar addItem:file_item];
+  NSMenu* file_menu = [[NSMenu alloc] initWithTitle:@"文件"];
+  NSMenuItem* print_item = [[NSMenuItem alloc] initWithTitle:@"打印…"
+                                                     action:@selector(printDocument:)
+                                              keyEquivalent:@"p"];
+  [print_item setTarget:script_handler];
+  [file_menu addItem:print_item];
+  [file_item setSubmenu:file_menu];
+
+  // 编辑菜单：target 留空，交给响应者链，焦点在 WKWebView 输入框时也能生效。
+  NSMenuItem* edit_item = [[NSMenuItem alloc] init];
+  [menubar addItem:edit_item];
+  NSMenu* edit_menu = [[NSMenu alloc] initWithTitle:@"编辑"];
+  [edit_menu addItemWithTitle:@"撤销" action:@selector(undo:) keyEquivalent:@"z"];
+  [edit_menu addItemWithTitle:@"重做" action:@selector(redo:) keyEquivalent:@"Z"];
+  [edit_menu addItem:[NSMenuItem separatorItem]];
+  [edit_menu addItemWithTitle:@"剪切" action:@selector(cut:) keyEquivalent:@"x"];
+  [edit_menu addItemWithTitle:@"复制" action:@selector(copy:) keyEquivalent:@"c"];
+  [edit_menu addItemWithTitle:@"粘贴" action:@selector(paste:) keyEquivalent:@"v"];
+  [edit_menu addItemWithTitle:@"全选" action:@selector(selectAll:) keyEquivalent:@"a"];
+  [edit_item setSubmenu:edit_menu];
+
+  NSMenuItem* window_item = [[NSMenuItem alloc] init];
+  [menubar addItem:window_item];
+  NSMenu* window_menu = [[NSMenu alloc] initWithTitle:@"窗口"];
+  [window_menu addItemWithTitle:@"最小化"
+                         action:@selector(performMiniaturize:)
+                  keyEquivalent:@"m"];
+  [window_menu addItemWithTitle:@"关闭"
+                         action:@selector(performClose:)
+                  keyEquivalent:@"w"];
+  [window_item setSubmenu:window_menu];
+  [NSApp setWindowsMenu:window_menu];
+
+  const NSRect frame = NSMakeRect(0, 0, 1280, 840);
+  NSWindow* window = [[NSWindow alloc]
+      initWithContentRect:frame
+                styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                           NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
+                  backing:NSBackingStoreBuffered
+                    defer:NO];
+  [window setTitle:app_name];
+  [window setMinSize:NSMakeSize(960, 600)];
+  // 窗口本体也涂 splash 底色：WebKit 首帧落地前不闪白。
+  [window setBackgroundColor:[NSColor colorWithSRGBRed:0xf5 / 255.0 green:0xf6 / 255.0
+                                                 blue:0xf8 / 255.0 alpha:1.0]];
+  // NSWindow.delegate 是 weak，必须自己持有；窗口关闭前由它决定放行还是弹确认。
+  static XiaotuWindowDelegate* g_windowDelegate = nil;
+  if (g_windowDelegate == nil) {
+    g_windowDelegate = [[XiaotuWindowDelegate alloc] init];
+  }
+  [window setDelegate:g_windowDelegate];
+
+  WKWebViewConfiguration* configuration = [[WKWebViewConfiguration alloc] init];
+  WKUserContentController* controller = [[WKUserContentController alloc] init];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuState"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuExport"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuPrint"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuPrintPdf"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateCheckNow"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateStatus"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateSkip"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateInstall"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateResume"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateOptions"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateDownload"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateCancelPrefetch"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateRollback"];
+  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateOpenBackupFolder"];
+  static XiaotuKeychainHandler* g_keychainHandler = nil;
+  if (g_keychainHandler == nil) {
+    g_keychainHandler = [[XiaotuKeychainHandler alloc] init];
+  }
+  [controller addScriptMessageHandlerWithReply:g_keychainHandler
+                                  contentWorld:[WKContentWorld pageWorld]
+                                          name:@"xiaotuKeychain"];
+  configuration.userContentController = controller;
+  WKWebView* webview = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
+  // UIDelegate 是 weak，静态变量负责持有；没有它，导入按钮的 fileInput.click() 不会弹面板。
+  static XiaotuOpenPanelDelegate* g_openPanelDelegate = nil;
+  if (g_openPanelDelegate == nil) {
+    g_openPanelDelegate = [[XiaotuOpenPanelDelegate alloc] init];
+  }
+  [webview setUIDelegate:g_openPanelDelegate];
+  [webview setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
+  [window setContentView:webview];
+  script_handler.webview = webview;
+  script_handler.window = window;
+  [window center];
+  g_shell_window = window;
+  g_shell_webview = webview;
+}
+
+}  // namespace
+
+void show_splash(const std::string& title) {
+  @autoreleasepool {
+    EnsureShellWindow(title);
+    [g_shell_webview loadHTMLString:XiaotuSplashHTML() baseURL:nil];
+    [g_shell_window makeKeyAndOrderFront:nil];
+    NSLog(@"[xiaotu] 启动打点 splash已显示");
+    // 泵事件循环至多 150ms 让 WebKit 把 splash 首帧画出来；之后主线程继续跑重活。
+    const NSTimeInterval deadline = [NSDate timeIntervalSinceReferenceDate] + 0.15;
+    while ([NSDate timeIntervalSinceReferenceDate] < deadline) {
+      [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode
+                               beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+  }
+}
+
 int run_webview(const std::string& url, const std::string& title) {
   // 启动耗时打点（方案：启动速度优化 P0-1）：server 侧阶段在 cli_main 落日志，
   // 这里补壳侧三点；NSLog 走统一日志，不新增文件。
   NSLog(@"[xiaotu] 启动打点 run_webview进入");
   @autoreleasepool {
-    [NSApplication sharedApplication];
-    [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
-
-    XiaotuAppDelegate* delegate = [[XiaotuAppDelegate alloc] init];
-    [NSApp setDelegate:delegate];
-
-    NSString* app_name = [NSString stringWithUTF8String:title.c_str()];
-    NSMenu* menubar = [[NSMenu alloc] init];
-    NSMenuItem* app_item = [[NSMenuItem alloc] init];
-    [menubar addItem:app_item];
-    [NSApp setMainMenu:menubar];
-
-    NSMenu* app_menu = [[NSMenu alloc] init];
-    [app_menu addItemWithTitle:[@"关于 " stringByAppendingString:app_name]
-                        action:@selector(orderFrontStandardAboutPanel:)
-                 keyEquivalent:@""];
-    [app_menu addItem:[NSMenuItem separatorItem]];
-    [app_menu addItemWithTitle:[@"隐藏 " stringByAppendingString:app_name]
-                        action:@selector(hide:)
-                 keyEquivalent:@"h"];
-    [app_menu addItem:[NSMenuItem separatorItem]];
-    [app_menu addItemWithTitle:[@"退出 " stringByAppendingString:app_name]
-                        action:@selector(terminate:)
-                 keyEquivalent:@"q"];
-    [app_item setSubmenu:app_menu];
-
-    XiaotuScriptHandler* script_handler = [[XiaotuScriptHandler alloc] init];
-
-    NSMenuItem* file_item = [[NSMenuItem alloc] init];
-    [menubar addItem:file_item];
-    NSMenu* file_menu = [[NSMenu alloc] initWithTitle:@"文件"];
-    NSMenuItem* print_item = [[NSMenuItem alloc] initWithTitle:@"打印…"
-                                                       action:@selector(printDocument:)
-                                                keyEquivalent:@"p"];
-    [print_item setTarget:script_handler];
-    [file_menu addItem:print_item];
-    [file_item setSubmenu:file_menu];
-
-    // 编辑菜单：target 留空，交给响应者链，焦点在 WKWebView 输入框时也能生效。
-    NSMenuItem* edit_item = [[NSMenuItem alloc] init];
-    [menubar addItem:edit_item];
-    NSMenu* edit_menu = [[NSMenu alloc] initWithTitle:@"编辑"];
-    [edit_menu addItemWithTitle:@"撤销" action:@selector(undo:) keyEquivalent:@"z"];
-    [edit_menu addItemWithTitle:@"重做" action:@selector(redo:) keyEquivalent:@"Z"];
-    [edit_menu addItem:[NSMenuItem separatorItem]];
-    [edit_menu addItemWithTitle:@"剪切" action:@selector(cut:) keyEquivalent:@"x"];
-    [edit_menu addItemWithTitle:@"复制" action:@selector(copy:) keyEquivalent:@"c"];
-    [edit_menu addItemWithTitle:@"粘贴" action:@selector(paste:) keyEquivalent:@"v"];
-    [edit_menu addItemWithTitle:@"全选" action:@selector(selectAll:) keyEquivalent:@"a"];
-    [edit_item setSubmenu:edit_menu];
-
-    NSMenuItem* window_item = [[NSMenuItem alloc] init];
-    [menubar addItem:window_item];
-    NSMenu* window_menu = [[NSMenu alloc] initWithTitle:@"窗口"];
-    [window_menu addItemWithTitle:@"最小化"
-                           action:@selector(performMiniaturize:)
-                    keyEquivalent:@"m"];
-    [window_menu addItemWithTitle:@"关闭"
-                           action:@selector(performClose:)
-                    keyEquivalent:@"w"];
-    [window_item setSubmenu:window_menu];
-    [NSApp setWindowsMenu:window_menu];
-
-    const NSRect frame = NSMakeRect(0, 0, 1280, 840);
-    NSWindow* window = [[NSWindow alloc]
-        initWithContentRect:frame
-                  styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                             NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable)
-                    backing:NSBackingStoreBuffered
-                      defer:NO];
-    [window setTitle:app_name];
-    [window setMinSize:NSMakeSize(960, 600)];
-    // NSWindow.delegate 是 weak，必须自己持有；窗口关闭前由它决定放行还是弹确认。
-    static XiaotuWindowDelegate* g_windowDelegate = nil;
-    if (g_windowDelegate == nil) {
-      g_windowDelegate = [[XiaotuWindowDelegate alloc] init];
+    EnsureShellWindow(title);
+    if (g_shell_window.isVisible) {
+      NSLog(@"[xiaotu] 启动打点 窗口已显示");
+    } else {
+      [g_shell_window makeKeyAndOrderFront:nil];
+      NSLog(@"[xiaotu] 启动打点 窗口已显示");
     }
-    [window setDelegate:g_windowDelegate];
-
-    WKWebViewConfiguration* configuration = [[WKWebViewConfiguration alloc] init];
-    WKUserContentController* controller = [[WKUserContentController alloc] init];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuState"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuExport"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuPrint"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuPrintPdf"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateCheckNow"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateStatus"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateSkip"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateInstall"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateResume"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateOptions"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateDownload"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateCancelPrefetch"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateRollback"];
-    [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateOpenBackupFolder"];
-    static XiaotuKeychainHandler* g_keychainHandler = nil;
-    if (g_keychainHandler == nil) {
-      g_keychainHandler = [[XiaotuKeychainHandler alloc] init];
-    }
-    [controller addScriptMessageHandlerWithReply:g_keychainHandler
-                                    contentWorld:[WKContentWorld pageWorld]
-                                            name:@"xiaotuKeychain"];
-    configuration.userContentController = controller;
-    WKWebView* webview = [[WKWebView alloc] initWithFrame:frame configuration:configuration];
-    // UIDelegate 是 weak，静态变量负责持有；没有它，导入按钮的 fileInput.click() 不会弹面板。
-    static XiaotuOpenPanelDelegate* g_openPanelDelegate = nil;
-    if (g_openPanelDelegate == nil) {
-      g_openPanelDelegate = [[XiaotuOpenPanelDelegate alloc] init];
-    }
-    [webview setUIDelegate:g_openPanelDelegate];
-    [webview setAutoresizingMask:(NSViewWidthSizable | NSViewHeightSizable)];
-    [window setContentView:webview];
-    script_handler.webview = webview;
-    script_handler.window = window;
-    [window center];
-    [window makeKeyAndOrderFront:nil];
-    NSLog(@"[xiaotu] 启动打点 窗口已显示");
 
     NSURL* nsurl = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
-    [webview loadRequest:[NSURLRequest requestWithURL:nsurl]];
+    [g_shell_webview loadRequest:[NSURLRequest requestWithURL:nsurl]];
     NSLog(@"[xiaotu] 启动打点 开始加载页面");
-
     // 更新预检查：清单地址与通道来自 Info.plist；health 只用于读取本地 schema。
     [[XiaotuUpdater shared] noteLaunch];
     NSString* manifest_url =
@@ -736,9 +784,9 @@ int run_webview(const std::string& url, const std::string& title) {
       NSString* minimum = result[@"minimum"] ?: @"";
       NSString* current = result[@"current"] ?: @"";
       NSLog(@"[xiaotu] 当前版本 %@ 低于服务端最低支持版本 %@，已阻断进入", current, minimum);
-      [webview loadHTMLString:XiaotuBlockingHTML(minimum, current,
-                                                 [NSString stringWithUTF8String:url.c_str()])
-                     baseURL:nil];
+      [g_shell_webview loadHTMLString:XiaotuBlockingHTML(minimum, current,
+                                                         [NSString stringWithUTF8String:url.c_str()])
+                              baseURL:nil];
     }];
 
     [NSApp activateIgnoringOtherApps:YES];
