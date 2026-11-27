@@ -201,6 +201,15 @@ static NSDictionary* XiaotuKeychainDelete(void) {
 - (BOOL)windowShouldClose:(NSWindow*)sender {
   return XiaotuConfirmExitIfDirty();
 }
+// 壳窗口被全局 g_shell_window 强持有（1.0.17 窗口先行复用），关闭后不会自动释放，
+// AppKit 的「最后一个窗口关闭即退出」因此永不触发——点红叉只收掉窗口，
+// 进程带 0 个可见窗口继续活着，Dock 图标一直挂着。这里显式补上终止。
+// dispatch_async 是避免在关闭通知回调里重入 AppKit 的关闭流程。
+- (void)windowWillClose:(NSNotification*)notification {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    [NSApp terminate:nil];
+  });
+}
 @end
 
 // 前端导出与打印的桥：WKWebView 不处理 a[download] 与 window.print()，
