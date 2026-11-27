@@ -73,9 +73,11 @@ bool parse_manifest(const nlohmann::json& body, UpdateManifest& out, ManifestErr
 
 // v2 统一清单（manifest.json）按 platform 拍平：取 platforms.<platform> 的版本、
 // 产物与灰度字段填进 UpdateManifest。platform 为空时行为同上。
+// prefer_portable=true 时 Windows 优先选 portable 绿色包（绿色版壳用），
+// 默认 false 优先 setup 安装包（安装版壳用）。
 // v2 不再携带 schema/api 区间与 upgrade_path，判定时也不做这些拦截。
 bool parse_manifest(const nlohmann::json& body, std::string_view platform, UpdateManifest& out,
-                    ManifestError& error);
+                    ManifestError& error, bool prefer_portable = false);
 
 // 解析清单中的可选字段 upgrade_path；非法时返回 false 并设 MANIFEST_UPGRADE_PATH_INVALID。
 bool parse_upgrade_path(const nlohmann::json& path, std::vector<UpgradeStep>& out,

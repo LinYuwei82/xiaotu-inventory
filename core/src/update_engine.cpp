@@ -431,7 +431,8 @@ bool UpdateEngine::check(bool manual) {
   UpdateManifest manifest;
   if (ok) {
     ManifestError merr;
-    if (!parse_manifest(body_json, cfg_.platform, manifest, merr)) {
+    if (!parse_manifest(body_json, cfg_.platform, manifest, merr,
+                        cfg_.prefer_portable_artifact)) {
       ok = false;
       error = merr.code.empty() ? "MANIFEST_INVALID" : merr.code;
     }

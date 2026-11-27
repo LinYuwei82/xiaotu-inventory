@@ -350,10 +350,12 @@ bool validate_manifest_fields(UpdateManifest& parsed, bool v2, ManifestError& er
   return true;
 }
 
-// 解析 v2 的单个平台段并拍平：macOS 取 artifacts.dmg，Windows 优先 setup，
-// 缺省时退回 portable（绿色包）。未知 artifacts key 与未知字段一律忽略。
+// 解析 v2 的单个平台段并拍平：macOS 取 artifacts.dmg，Windows 默认优先 setup，
+// 缺省时退回 portable（绿色包）；绿色版运行形态传 prefer_portable=true 反过来优先。
+// 未知 artifacts key 与未知字段一律忽略。
 bool parse_manifest_v2_section(const nlohmann::json& section, const std::string& platform,
-                               UpdateManifest& parsed, ManifestError& error) {
+                               UpdateManifest& parsed, ManifestError& error,
+                               bool prefer_portable = false) {
   if (!section.is_object()) {
     set_error(error, "MANIFEST_PLATFORM_INVALID",
               "platforms." + platform + " 必须是对象");
@@ -386,7 +388,14 @@ bool parse_manifest_v2_section(const nlohmann::json& section, const std::string&
     role = "dmg";
   } else {
     const auto setup = artifacts->find("setup");
-    role = (setup != artifacts->end() && setup->is_object()) ? "setup" : "portable";
+    const bool has_setup = setup != artifacts->end() && setup->is_object();
+    const auto portable = artifacts->find("portable");
+    const bool has_portable = portable != artifacts->end() && portable->is_object();
+    if (prefer_portable && has_portable) {
+      role = "portable";
+    } else {
+      role = has_setup ? "setup" : "portable";
+    }
   }
   const auto entry = artifacts->find(role);
   if (entry == artifacts->end() || !entry->is_object()) {
@@ -404,7 +413,7 @@ bool parse_manifest_v2_section(const nlohmann::json& section, const std::string&
 }
 
 bool parse_manifest_v2(const nlohmann::json& body, std::string_view requested_platform,
-                       UpdateManifest& out, ManifestError& error) {
+                       UpdateManifest& out, ManifestError& error, bool prefer_portable = false) {
   UpdateManifest base;
   base.manifest_version = 2;
   std::string product;
@@ -445,7 +454,7 @@ bool parse_manifest_v2(const nlohmann::json& body, std::string_view requested_pl
       return false;
     }
     UpdateManifest part = base;
-    if (!parse_manifest_v2_section(*section, name, part, error) ||
+    if (!parse_manifest_v2_section(*section, name, part, error, prefer_portable) ||
         !validate_manifest_fields(part, true, error)) {
       return false;
     }
@@ -465,7 +474,7 @@ bool parse_manifest(const nlohmann::json& body, UpdateManifest& out, ManifestErr
 }
 
 bool parse_manifest(const nlohmann::json& body, std::string_view platform, UpdateManifest& out,
-                    ManifestError& error) {
+                    ManifestError& error, bool prefer_portable) {
   error = {};
   if (!body.is_object()) {
     set_error(error, "MANIFEST_NOT_OBJECT", "清单必须是 JSON 对象");
@@ -479,7 +488,7 @@ bool parse_manifest(const nlohmann::json& body, std::string_view platform, Updat
   }
   parsed.manifest_version = static_cast<int>(number);
   if (parsed.manifest_version == 2) {
-    return parse_manifest_v2(body, platform, out, error);
+    return parse_manifest_v2(body, platform, out, error, prefer_portable);
   }
   if (parsed.manifest_version != 1) {
     set_error(error, "MANIFEST_VERSION_UNSUPPORTED", "不支持的清单版本");

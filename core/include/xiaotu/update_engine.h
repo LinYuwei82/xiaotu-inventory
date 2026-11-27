@@ -137,6 +137,9 @@ struct EngineConfig {
   int api_version = 0;
   // 忽略清单 min_os 拦截：旧 win 壳 v2 路径不查系统版本，端口置 true 保持行为。
   bool ignore_min_os = false;
+  // Windows 包偏好：true=优先 portable 绿色包（绿色版壳），false=优先 setup
+  // 安装包（安装版壳）。macOS 忽略。清单缺 portable 时自动回落 setup。
+  bool prefer_portable_artifact = false;
   // 开关位（仅随状态落盘透传给前端，引擎自身不消费）。
   bool enabled = true;
   bool auto_check = true;
