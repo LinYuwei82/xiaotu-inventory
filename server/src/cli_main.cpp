@@ -175,6 +175,14 @@ class DailyBackupScheduler {
  private:
   void loop() {
     while (running_.load()) {
+      // 首检延时（方案：启动速度优化 P1-5）：先等 60s 再跑首次备份，
+      // 避开启动期与首请求抢 DB/磁盘；「补当天备份」语义不变（下次启动仍会补）。
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (cv_.wait_for(lock, std::chrono::minutes(1), [this] { return !running_.load(); })) {
+          return;
+        }
+      }
       try {
         const xiaotu::DailyBackupOutcome outcome =
             xiaotu::run_daily_backup(db_, data_dir_, backup_dir_);
@@ -463,13 +471,27 @@ int main(int argc, char** argv) {
     xiaotu::log_info("启动耗时 阶段=迁移 elapsed=" + std::to_string(stage_ms()) + "ms");
     // 历史分裂修补：partner 额度为 0 而 customer 镜像非 0 时并回 partner（幂等）。
     // v28 已搬过数据，这里只兜底被旧版本/外部工具写歪的库。
-    {
+    // 后移（方案：启动速度优化 P1-4）：未升版的常规启动挪到后台写事务，
+    // 不占启动关键路径、不与首请求抢写锁；migrate 实际升版时保持同步，迁移完立刻修平。
+    auto run_credit_mirror_repair = [&db] {
       std::size_t repaired = 0;
       db.write([&](sqlite3* conn) { repaired = xiaotu::repair_customer_credit_mirror(conn); });
       if (repaired > 0) {
-        std::cout << "信用额度镜像修补: " << repaired << " 条" << std::endl;
         xiaotu::log_info("信用额度镜像修补 " + std::to_string(repaired) + " 条");
+        std::cout << "信用额度镜像修补: " << repaired << " 条" << std::endl;
       }
+    };
+    std::thread repair_thread;
+    struct RepairJoin {
+      std::thread& t;
+      ~RepairJoin() {
+        if (t.joinable()) t.join();
+      }
+    } repair_join{repair_thread};
+    if (db.schema_version() != previous_version || !database_existed) {
+      run_credit_mirror_repair();
+    } else {
+      repair_thread = std::thread(run_credit_mirror_repair);
     }
     xiaotu::load_role_permissions(db);
     xiaotu::log_info("启动耗时 阶段=角色加载 elapsed=" + std::to_string(stage_ms()) + "ms");
