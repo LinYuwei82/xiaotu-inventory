@@ -43,7 +43,8 @@ target_compile_definitions(xiaotu-server PRIVATE XIAOTU_VERSION="${PROJECT_VERSI
 # 版本号取项目级 PROJECT_VERSION（来自仓库根 VERSION），与壳和 XIAOTU_VERSION 宏同源。
 if(WIN32)
   # apply_update 需要 version.lib（GetFileVersionInfo）与 shell32.lib（CommandLineToArgvW）。
-  target_link_libraries(xiaotu-server PRIVATE version shell32)
+  # 挂在静态库上 PUBLIC，让链接 xiaotu_server 的测试/壳也自动带上。
+  target_link_libraries(xiaotu_server PUBLIC version shell32)
   # 服务端 exe 与壳、安装包使用同一份候选 A 图标。
   set(XIAOTU_WIN_ICON "${CMAKE_SOURCE_DIR}/packaging/win/xiaotu.ico")
   if (NOT EXISTS "${XIAOTU_WIN_ICON}")

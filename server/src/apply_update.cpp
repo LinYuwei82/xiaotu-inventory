@@ -132,7 +132,7 @@ std::string now_iso_utc() {
   std::tm tm{};
   gmtime_s(&tm, &now);
   char buffer[32] = {};
-  std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", tm);
+  std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm);
   return buffer;
 }
 
@@ -219,7 +219,8 @@ int apply_zip_update(const ApplyUpdateOptions& options, const std::filesystem::p
   const std::filesystem::path backup =
       app_dir.parent_path() / (app_dir.filename().string() + ".bak-" + std::to_string(::GetCurrentProcessId()));
   std::filesystem::remove_all(backup, ec);
-  if (!std::filesystem::rename(app_dir, backup, ec)) {
+  std::filesystem::rename(app_dir, backup, ec);
+  if (ec) {
     *error = "备份旧目录失败（可能被占用）：" + ec.message();
     return 1;
   }
@@ -256,7 +257,8 @@ int apply_zip_update(const ApplyUpdateOptions& options, const std::filesystem::p
     // 回滚：删掉半成品，把备份搬回去。
     std::error_code ignored;
     std::filesystem::remove_all(app_dir, ignored);
-    if (!std::filesystem::rename(backup, app_dir, ignored)) {
+    std::filesystem::rename(backup, app_dir, ignored);
+    if (ignored) {
       *error = "覆盖失败且回滚失败，旧版本目录在 " + path_to_utf8(backup);
       return 2;
     }
