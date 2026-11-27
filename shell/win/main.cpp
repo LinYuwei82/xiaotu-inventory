@@ -91,6 +91,8 @@ AppState g_app;
 ICoreWebView2* g_webview_for_post = nullptr;
 std::mutex g_webview_mutex;
 
+HWND g_shell_hwnd = nullptr;  // 主窗口句柄：文件对话框 + 安装 STARTED 后优雅自退
+
 // UTF-8 → UTF-16。不能用 std::wstring(json.begin(), json.end())：
 // 那样是把每个字节当成一个 wchar_t，中文会变成乱码（PostWebMessageAsJson 按 UTF-16 解析）。
 static std::wstring utf8_to_wide(const std::string& s) {
@@ -133,6 +135,8 @@ static xiaotu::updater::Completion BindCompletion(const std::string& event) {
 //   5 setOptions(auto_check, prefetch) 设置后台检查开关
 //   6 statusJson()         返回当前状态 JSON（同步）
 //   7 checkMinSupportedVersion() 检查服务端最低要求
+//   8 installResult()      协助器安装结果 JSON（同步，重启后拉一次）
+//   9 ackInstallResult()   删除结果文件（一次性展示）
 class UpdaterHost : public IDispatch {
  public:
   UpdaterHost() : ref_(1) {}
@@ -166,11 +170,12 @@ class UpdaterHost : public IDispatch {
     static const wchar_t* kNames[] = {
         L"checkNow", L"downloadUpdate", L"installUpdate",
         L"cancelPrefetch", L"setOptions", L"statusJson",
-        L"checkMinSupportedVersion",
+        L"checkMinSupportedVersion", L"installResult",
+        L"ackInstallResult",
     };
     for (UINT i = 0; i < count; ++i) {
       ids[i] = DISPID_UNKNOWN;
-      for (UINT j = 0; j < 7; ++j) {
+      for (UINT j = 0; j < 9; ++j) {
         if (wcscmp(names[i], kNames[j]) == 0) { ids[i] = static_cast<DISPID>(j + 1); break; }
       }
       if (ids[i] == DISPID_UNKNOWN) return DISP_E_UNKNOWNNAME;
@@ -191,7 +196,16 @@ class UpdaterHost : public IDispatch {
     switch (dispid) {
       case 1: upd.checkNow(BindCompletion("checkNow")); return set_str("");
       case 2: upd.downloadUpdate(BindCompletion("downloadUpdate")); return set_str("");
-      case 3: upd.installUpdate(BindCompletion("installUpdate")); return set_str("");
+      case 3: {
+        auto base = BindCompletion("installUpdate");
+        upd.installUpdate([base](const std::string& code, const std::string& detail) {
+          base(code, detail);
+          // 协助器已接管安装：壳优雅自退（WM_CLOSE → shutdown_child 带走 server 树），
+          // 协助器等 PID 退出后安装并 relaunch 壳。不再由 RM 强杀（旧「闪退」根因）。
+          if (code == "STARTED" && g_shell_hwnd) PostMessageW(g_shell_hwnd, WM_CLOSE, 0, 0);
+        });
+        return set_str("");
+      }
       case 4: upd.cancelPrefetch(BindCompletion("cancelPrefetch")); return set_str("");
       case 5: {
         if (!params || params->cArgs < 2) return E_INVALIDARG;
@@ -204,6 +218,8 @@ class UpdaterHost : public IDispatch {
       }
       case 6: return set_str(upd.statusJson());
       case 7: upd.checkMinSupportedVersion(BindCompletion("checkMinSupportedVersion")); return set_str("");
+      case 8: return set_str(upd.installResultJson());
+      case 9: upd.ackInstallResult(); return set_str("");
       default: return DISP_E_MEMBERNOTFOUND;
     }
   }
@@ -213,8 +229,6 @@ class UpdaterHost : public IDispatch {
 };
 
 // ---------- Native IO Host（文件对话框 + base64） ----------
-
-HWND g_shell_hwnd = nullptr;  // 主窗口句柄，供文件对话框用
 
 std::wstring u8_to_w(const std::string& s) {
   return win_encoding::utf8_to_wide(s);

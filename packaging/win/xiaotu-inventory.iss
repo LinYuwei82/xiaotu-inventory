@@ -188,10 +188,14 @@ end;
 // updater 拉起安装时永远带 /RESTARTAPPLICATIONS，据此识别「更新触发的静默安装」，
 // 首次静默部署（不带该参数）仍然不会莫名弹窗起应用。
 // （[Code] 段只能用 // 或 { } 注释；{ } 不能嵌套，注释里出现 {app} 会提前闭合。）
+// 协助器模式（1.0.19+）：安装由 apply-helper 同步执行并负责重启，环境变量
+// XIAOTU_APPLY_HELPER=1 时 Inno 不再自己重启，避免双重启抢单实例锁。
+// 旧壳不带该变量，仍走 /RESTARTAPPLICATIONS 识别路径，行为不变。
 function RestartAfterSilent: Boolean;
 begin
   Result := WizardSilent and HasShell and
-    (WasInstalled or (Pos('/RESTARTAPPLICATIONS', GetCmdTail) > 0));
+    (WasInstalled or (Pos('/RESTARTAPPLICATIONS', GetCmdTail) > 0)) and
+    (GetEnv('XIAOTU_APPLY_HELPER') = '');
 end;
 
 { WebView2 Runtime 检测：机器级 x64/x86 与用户级注册表任一存在且版本非空即视为已安装。 }

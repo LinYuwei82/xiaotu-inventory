@@ -3,7 +3,7 @@
 // 架构（见 docs/更新模块拆分重构方案.md §5）：
 //   状态机、清单判定、进度聚合、持久化全部在 core/update_engine；
 //   本类只做三件事：
-//     1. 提供平台端口实现（WinHTTP 传输 / BCrypt 哈希 / ShellExecute 安装 /
+//     1. 提供平台端口实现（WinHTTP 传输 / BCrypt 哈希 / 协助器安装 /
 //        系统时钟 / updater_win.json 存储，含旧格式一次性迁移）；
 //     2. 桥方法 → 引擎调用 + 旧返回码映射（对外签名与返回码不变）；
 //     3. statusJson 直接输出引擎统一 status_json（P3 起，旧壳键适配已删，
@@ -56,6 +56,13 @@ class UpdaterWin {
 
   // 强制升级握手：读服务端 /api/health 的 min_supported_version
   void checkMinSupportedVersion(Completion cb);
+
+  // 协助器安装结果（重启后前端拉一次）：合并 apply-state.json 与
+  // install-result.json，返回 {"apply":{...}|null, "result":{...}|null,
+  // "interrupted":bool}。
+  std::string installResultJson() const;
+  // 展示过结果后删除两份文件（一次性提示，不重放）。
+  void ackInstallResult();
 
   // JSON 序列化（给前端直接读；引擎 status_json + 旧键适配）
   std::string statusJson() const;

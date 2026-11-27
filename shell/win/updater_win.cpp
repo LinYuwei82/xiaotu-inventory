@@ -4,8 +4,11 @@
 //   状态机与五条内置规则全部在 core/update_engine；本文件只提供：
 //   - WinTransport：WinHTTP 拉清单 / 下载（写 .part → 进度回调 → 原子改名）
 //   - WinHasher：BCrypt SHA256（小写 hex）
-//   - WinInstaller：ShellExecuteW 跑 ISCC /VERYSILENT（/CLOSEAPPLICATIONS 关壳、
-//     /RESTARTAPPLICATIONS 装完拉起新壳——平台语义，不进引擎）
+//   - WinInstaller：复制 server.exe 为 updates\apply-helper.exe，起协助器
+//     （--apply-update 包路径 --wait-pid 壳 PID --result 结果 --relaunch 壳+原参数），
+//     壳自己 PostMessage WM_CLOSE 优雅退出（shutdown_child 经 Job Object 带走 server 树）。
+//     协助器等壳退出后同步跑安装/解压替换 → 原子写结果 → relaunch 壳。
+//     安装版/绿色版由 HKCU 卸载键判定形态，引擎侧 prefer_portable_artifact 透传。
 //   - SystemClock：UTC 秒
 //   - WinStore：读写 %LOCALAPPDATA%\com.simem.xiaotu\updater_win.json，
 //     检测旧格式键（download_state / pending_local_path / download_progress）
@@ -81,6 +84,60 @@ static std::wstring downloadDir() {
   std::wstring dir = appDataDir() + L"\\downloads";
   CreateDirectoryW(dir.c_str(), nullptr);
   return dir;
+}
+
+// 安装版/绿色版判定：Inno 安装必写 HKCU\...\Uninstall\{AppId}_is1，
+// 绿色版没有卸载键。AppId 与 packaging/win/xiaotu-inventory.iss 同源。
+static bool isInstalledEdition() {
+  HKEY key = nullptr;
+  const std::wstring sub =
+      L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
+      L"{6E2A9B4D-5C1F-4F3B-9D2E-7A8B1C3D5E6F}_is1";
+  const LONG rc = RegOpenKeyExW(HKEY_CURRENT_USER, sub.c_str(), 0, KEY_READ, &key);
+  if (rc == ERROR_SUCCESS) RegCloseKey(key);
+  return rc == ERROR_SUCCESS;
+}
+
+// 命令行引号：Inno/MSVCRT 反斜杠只在引号前翻倍。
+static std::wstring quoteArg(const std::wstring& value) {
+  if (value.find_first_of(L" \t\n\v\"") == std::wstring::npos) return value;
+  std::wstring out = L"\"";
+  std::size_t backslashes = 0;
+  for (wchar_t c : value) {
+    if (c == L'\\') {
+      ++backslashes;
+    } else if (c == L'"') {
+      out.append(backslashes * 2 + 1, L'\\');
+      out.push_back(L'"');
+      backslashes = 0;
+    } else {
+      out.append(backslashes, L'\\');
+      backslashes = 0;
+      out.push_back(c);
+    }
+  }
+  out.append(backslashes * 2, L'\\');
+  out.push_back(L'"');
+  return out;
+}
+
+// 读 UTF-8 文件到字符串；失败返回空串（调用方按「无结果」处理）。
+static std::string readFileUtf8(const std::wstring& path) {
+  FILE* f = nullptr;
+  _wfopen_s(&f, path.c_str(), L"rb");
+  if (!f) return {};
+  fseek(f, 0, SEEK_END);
+  long sz = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  if (sz <= 0) {
+    fclose(f);
+    return {};
+  }
+  std::string text(static_cast<std::size_t>(sz), '\0');
+  const size_t got = fread(text.data(), 1, text.size(), f);
+  fclose(f);
+  text.resize(got);
+  return text;
 }
 
 static std::string generateUuid() {
@@ -325,20 +382,77 @@ struct UpdaterWin::Impl
     return true;
   }
 
-  // IInstaller::install —— ISCC 静默安装语义（平台事实，不进引擎）：
-  // /CLOSEAPPLICATIONS 让 Restart Manager 先关掉正在运行的壳，否则 exe 被占用，
-  // 静默安装会无声失败（表现为「点安装没反应」）；/RESTARTAPPLICATIONS 装完拉起新壳。
+  // IInstaller::install —— 协助器模式（devcard 已验证）：
+  // 复制 server.exe 为 updates\apply-helper.exe，起协助器（SW_HIDE，默认
+  // CreateProcessW 标志）传包路径/壳 PID/结果路径/重启程序+原参数。
+  // 壳自己 PostMessage WM_CLOSE 优雅退出（shutdown_child 经 Job Object 带走
+  // server 进程树，协助器等壳 PID 即等到全树释放）。
+  // 协助器内：安装版跑 Inno /VERYSILENT /CLOSEAPPLICATIONS /LOG（兜底），
+  // 绿色版 tar 解压→.bak 备份→覆盖→验 ProductVersion→失败回滚；
+  // 无论成败 relaunch 壳（XIAOTU_APPLY_HELPER=1 防 Inno [Run] 双重启）。
   xiaotu::InstallResult install(const xiaotu::PendingPackage& pkg) override {
     const std::wstring path = pkg.path.native();
     if (path.empty() || GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
       return {false, "FAILED", "PENDING_MISSING"};
     }
-    std::wstring params =
-        L"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS";
-    HINSTANCE ret = ShellExecuteW(nullptr, L"open", path.c_str(), params.c_str(), nullptr, SW_HIDE);
-    if (reinterpret_cast<INT_PTR>(ret) <= 32) {
-      return {false, "FAILED", "ShellExecute=" + std::to_string(reinterpret_cast<INT_PTR>(ret))};
+    const std::wstring app = exeDirectory();
+    const std::wstring data = appDataDir();
+    if (app.empty() || data.empty()) return {false, "FAILED", "DIR_UNAVAILABLE"};
+    const std::wstring server_exe = app + L"\\xiaotu-server.exe";
+    if (GetFileAttributesW(server_exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
+      return {false, "FAILED", "SERVER_MISSING"};
     }
+    const std::wstring updates = data + L"\\updates";
+    CreateDirectoryW(updates.c_str(), nullptr);
+    const std::wstring helper = updates + L"\\apply-helper.exe";
+    const std::wstring result = updates + L"\\install-result.json";
+    const std::wstring apply_state = updates + L"\\apply-state.json";
+    // 复制 server 副本：setup 会覆盖安装目录的 server.exe，运行中镜像不可覆盖。
+    if (!CopyFileW(server_exe.c_str(), helper.c_str(), FALSE)) {
+      return {false, "FAILED",
+              "HELPER_COPY_FAILED=" + std::to_string(GetLastError())};
+    }
+    // 清旧结果，避免重启后读到上一次结果。
+    DeleteFileW(result.c_str());
+    DeleteFileW(apply_state.c_str());
+    // 壳先写 apply-state=installing：协助器还没启动就断电也能被 interrupted 检测
+    // （读取侧用文件 mtime 算 age，updated_at 仅展示用可省）。
+    {
+      const std::string state_text =
+          "{\"state\":\"installing\",\"detail\":\"协助器即将启动\"}";
+      FILE* f = nullptr;
+      _wfopen_s(&f, apply_state.c_str(), L"wb");
+      if (f) {
+        fwrite(state_text.data(), 1, state_text.size(), f);
+        fclose(f);
+      }
+    }
+    std::wstring params = L" --apply-update " + quoteArg(path) +
+                          L" --wait-pid " + std::to_wstring(GetCurrentProcessId()) +
+                          L" --result " + quoteArg(result) +
+                          L" --relaunch " + quoteArg(app + L"\\xiaotu-shell.exe");
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv) {
+      for (int i = 1; i < argc; ++i) {
+        params += L" --relaunch-arg " + quoteArg(argv[i]);
+      }
+      LocalFree(argv);
+    }
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION process{};
+    std::vector<wchar_t> buffer(params.begin(), params.end());
+    buffer.push_back(L'\0');
+    if (!CreateProcessW(helper.c_str(), buffer.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                        updates.c_str(), &startup, &process)) {
+      return {false, "FAILED",
+              "HELPER_LAUNCH_FAILED=" + std::to_string(GetLastError())};
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
     return {true, "STARTED", ""};
   }
 
@@ -433,6 +547,8 @@ UpdaterWin::UpdaterWin() : impl_(std::make_unique<Impl>()) {
   cfg.ignore_min_os = true;
   cfg.download_dir = fs::path(downloadDir());
   cfg.public_key_base64 = XIAOTU_UPDATE_PUBKEY;
+  // 安装版壳优先 setup，绿色版壳优先 portable.zip（清单缺省回落 setup）。
+  cfg.prefer_portable_artifact = !isInstalledEdition();
   if (cfg.public_key_base64.empty())
     log_warn("更新：未配置 XIAOTU_UPDATE_PUBKEY，跳过 Ed25519 验签");
 
@@ -654,6 +770,53 @@ void UpdaterWin::checkMinSupportedVersion(Completion cb) {
   // 简单实现：当前 shell 不直接查 health endpoint；让前端调壳内服务端的 /api/health
   // 或在 shell 里加一个直连。暂留 TODO。
   if (cb) cb("UNAVAILABLE", "checkMinSupportedVersion 未实现");
+}
+
+std::string UpdaterWin::installResultJson() const {
+  // 合并 apply-state.json + install-result.json（协助器写的，见 apply_update.cpp）。
+  // interrupted：apply-state 停在 installing 超过 600s（协助器/安装器中途没命）。
+  const std::wstring updates = appDataDir() + L"\\updates";
+  nlohmann::json out = {{"apply", nullptr}, {"result", nullptr}, {"interrupted", false}};
+  const std::string apply_text = readFileUtf8(updates + L"\\apply-state.json");
+  if (!apply_text.empty()) {
+    auto j = nlohmann::json::parse(apply_text, nullptr, false);
+    if (!j.is_discarded() && j.is_object()) {
+      std::int64_t age = 0;
+      HANDLE h = CreateFileW((updates + L"\\apply-state.json").c_str(), GENERIC_READ,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                             FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (h != INVALID_HANDLE_VALUE) {
+        FILETIME write_time;
+        if (GetFileTime(h, nullptr, nullptr, &write_time)) {
+          FILETIME now_ft;
+          GetSystemTimeAsFileTime(&now_ft);
+          ULARGE_INTEGER now_u, then_u;
+          now_u.LowPart = now_ft.dwLowDateTime;
+          now_u.HighPart = now_ft.dwHighDateTime;
+          then_u.LowPart = write_time.dwLowDateTime;
+          then_u.HighPart = write_time.dwHighDateTime;
+          age = static_cast<std::int64_t>((now_u.QuadPart - then_u.QuadPart) / 10000000);
+        }
+        CloseHandle(h);
+      }
+      j["age_seconds"] = age;
+      out["apply"] = j;
+      if (j.value("state", "") == "installing" && age > 600) out["interrupted"] = true;
+    }
+  }
+  const std::string result_text = readFileUtf8(updates + L"\\install-result.json");
+  if (!result_text.empty()) {
+    auto j = nlohmann::json::parse(result_text, nullptr, false);
+    if (!j.is_discarded() && j.is_object()) out["result"] = j;
+  }
+  return out.dump();
+}
+
+void UpdaterWin::ackInstallResult() {
+  // 一次性展示：删掉两份文件即完成 ack。
+  const std::wstring updates = appDataDir() + L"\\updates";
+  DeleteFileW((updates + L"\\install-result.json").c_str());
+  DeleteFileW((updates + L"\\apply-state.json").c_str());
 }
 
 }  // namespace xiaotu::updater
