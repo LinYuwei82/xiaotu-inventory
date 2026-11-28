@@ -45,7 +45,6 @@ constexpr wchar_t kWindowTitle[] = L"小兔进销存";
 constexpr UINT kMsgServerUrl = WM_APP + 1;
 constexpr UINT kMsgServerExited = WM_APP + 2;
 constexpr UINT_PTR kTimerStartup = 1;
-constexpr UINT_PTR kMenuIdAbout = 1001;  // 帮助→关于 的菜单命令 ID
 constexpr UINT kDefaultStartupTimeoutMs = 30000;
 constexpr UINT kMinStartupTimeoutMs = 1000;
 constexpr UINT kMaxStartupTimeoutMs = 600000;
@@ -670,32 +669,6 @@ void show_error(const std::wstring& text, UINT icon = MB_ICONERROR) {
 
 // 关于框：版本与构建号是编译期宏（CMakeLists 注入，与更新引擎上报值同源），
 // 直接读 exe 版本资源的话第四段恒为 0，会把构建号显示成丢失。
-#ifndef XIAOTU_WSTR
-#define XIAOTU_WSTR2(x) L##x
-#define XIAOTU_WSTR(x) XIAOTU_WSTR2(x)
-#endif
-
-void show_about() {
-  // CMake 注入的版本宏是窄字符串字面量，这里统一转成宽字符再拼接。
-  std::wstring build = L"开发构建";
-#ifdef XIAOTU_BUILD_STR
-  build = XIAOTU_WSTR(XIAOTU_BUILD_STR);
-#endif
-  std::wstring version =
-#ifdef XIAOTU_VERSION
-      XIAOTU_WSTR(XIAOTU_VERSION)
-#else
-      L"(dev)"
-#endif
-      ;
-  std::wstring text = std::wstring(kWindowTitle) + L" " + version +
-                      L"（构建 " + build + L"）\n\n" +
-                      L"小兔进销存 —— 小微企业进销存与库存管理\n\n" +
-                      L"Copyright © 2026 si_mem. 保留所有权利。";
-  std::wstring title = std::wstring(L"关于 ") + kWindowTitle;
-  MessageBoxW(g_app.hwnd, text.c_str(), title.c_str(), MB_OK | MB_ICONINFORMATION);
-}
-
 std::wstring output_tail(size_t limit = 1200) {
   std::lock_guard<std::mutex> lock(g_app.output_mutex);
   if (g_app.output_bytes.size() <= limit) return decode_output(g_app.output_bytes);
@@ -1178,13 +1151,6 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       resize_webview();
       return 0;
 
-    case WM_COMMAND:
-      if (LOWORD(wparam) == kMenuIdAbout) {
-        show_about();
-        return 0;
-      }
-      return DefWindowProcW(hwnd, msg, wparam, lparam);
-
     case kMsgServerUrl: {
       std::wstring* url = reinterpret_cast<std::wstring*>(lparam);
       if (url) {
@@ -1322,15 +1288,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     height = placement.rc.bottom - placement.rc.top;
   }
 
-  // 菜单栏只放「帮助→关于」；WebView2 用 SetBounds 贴客户区，菜单占位由 WM_SIZE
-  // 自动重排，无需额外处理。
-  HMENU menu = CreateMenu();
-  HMENU help_menu = CreatePopupMenu();
-  AppendMenuW(help_menu, MF_STRING, kMenuIdAbout, L"关于小兔进销存(&A)");
-  AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(help_menu), L"帮助(&H)");
-
+  // 不设原生菜单栏：界面全部交给 WebView，与 macOS 壳一致；
+  // 「关于」信息在应用内「系统→关于与诊断」页查看。
   g_app.hwnd = CreateWindowExW(0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW, x, y, width,
-                               height, nullptr, menu, instance, nullptr);
+                               height, nullptr, nullptr, instance, nullptr);
   if (!g_app.hwnd) {
     MessageBoxW(nullptr, L"创建窗口失败。", kWindowTitle, MB_OK | MB_ICONERROR);
     CoUninitialize();
