@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "xiaotu/audit.h"
+#include "xiaotu/auth_middleware.h"
 #include "xiaotu/backup.h"
 #include "xiaotu/context.h"
 #include "xiaotu/edition.h"
@@ -21,6 +22,7 @@
 #include "xiaotu/error.h"
 #include "xiaotu/http_guard.h"
 #include "xiaotu/http_json.h"
+#include "xiaotu/http_util.h"
 #include "xiaotu/ids.h"
 #include "xiaotu/log.h"
 #include "xiaotu/masterdata_io.h"
@@ -36,56 +38,6 @@
 
 namespace xiaotu {
 namespace {
-
-std::string cookie_value(const httplib::Request& req, const std::string& name) {  const std::string header = req.get_header_value("Cookie");
-  std::size_t offset = 0;
-  while (offset < header.size()) {
-    const std::size_t end = header.find(';', offset);
-    const std::string part =
-        header.substr(offset, end == std::string::npos ? std::string::npos : end - offset);
-    const std::size_t equals = part.find('=');
-    if (equals != std::string::npos) {
-      std::string key = part.substr(0, equals);
-      const std::size_t first = key.find_first_not_of(' ');
-      if (first != std::string::npos) {
-        key = key.substr(first);
-      }
-      if (key == name) {
-        return part.substr(equals + 1);
-      }
-    }
-    if (end == std::string::npos) {
-      break;
-    }
-    offset = end + 1;
-  }
-  return {};
-}
-
-bool state_changing(const std::string& method) {
-  return method == "POST" || method == "PUT" || method == "DELETE" || method == "PATCH";
-}
-
-// 登录前就放行的本机端点只应由本机页面调用：Origin/Referer 若存在必须指向当前服务，
-// 否则任意网页都能跨站关掉口令门禁或抢先设置口令。两个头都缺失时按非浏览器客户端放行。
-bool local_page_request(const httplib::Request& req, int port, const std::string& mode) {
-  if (mode != "local") {
-    return true;
-  }
-  if (!is_loopback_address(req.remote_addr)) {
-    return false;
-  }
-  const std::string self = "http://127.0.0.1:" + std::to_string(port);
-  const std::string origin = req.get_header_value("Origin");
-  if (!origin.empty()) {
-    return origin == self;
-  }
-  const std::string referer = req.get_header_value("Referer");
-  if (!referer.empty()) {
-    return referer.rfind(self + "/", 0) == 0;
-  }
-  return true;
-}
 
 // 单机版本机口令开关：键不存在=从未询问，'1'=已启用门禁，'0'=已选择跳过。
 constexpr const char* kLocalPasswordSettingKey = "local_password_enabled";
@@ -258,45 +210,6 @@ std::string query_text(const httplib::Request& req) {
   return text;
 }
 
-// 反向代理终结 TLS 时按 X-Forwarded-Proto 决定是否加 Secure，
-// 但只在本机反代（remote_addr 为回环）时才采信该头：直连客户端自报
-// X-Forwarded-Proto 不能左右会话 Cookie 的 Secure 属性。
-// max_age_seconds 与空闲超时一致，服务端续期时同步延长。
-std::string cookie_attributes(const httplib::Request& req, int max_age_seconds) {
-  std::string attributes =
-      "; Path=/; HttpOnly; SameSite=Strict; Max-Age=" + std::to_string(max_age_seconds);
-  if (is_loopback_address(req.remote_addr) &&
-      req.get_header_value("X-Forwarded-Proto") == "https") {
-    attributes += "; Secure";
-  }
-  return attributes;
-}
-
-// 关闭端点的回环门禁：同机反代部署下 remote_addr 恒为代理回环地址，
-// 仅查 remote_addr 会让任意远程访客都"看起来像本机"。若请求带了
-// X-Forwarded-For，再校验代理追加的最后一跳（真实客户端 IP）也是回环；
-// 直连请求不带该头，仅按 remote_addr 判定。
-bool shutdown_from_local_origin(const httplib::Request& req) {
-  if (!is_loopback_address(req.remote_addr)) {
-    return false;
-  }
-  const std::string xff = req.get_header_value("X-Forwarded-For");
-  if (xff.empty()) {
-    return true;
-  }
-  const std::size_t comma = xff.rfind(',');
-  std::string_view last = comma == std::string::npos
-                              ? std::string_view(xff)
-                              : std::string_view(xff).substr(comma + 1);
-  while (!last.empty() && (last.front() == ' ' || last.front() == '\t')) {
-    last.remove_prefix(1);
-  }
-  while (!last.empty() && (last.back() == ' ' || last.back() == '\t')) {
-    last.remove_suffix(1);
-  }
-  return is_loopback_address(last);
-}
-
 }  // namespace
 
 HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstrap_token)
@@ -371,156 +284,9 @@ HttpServer::HttpServer(Services& services, ServerInfo info, std::string bootstra
     }
   });
 
-  server_->set_pre_routing_handler(
-      [this](const httplib::Request& req, httplib::Response& res) {
-        const std::string sid = cookie_value(req, "sid");
-        bool renewed = false;
-        const SessionPolicy policy = services_.settings.session_policy();
-        const auto session =
-            sessions_.get(sid, policy.idle_minutes, policy.absolute_hours, &renewed);
-        if (renewed) {
-          // 服务端滑动续期后同步延长浏览器 Cookie，否则 Cookie 会比会话先过期。
-          res.set_header("Set-Cookie",
-                         "sid=" + sid + cookie_attributes(req, policy.idle_minutes * 60));
-        }
-        current_context() = RequestContext{session ? session->user : std::string{},
-                                           session ? session->role : std::string{},
-                                           random_hex(8),
-                                           session ? session->csrf : std::string{},
-                                           session ? session->user_id : 0,
-                                           session ? session->must_change_password : false,
-                                           req.remote_addr,
-                                           std::string{}};
-
-        // 单机版只接受来自 127.0.0.1 的请求，防御 DNS rebinding。
-        if (info_.mode == "local") {
-          const std::string expected = "127.0.0.1:" + std::to_string(port_);
-          if (req.get_header_value("Host") != expected) {
-            json_error(res, 403, "FORBIDDEN", "仅允许本机访问");
-            return httplib::Server::HandlerResponse::Handled;
-          }
-        }
-
-#ifdef XIAOTU_DEV_WEB
-        // 开发态：前端跑在本地 dev server，允许其跨端口调用 API。
-        const std::string origin = req.get_header_value("Origin");
-        if (origin.rfind("http://127.0.0.1:", 0) == 0 || origin.rfind("http://localhost:", 0) == 0) {
-          res.set_header("Access-Control-Allow-Origin", origin);
-          res.set_header("Access-Control-Allow-Credentials", "true");
-          res.set_header("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token, X-API-Version");
-          res.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-          res.set_header("Vary", "Origin");
-        }
-        if (req.method == "OPTIONS") {
-          res.status = 204;
-          return httplib::Server::HandlerResponse::Handled;
-        }
-#endif
-
-        const std::string& path = req.path;
-        const bool is_api = path.rfind("/api/", 0) == 0;
-
-        // 能力协商：客户端带版本时只接受当前版本与 N-1，其余回 426 让其升级。
-        const std::string client_api = req.get_header_value("X-API-Version");
-        if (is_api && path != "/api/health" && !client_api.empty()) {
-          int version = -1;
-          try {
-            version = std::stoi(client_api);
-          } catch (const std::exception&) {
-            version = -1;
-          }
-          if (version != gen::kApiVersion && version != gen::kApiVersion - 1) {
-            json_error(res, 426, "API_VERSION_UNSUPPORTED",
-                       "客户端 API 版本不兼容：服务端 " + std::to_string(gen::kApiVersion) +
-                           "，客户端 " + client_api);
-            return httplib::Server::HandlerResponse::Handled;
-          }
-        }
-        if (!is_api) {
-          return httplib::Server::HandlerResponse::Unhandled;
-        }
-        // 维护态（恢复向导已提交）：读请求放行，写请求明确拒绝，避免恢复期间继续下单。
-        if (maintenance_.load() && state_changing(req.method)) {
-          json_error(res, 503, "MAINTENANCE_MODE", "正在进行数据库恢复，写操作已暂停，请稍后重试");
-          return httplib::Server::HandlerResponse::Handled;
-        }
-        // 导入走原始二进制，其余 API 的请求体仍限制在 1MB。
-        // pre-routing 阶段请求体尚未读取，只能按 Content-Length 预检。
-        const bool is_import =
-            path.size() > 7 && path.compare(path.size() - 7, 7, "/import") == 0;
-        if (!is_import) {
-          const std::string declared = req.get_header_value("Content-Length");
-          std::size_t length = 0;
-          try {
-            length = declared.empty() ? 0 : static_cast<std::size_t>(std::stoull(declared));
-          } catch (const std::exception&) {
-            length = 0;
-          }
-          if (length > (1U << 20U)) {
-            json_error(res, 413, "PAYLOAD_TOO_LARGE", "请求体超过 1MB 上限");
-            return httplib::Server::HandlerResponse::Handled;
-          }
-        }
-        if (path == "/api/health") {
-          return httplib::Server::HandlerResponse::Unhandled;
-        }
-        // 更新检查在登录前也可能发生（网络版轻量握手之前），且不返回敏感数据。
-        if (path == "/api/update/check") {
-          return httplib::Server::HandlerResponse::Unhandled;
-        }
-        if (path == "/api/session" && req.method == "POST") {
-          return httplib::Server::HandlerResponse::Unhandled;
-        }
-        // 单机版本机口令的设置与跳过发生在登录之前，按路径放行，
-        // 但必须确认请求来自本机页面，否则可被跨站改写门禁。
-        if ((path == "/api/local/password" || path == "/api/local/password/skip") &&
-            req.method == "POST") {
-          if (!local_page_request(req, port_, info_.mode)) {
-            json_error(res, 403, "FORBIDDEN", "仅允许本机页面调用");
-            return httplib::Server::HandlerResponse::Handled;
-          }
-          return httplib::Server::HandlerResponse::Unhandled;
-        }
-        // 用钥匙串里的长期凭据换会话同样发生在登录之前。
-        if (path == "/api/local/remember" && req.method == "POST") {
-          return httplib::Server::HandlerResponse::Unhandled;
-        }
-        if (path == "/api/login" && req.method == "POST") {
-          return httplib::Server::HandlerResponse::Unhandled;
-        }
-        // 优雅关闭：只允许回环地址；未登录时用一次性令牌（X-Xiaotu-Shutdown-Token）
-        // 鉴权，具体判定在路由内完成。已登录时继续走下面的 CSRF / 强制改密检查。
-        if (path == "/api/system/shutdown" && req.method == "POST") {
-          if (!shutdown_from_local_origin(req)) {
-            json_error(res, 403, "FORBIDDEN", "仅允许本机访问");
-            return httplib::Server::HandlerResponse::Handled;
-          }
-          if (!session.has_value()) {
-            if (req.get_header_value("X-Xiaotu-Shutdown-Token").empty()) {
-              json_error(res, 401, "UNAUTHORIZED", "未登录或会话已过期");
-              return httplib::Server::HandlerResponse::Handled;
-            }
-            return httplib::Server::HandlerResponse::Unhandled;
-          }
-        }
-        if (!session.has_value()) {
-          json_error(res, 401, "UNAUTHORIZED", "未登录或会话已过期");
-          return httplib::Server::HandlerResponse::Handled;
-        }
-        // Cookie 会话的写操作必须带同步令牌，防止跨站表单直接调用 API。
-        if (state_changing(req.method) &&
-            !constant_time_equals(req.get_header_value("X-CSRF-Token"), session->csrf)) {
-          json_error(res, 403, "CSRF_INVALID", "请求缺少有效的 CSRF 令牌");
-          return httplib::Server::HandlerResponse::Handled;
-        }
-        // 强制改密：除改密、退出与查看自身信息外的接口一律拒绝，前端据此跳改密页。
-        if (session->must_change_password && path != "/api/password/change" &&
-            path != "/api/session/logout" && path != "/api/me") {
-          json_error(res, 403, "MUST_CHANGE_PASSWORD", "请先修改口令后再使用其他功能");
-          return httplib::Server::HandlerResponse::Handled;
-        }
-        return httplib::Server::HandlerResponse::Unhandled;
-      });
+  install_auth_middleware(*server_, AuthMiddlewareContext{services_, sessions_,
+                                                          info_.mode, port_,
+                                                          maintenance_});
 
   server_->Get("/api/health", [this](const httplib::Request&, httplib::Response& res) {
     nlohmann::json body;

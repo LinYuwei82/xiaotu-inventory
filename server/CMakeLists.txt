@@ -3,6 +3,7 @@ include("${CMAKE_SOURCE_DIR}/cmake/generated_sources.cmake")
 
 add_library(xiaotu_server STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/audit_routes.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/auth_middleware.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/backup_routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/config.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/document_routes.cpp"
@@ -10,6 +11,7 @@ add_library(xiaotu_server STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/http_guard.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/http_json.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/http_server.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/http_util.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/instance_lock.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/login_limiter.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/masterdata_routes.cpp"
@@ -17,7 +19,12 @@ add_library(xiaotu_server STATIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/partner_routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/print_routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/process_capture.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/report_common.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/report_finance_routes.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/report_purchase_routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/report_routes.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/report_sales_routes.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/report_stock_routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/restore_wizard.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/routes.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/session_store.cpp"
