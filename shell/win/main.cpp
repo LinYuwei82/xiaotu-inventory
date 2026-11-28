@@ -203,9 +203,12 @@ class UpdaterHost : public IDispatch {
         auto base = BindCompletion("installUpdate");
         upd.installUpdate([base](const std::string& code, const std::string& detail) {
           base(code, detail);
-          // 协助器已接管安装：壳优雅自退（WM_CLOSE → shutdown_child 带走 server 树），
-          // 协助器等 PID 退出后安装并 relaunch 壳。不再由 RM 强杀（旧「闪退」根因）。
-          if (code == "STARTED" && g_shell_hwnd) PostMessageW(g_shell_hwnd, WM_CLOSE, 0, 0);
+          // mote 模式：STARTED=setup 已启动（Inno /RELAUNCH=1 负责替换与重启）、
+          // MANUAL=绿色版已打开 zip 目录待用户覆盖——两种情况壳都必须退出，
+          // 否则运行中的 exe 被占用，覆盖不了。WM_CLOSE → shutdown_child 经
+          // Job Object 带走 server 进程树。
+          if ((code == "STARTED" || code == "MANUAL") && g_shell_hwnd)
+            PostMessageW(g_shell_hwnd, WM_CLOSE, 0, 0);
         });
         return set_str("");
       }
@@ -1366,9 +1369,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   // channel 默认 stable，用户切换 beta/rc 时通过 JS 桥 setOptions 改。
   // v2 起三平台共用统一清单 manifest.json（签名覆盖整个对象），放在各自的
   // <product>/updates/<channel>/ 下，客户端只取 platforms.windows。
-  xiaotu::updater::UpdaterWin::instance().start(
-      "https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json",
-      "stable");
+  // XIAOTU_UPDATE_URL 环境变量覆盖清单地址（本地端到端测试用，mote 同款）。
+  std::string manifest_url = "https://dl.xiaotu.online/xiaotu/updates/stable/manifest.json";
+  if (const char* env = getenv("XIAOTU_UPDATE_URL"); env && *env) manifest_url = env;
+  xiaotu::updater::UpdaterWin::instance().start(manifest_url, "stable");
 
   MSG msg{};
   while (GetMessageW(&msg, nullptr, 0, 0) > 0) {

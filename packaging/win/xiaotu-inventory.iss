@@ -86,6 +86,12 @@ UninstallDisplayName={#AppName} {#AppVersion}
 SetupIconFile=xiaotu.ico
 ; 卸载项指向始终存在的服务端 exe（无论是否带壳），避免指向可能不存在的壳。
 UninstallDisplayIcon={app}\{#ServerExeName}
+; 静默覆盖更新（mote 模式）：CloseApplications 让 Restart Manager 兜底释放文件锁；
+; RestartApplications 设为 no——新壳由 updater 带 /RELAUNCH=1 拉起（见 [Run]），
+; 不靠 RM 重启。旧壳(≤1.0.18)显式传 /RESTARTAPPLICATIONS，命令行参数会覆盖本
+; 默认值，其原有行为不受影响。
+CloseApplications=yes
+RestartApplications=no
 ; RestartIfRunning 不是 [Setup] 指令！静默覆盖场景下壳占用处理靠 [Code] 里的 KillOldShell：
 ;   ssPreInstall 阶段 taskkill /F /IM xiaotu-shell.exe → 文件释放 → 安装继续 → 启新壳
 ; 见本脚本 [Code] 段 CurStepChanged。
@@ -188,13 +194,18 @@ end;
 // updater 拉起安装时永远带 /RESTARTAPPLICATIONS，据此识别「更新触发的静默安装」，
 // 首次静默部署（不带该参数）仍然不会莫名弹窗起应用。
 // （[Code] 段只能用 // 或 { } 注释；{ } 不能嵌套，注释里出现 {app} 会提前闭合。）
-// 协助器模式（1.0.19+）：安装由 apply-helper 同步执行并负责重启，环境变量
-// XIAOTU_APPLY_HELPER=1 时 Inno 不再自己重启，避免双重启抢单实例锁。
-// 旧壳不带该变量，仍走 /RESTARTAPPLICATIONS 识别路径，行为不变。
+// 协助器模式（1.0.19–1.0.23 线上旧壳）：安装由 apply-helper 同步执行并负责重启，
+// 环境变量 XIAOTU_APPLY_HELPER=1 时 Inno 不再自己重启，避免双重启抢单实例锁。
+// 该条件必须保留到旧壳全部升级完毕。
+// mote 模式（新壳）：updater 直接 ShellExecuteW 带 /RELAUNCH=1，装完由本 [Run]
+// 拉起新壳。三种拉起方式共存关系：
+//   /RESTARTAPPLICATIONS → ≤1.0.18 旧壳；XIAOTU_APPLY_HELPER 排除 → 1.0.19–1.0.23
+//   协助器壳；/RELAUNCH=1 → 新壳。
 function RestartAfterSilent: Boolean;
 begin
   Result := WizardSilent and HasShell and
-    (WasInstalled or (Pos('/RESTARTAPPLICATIONS', GetCmdTail) > 0)) and
+    (WasInstalled or (Pos('/RESTARTAPPLICATIONS', GetCmdTail) > 0) or
+     (Pos('/RELAUNCH=1', GetCmdTail) > 0)) and
     (GetEnv('XIAOTU_APPLY_HELPER') = '');
 end;
 
@@ -341,6 +352,12 @@ begin
     Exec('taskkill.exe', '/IM xiaotu-shell.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     KernelSleep(2000);
     Exec('taskkill.exe', '/F /IM xiaotu-shell.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    KernelSleep(500);
+    // server.exe 也要释放：浏览器模式（--server 独立运行、无壳）更新时壳的
+    // Job Object 不存在，不杀掉就会锁住 {app}\xiaotu-server.exe。同款两段式。
+    Exec('taskkill.exe', '/IM xiaotu-server.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    KernelSleep(2000);
+    Exec('taskkill.exe', '/F /IM xiaotu-server.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     KernelSleep(500);
   end;
 end;

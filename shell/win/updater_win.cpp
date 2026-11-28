@@ -4,10 +4,10 @@
 //   状态机与五条内置规则全部在 core/update_engine；本文件只提供：
 //   - WinTransport：WinHTTP 拉清单 / 下载（写 .part → 进度回调 → 原子改名）
 //   - WinHasher：BCrypt SHA256（小写 hex）
-//   - WinInstaller：复制 server.exe 为 updates\apply-helper.exe，起协助器
-//     （--apply-update 包路径 --wait-pid 壳 PID --result 结果 --relaunch 壳+原参数），
-//     壳自己 PostMessage WM_CLOSE 优雅退出（shutdown_child 经 Job Object 带走 server 树）。
-//     协助器等壳退出后同步跑安装/解压替换 → 原子写结果 → relaunch 壳。
+//   - WinInstaller（mote 模式，无协助器）：安装版 ShellExecuteW 静默跑 setup.exe
+//     （/RELAUNCH=1 替换与重启交给 Inno），壳 PostMessage WM_CLOSE 优雅退出
+//     （shutdown_child 经 Job Object 带走 server 树）；绿色版 explorer /select
+//     打开 zip 所在目录返回 MANUAL，用户手动解压覆盖。
 //     安装版/绿色版由 HKCU 卸载键判定形态，引擎侧 prefer_portable_artifact 透传。
 //   - SystemClock：UTC 秒
 //   - WinStore：读写 %LOCALAPPDATA%\com.simem.xiaotu\updater_win.json，
@@ -96,29 +96,6 @@ static bool isInstalledEdition() {
   const LONG rc = RegOpenKeyExW(HKEY_CURRENT_USER, sub.c_str(), 0, KEY_READ, &key);
   if (rc == ERROR_SUCCESS) RegCloseKey(key);
   return rc == ERROR_SUCCESS;
-}
-
-// 命令行引号：Inno/MSVCRT 反斜杠只在引号前翻倍。
-static std::wstring quoteArg(const std::wstring& value) {
-  if (value.find_first_of(L" \t\n\v\"") == std::wstring::npos) return value;
-  std::wstring out = L"\"";
-  std::size_t backslashes = 0;
-  for (wchar_t c : value) {
-    if (c == L'\\') {
-      ++backslashes;
-    } else if (c == L'"') {
-      out.append(backslashes * 2 + 1, L'\\');
-      out.push_back(L'"');
-      backslashes = 0;
-    } else {
-      out.append(backslashes, L'\\');
-      backslashes = 0;
-      out.push_back(c);
-    }
-  }
-  out.append(backslashes * 2, L'\\');
-  out.push_back(L'"');
-  return out;
 }
 
 // 读 UTF-8 文件到字符串；失败返回空串（调用方按「无结果」处理）。
@@ -382,77 +359,38 @@ struct UpdaterWin::Impl
     return true;
   }
 
-  // IInstaller::install —— 协助器模式（devcard 已验证）：
-  // 复制 server.exe 为 updates\apply-helper.exe，起协助器（SW_HIDE，默认
-  // CreateProcessW 标志）传包路径/壳 PID/结果路径/重启程序+原参数。
-  // 壳自己 PostMessage WM_CLOSE 优雅退出（shutdown_child 经 Job Object 带走
-  // server 进程树，协助器等壳 PID 即等到全树释放）。
-  // 协助器内：安装版跑 Inno /VERYSILENT /CLOSEAPPLICATIONS /LOG（兜底），
-  // 绿色版 tar 解压→.bak 备份→覆盖→验 ProductVersion→失败回滚；
-  // 无论成败 relaunch 壳（XIAOTU_APPLY_HELPER=1 防 Inno [Run] 双重启）。
+  // IInstaller::install —— mote 模式（无协助器，参考 mote/shell/win/updater_win.cpp）：
+  // 安装版：ShellExecuteW 直接静默跑 setup.exe，文件替换与重启全部外包给
+  //   Inno Setup（/CLOSEAPPLICATIONS 释放文件锁、/RELAUNCH=1 装完自动拉起新壳）。
+  //   返回 STARTED 后壳 PostMessage WM_CLOSE 优雅退出（Job Object 带走 server 树）。
+  // 绿色版：explorer /select 打开更新包所在目录，返回 MANUAL——用户关闭本程序后
+  //   手动解压覆盖，重开即完成更新。引擎 load() 会把 INSTALLING 回退 DONE、
+  //   pending 保留，覆盖前重开仍会继续提示待安装。
   xiaotu::InstallResult install(const xiaotu::PendingPackage& pkg) override {
     const std::wstring path = pkg.path.native();
     if (path.empty() || GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
       return {false, "FAILED", "PENDING_MISSING"};
     }
-    const std::wstring app = exeDirectory();
-    const std::wstring data = appDataDir();
-    if (app.empty() || data.empty()) return {false, "FAILED", "DIR_UNAVAILABLE"};
-    const std::wstring server_exe = app + L"\\xiaotu-server.exe";
-    if (GetFileAttributesW(server_exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
-      return {false, "FAILED", "SERVER_MISSING"};
-    }
-    const std::wstring updates = data + L"\\updates";
-    CreateDirectoryW(updates.c_str(), nullptr);
-    const std::wstring helper = updates + L"\\apply-helper.exe";
-    const std::wstring result = updates + L"\\install-result.json";
-    const std::wstring apply_state = updates + L"\\apply-state.json";
-    // 复制 server 副本：setup 会覆盖安装目录的 server.exe，运行中镜像不可覆盖。
-    if (!CopyFileW(server_exe.c_str(), helper.c_str(), FALSE)) {
-      return {false, "FAILED",
-              "HELPER_COPY_FAILED=" + std::to_string(GetLastError())};
-    }
-    // 清旧结果，避免重启后读到上一次结果。
-    DeleteFileW(result.c_str());
-    DeleteFileW(apply_state.c_str());
-    // 壳先写 apply-state=installing：协助器还没启动就断电也能被 interrupted 检测
-    // （读取侧用文件 mtime 算 age，updated_at 仅展示用可省）。
-    {
-      const std::string state_text =
-          "{\"state\":\"installing\",\"detail\":\"协助器即将启动\"}";
-      FILE* f = nullptr;
-      _wfopen_s(&f, apply_state.c_str(), L"wb");
-      if (f) {
-        fwrite(state_text.data(), 1, state_text.size(), f);
-        fclose(f);
+    const bool is_zip = path.size() >= 4 &&
+                        _wcsicmp(path.c_str() + path.size() - 4, L".zip") == 0;
+    if (is_zip) {
+      // 绿色版：只打开目录并选中 zip，不做自动替换（避免重新引入协助器）。
+      const std::wstring params = L"/select,\"" + path + L"\"";
+      const auto rc = ShellExecuteW(nullptr, L"open", L"explorer.exe",
+                                    params.c_str(), nullptr, SW_SHOWNORMAL);
+      if (reinterpret_cast<INT_PTR>(rc) <= 32) {
+        return {false, "FAILED", "OPEN_FAILED=" + std::to_string(reinterpret_cast<INT_PTR>(rc))};
       }
+      return {true, "MANUAL", ""};
     }
-    std::wstring params = L" --apply-update " + quoteArg(path) +
-                          L" --wait-pid " + std::to_wstring(GetCurrentProcessId()) +
-                          L" --result " + quoteArg(result) +
-                          L" --relaunch " + quoteArg(app + L"\\xiaotu-shell.exe");
-    int argc = 0;
-    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (argv) {
-      for (int i = 1; i < argc; ++i) {
-        params += L" --relaunch-arg " + quoteArg(argv[i]);
-      }
-      LocalFree(argv);
+    // 安装版：静默安装，替换+重启交给 Inno。
+    const auto rc = ShellExecuteW(
+        nullptr, L"open", path.c_str(),
+        L"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RELAUNCH=1",
+        nullptr, SW_SHOW);
+    if (reinterpret_cast<INT_PTR>(rc) <= 32) {
+      return {false, "FAILED", "SHELLEXEC_FAILED=" + std::to_string(reinterpret_cast<INT_PTR>(rc))};
     }
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    startup.dwFlags = STARTF_USESHOWWINDOW;
-    startup.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION process{};
-    std::vector<wchar_t> buffer(params.begin(), params.end());
-    buffer.push_back(L'\0');
-    if (!CreateProcessW(helper.c_str(), buffer.data(), nullptr, nullptr, FALSE, 0, nullptr,
-                        updates.c_str(), &startup, &process)) {
-      return {false, "FAILED",
-              "HELPER_LAUNCH_FAILED=" + std::to_string(GetLastError())};
-    }
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
     return {true, "STARTED", ""};
   }
 
@@ -765,8 +703,9 @@ void UpdaterWin::start_install(Completion cb) {
   // 一旦拉起就会先关掉本程序——坏包照跑就表现为「点安装直接闪退、回不来」。
   const auto res = impl_->engine->try_install();
   if (res.started) {
-    log_info("更新：已启动安装程序，等待静默安装接管");
-    if (cb) cb("STARTED", "");
+    // MANUAL=绿色版已打开目录待用户手动覆盖；STARTED=setup 已启动静默安装。
+    log_info("更新：安装流程已启动 code=" + res.code);
+    if (cb) cb(res.code, "");
     return;
   }
   if (res.code == "NO_PENDING_UPDATE") {
@@ -802,7 +741,9 @@ void UpdaterWin::checkMinSupportedVersion(Completion cb) {
 }
 
 std::string UpdaterWin::installResultJson() const {
-  // 合并 apply-state.json + install-result.json（协助器写的，见 apply_update.cpp）。
+  // 读取协助器（1.0.19–1.0.23，已随协助器链路删除）留下的
+  // apply-state.json + install-result.json，仅用于旧壳升级上来后的
+  // 「更新成功」一次性提示；新壳安装不再产生这两份文件。1.1 删除本读取。
   // interrupted：apply-state 停在 installing 超过 600s（协助器/安装器中途没命）。
   const std::wstring updates = appDataDir() + L"\\updates";
   nlohmann::json out = {{"apply", nullptr}, {"result", nullptr}, {"interrupted", false}};

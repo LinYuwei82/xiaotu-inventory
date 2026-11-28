@@ -7407,8 +7407,8 @@
     bridge.xiaotuUpdateStatus.postMessage({});
   }
 
-  // Windows 更新重启后的一次性结果提示：安装由 server --apply-update 协助器完成，
-  // 协助器写 apply-state.json / install-result.json，壳的 installResult 合并返回。
+  // Windows 更新重启后的一次性结果提示：兼容 1.0.19–1.0.23 协助器留下的
+  // apply-state.json / install-result.json（新壳安装不再产生，读到为空即静默跳过）。
   // 启动进入主界面后取一次，按成功/失败/被中断提示用户，随后 ackInstallResult 删文件，不再重复弹。
   let installResultChecked = false;
   function maybeReportInstallResultOnce() {
@@ -7732,6 +7732,9 @@
         nativeBridge.xiaotuUpdateStatus.postMessage({});
       } else if (payload && (payload.code === "OPENED" || payload.code === "STARTED")) {
         showNotice("安装程序已启动，程序会自动关闭并完成安装", "ok");
+      } else if (payload && payload.code === "MANUAL") {
+        // 绿色版：壳已打开 zip 所在目录并退出，需用户手动解压覆盖。
+        showNotice("更新包已下载并校验，已打开所在目录；关闭程序后解压覆盖原文件，重新打开即完成更新", "ok");
       }
     };
     window.xiaotuUpdateOptionsDone = (payload) => {
