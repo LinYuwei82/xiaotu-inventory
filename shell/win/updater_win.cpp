@@ -568,6 +568,7 @@ UpdaterWin::~UpdaterWin() {
   auto_check_stop_ = true;
   if (auto_check_thread_.joinable()) auto_check_thread_.join();
   if (download_thread_.joinable()) download_thread_.join();
+  if (install_thread_.joinable()) install_thread_.join();
 }
 
 UpdaterWin& UpdaterWin::instance() {
@@ -731,6 +732,34 @@ void UpdaterWin::cancelPrefetch(Completion cb) {
 }
 
 void UpdaterWin::installUpdate(Completion cb) {
+  // 与 macOS（Sparkle）单入口对齐：界面上不再单独提供「下载并校验」，
+  // 包还没下载（预取关闭、下载失败或还没轮到）时，这里先补下载再安装。
+  const auto st = impl_->engine->status();
+  const std::string state = st.value("state", "IDLE");
+  const bool not_ready =
+      (state == "UPDATE_AVAILABLE" || state == "FAILED") &&
+      st.value("pending_path", "").empty();
+  if (!not_ready) {
+    start_install(std::move(cb));
+    return;
+  }
+  if (install_thread_.joinable()) install_thread_.join();
+  install_thread_ = std::thread([this, cb] {
+    // 后台预取正在跑：等它结束，成功就直接用它的产物，不再重复下载。
+    while (download_running_) std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const bool have_pkg = !impl_->engine->status().value("pending_path", "").empty();
+    if (have_pkg || impl_->engine->download_pending()) {
+      start_install(cb);
+      return;
+    }
+    const auto s = impl_->engine->status();
+    const std::string lr = s.value("last_result", "");
+    log_warn("更新：安装前补下载失败 " + s.value("last_error", ""));
+    if (cb) cb(lr == "CANCELED" ? "CANCELED" : "FAILED", s.value("last_error", ""));
+  });
+}
+
+void UpdaterWin::start_install(Completion cb) {
   // 引擎在进入 INSTALLING 前强制重校验大小 + SHA256（规则 2）：
   // 下载完成后文件可能被杀软隔离、截断或清理，安装器带 /CLOSEAPPLICATIONS，
   // 一旦拉起就会先关掉本程序——坏包照跑就表现为「点安装直接闪退、回不来」。

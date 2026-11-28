@@ -74,6 +74,9 @@ class UpdaterWin {
   // 启动 30 秒后首次自动检查，之后 24h±2h（失败按 check_retry_delay 退避）
   void autoCheckLoop();
 
+  // 安装收尾：引擎重校验 + 拉起协助器（installUpdate 的两个分支共用）
+  void start_install(Completion cb);
+
   // 平台端口 + 引擎（定义在 cpp，见 §5.1）
   struct Impl;
   std::unique_ptr<Impl> impl_;
@@ -86,6 +89,9 @@ class UpdaterWin {
 
   std::thread download_thread_;
   std::atomic<bool> download_running_{false};
+
+  // 「安装更新」单入口里补下载的执行线程（析构 join，避免悬垂 this）
+  std::thread install_thread_;
 };
 
 }  // namespace xiaotu::updater

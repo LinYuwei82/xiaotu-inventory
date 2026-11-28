@@ -7502,6 +7502,8 @@
       return "—";
     }
 
+    // Windows 点「安装更新」后壳内可能先补下载；期间按钮保持禁用与提示文案。
+    let installPreparing = false;
     let pollTimer = null;
     function stopPoll() {
       if (pollTimer) {
@@ -7527,7 +7529,8 @@
       const sparkle = status.install_engine === "sparkle";
       const prefetchRunning =
         status.prefetch_state === "running" || status.prefetch_state === "retrying";
-      const prefetchDone = status.prefetch_state === "done";
+      // Windows 与 macOS 同一套界面：只在真有下载在跑时显示进度行，
+      // 不再暴露「后台下载」开关与手动下载入口（安装时壳内自动补下载）。
       const rows = [
         ["检查通道", status.channel || "stable"],
         [
@@ -7541,16 +7544,8 @@
             ? versionWithBuild(status.pending_version, status.pending_build)
             : "—",
         ],
-        sparkle ? null : ["后台下载", prefetchText(status)],
+        !sparkle && prefetchRunning ? ["后台下载", prefetchText(status)] : null,
       ].filter(Boolean);
-      const consent =
-        status.prefetch_state === "needs_consent"
-          ? `<p class="page-sub" style="margin-top:10px">
-               发现新版本时会在后台自动下载安装包，可能产生网络流量并占用磁盘空间。
-               可随时关闭上方开关。
-             </p>
-             <button class="btn" type="button" data-role="ack-prefetch">我知道了，开始后台下载</button>`
-          : "";
       // 强制升级：到期后阻塞式提示，不提供“跳过此版本”；截止前仍按普通更新提示。
       const reason = mandatoryReasonText(status.reason);
       const forceNow = mandatoryActive(status);
@@ -7618,37 +7613,17 @@
           <label class="checkbox"><input type="checkbox" data-role="auto-check" ${
             status.auto_check ? "checked" : ""
           } /> 自动检查更新</label>
-          ${
-            sparkle
-              ? ""
-              : `<label class="checkbox"><input type="checkbox" data-role="prefetch" ${
-                  status.prefetch ? "checked" : ""
-                } /> 发现新版本时自动下载安装包</label>`
-          }
         </div>
-        ${consent}
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
           <button class="btn" type="button" data-role="check">检查更新</button>
-          ${
-            status.update_available && !sparkle
-              ? `<button class="btn" type="button" data-role="download" ${
-                  prefetchRunning || prefetchDone ? "disabled" : ""
-                }>${prefetchDone ? "已下载" : "下载并校验"}</button>`
-              : ""
-          }
-          ${
-            prefetchRunning && !sparkle
-              ? `<button class="btn" type="button" data-role="cancel">取消下载</button>`
-              : ""
-          }
           ${
             status.update_available && status.notes_url
               ? `<button class="btn" type="button" data-role="notes">查看更新详情</button>`
               : ""
           }
           <button class="btn primary" type="button" data-role="install" ${
-            status.update_available ? "" : "disabled"
-          }>安装更新</button>
+            status.update_available && !installPreparing ? "" : "disabled"
+          }>${installPreparing ? "正在准备安装包…" : "安装更新"}</button>
         </div>`;
 
       const checkButton = card.querySelector('[data-role="check"]');
@@ -7666,52 +7641,6 @@
         autoInput.disabled = true;
         nativeBridge.xiaotuUpdateOptions.postMessage({ auto_check: autoInput.checked });
       });
-      const prefetchInput = card.querySelector('[data-role="prefetch"]');
-      if (prefetchInput) {
-        prefetchInput.addEventListener("change", async () => {
-          if (prefetchInput.checked && status.prefetch_notice_acked !== true) {
-            const confirmed = await askConfirm(
-              "发现新版本时会在后台自动下载安装包，可能产生网络流量并占用磁盘空间。" +
-                "可随时在此处关闭，是否开启？",
-              { okText: "开启", cancelText: "取消" }
-            );
-            if (!confirmed) {
-              prefetchInput.checked = false;
-              return;
-            }
-            nativeBridge.xiaotuUpdateOptions.postMessage({
-              prefetch: true,
-              ack_prefetch_notice: true,
-            });
-            return;
-          }
-          nativeBridge.xiaotuUpdateOptions.postMessage({ prefetch: prefetchInput.checked });
-        });
-      }
-      const downloadButton = card.querySelector('[data-role="download"]');
-      if (downloadButton) {
-        downloadButton.addEventListener("click", () => {
-          downloadButton.disabled = true;
-          nativeBridge.xiaotuUpdateDownload.postMessage({});
-        });
-      }
-      const cancelButton = card.querySelector('[data-role="cancel"]');
-      if (cancelButton) {
-        cancelButton.addEventListener("click", () => {
-          cancelButton.disabled = true;
-          nativeBridge.xiaotuUpdateCancelPrefetch.postMessage({});
-        });
-      }
-      const ackButton = card.querySelector('[data-role="ack-prefetch"]');
-      if (ackButton) {
-        ackButton.addEventListener("click", () => {
-          ackButton.disabled = true;
-          nativeBridge.xiaotuUpdateOptions.postMessage({
-            prefetch: true,
-            ack_prefetch_notice: true,
-          });
-        });
-      }
       card.querySelector('[data-role="install"]').addEventListener("click", async () => {
         const size = status.pending_size
           ? `约 ${formatBytes(status.pending_size)}`
@@ -7727,7 +7656,7 @@
           ? `安装时由 Sparkle 下载并校验${size}，完成后自动重启。是否继续？`
           : downloaded
             ? "将使用已下载并校验的安装包，随后关闭程序并完成安装。是否继续？"
-            : `安装时会重新下载${size}（后台预下载只用于提前校验），随后关闭程序并完成安装。是否继续？`;
+            : `安装时会先下载并校验${size}，随后关闭程序并完成安装。是否继续？`;
         const confirmed = await askConfirm(
           forceNow
             ? `此更新已到截止时间（${mandatoryReasonText(status.reason) || "服务端要求"}），不能跳过。` +
@@ -7739,6 +7668,10 @@
           { okText: "安装", cancelText: "取消" }
         );
         if (!confirmed) return;
+        if (!sparkle) {
+          installPreparing = true;
+          render(status);
+        }
         nativeBridge.xiaotuUpdateInstall.postMessage({});
       });
       const rollbackButton = card.querySelector('[data-role="rollback"]');
@@ -7792,8 +7725,11 @@
       }
     };
     window.xiaotuUpdateInstallDone = (payload) => {
+      installPreparing = false;
       if (payload && payload.ok === false) {
         showNotice("无法启动安装流程：" + winFailureText(payload.code), "error");
+        // 补下载失败等场景：拉一次状态恢复按钮，让用户能直接重试。
+        nativeBridge.xiaotuUpdateStatus.postMessage({});
       } else if (payload && (payload.code === "OPENED" || payload.code === "STARTED")) {
         showNotice("安装程序已启动，程序会自动关闭并完成安装", "ok");
       }
