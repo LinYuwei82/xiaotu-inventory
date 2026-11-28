@@ -7239,6 +7239,26 @@
       window.chrome.webview.addEventListener("message", (event) => {
         const msg = parseWebviewMessage(event);
         if (!msg || !msg.event || msg.event === "printPdf") return;
+        // 壳主动推送的启动快照：一次带上状态和上次安装结果（不依赖 HostObject 返回值）。
+        if (msg.event === "startup") {
+          if (msg.status) {
+            winUpdaterStatusCache = msg.status;
+            finish("xiaotuUpdateStatusDone", {
+              status: msg.status,
+              code: "",
+              ok: true,
+              update_available: !!(msg.status.manifest_version || msg.status.version),
+            });
+          }
+          if (msg.install_result && reportInstallResult(msg.install_result)) {
+            try {
+              updater.ackInstallResult();
+            } catch (error) {
+              // 旧壳没有该方法：下次启动会再提示。
+            }
+          }
+          return;
+        }
         if (msg.status) winUpdaterStatusCache = msg.status;
         // P3：win 桥不再预归一，透传引擎原始 status，由 handler 统一 normalize。
         const status = msg.status || winUpdaterStatusCache || {};
@@ -7272,6 +7292,15 @@
     winUpdaterBridgeInstance = {
       xiaotuUpdateStatus: {
         postMessage: () => {
+          // 优先让壳用事件推状态快照，避免依赖 HostObject 返回值。
+          try {
+            if (updater && typeof updater.reportStartup === "function") {
+              updater.reportStartup();
+              return;
+            }
+          } catch (error) {
+            // 旧壳没有该方法：回退到返回值方式。
+          }
           (async () => {
             try {
               const s = await readStatus();
@@ -7423,56 +7452,67 @@
   // apply-state.json / install-result.json（新壳安装不再产生，读到为空即静默跳过）。
   // 启动进入主界面后取一次，按成功/失败/被中断提示用户，随后 ackInstallResult 删文件，不再重复弹。
   let installResultChecked = false;
+
+  function reportInstallResult(data) {
+    if (!data || typeof data !== "object") return false;
+    const result = data.result || null;
+    const interrupted = !!data.interrupted;
+    const launch = data.launch || null;
+    if (interrupted) {
+      showNotice("上次更新安装被中断，当前仍是旧版本；可在「设置 → 软件更新」中重试", "warn");
+      return true;
+    }
+    if (result) {
+      const unchanged =
+        !!result.version_before &&
+        !!result.version_after &&
+        result.version_after === result.version_before;
+      const failed = !!result.error || Number(result.exit_code) !== 0 || unchanged;
+      if (failed) {
+        showNotice("更新安装失败，当前仍是旧版本；可在「设置 → 软件更新」中重试", "error");
+      } else {
+        showNotice(`更新成功，当前版本 ${result.version_after || ""}`, "ok");
+      }
+      return true;
+    }
+    if (launch) {
+      // 新壳：拉起 setup 前落盘的目标版本 vs 本次实际版本，判断装成没装成。
+      const currentVersion = data.current_version || "";
+      const targetVersion = launch.target_version || "";
+      if (targetVersion && currentVersion === targetVersion) {
+        showNotice(`更新成功，当前版本 ${currentVersion}`, "ok");
+      } else {
+        const tailLines = String(launch.setup_log_tail || "")
+          .split(/\r?\n/)
+          .filter((line) => line.trim())
+          .slice(-3)
+          .join(" ");
+        const reason = (winUpdaterStatusCache && winUpdaterStatusCache.last_error) || "";
+        showNotice(
+          `上次更新没有完成（当前 ${currentVersion || "未知版本"}，目标 ${
+            targetVersion || "未知版本"
+          }）${tailLines ? "；安装日志：" + tailLines : ""}${
+            reason ? "；原因：" + reason : ""
+          }`,
+          "error"
+        );
+      }
+      return true;
+    }
+    return false;
+  }
+
   function maybeReportInstallResultOnce() {
     if (!isWinWebview() || installResultChecked) return;
     const hostObjects = window.chrome.webview.hostObjects;
     if (!hostObjects || !hostObjects.updater_win) return;
-    const updater = hostObjects.updater_win;
     installResultChecked = true;
-    (async () => {
-      try {
-        const data = JSON.parse((await updater.installResult()) || "{}");
-        const result = data.result || null;
-        const interrupted = !!data.interrupted;
-        const launch = data.launch || null;
-        if (interrupted) {
-          showNotice("上次更新安装被中断，当前仍是旧版本；可在「设置 → 软件更新」中重试", "warn");
-        } else if (result) {
-          const unchanged =
-            !!result.version_before &&
-            !!result.version_after &&
-            result.version_after === result.version_before;
-          const failed = !!result.error || Number(result.exit_code) !== 0 || unchanged;
-          if (failed) {
-            showNotice("更新安装失败，当前仍是旧版本；可在「设置 → 软件更新」中重试", "error");
-          } else {
-            showNotice(`更新成功，当前版本 ${result.version_after || ""}`, "ok");
-          }
-        } else if (launch) {
-          // 新壳：拉起 setup 前落盘的目标版本 vs 本次实际版本，判断装成没装成。
-          const currentVersion = data.current_version || "";
-          const targetVersion = launch.target_version || "";
-          if (targetVersion && currentVersion === targetVersion) {
-            showNotice(`更新成功，当前版本 ${currentVersion}`, "ok");
-          } else {
-            const tailLines = String(launch.setup_log_tail || "")
-              .split(/\r?\n/)
-              .filter((line) => line.trim())
-              .slice(-3)
-              .join(" ");
-            showNotice(
-              `上次更新没有完成（当前 ${currentVersion || "未知版本"}，目标 ${
-                targetVersion || "未知版本"
-              }）${tailLines ? "；安装日志：" + tailLines : ""}`,
-              "error"
-            );
-          }
-        }
-        if (result || interrupted || launch) await updater.ackInstallResult();
-      } catch (error) {
-        // 桥不可用或旧壳没有该方法：静默跳过，不打扰用户。
-      }
-    })();
+    // 返回值型宿主调用在部分环境拿不到结果；改用 void 方法让壳用 startup 事件推送。
+    try {
+      hostObjects.updater_win.reportStartup();
+    } catch (error) {
+      // 旧壳没有该方法：静默跳过。
+    }
   }
 
   // 软件更新：状态、下载、安装都在服务端完成；前端只展示结果与发起动作。
@@ -7690,7 +7730,16 @@
     window.xiaotuUpdateInstallDone = (payload) => {
       installPreparing = false;
       if (payload && payload.ok === false) {
-        showNotice("无法启动安装流程：" + winFailureText(payload.code), "error");
+        const reason =
+          (payload && payload.detail) ||
+          (payload && payload.status && payload.status.last_error) ||
+          "";
+        showNotice(
+          "无法启动安装流程：" +
+            winFailureText(payload.code) +
+            (reason ? "（" + reason + "）" : ""),
+          "error"
+        );
         // 补下载失败等场景：拉一次状态恢复按钮，让用户能直接重试。
         nativeBridge.xiaotuUpdateStatus.postMessage({});
       } else if (payload && (payload.code === "OPENED" || payload.code === "STARTED")) {

@@ -182,11 +182,11 @@ class UpdaterHost : public IDispatch {
         L"checkNow", L"downloadUpdate", L"installUpdate",
         L"cancelPrefetch", L"setOptions", L"statusJson",
         L"checkMinSupportedVersion", L"installResult",
-        L"ackInstallResult",
+        L"ackInstallResult", L"reportStartup",
     };
     for (UINT i = 0; i < count; ++i) {
       ids[i] = DISPID_UNKNOWN;
-      for (UINT j = 0; j < 9; ++j) {
+      for (UINT j = 0; j < 10; ++j) {
         if (wcscmp(names[i], kNames[j]) == 0) { ids[i] = static_cast<DISPID>(j + 1); break; }
       }
       if (ids[i] == DISPID_UNKNOWN) return DISP_E_UNKNOWNNAME;
@@ -237,6 +237,24 @@ class UpdaterHost : public IDispatch {
       case 7: upd.checkMinSupportedVersion(BindCompletion("checkMinSupportedVersion")); return set_str("");
       case 8: return set_str(upd.installResultJson());
       case 9: upd.ackInstallResult(); return set_str("");
+      case 10: {
+        // 前端启动/刷新时触发（void 方法）：用事件推送状态与安装结果，
+        // 不依赖 HostObject 返回值（部分环境下返回值调用拿不到结果）。
+        nlohmann::json j;
+        j["event"] = "startup";
+        try {
+          j["status"] = nlohmann::json::parse(upd.statusJson());
+        } catch (const nlohmann::json::exception&) {
+          j["status"] = nlohmann::json::object();
+        }
+        try {
+          j["install_result"] = nlohmann::json::parse(upd.installResultJson());
+        } catch (const nlohmann::json::exception&) {
+        }
+        post_web_message_json(
+            j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+        return set_str("");
+      }
       default: return DISP_E_MEMBERNOTFOUND;
     }
   }
