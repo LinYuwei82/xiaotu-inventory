@@ -77,6 +77,14 @@ class HttpServer {
 
  private:
   void register_routes();
+  // 路由装配：构造只做传输层配置，具体路由按职责分文件注册。
+  void register_health_routes();
+  void register_update_routes();
+  void register_restore_routes();
+  void register_auth_routes();
+  void register_local_auth_routes();
+  void register_system_routes();
+  void register_static_routes();
   bool consume_bootstrap_token(const std::string& token);
   // 单机版本机口令：直接复用 app_user 里的内置管理员口令，不另建表。
   // required 表示用户已在本机启用口令门禁，启动时先显示门禁页。
