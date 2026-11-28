@@ -1,6 +1,6 @@
-# 小兔进销存 1.0.25（及更早版本）手动覆盖安装 1.0.27 指引
+# 小兔进销存 1.0.25（及更早版本）手动覆盖安装 1.0.28 指引
 
-适用于 Windows 10/11 64 位用户。若你当前版本是 **1.0.25 或更早**，且应用内自动更新出现卡住、闪退、反复提示“正在准备安装包”等情况，请按本指引手动安装一次 1.0.27；之后即可正常使用应用内更新。
+适用于 Windows 10/11 64 位用户。若你当前版本是 **1.0.25 或更早**，且应用内自动更新出现卡住、闪退、反复提示“正在准备安装包”等情况，请按本指引手动安装一次 1.0.28；之后即可正常使用应用内更新。
 
 > 数据不会丢失：账套数据存放在独立的数据目录，覆盖安装只替换程序文件，不改动数据。
 
@@ -18,22 +18,22 @@
 
 ## 二、下载安装包
 
-- 下载地址：<https://dl.xiaotu.online/xiaotu/xiaotu-1.0.27-win64-setup.exe>
-- 文件名：`xiaotu-1.0.27-win64-setup.exe`
-- 大小：5,733,085 字节
-- SHA256：`0735f39c7428be5787499a527c33f388d72958ebbaa9a5c47ec90f56a64567e8`
+- 下载地址：<https://dl.xiaotu.online/xiaotu/xiaotu-1.0.28-win64-setup.exe>
+- 文件名：`xiaotu-1.0.28-win64-setup.exe`
+- 大小：5,745,098 字节
+- SHA256：`d0a1cade1d3ffd271f2700110247dc6b79dc728212735b3b4819c9297b8690dc`
 
 可选校验（PowerShell）：
 
 ```powershell
-Get-FileHash "$env:USERPROFILE\Downloads\xiaotu-1.0.27-win64-setup.exe" -Algorithm SHA256
+Get-FileHash "$env:USERPROFILE\Downloads\xiaotu-1.0.28-win64-setup.exe" -Algorithm SHA256
 ```
 
 哈希与上面一致即可继续；不一致请重新下载。
 
 ## 三、覆盖安装
 
-1. 双击 `xiaotu-1.0.27-win64-setup.exe`。
+1. 双击 `xiaotu-1.0.28-win64-setup.exe`。
 2. 若出现 Windows SmartScreen 提示：点「更多信息」→「仍要运行」。
    （安装包暂未启用代码签名，属正常现象。）
 3. 保持默认安装目录（通常是 `%LOCALAPPDATA%\Programs\小兔进销存`），直接下一步完成安装。
@@ -44,7 +44,7 @@ Get-FileHash "$env:USERPROFILE\Downloads\xiaotu-1.0.27-win64-setup.exe" -Algorit
 
 进入「系统 → 关于与诊断」，确认：
 
-- 应用：`小兔进销存 1.0.27`
+- 应用：`小兔进销存 1.0.28`
 - 运行形态：与升级前一致（单机版 / 网络版）
 - schema：`v40`（与升级前一致，说明数据正常）
 - 软件更新区域：应直接显示「上次检查」「检查结果」「待安装版本」，无需先点「检查更新」；点一次「检查更新」应返回「已是最新版本」。
@@ -70,6 +70,6 @@ Get-FileHash "$env:USERPROFILE\Downloads\xiaotu-1.0.27-win64-setup.exe" -Algorit
 
 ## 六、升级后
 
-- 1.0.27 起，应用内「检查更新 → 安装更新」已修复卡死/闪退问题，后续版本可正常自动更新。
+- 自 1.0.27 起（1.0.28 同样包含），应用内「检查更新 → 安装更新」已修复卡死/闪退问题，后续版本可正常自动更新。
 - 自动更新失败时，界面会显示具体原因（如 `SETUP_EXITED_EARLY=1`）与安装日志尾部，便于反馈问题。
 - 日志位置：`%LOCALAPPDATA%\com.simem.xiaotu\logs\shell.log` 与 `update-setup.log`。
