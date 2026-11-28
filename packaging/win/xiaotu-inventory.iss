@@ -55,8 +55,8 @@
 #endif
 
 #define AppName "小兔进销存"
-#define AppPublisher "si_mem"
-#define AppCopyright "Copyright © 2026 si_mem"
+#define AppPublisher "小兔在线"
+#define AppCopyright "Copyright © 2026 小兔在线"
 #define AppExeName "xiaotu-shell.exe"
 #define ServerExeName "xiaotu-server.exe"
 #define WebView2Url "https://go.microsoft.com/fwlink/p/?LinkId=2124703"

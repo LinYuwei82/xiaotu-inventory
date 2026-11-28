@@ -1,6 +1,6 @@
 # 小兔进销存 Windows 打包说明
 
-发布者：个人开发者 `si_mem`；版权：`Copyright © 2026 si_mem`。
+发布者：个人开发者 `si_mem`；版权：`Copyright © 2026 小兔在线`。
 
 本目录放 Windows 侧的分发产物构建脚本，不参与顶层 CMake 构建：
 

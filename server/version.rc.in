@@ -23,7 +23,7 @@ BEGIN
   BEGIN
     BLOCK "080404b0"
     BEGIN
-      VALUE "CompanyName", "si_mem"
+      VALUE "CompanyName", "小兔在线"
       VALUE "FileDescription", "小兔进销存 服务端"
       VALUE "FileVersion", "@PROJECT_VERSION@"
       VALUE "InternalName", "xiaotu-server"

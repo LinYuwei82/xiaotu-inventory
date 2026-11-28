@@ -1,6 +1,6 @@
 # 小兔进销存（Windows）
 
-发布者：个人开发者 `si_mem`；版权：`Copyright © 2026 si_mem`。
+发布者：个人开发者 `si_mem`；版权：`Copyright © 2026 小兔在线`。
 
 ## 最快开始
 
