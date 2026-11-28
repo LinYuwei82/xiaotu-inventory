@@ -525,11 +525,19 @@ bool UpdateEngine::download_pending() {
   remove_quiet(part_path_of(dest));
 
   std::string terr;
-  const ProgressFn on_progress = [this](std::int64_t done, std::int64_t total) {
+  // 进度落盘节流：每块 64KB 都写一次 updater_win.json 会在杀软机器上把下载
+  // 拖成龟速，还长期占着引擎锁。内存里的进度照常更新，落盘最多每秒一次。
+  std::int64_t last_persist_epoch = 0;
+  const ProgressFn on_progress = [this, &last_persist_epoch](std::int64_t done,
+                                                             std::int64_t total) {
     std::lock_guard<std::mutex> lock(mutex_);
     st_->bytes_done = done;
     if (total > 0) st_->bytes_total = total;
-    persist_locked();  // 规则 4：进度与 pending_size 同一次落盘
+    const std::int64_t t = now();
+    if (t != last_persist_epoch) {
+      last_persist_epoch = t;
+      persist_locked();  // 规则 4：进度与 pending_size 同一次落盘
+    }
   };
   const CancelFn on_cancel = [this]() { return cancel_flag_.load(); };
   const bool ok = deps_.transport->download(url, dest, on_progress, on_cancel, terr);
@@ -633,8 +641,15 @@ InstallResult UpdateEngine::try_install() {
     st_->last_result = "INSTALL_FAILED";
     st_->last_error = res.error;
     persist_locked();
+  } else if (res.code == "MANUAL") {
+    // 绿色版：只打开了下载目录，等用户手动覆盖。不进入 INSTALLING，
+    // 否则壳不退出时状态会一直卡在「安装中」，连重新检查/重试都被拒绝。
+    st_->state = UpdateState::kDone;
+    st_->last_result = "MANUAL";
+    st_->last_error.clear();
+    persist_locked();
   }
-  // started：保持 INSTALLING，进程即将由安装器接管。
+  // STARTED：保持 INSTALLING，进程即将由安装器接管。
   return res;
 }
 

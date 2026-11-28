@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <functional>
 #include <random>
+#include <system_error>
 #include <vector>
 
 #include "xiaotu/update.h"
@@ -117,6 +118,26 @@ static std::string readFileUtf8(const std::wstring& path) {
   return text;
 }
 
+// 读文件末尾 max_bytes 字节（Inno 的 /LOG 尾部，用来在下次启动展示失败原因）。
+static std::string readTailUtf8(const std::wstring& path, long max_bytes) {
+  FILE* f = nullptr;
+  _wfopen_s(&f, path.c_str(), L"rb");
+  if (!f) return {};
+  fseek(f, 0, SEEK_END);
+  const long sz = ftell(f);
+  if (sz <= 0) {
+    fclose(f);
+    return {};
+  }
+  const long start = sz > max_bytes ? sz - max_bytes : 0;
+  fseek(f, start, SEEK_SET);
+  std::string text(static_cast<std::size_t>(sz - start), '\0');
+  const size_t got = fread(text.data(), 1, text.size(), f);
+  fclose(f);
+  text.resize(got);
+  return text;
+}
+
 static std::string generateUuid() {
   // 简单随机 UUID（install_id 只用于灰度分桶，不需要真正 GUID）
   static thread_local std::mt19937 gen(std::random_device{}());
@@ -175,12 +196,13 @@ static bool winhttpGet(const std::string& url, std::string& out_body,
   // 显式超时：WinHTTP 默认 resolve 无限等待，且慢速滴流下载永不报错，
   // 界面会永久卡在「正在准备安装包」。resolve/connect/send 15s，
   // receive 60s（按块计时，每块 60s 无数据才算超时）。
-  const DWORD kResolveTimeout = 15000, kConnectTimeout = 15000;
-  const DWORD kSendTimeout = 15000, kReceiveTimeout = 60000;
-  WinHttpSetOption(session, WINHTTP_OPTION_RESOLVE_TIMEOUT, &kResolveTimeout, sizeof(DWORD));
-  WinHttpSetOption(session, WINHTTP_OPTION_CONNECT_TIMEOUT, &kConnectTimeout, sizeof(DWORD));
-  WinHttpSetOption(session, WINHTTP_OPTION_SEND_TIMEOUT, &kSendTimeout, sizeof(DWORD));
-  WinHttpSetOption(session, WINHTTP_OPTION_RECEIVE_TIMEOUT, &kReceiveTimeout, sizeof(DWORD));
+  // 注意：WinHttpSetOption 的 lpBuffer 是 LPVOID，不能传 const DWORD*（MSVC 会报 C2664）。
+  DWORD resolve_timeout = 15000, connect_timeout = 15000;
+  DWORD send_timeout = 15000, receive_timeout = 60000;
+  WinHttpSetOption(session, WINHTTP_OPTION_RESOLVE_TIMEOUT, &resolve_timeout, sizeof(DWORD));
+  WinHttpSetOption(session, WINHTTP_OPTION_CONNECT_TIMEOUT, &connect_timeout, sizeof(DWORD));
+  WinHttpSetOption(session, WINHTTP_OPTION_SEND_TIMEOUT, &send_timeout, sizeof(DWORD));
+  WinHttpSetOption(session, WINHTTP_OPTION_RECEIVE_TIMEOUT, &receive_timeout, sizeof(DWORD));
   HINTERNET connect = WinHttpConnect(session, host_w.c_str(), is_https ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT, 0);
   if (!connect) {
     WinHttpCloseHandle(session);
@@ -246,8 +268,11 @@ static bool winhttpGet(const std::string& url, std::string& out_body,
         err_detail = "";
         return false;
       }
+    } else {
+      // 只有拉清单（无分块回调）才在内存里攒；下载安装包时逐块写盘，
+      // 不能再整包复制进内存（原来 100MB+ 的包会占两份）。
+      out_body.append(chunk_buf.data(), got);
     }
-    out_body.append(chunk_buf.data(), got);
   }
 
   WinHttpCloseHandle(request);
@@ -408,13 +433,39 @@ struct UpdaterWin::Impl
     // GetLastError 诊断码），且加 CREATE_BREAKAWAY_FROM_JOB 防御壳被
     // 外部 job 包裹时 setup 遭连坐（main.cpp job 侧已开 BREAKAWAY_OK）。
     // 本 setup 为 PrivilegesRequired=lowest，无需 UAC 提升，可直接启动。
+    const std::wstring logs_dir = appDataDir() + L"\\logs";
+    CreateDirectoryW(logs_dir.c_str(), nullptr);
+    const std::wstring log_path = logs_dir + L"\\update-setup.log";
+    // 旧日志先删：下面用「日志文件是否出现」判断 Inno 是否真的跑起来了，
+    // 残留的旧文件会造成误判。
+    _wremove(log_path.c_str());
+
+    // 拉起前落盘本次安装标记：setup 会把本进程 taskkill 掉，只有这份文件
+    // 能让下一次启动判断「装成没装成」，失败时还能带上 Inno 日志尾部。
+    {
+      nlohmann::json marker = {
+          {"target_version", pkg.version},
+          {"target_build", pkg.build},
+          {"started_epoch", epochNow()},
+      };
+      FILE* mf = nullptr;
+      if (_wfopen_s(&mf, (appDataDir() + L"\\update-launch.json").c_str(), L"wb") == 0 && mf) {
+        const std::string text = marker.dump();
+        fwrite(text.data(), 1, text.size(), mf);
+        fclose(mf);
+      }
+    }
+
     STARTUPINFOW setup_si{};
     setup_si.cb = sizeof(setup_si);
     setup_si.dwFlags = STARTF_USESHOWWINDOW;
     setup_si.wShowWindow = SW_HIDE;
     PROCESS_INFORMATION setup_pi{};
+    // /LOG 是排错的关键：以前 /SUPPRESSMSGBOXES 会把安装器的错误框一起吞掉，
+    // 失败后既没有日志也没有提示，只能看到「窗口消失」。
     std::wstring setup_cmd = quoteArg(path) +
-        L" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RELAUNCH=1";
+        L" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RELAUNCH=1 /LOG=" +
+        quoteArg(log_path);
     std::vector<wchar_t> setup_buf(setup_cmd.begin(), setup_cmd.end());
     setup_buf.push_back(L'\0');
     if (!CreateProcessW(path.c_str(), setup_buf.data(), nullptr, nullptr, FALSE,
@@ -422,8 +473,27 @@ struct UpdaterWin::Impl
       return {false, "FAILED",
               "SETUP_LAUNCH_FAILED=" + std::to_string(GetLastError())};
     }
+    // 确认 Inno 真的启动（日志出现）再返回 STARTED；进程一创建就退出的坏包/
+    // 被杀软拦截不应该表现成「点安装就闪退」。最多等 8 秒。
+    bool log_seen = false;
+    bool exited = false;
+    DWORD exit_code = 0;
+    for (int waited = 0; waited < 8000; waited += 200) {
+      if (GetFileAttributesW(log_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        log_seen = true;
+        break;
+      }
+      if (WaitForSingleObject(setup_pi.hProcess, 200) == WAIT_OBJECT_0) {
+        exited = true;
+        GetExitCodeProcess(setup_pi.hProcess, &exit_code);
+        break;
+      }
+    }
     CloseHandle(setup_pi.hThread);
     CloseHandle(setup_pi.hProcess);
+    if (!log_seen && exited) {
+      return {false, "FAILED", "SETUP_EXITED_EARLY=" + std::to_string(exit_code)};
+    }
     return {true, "STARTED", ""};
   }
 
@@ -537,6 +607,7 @@ UpdaterWin::UpdaterWin() : impl_(std::make_unique<Impl>()) {
 UpdaterWin::~UpdaterWin() {
   auto_check_stop_ = true;
   if (auto_check_thread_.joinable()) auto_check_thread_.join();
+  if (check_thread_.joinable()) check_thread_.join();
   if (download_thread_.joinable()) download_thread_.join();
   if (install_thread_.joinable()) install_thread_.join();
 }
@@ -582,7 +653,12 @@ void UpdaterWin::autoCheckLoop() {
       }
     }
 
-    checkNow(nullptr);  // 后台，回调为空
+    // 与手动检查共用 check_running_ 门闩：用户正在手动检查时跳过本轮，
+    // 避免两个线程同时改引擎状态。doCheck 在本线程同步跑，下面的失败计数才可靠。
+    if (!check_running_.exchange(true)) {
+      doCheck(nullptr);  // 后台，回调为空
+      check_running_ = false;
+    }
 
     // 与 macOS 壳 / core 同一口径：失败按 1 分钟 → 10 分钟 → 1 小时退避，
     // 成功一次即回到 24h±2h。否则清单 404 时仍按天重试，界面会长时间停在旧状态。
@@ -600,6 +676,26 @@ void UpdaterWin::autoCheckLoop() {
 }
 
 void UpdaterWin::checkNow(Completion cb) {
+  // 网络检查最长可达 15s 连接 + 60s 接收，绝不能在 UI 线程同步跑，
+  // 否则点一下「检查更新」整个窗口就假死。这里只负责起后台线程。
+  if (check_running_.exchange(true)) {
+    if (cb) cb("NO_UPDATE", "");  // 已有检查在跑，本轮按无更新返回
+    return;
+  }
+  try {
+    std::lock_guard<std::mutex> lock(thread_mutex_);
+    if (check_thread_.joinable()) check_thread_.join();
+    check_thread_ = std::thread([this, cb] {
+      doCheck(cb);
+      check_running_ = false;
+    });
+  } catch (const std::system_error&) {
+    check_running_ = false;
+    if (cb) cb("NO_UPDATE", "THREAD_START_FAILED");
+  }
+}
+
+void UpdaterWin::doCheck(const Completion& cb) {
   std::string url;
   {
     std::lock_guard<std::mutex> lock(url_mutex_);
@@ -652,14 +748,12 @@ void UpdaterWin::checkNow(Completion cb) {
 }
 
 void UpdaterWin::downloadUpdate(Completion cb) {
+  std::lock_guard<std::mutex> lock(thread_mutex_);
   if (download_running_) {
-    // 已有下载在跑：前端应继续等 downloadUpdate 完成事件，不要重复发起。
+    // 已有下载在跑：前端应继续轮询状态，不要重复发起。
     if (cb) cb("ALREADY_RUNNING", "");
     return;
   }
-  // 上一轮线程已结束但还没回收：先 join，再复用成员（不能 detach，否则析构时可能访问已销毁的 this）。
-  if (download_thread_.joinable()) download_thread_.join();
-
   const auto st = impl_->engine->status();
   const std::string state = st.value("state", "IDLE");
   // 旧壳口径：清单没给出待更新包（sha/url 缺失、无待更新版本）→ NO_PENDING_UPDATE。
@@ -673,22 +767,29 @@ void UpdaterWin::downloadUpdate(Completion cb) {
     return;
   }
 
+  // 上一轮线程已结束但还没回收：先 join，再复用成员（不能 detach，否则析构时可能访问已销毁的 this）。
+  if (download_thread_.joinable()) download_thread_.join();
   download_running_ = true;
-  download_thread_ = std::thread([this, cb] {
-    const bool ok = impl_->engine->download_pending();
+  try {
+    download_thread_ = std::thread([this, cb] {
+      const bool ok = impl_->engine->download_pending();
+      download_running_ = false;
+      const auto st2 = impl_->engine->status();
+      const std::string last_result = st2.value("last_result", "");
+      if (ok) {
+        log_info("更新：下载完成并通过 SHA256 校验");
+        if (cb) cb("DOWNLOADED", "");
+      } else if (last_result == "CANCELED") {
+        if (cb) cb("CANCELED", "");
+      } else {
+        log_warn("更新：下载失败 " + st2.value("last_error", ""));
+        if (cb) cb("FAILED", st2.value("last_error", ""));
+      }
+    });
+  } catch (const std::system_error&) {
     download_running_ = false;
-    const auto st2 = impl_->engine->status();
-    const std::string last_result = st2.value("last_result", "");
-    if (ok) {
-      log_info("更新：下载完成并通过 SHA256 校验");
-      if (cb) cb("DOWNLOADED", "");
-    } else if (last_result == "CANCELED") {
-      if (cb) cb("CANCELED", "");
-    } else {
-      log_warn("更新：下载失败 " + st2.value("last_error", ""));
-      if (cb) cb("FAILED", st2.value("last_error", ""));
-    }
-  });
+    if (cb) cb("FAILED", "THREAD_START_FAILED");
+  }
 }
 
 void UpdaterWin::cancelPrefetch(Completion cb) {
@@ -702,31 +803,48 @@ void UpdaterWin::cancelPrefetch(Completion cb) {
 }
 
 void UpdaterWin::installUpdate(Completion cb) {
-  // 与 macOS（Sparkle）单入口对齐：界面上不再单独提供「下载并校验」，
-  // 包还没下载（预取关闭、下载失败或还没轮到）时，这里先补下载再安装。
+  // 与 macOS（Sparkle）单入口对齐：包还没下载时先补下载再安装。
+  // 整包 SHA256 与拉起 setup 都可能耗时，全部放后台线程，UI 只等封送回来的结果。
+  std::lock_guard<std::mutex> lock(thread_mutex_);
+  if (install_running_) {
+    if (cb) cb("ALREADY_RUNNING", "");
+    return;
+  }
+  if (install_thread_.joinable()) install_thread_.join();
+  install_running_ = true;
+  try {
+    install_thread_ = std::thread([this, cb] {
+      installWorker(cb);
+      install_running_ = false;
+    });
+  } catch (const std::system_error&) {
+    install_running_ = false;
+    if (cb) cb("OPEN_FAILED", "THREAD_START_FAILED");
+  }
+}
+
+void UpdaterWin::installWorker(const Completion& cb) {
+  // 后台预取正在跑：等它结束，成功就直接用它的产物，不再重复下载。
+  while (download_running_) std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
   const auto st = impl_->engine->status();
   const std::string state = st.value("state", "IDLE");
   const bool not_ready =
       (state == "UPDATE_AVAILABLE" || state == "FAILED") &&
       st.value("pending_path", "").empty();
   if (!not_ready) {
-    start_install(std::move(cb));
+    start_install(cb);
     return;
   }
-  if (install_thread_.joinable()) install_thread_.join();
-  install_thread_ = std::thread([this, cb] {
-    // 后台预取正在跑：等它结束，成功就直接用它的产物，不再重复下载。
-    while (download_running_) std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    const bool have_pkg = !impl_->engine->status().value("pending_path", "").empty();
-    if (have_pkg || impl_->engine->download_pending()) {
-      start_install(cb);
-      return;
-    }
-    const auto s = impl_->engine->status();
-    const std::string lr = s.value("last_result", "");
-    log_warn("更新：安装前补下载失败 " + s.value("last_error", ""));
-    if (cb) cb(lr == "CANCELED" ? "CANCELED" : "FAILED", s.value("last_error", ""));
-  });
+  const bool have_pkg = !impl_->engine->status().value("pending_path", "").empty();
+  if (have_pkg || impl_->engine->download_pending()) {
+    start_install(cb);
+    return;
+  }
+  const auto s = impl_->engine->status();
+  const std::string lr = s.value("last_result", "");
+  log_warn("更新：安装前补下载失败 " + s.value("last_error", ""));
+  if (cb) cb(lr == "CANCELED" ? "CANCELED" : "FAILED", s.value("last_error", ""));
 }
 
 void UpdaterWin::start_install(Completion cb) {
@@ -811,14 +929,29 @@ std::string UpdaterWin::installResultJson() const {
     auto j = nlohmann::json::parse(result_text, nullptr, false);
     if (!j.is_discarded() && j.is_object()) out["result"] = j;
   }
-  return out.dump();
+  // 新壳（mote 模式）拉起 setup 前落的标记：进程被安装器直接结束，
+  // 只有这里能在下次启动判断「装成没装成」，并把 Inno 日志尾部带回给前端。
+  const std::string launch_text = readFileUtf8(appDataDir() + L"\\update-launch.json");
+  if (!launch_text.empty()) {
+    auto j = nlohmann::json::parse(launch_text, nullptr, false);
+    if (!j.is_discarded() && j.is_object()) {
+      const std::string log_tail = readTailUtf8(appDataDir() + L"\\logs\\update-setup.log", 4000);
+      if (!log_tail.empty()) j["setup_log_tail"] = log_tail;
+      out["launch"] = j;
+    }
+  }
+  out["current_version"] = current_product_version();
+  out["current_build"] = current_build_number();
+  // Inno 日志可能含非 UTF-8 字节；用 replace 策略避免 dump() 抛异常。
+  return out.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
 void UpdaterWin::ackInstallResult() {
-  // 一次性展示：删掉两份文件即完成 ack。
+  // 一次性展示：删掉结果文件与本次安装标记即完成 ack。
   const std::wstring updates = appDataDir() + L"\\updates";
   DeleteFileW((updates + L"\\install-result.json").c_str());
   DeleteFileW((updates + L"\\apply-state.json").c_str());
+  DeleteFileW((appDataDir() + L"\\update-launch.json").c_str());
 }
 
 }  // namespace xiaotu::updater

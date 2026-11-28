@@ -7074,6 +7074,7 @@
       raw === "CANCELED" ||
       raw === "VERIFY_FAILED" ||
       raw === "INSTALL_FAILED" ||
+      raw === "MANUAL" ||
       raw === "UPDATE_REQUIRED"
     ) {
       return "UPDATE_AVAILABLE";
@@ -7316,19 +7317,46 @@
                 updater.installUpdate();
                 return;
               }
-              // 还没下载：先下载，收到 DOWNLOADED 后自动安装
-              const onMessage = (event) => {
-                const msg = parseWebviewMessage(event);
-                if (!msg || msg.event !== "downloadUpdate") return;
-                // 已有下载在跑：等它自己的完成事件，这里不提前收尾
-                if (msg.code === "ALREADY_RUNNING") return;
-                window.chrome.webview.removeEventListener("message", onMessage);
-                if (msg.code === "DOWNLOADED") updater.installUpdate();
-                else finish("xiaotuUpdateInstallDone", { ok: false, code: msg.code });
-              };
-              window.chrome.webview.addEventListener("message", onMessage);
+              // 还没下载：自动预取可能已经在跑，此时 downloadUpdate 只会回
+              // ALREADY_RUNNING 且壳里 cb 为空、不产生任何完成事件，所以这里
+              // 改为轮询状态——pending_path 一出现就安装，避免永久卡在
+              // 「正在准备安装包…」。
               showNotice("正在下载安装包，完成后会自动开始安装", "ok");
               updater.downloadUpdate();
+              const deadline = Date.now() + 15 * 60 * 1000;
+              let installing = false;
+              const tick = async () => {
+                if (installing) return;
+                let latest = {};
+                try {
+                  latest = await readStatus();
+                } catch (error) {
+                  latest = {};
+                }
+                if (latest.pending_path) {
+                  installing = true;
+                  updater.installUpdate();
+                  return;
+                }
+                if (latest.state === "FAILED" && latest.last_result === "DOWNLOAD_FAILED") {
+                  finish("xiaotuUpdateInstallDone", {
+                    status: latest,
+                    ok: false,
+                    code: "FAILED",
+                  });
+                  return;
+                }
+                if (Date.now() >= deadline) {
+                  finish("xiaotuUpdateInstallDone", {
+                    status: latest,
+                    ok: false,
+                    code: "DOWNLOAD_TIMEOUT",
+                  });
+                  return;
+                }
+                setTimeout(tick, 700);
+              };
+              setTimeout(tick, 700);
             } catch (error) {
               finish("xiaotuUpdateInstallDone", { ok: false, code: "BRIDGE_ERROR" });
             }
@@ -7406,6 +7434,7 @@
         const data = JSON.parse((await updater.installResult()) || "{}");
         const result = data.result || null;
         const interrupted = !!data.interrupted;
+        const launch = data.launch || null;
         if (interrupted) {
           showNotice("上次更新安装被中断，当前仍是旧版本；可在「设置 → 软件更新」中重试", "warn");
         } else if (result) {
@@ -7419,8 +7448,27 @@
           } else {
             showNotice(`更新成功，当前版本 ${result.version_after || ""}`, "ok");
           }
+        } else if (launch) {
+          // 新壳：拉起 setup 前落盘的目标版本 vs 本次实际版本，判断装成没装成。
+          const currentVersion = data.current_version || "";
+          const targetVersion = launch.target_version || "";
+          if (targetVersion && currentVersion === targetVersion) {
+            showNotice(`更新成功，当前版本 ${currentVersion}`, "ok");
+          } else {
+            const tailLines = String(launch.setup_log_tail || "")
+              .split(/\r?\n/)
+              .filter((line) => line.trim())
+              .slice(-3)
+              .join(" ");
+            showNotice(
+              `上次更新没有完成（当前 ${currentVersion || "未知版本"}，目标 ${
+                targetVersion || "未知版本"
+              }）${tailLines ? "；安装日志：" + tailLines : ""}`,
+              "error"
+            );
+          }
         }
-        if (result || interrupted) await updater.ackInstallResult();
+        if (result || interrupted || launch) await updater.ackInstallResult();
       } catch (error) {
         // 桥不可用或旧壳没有该方法：静默跳过，不打扰用户。
       }

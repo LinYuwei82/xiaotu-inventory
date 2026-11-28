@@ -21,6 +21,7 @@
 #include <atomic>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -44,6 +45,7 @@ constexpr wchar_t kWindowClass[] = L"XiaotuShellWindow";
 constexpr wchar_t kWindowTitle[] = L"小兔进销存";
 constexpr UINT kMsgServerUrl = WM_APP + 1;
 constexpr UINT kMsgServerExited = WM_APP + 2;
+constexpr UINT kMsgUpdateEvent = WM_APP + 3;
 constexpr UINT_PTR kTimerStartup = 1;
 constexpr UINT kDefaultStartupTimeoutMs = 30000;
 constexpr UINT kMinStartupTimeoutMs = 1000;
@@ -93,7 +95,9 @@ AppState g_app;
 ICoreWebView2* g_webview_for_post = nullptr;
 std::mutex g_webview_mutex;
 
-HWND g_shell_hwnd = nullptr;  // 主窗口句柄：文件对话框 + 安装 STARTED 后优雅自退
+// 主窗口句柄：文件对话框 + 安装 STARTED 后优雅自退。
+// 更新回调来自后台线程，也会读它决定往哪里 PostMessage，所以用原子量。
+std::atomic<HWND> g_shell_hwnd{nullptr};
 
 // UTF-8 → UTF-16。不能用 std::wstring(json.begin(), json.end())：
 // 那样是把每个字节当成一个 wchar_t，中文会变成乱码（PostWebMessageAsJson 按 UTF-16 解析）。
@@ -109,21 +113,26 @@ static void post_web_message_json(const std::string& json) {
 }
 
 // 把 updater_win 的 Completion 回调接到主线程 → PostWebMessage 推给前端。
+//
+// 契约：Completion 可能在引擎/下载/安装任意后台线程触发，而 WebView2 是 STA 对象，
+// 只允许在创建它的 UI 线程上调用。所以这里只做「装进堆对象 + PostMessage」，
+// 由窗口过程真正读 statusJson 并 PostWebMessageAsJson（见 kMsgUpdateEvent）。
+struct UpdateEventPayload {
+  std::string event;
+  std::string code;
+  std::string detail;
+  std::string status_json;  // 在后台线程取的快照，避免主线程再读一次状态
+};
+
 static xiaotu::updater::Completion BindCompletion(const std::string& event) {
   return [event](const std::string& code, const std::string& detail) {
-    nlohmann::json j;
-    j["event"] = event;
-    j["code"] = code;
-    j["detail"] = detail;
-    // statusJson() 返回的是 JSON 文本；直接赋给 json 会变成字符串，
-    // 前端拿到的 status 就不是对象了。这里解析成对象再嵌入。
-    try {
-      j["status"] = nlohmann::json::parse(
-          xiaotu::updater::UpdaterWin::instance().statusJson());
-    } catch (const nlohmann::json::exception&) {
-      j["status"] = nlohmann::json::object();
+    auto* payload = new UpdateEventPayload{
+        event, code, detail, xiaotu::updater::UpdaterWin::instance().statusJson()};
+    if (!g_shell_hwnd ||
+        !PostMessageW(g_shell_hwnd, kMsgUpdateEvent, 0,
+                      reinterpret_cast<LPARAM>(payload))) {
+      delete payload;  // 窗口已销毁：丢弃事件，绝不在后台线程碰 WebView2
     }
-    post_web_message_json(j.dump());
   };
 }
 
@@ -191,8 +200,10 @@ class UpdaterHost : public IDispatch {
     auto& upd = xiaotu::updater::UpdaterWin::instance();
     auto set_str = [&](const std::string& s) -> HRESULT {
       if (!result) return S_OK;
+      // BSTR 是 UTF-16：直接塞 UTF-8 字节会把中文变乱码，必须先转换。
+      const std::wstring wide = utf8_to_wide(s);
       result->vt = VT_BSTR;
-      result->bstrVal = SysAllocStringByteLen(s.c_str(), static_cast<UINT>(s.size()));
+      result->bstrVal = SysAllocString(wide.c_str());
       return result->bstrVal ? S_OK : E_OUTOFMEMORY;
     };
     switch (dispid) {
@@ -202,11 +213,12 @@ class UpdaterHost : public IDispatch {
         auto base = BindCompletion("installUpdate");
         upd.installUpdate([base](const std::string& code, const std::string& detail) {
           base(code, detail);
-          // mote 模式：STARTED=setup 已启动（Inno /RELAUNCH=1 负责替换与重启）、
-          // MANUAL=绿色版已打开 zip 目录待用户覆盖——两种情况壳都必须退出，
-          // 否则运行中的 exe 被占用，覆盖不了。WM_CLOSE → shutdown_child 经
-          // Job Object 带走 server 进程树。
-          if ((code == "STARTED" || code == "MANUAL") && g_shell_hwnd)
+          // mote 模式：STARTED=setup 已启动（Inno /RELAUNCH=1 负责替换与重启），
+          // 壳必须退出，否则运行中的 exe 被占用，覆盖不了。WM_CLOSE → shutdown_child
+          // 经 Job Object 带走 server 进程树。
+          // MANUAL=绿色版只打开了 zip 目录：这里不能再关窗，否则用户什么都还没看到
+          // 就「闪退」了；留在界面上按提示手动关闭并解压覆盖。
+          if (code == "STARTED" && g_shell_hwnd)
             PostMessageW(g_shell_hwnd, WM_CLOSE, 0, 0);
         });
         return set_str("");
@@ -438,8 +450,10 @@ class NativeIoHost : public IDispatch {
                                    VARIANT* result, EXCEPINFO*, UINT*) override {
     auto set_str = [&](const std::string& s) -> HRESULT {
       if (!result) return S_OK;
+      // BSTR 是 UTF-16：直接塞 UTF-8 字节会把中文变乱码，必须先转换。
+      const std::wstring wide = utf8_to_wide(s);
       result->vt = VT_BSTR;
-      result->bstrVal = SysAllocStringByteLen(s.c_str(), static_cast<UINT>(s.size()));
+      result->bstrVal = SysAllocString(wide.c_str());
       return result->bstrVal ? S_OK : E_OUTOFMEMORY;
     };
     auto set_bool = [&](bool b) -> HRESULT {
@@ -1191,6 +1205,27 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
       }
       return 0;
 
+    case kMsgUpdateEvent: {
+      // 更新桥的结果统一在这里落地：此刻在 UI 线程，可以安全操作 WebView2。
+      std::unique_ptr<UpdateEventPayload> payload(
+          reinterpret_cast<UpdateEventPayload*>(lparam));
+      if (payload) {
+        nlohmann::json j;
+        j["event"] = payload->event;
+        j["code"] = payload->code;
+        j["detail"] = payload->detail;
+        try {
+          j["status"] = nlohmann::json::parse(payload->status_json);
+        } catch (const nlohmann::json::exception&) {
+          j["status"] = nlohmann::json::object();
+        }
+        // detail/status 万一含非法 UTF-8，dump 不能抛到窗口过程里（否则直接 terminate）。
+        post_web_message_json(
+            j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+      }
+      return 0;
+    }
+
     case WM_CLOSE:
       DestroyWindow(hwnd);
       return 0;
@@ -1198,6 +1233,7 @@ LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_DESTROY:
       save_window_state(hwnd);
       shutdown_child();
+      g_shell_hwnd = nullptr;
       // 先清 post 指针：updater_win 后台回调还在跑，清 null 就不会往已释放的 webview 推消息。
       {
         std::lock_guard<std::mutex> lock(g_webview_mutex);
