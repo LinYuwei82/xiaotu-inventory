@@ -7100,12 +7100,10 @@
     const manifestVersion = s.manifest_version || s.version || "";
     const updateAvailable = !!manifestVersion;
     const state = s.state || "IDLE";
-    // prefetch_state：mac 扩展键带 needs_consent / retrying 门控细节，优先采用；
-    // win 无扩展键，由引擎 state 派生。
+    // prefetch_state 由引擎 state 派生（两端同口径；mac 安装走 Sparkle，
+    // 引擎不会进入 DOWNLOADING/DONE，恒为 idle）。
     let prefetchState;
-    if (typeof s.prefetch_state === "string" && s.prefetch_state) {
-      prefetchState = s.prefetch_state;
-    } else if (state === "DOWNLOADING") {
+    if (state === "DOWNLOADING") {
       prefetchState = "running";
     } else if (state === "DONE" || state === "INSTALLING") {
       prefetchState = "done";
@@ -7139,18 +7137,8 @@
       prefetch_total: s.bytes_total || s.manifest_size || 0,
       prefetch_version: s.prefetch_version || manifestVersion,
       prefetch_file: pendingBase,
-      // 平台扩展键缺省：win 无回滚/恢复模式，按「不可用」处理。
+      // mac 唯一在用的平台扩展键（sparkle/package）；win 无此键按 package 处理。
       install_engine: s.install_engine || "package",
-      // win 无此扩展键时缺省 false，保持旧行为：勾选预下载先弹流量确认框
-      prefetch_notice_acked: s.prefetch_notice_acked === true,
-      prefetch_attempts: s.prefetch_attempts || 0,
-      prefetch_message: s.prefetch_message || null,
-      min_supported_version: s.min_supported_version || null,
-      launch_attempts: s.launch_attempts || 0,
-      paused: !!s.paused,
-      recovery_required: !!s.recovery_required,
-      previous: s.previous || { available: false },
-      intermediate: s.intermediate || null,
     };
   }
 
@@ -7279,7 +7267,6 @@
       });
     }
 
-    const noop = { postMessage: () => {} };
     winUpdaterBridgeInstance = {
       xiaotuUpdateStatus: {
         postMessage: () => {
@@ -7347,10 +7334,6 @@
           })();
         },
       },
-      // Windows 壳暂不支持回退 / 恢复 / 打开备份目录：给空实现，避免调到 undefined
-      xiaotuUpdateRollback: noop,
-      xiaotuUpdateResume: noop,
-      xiaotuUpdateOpenBackupFolder: noop,
     };
     return winUpdaterBridgeInstance;
   }
@@ -7454,7 +7437,6 @@
         UPDATE_AVAILABLE: "发现新版本",
         NO_UPDATE: "已是最新版本",
         CHECK_FAILED: "检查失败（网络或清单验签未通过）",
-        PAUSED: "自动更新已暂停（连续启动失败）",
         SKIPPED: "已跳过该版本",
         INCOMPATIBLE_SCHEMA: "版本不兼容，需先升级到中间版本",
         INTERMEDIATE_REQUIRED: "需先安装中间版本",
@@ -7484,20 +7466,14 @@
           ? `正在后台下载 ${status.prefetch_version || ""}（${bytes} / ${total}）`
           : `正在后台下载 ${status.prefetch_version || ""}（${bytes}）`;
       }
-      if (state === "retrying") {
-        return status.prefetch_message || "下载失败，稍后自动重试";
-      }
       if (state === "done") {
         return `已下载并校验：${status.prefetch_file || ""}（${bytes}）`;
       }
       if (state === "failed") {
-        return `后台下载失败：${status.prefetch_message || "可手动下载"}`;
+        return "后台下载失败：可手动下载";
       }
       if (state === "canceled") {
         return "已取消本次后台下载，可手动下载";
-      }
-      if (state === "needs_consent") {
-        return "首次后台下载前需要确认流量提示";
       }
       return "—";
     }
@@ -7527,8 +7503,7 @@
       // Sparkle 安装引擎：下载 / 验签 / 替换 / 重启都在安装流程内完成，
       // 不再提供「后台预下载、下载并校验」这些自研入口。
       const sparkle = status.install_engine === "sparkle";
-      const prefetchRunning =
-        status.prefetch_state === "running" || status.prefetch_state === "retrying";
+      const prefetchRunning = status.prefetch_state === "running";
       // Windows 与 macOS 同一套界面：只在真有下载在跑时显示进度行，
       // 不再暴露「后台下载」开关与手动下载入口（安装时壳内自动补下载）。
       const rows = [
@@ -7565,33 +7540,6 @@
                }
              </div>`
           : "";
-      // 恢复模式：连续启动失败后引导回退。回退只替换程序，数据库结构变更需先恢复升级前备份。
-      const previous = status.previous || {};
-      const recovery = status.recovery_required
-        ? `<div style="margin:8px 0;padding:12px;border:1px solid #e0b252;background:#fff8e6">
-             <p style="margin:0 0 6px"><strong>恢复模式</strong>：当前版本连续 3 次启动未稳定，自动检查已暂停。</p>
-             <p class="page-sub" style="margin:0 0 6px">${
-               previous.available
-                 ? `可回退到安装前保留的上一版本 ${escapeHtml(
-                     previous.version || ""
-                   )}（构建 ${escapeHtml(String(previous.build || ""))}）。`
-                 : "旧版本副本不可用，请从官网重新下载上一版本安装包。"
-             }</p>
-             <p class="page-sub" style="margin:0 0 10px">
-               若升级包含数据库结构变更，回退后旧版本可能无法直接打开数据；
-               请先用升级前的自动备份（backups/app-*-pre-v*.db）按用户手册恢复。
-             </p>
-             <div style="display:flex;gap:8px;flex-wrap:wrap">
-               ${
-                 previous.available
-                   ? `<button class="btn primary" type="button" data-role="rollback">回退到上一版本</button>`
-                   : ""
-               }
-               <button class="btn" type="button" data-role="recovery-dismiss">继续使用当前版本</button>
-               <button class="btn" type="button" data-role="open-backups">打开备份目录</button>
-             </div>
-           </div>`
-        : "";
       card.innerHTML = `
         <div class="page-head" style="margin-bottom:8px">
           <div>
@@ -7600,7 +7548,6 @@
           </div>
         </div>
         ${mandatory}
-        ${recovery}
         <table class="table"><tbody>${rows
           .map(
             ([label, value]) =>
@@ -7674,33 +7621,6 @@
         }
         nativeBridge.xiaotuUpdateInstall.postMessage({});
       });
-      const rollbackButton = card.querySelector('[data-role="rollback"]');
-      if (rollbackButton) {
-        rollbackButton.addEventListener("click", async () => {
-          const confirmed = await askConfirm(
-            "回退会退出程序，用上一版本替换当前程序并重新启动。" +
-              "若数据库结构已升级，请先恢复升级前备份；是否继续？",
-            { okText: "回退", cancelText: "取消" }
-          );
-          if (!confirmed) return;
-          rollbackButton.disabled = true;
-          nativeBridge.xiaotuUpdateRollback.postMessage({});
-        });
-      }
-      const dismissRecoveryButton = card.querySelector('[data-role="recovery-dismiss"]');
-      if (dismissRecoveryButton) {
-        dismissRecoveryButton.addEventListener("click", () => {
-          dismissRecoveryButton.disabled = true;
-          nativeBridge.xiaotuUpdateResume.postMessage({});
-        });
-      }
-      const openBackupsButton = card.querySelector('[data-role="open-backups"]');
-      if (openBackupsButton) {
-        openBackupsButton.addEventListener("click", () => {
-          openBackupsButton.disabled = true;
-          nativeBridge.xiaotuUpdateOpenBackupFolder.postMessage({});
-        });
-      }
       schedulePoll(status);
     }
 
@@ -7756,27 +7676,6 @@
       render(normalizeUpdateStatus((payload && payload.status) || {}, statusPlatform));
       if (payload && payload.code === "CANCELED") {
         showNotice("已取消本次后台下载", "ok");
-      }
-    };
-    window.xiaotuUpdateResumeDone = (payload) => {
-      render(normalizeUpdateStatus((payload && payload.status) || {}, statusPlatform));
-      if (payload && payload.ok === false) {
-        showNotice("恢复失败：" + (payload.code || ""), "error");
-      } else {
-        showNotice("已继续使用当前版本，自动更新已恢复", "ok");
-      }
-    };
-    window.xiaotuUpdateRollbackDone = (payload) => {
-      if (payload && payload.ok === false) {
-        showNotice(payload.message || "回退未能开始：" + (payload.code || ""), "error");
-        nativeBridge.xiaotuUpdateStatus.postMessage({});
-      } else if (payload && payload.code === "ROLLING_BACK") {
-        showNotice(payload.message || "正在退出并回退到上一版本…", "ok");
-      }
-    };
-    window.xiaotuUpdateOpenBackupFolderDone = (payload) => {
-      if (payload && payload.ok === false) {
-        showNotice(payload.message || "无法打开备份目录", "error");
       }
     };
     nativeBridge.xiaotuUpdateStatus.postMessage({});

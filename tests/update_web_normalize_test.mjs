@@ -89,12 +89,9 @@ const ENGINE_FIELDS = [
   "notes_url", "pending_path", "pending_size", "prefetch", "retry_after", "skipped_version",
   "skip_until_epoch", "state", "version",
 ];
-// mac 壳扩展键（shell/mac/updater.mm 合并）与旧格式迁移键（保留至 1.1）。
-const MAC_EXT_KEYS = [
-  "install_engine", "prefetch_state", "prefetch_notice_acked", "prefetch_attempts",
-  "prefetch_message", "min_supported_version", "launch_attempts", "paused",
-  "recovery_required", "previous", "intermediate",
-];
+// mac 壳扩展键（mote 模式后只剩 install_engine；恢复/预取扩展键已删）
+// 与旧格式迁移键（保留至 1.1）。
+const MAC_EXT_KEYS = ["install_engine"];
 const LEGACY_KEYS = ["release_notes_url", "prefetch_version"];
 
 const fullEngineStatus = {
@@ -144,30 +141,14 @@ const fullEngineStatus = {
   eq(w.prefetch_version, "1.4.3", "win: prefetch_version 缺省回落 manifest_version");
   eq(w.prefetch_file, "setup-1.4.3.exe", "win: pending_path 反斜杠取 basename");
   eq(w.install_engine, "package", "win: 无扩展键缺省 package");
-  eq(w.prefetch_notice_acked, false, "win: 缺省未确认（保持弹流量确认框旧行为）");
-  eq(w.previous, { available: false }, "win: previous 缺省不可回滚");
-  eq(w.paused, false, "win: paused 缺省 false");
-  eq(w.intermediate, null, "win: intermediate 缺省 null");
 
-  // mac：同一份引擎 JSON + 扩展键合并后归一。
-  const macStatus = { ...fullEngineStatus, pending_path: "/Users/lin/upd/xiaotu-1.4.3.dmg",
-    prefetch_state: "needs_consent", install_engine: "sparkle", prefetch_notice_acked: true,
-    prefetch_attempts: 2, prefetch_message: "等待用户确认", min_supported_version: "1.2.0",
-    launch_attempts: 1, paused: true, recovery_required: true,
-    previous: { available: true, version: "1.4.2" }, intermediate: { version: "1.4.3" } };
+  // mac：同一份引擎 JSON + install_engine 扩展键合并后归一。
+  const macStatus = { ...fullEngineStatus,
+    pending_path: "/Users/lin/upd/xiaotu-1.4.3.dmg", install_engine: "sparkle" };
   const m2 = n(macStatus, "macos");
   eq(m2.pending_build, 0, "mac: pending_build 固定 0（v2 清单无构建号）");
-  eq(m2.prefetch_state, "needs_consent", "mac: 扩展键 prefetch_state 优先于 state 派生");
   eq(m2.install_engine, "sparkle", "mac: install_engine 透传");
-  eq(m2.prefetch_notice_acked, true, "mac: 已确认流量提示");
-  eq(m2.prefetch_attempts, 2, "mac: prefetch_attempts");
-  eq(m2.prefetch_message, "等待用户确认", "mac: prefetch_message");
-  eq(m2.min_supported_version, "1.2.0", "mac: min_supported_version");
-  eq(m2.launch_attempts, 1, "mac: launch_attempts");
-  eq(m2.paused, true, "mac: paused");
-  eq(m2.recovery_required, true, "mac: recovery_required");
-  eq(m2.previous, { available: true, version: "1.4.2" }, "mac: previous 透传");
-  eq(m2.intermediate, { version: "1.4.3" }, "mac: intermediate 透传");
+  eq(m2.prefetch_state, "done", "mac: prefetch_state 由 state 派生（无扩展键优先）");
   eq(m2.prefetch_file, "xiaotu-1.4.3.dmg", "mac: pending_path 正斜杠取 basename");
 }
 
@@ -190,7 +171,6 @@ const fullEngineStatus = {
   }
   eq(n({ state: "FAILED", last_result: "CANCELED" }, "windows").prefetch_state, "canceled", "边界: FAILED+CANCELED→canceled");
   eq(n({ state: "FAILED" }, "windows").prefetch_state, "failed", "边界: FAILED→failed");
-  eq(n({ state: "DOWNLOADING", prefetch_state: "retrying" }, "macos").prefetch_state, "retrying", "边界: 扩展键 retrying 优先");
 }
 
 // ---- 用例 4：win 检查码辅助 + 消息解析 ----
