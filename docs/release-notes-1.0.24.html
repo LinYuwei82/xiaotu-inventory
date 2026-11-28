@@ -1,0 +1,56 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:720px;margin:40px auto;padding:0 20px;line-height:1.7;color:#222}h1{border-bottom:2px solid #eee;padding-bottom:8px}h2{margin-top:1.5em;color:#111}table{border-collapse:collapse;width:100%;margin:1em 0}th,td{border:1px solid #ddd;padding:8px 12px;text-align:left}th{background:#f6f8fa}code{background:#f0f0f0;padding:1px 6px;border-radius:3px;font-size:.9em}pre{background:#f6f8fa;padding:12px 16px;border-radius:6px;overflow-x:auto}pre code{background:none;padding:0}blockquote{border-left:4px solid #ddd;margin:1em 0;padding:0 16px;color:#666}</style></head><body><h2>小兔进销存 1.0.24</h2>
+<h3>本次更新（双平台自动更新简化）</h3>
+<ul>
+<li><strong>Windows 安装版一键完成更新</strong>：点击「安装更新」后程序静默运行新安装包并自动重启到新版本，不再依赖单独的协助进程，步骤更少、失败点更少。</li>
+<li><strong>Windows 绿色版更新更直接</strong>：点击「安装更新」后自动下载校验并打开更新包所在目录，关闭程序后解压覆盖原文件、重新打开即完成更新。</li>
+<li><strong>macOS 更新全面交给 Sparkle</strong>：一键完成下载、签名校验、原子替换与自动重启；移除「回退到上一版本」入口（如需回到旧版，可随时从官网 Release 页重装）。</li>
+<li><strong>「检查更新」随时可用</strong>：移除手动检查冷却限制，连续点击不再被拦截；后台自动检查间隔与失败退避保持不变。</li>
+<li>数据与配置不受影响。</li>
+</ul>
+<h3>构建与分发</h3>
+<ul>
+<li>双平台同步更新到 1.0.24，构建号 <code>20</code>。</li>
+</ul>
+<h3>下载</h3>
+<table>
+<thead>
+<tr>
+<th>平台</th>
+<th>文件</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>macOS（Apple Silicon）</td>
+<td><code>xiaotu-1.0.24-macos-arm64.dmg</code></td>
+<td>Developer ID 签名 + 公证，<code>.app</code> 与 DMG 均已 staple</td>
+</tr>
+<tr>
+<td>Windows</td>
+<td><code>xiaotu-1.0.24-win64-setup.exe</code></td>
+<td>Inno Setup 安装包</td>
+</tr>
+<tr>
+<td>Windows</td>
+<td><code>xiaotu-1.0.24-win64-portable.zip</code></td>
+<td>绿色版</td>
+</tr>
+</tbody>
+</table>
+<h3>校验</h3>
+<pre><code>shasum -a 256 xiaotu-1.0.24-macos-arm64.dmg
+# 期望：见 stable/manifest.json 的 platforms.macos.artifacts.dmg.sha256
+</code></pre>
+<h3>升级说明</h3>
+<ul>
+<li>1.0.23 用户可直接在应用内「检查更新」获取本次版本；升级前请先备份。</li>
+<li>从 1.0.23 升级 Windows 安装版时仍走旧协助器兼容路径，升级完成后即获得新的一键更新流程。</li>
+<li>Windows 安装包尚未启用 Authenticode 签名，首次运行仍可能出现 SmartScreen 提示，选择「更多信息 → 仍要运行」即可。</li>
+</ul>
+<h3>系统要求</h3>
+<ul>
+<li>macOS 13 及以上（Apple Silicon）</li>
+<li>Windows 10/11 64 位；桌面窗口需要 WebView2 Runtime（安装包可自动安装）</li>
+</ul>
+</body></html>
