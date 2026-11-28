@@ -2,7 +2,7 @@
  * 由 document.js 拆出，只放不依赖页面闭包状态的视图代码，模板文本与拆分前一致。
  */
 import { can } from "./core_state.js";
-import { bizCategoryText, escapeHtml, money, qtyText } from "./core_format.js";
+import { bizCategoryText, escapeHtml, itemOptionText, money, qtyText } from "./core_format.js";
 
   // 单据页骨架：仓库/日期/往来单位/业务类型等表头字段 + 明细表 + 列表卡片。
   export function documentPageHtml(config, flags) {
@@ -108,6 +108,70 @@ import { bizCategoryText, escapeHtml, money, qtyText } from "./core_format.js";
         <td><input type="text" class="readonly" value="—" data-role="tax" disabled /></td>
         <td><input type="text" class="readonly" value="—" data-role="with-tax" disabled /></td>
         <td class="actions"><button class="link danger" type="button" data-role="remove">移除</button></td>`;
+  }
+
+  // 表头与明细行下拉的选项片段：数据由页面加载后传入，这里只负责拼 HTML。
+  export function itemOptionsHtml(items, selected) {
+    return items
+      .map(
+        (item) =>
+          `<option value="${item.id}" ${String(item.id) === String(selected) ? "selected" : ""}>${escapeHtml(
+            itemOptionText(item)
+          )}</option>`
+      )
+      .join("");
+  }
+
+  export function warehouseOptionsHtml(warehouses, selected) {
+    return warehouses
+      .filter((warehouse) => warehouse.status)
+      .map(
+        (warehouse) =>
+          `<option value="${warehouse.id}" ${
+            String(warehouse.id) === String(selected) ? "selected" : ""
+          }>${escapeHtml(warehouse.code + " " + warehouse.name)}</option>`
+      )
+      .join("");
+  }
+
+  export function warehouseSelectOptionsHtml(warehouses) {
+    return warehouses
+      .filter((warehouse) => warehouse.status)
+      .map(
+        (warehouse) =>
+          `<option value="${warehouse.id}">${escapeHtml(warehouse.code + " " + warehouse.name)}</option>`
+      )
+      .join("");
+  }
+
+  export function partnerOptionsHtml(partners) {
+    return (
+      '<option value="">不指定</option>' +
+      partners
+        .filter((partner) => partner.status)
+        .map(
+          (partner) =>
+            `<option value="${partner.id}" data-name="${escapeHtml(partner.name)}">${escapeHtml(
+              partner.code + " " + partner.name
+            )}</option>`
+        )
+        .join("")
+    );
+  }
+
+  // 停用/离职职员仍列在历史单据里，这里保留可选项并标注，不隐藏。
+  export function salespersonOptionsHtml(employees) {
+    return (
+      '<option value="0">未指定</option>' +
+      employees
+        .map(
+          (person) =>
+            `<option value="${person.id}">${escapeHtml(
+              person.code + " " + person.name
+            )}${person.status ? "" : "（停用）"}</option>`
+        )
+        .join("")
+    );
   }
 
   export function statusLabel(status) {
