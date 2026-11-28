@@ -25,10 +25,24 @@ static BOOL XiaotuConfirmExitIfDirty(void);
 // CFBundleVersion，打包脚本注入），credits 补应用简介与主页，与 Windows 壳关于框对齐。
 - (void)showAboutPanel:(id)sender {
   (void)sender;
-  NSString* credits =
-      @"<p>小微企业进销存与库存管理</p>"
-       "<p><a href=\"https://xiaotu.online\">https://xiaotu.online</a></p>";
-  [NSApp orderFrontStandardAboutPanelWithOptions:@{NSAboutPanelOptionCredits : credits}];
+  // 裸 HTML 字符串会被按 NSAttributedString HTML 导入的默认字体渲染
+  // （Times-Roman 12pt，中文回退宋体），与面板系统字体不搭；
+  // 这里直接构造 NSAttributedString，显式用系统字体 11pt。
+  NSMutableParagraphStyle* para = [[NSMutableParagraphStyle alloc] init];
+  para.alignment = NSTextAlignmentCenter;
+  NSMutableDictionary* base = [NSMutableDictionary dictionary];
+  base[NSFontAttributeName] = [NSFont systemFontOfSize:11];
+  base[NSForegroundColorAttributeName] = [NSColor labelColor];
+  base[NSParagraphStyleAttributeName] = para;
+  NSAttributedString* intro =
+      [[NSAttributedString alloc] initWithString:@"小微企业进销存与库存管理" attributes:base];
+  NSMutableDictionary* link = [base mutableCopy];
+  link[NSLinkAttributeName] = [NSURL URLWithString:@"https://xiaotu.online"];
+  NSAttributedString* homepage =
+      [[NSAttributedString alloc] initWithString:@"https://xiaotu.online" attributes:link];
+  [NSApp orderFrontStandardAboutPanelWithOptions:@{
+    NSAboutPanelOptionCredits : @[ intro, homepage ]
+  }];
 }
 
 // Cmd+Q 与窗口关闭是两条独立路径，必须都走同一个判断，只拦一条等于没拦。
