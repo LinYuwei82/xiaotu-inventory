@@ -6,13 +6,12 @@ import { can } from "./core_state.js";
 import { api, newRequestId } from "./core_api.js";
 import { clearDraft, startDraftTimer } from "./core_draft.js";
 import { setUnsavedGuard } from "./core.js";
+import { documentListColumns, documentPageHtml } from "./document_view.js";
 import {
-  documentListColumns,
-  documentPageHtml,
   partnerOptionsHtml,
   salespersonOptionsHtml,
   warehouseSelectOptionsHtml,
-} from "./document_view.js";
+} from "./select_options.js";
 import { createDocumentList } from "./documents.js";
 import { addDocumentLine, recalcDocumentTotals, resetDocumentLines } from "./document_lines.js";
 import { restoreDocumentDraftIfAny, saveDocumentDraftNow } from "./document_draft.js";

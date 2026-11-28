@@ -5,7 +5,8 @@ import { can, main, nav, notice, showNotice, state } from "./core_state.js";
 import { escapeHtml, money } from "./core_format.js";
 import { api } from "./core_api.js";
 import { confirmLeavePage, setUnsavedGuard } from "./core.js";
-import { crudPage, itemPage } from "./masterdata.js";
+import { crudPage } from "./masterdata.js";
+import { itemPage } from "./masterdata_item.js";
 import { FIXED_PAGES } from "./pages.js";
 import { NAV_GROUPS, NAV_LAYOUT } from "./system.js";
 

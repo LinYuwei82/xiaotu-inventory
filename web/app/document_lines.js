@@ -4,7 +4,8 @@
 import { money, parseQty, qtyAmountCents, qtyAmountText, qtyText, taxForAmount } from "./core_format.js";
 import { newRequestId } from "./core_api.js";
 import { showNotice } from "./core_state.js";
-import { documentLineRowHtml, documentLinesHead, itemOptionsHtml, warehouseOptionsHtml } from "./document_view.js";
+import { documentLineRowHtml, documentLinesHead } from "./document_view.js";
+import { itemOptionsHtml, warehouseOptionsHtml } from "./select_options.js";
 
   export function addDocumentLine(ctx, line) {
     const row = document.createElement("tr");
