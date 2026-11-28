@@ -10,9 +10,9 @@
 # 最简：仓库、安装包都给绝对路径
 .\tools\win\verify.ps1 `
   -Repo C:\src\xiaotu-inventory `
-  -Installer C:\Users\me\Downloads\xiaotu-inventory-1.0.3-win64-setup.exe `
+  -Installer C:\Users\me\Downloads\xiaotu-1.0.28-win64-setup.exe `
   -DataDir C:\Users\me\AppData\Local\com.simem.xiaotu `
-  -ExpectedVersion 1.0.3
+  -ExpectedVersion 1.0.28
 ```
 
 常用参数：
@@ -21,7 +21,7 @@
 | --- | --- | --- |
 | `-Repo` | `C:\src\xiaotu-inventory` | 仓库根，必须含 `.git` |
 | `-Installer` | 自动在 `dist` 与 `%TEMP%\xiaotu-win-installer` 找 | 安装包路径 |
-| `-ExpectedVersion` | `1.0.3` | 用于校验 `/api/health` 的版本号 |
+| `-ExpectedVersion` | `0.9.0` | 用于校验 `/api/health` 的版本号；默认值只是占位，实际运行时必须传本次版本 |
 | `-DataDir` | `%LOCALAPPDATA%\com.simem.xiaotu` | 测试用数据目录；**不要指向客户真实数据** |
 | `-Port` | `18080` | 保留参数，单机版实际用随机端口 |
 | `-LogDir` | `%TEMP%\xiaotu-verify-<时间>` | 日志、安装日志、备份 |
@@ -34,7 +34,8 @@
 ## 安全约定
 
 - 非 Windows 直接退出码 2，不执行任何操作。
-- `-DataDir` 已有 `app.db` 且未加 `-AllowExistingData` 时**中止**，避免把测试跑在真实数据上。
+- `-DataDir` 已有 `app.db` 且未加 `-AllowExistingData` 时**中止**，避免把测试跑在真实数据上；目录不存在时脚本会先建一个空目录。
+- `-Installer` 同目录必须有 `SIGNING.txt`，写明「未签名」或「已签名」并与实际签名状态一致。本地 `package_windows.ps1` 不生成该文件，跑 `verify.ps1` 前要手工放一份，否则「安装包签名状态」判 FAIL。
 - 安装与卸载前会提示将写入 `%LOCALAPPDATA%`；不加 `-Yes` 时等待回车。
 - 所有临时目录用唯一名字，结束时清理；C7560 检查在 `git worktree` 副本里做，不污染主仓库。
 - 任何步骤的失败输出都写入 `-LogDir` 下的对应日志。
@@ -106,6 +107,25 @@ C7560 指「指定初始化器（designated initializer）顺序与结构体成�
 - 打印对话框（预览能否调出、能否取消、取消后是否卡死）。
 
 对应关系：`verify.ps1` 里这三条 MANUAL 的说明文字已指向 `ui-checks.ps1`，跑法见下一节。
+
+## 远程运行与桌面会话
+
+`verify.ps1` 不依赖桌面窗口，可以直接 ssh 到实机运行：
+
+```powershell
+ssh pc@192.168.2.200
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\dev\xiaotu-inventory\tools\win\verify.ps1 `
+  -Repo C:\dev\xiaotu-inventory -Installer C:\dev\xiaotu-inventory\dist\xiaotu-1.0.28-win64-setup.exe -ExpectedVersion 1.0.28 -Yes
+```
+
+`ui-checks.ps1` 要拉起并操作壳窗口，必须跑在**已登录的交互式桌面会话**里。ssh 默认落在 services 会话（Session 0），壳不会出现主窗口，脚本会报「第一次启动未出现主窗口」。此时用计划任务把脚本投到 console 会话执行：
+
+```powershell
+schtasks /Create /TN XiaotuUiChecks /TR "powershell -NoProfile -ExecutionPolicy Bypass -File C:\dev\xiaotu-inventory\tools\win\ui-checks.ps1" /SC ONCE /ST 23:59 /IT /F
+schtasks /Run /TN XiaotuUiChecks
+# 等任务结束后查看输出，并删除计划任务
+schtasks /Delete /TN XiaotuUiChecks /F
+```
 
 ## UI 回归检查（ui-checks.ps1）
 

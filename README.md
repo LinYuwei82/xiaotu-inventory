@@ -1,4 +1,4 @@
-# 小兔进销存（1.0.26）
+# 小兔进销存（1.0.28）
 
 > 主仓库在 Gitee：`git@gitee.com:lin-yuwei168/xiaotu-inventory.git`。GitHub 的 `LinYuwei82/xiaotu-inventory` 是同源镜像：Linux 门禁在 Gitee Go；Windows 的 MSVC 构建、**未签名安装包**与 tag 发布由镜像仓库的 `.github/workflows/windows-build.yml` / `release-windows.yml` 承担；macOS 的编译与测试也在镜像里跑，但 dmg 打包、签名与公证仍在本地执行。
 >
@@ -11,7 +11,7 @@ macOS 优先的进销存软件：**一套 C++20 代码，两种运行形态**。
 - 不带参数启动 = **单机版**：内嵌服务只监听 `127.0.0.1` 的随机端口，生成一次性 token，用系统 WKWebView 打开本地页面。
 - `--server` 启动 = **网络版**：监听 `0.0.0.0`，用浏览器访问；使用用户名与口令登录（首次需先给内置管理员设置口令）。
 
-当前版本 1.0.28（唯一来源：仓库根 `VERSION.txt`；发布号用 annotated tag `v<semver>+<seq>`，构建号等于 tag 序号）。按 [docs/进销存技术方案.md](docs/进销存技术方案.md) 的里程碑口径：M1–M3 与 M5 已完成；M4 除针式套打真机验证外已完成（纸型、边距、缩放与打印列勾选已落地，真机验收仍为阻塞项）；M6 的 macOS `.dmg` 打包脚本与用户手册已完成，Windows 壳已可接入顶层构建，自研更新桥（清单拉取、Ed25519 验签、SHA256 校验、静默安装重启）与前端更新卡片均已接入，一键打包用 `tools/package/package_windows.ps1`，安装/卸载真机验收见 [docs/Windows验收清单.md](docs/Windows验收清单.md)；Windows 代码签名暂不购买证书，签名脚本与 CI 已就绪，详见 [docs/未签名分发注意事项.md](docs/未签名分发注意事项.md)。macOS `.dmg` 已用 Developer ID 签名、公证并 staple。
+当前版本 1.0.28（唯一来源：仓库根 `VERSION.txt`；发布号用 annotated tag `v<semver>+<seq>`，构建号等于 tag 序号）。按 [docs/进销存技术方案.md](docs/进销存技术方案.md) 的里程碑口径：M1–M3 与 M5 已完成；M4 除针式套打真机验证外已完成（纸型、边距、缩放与打印列勾选已落地，真机验收仍为阻塞项）；M6 的 macOS `.dmg` 打包脚本与用户手册已完成，Windows 壳已可接入顶层构建，自研更新桥（清单拉取、Ed25519 验签、SHA256 校验、静默安装重启）与前端更新卡片均已接入，一键打包用 `tools/package/package_windows.ps1`，安装/卸载真机验收见 [docs/Windows验收清单.md](docs/Windows验收清单.md)，自动化脚本见 [tools/win/README.md](tools/win/README.md)；Windows 代码签名暂不购买证书，签名脚本与 CI 已就绪，详见 [docs/未签名分发注意事项.md](docs/未签名分发注意事项.md)。macOS `.dmg` 已用 Developer ID 签名、公证并 staple。
 
 已打通：**商品（分类 / 条码 / 税率）/ 单位 / 仓库 / 职员 / 客户 / 供应商档案（支持 Excel 批量导入导出，客户供应商已合表到 partner 并支持合并与撤销）→ 库存、应收、应付、资金账户四类期初导入 → 采购入库、销售出库、采购退货、销售退货、其他入库、其他出库、调拨、盘点、成本调整（草稿与反审核）→ 销售订单确认与转出库（可记录业务员）→ 库存余额与流水 → 应收应付台账与核销（按 partner 维度归集）→ 收付款单与资金账户 → 往来对账单 → 15 个报表接口（14 类输出）的导出与打印 → 自定义打印模板**，并具备内置 `admin` 用户、三角色权限、审计日志（含来源 IP 与请求号）、单据幂等与乐观锁、登录失败锁定与强制改密、成本口径参数（含税价 / 不含税净额，可切换并标注切换日）、前端离线提示与表单草稿、打印纸型 / 边距 / 缩放与 Cmd+P、报表导出流式化（不再有 10 万行上限）与 macOS `.dmg` 打包。桌面壳提供撤销 / 重做 / 剪切 / 复制 / 粘贴 / 全选编辑菜单；单据录入时商品下拉显示编码、名称与规格，数量框旁显示单位；桌面版支持直接「导出 PDF」。成本重算保持只读核对，差异通过成本调整单落账。
 
@@ -392,7 +392,8 @@ xiaotu-inventory/
 │   ├── mac/webview.mm             # WKWebView 宿主
 │   └── win/                       # Win32 + WebView2 壳工程（可用 XIAOTU_BUILD_WIN_SHELL 接入顶层，默认关闭）
 ├── web/                           # 前端（无构建步骤）
-│   ├── index.html / app.js / styles.css
+│   ├── index.html / app.js / styles.css   # app.js 仅入口，加载 app/ 下的模块
+│   ├── app/                       # ES modules（基础层、单据、订单、报表、打印、更新等）
 │   └── gen/                       # ← 生成物（列表页/表单页 + pages.json）
 ├── tests/                         # ctest 目标：core/config/session/platform_paths/xlsx/masterdata/opening/report/api/backup/print_paper/update_* 等
 ├── packaging/                     # Windows 分发打包（win/：Inno Setup 脚本、make-zip.ps1、sign.ps1）
@@ -674,7 +675,7 @@ struct DocumentDefinition {
 - 数据权限白名单不做：所有登录用户可见全部仓库数据（口径见上一条）。
 - 外部对接不做：Excel 导入导出即为对接面。
 - License 与防拷贝不做加密狗：社区版免费、专业版靠功能差异分层，弱校验即可。
-- Windows 自动更新不接 WinSparkle，改为自研 C++ 桥接（`shell/win/updater_win`）：WinHTTP 拉清单、复用 core 层 `parse_manifest` / `evaluate_manifest` 做版本与灰度判定、Ed25519 验签、BCrypt SHA256 校验、ISCC 静默安装并重启，零新增第三方依赖。桥已通过 `AddHostObjectToScript("updater_win")` 暴露给前端，`web/app.js` 的更新卡片已同时适配 macOS 与 Windows 桥；正式分发仍以客户从下载页获取安装包为主。
+- Windows 自动更新不接 WinSparkle，改为自研 C++ 桥接（`shell/win/updater_win`）：WinHTTP 拉清单、复用 core 层 `parse_manifest` / `evaluate_manifest` 做版本与灰度判定、Ed25519 验签、BCrypt SHA256 校验、ISCC 静默安装并重启，零新增第三方依赖。桥已通过 `AddHostObjectToScript("updater_win")` 暴露给前端，`web/app/update_render.js` 的更新卡片（桥接在 `update_bridge.js`）已同时适配 macOS 与 Windows 桥；正式分发仍以客户从下载页获取安装包为主。
 - 单据支持草稿态：存草稿只写单据与明细、不写库存流水，审核时才进单事务；反审核为整单反向。
 - 销售订单只做需求确认与转出库来源：确认不动库存、不写流水、不产生往来，只有转出的销售出库单才产生库存与应收。
 - 数量按 4 位定点整数存储（×10000），接口传十进制字符串、前端用字符串计算；`unit.qty_decimals` 决定录入精度（件 0 位、千克 3 位、米 2 位），展示时去掉末尾 0。金额仍为分，只有行金额按「数量 × 单价 ÷ 10000」四舍五入取整。
@@ -744,7 +745,7 @@ macOS：`BUILD=<seq> PRODUCT=xiaotu tools/release/publish_macos.sh`；Windows：
 - `main` 是可运行的主干，双方都向 `main` 提交；个人主题分支命名为 `macmini/<主题>` 或 `macbook/<主题>`，完成后合回 `main`。
 - 每次动手前先 `git fetch && git pull --ff-only`；提交前再确认远端没有新提交，避免长驻未提交改动。
 - 冲突当场本地解决，不使用 `--force`，不 rebase 改写别人已经推上去的提交。
-- 热点文件（`README.md`、`web/app.js`、`core/src/migrations.cpp`、`core/src/document.cpp`）的改动尽量集中在一笔提交内，缩短并行窗口。
+- 热点文件（`README.md`、`web/app/`、`core/src/migrations.cpp`、`core/src/document.cpp`）的改动尽量集中在一笔提交内，缩短并行窗口。
 
 每次提交前至少通过：
 
@@ -812,7 +813,7 @@ bash tools/ci/check.sh           # 全量（macOS 含 windows-release）
 bash tools/ci/check.sh --quick   # macOS 跳过 windows-release
 ```
 
-Linux 上该脚本等价于 CI：使用 `linux-ci` preset（`XIAOTU_BUILD_SHELL=OFF`）配置构建、`ctest`、`generate.py --check`、平台代码泄漏检查。
+Linux 上该脚本等价于 CI：使用 `linux-ci` preset（`XIAOTU_BUILD_SHELL=OFF`）配置构建、`ctest`、`generate.py --check`、平台代码泄漏检查。前端是无构建 ES modules，脚本会剥离 `import` / `export` 后逐文件用 jsc 做语法机检（`tools/ci/web_syntax_check.js`），`web/app.js` 与 `web/app/*.js` 都在检查范围内。
 
 平台泄漏检查（`tools/ci/check_platform_leaks.sh`）：`core/` 禁止出现 Apple 条件编译、框架或 WebView 引用；`server/` 只允许 `cli_main.cpp` 在 `#if defined(__APPLE__)` 内引用 WebView 壳。
 
