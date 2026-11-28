@@ -136,6 +136,17 @@ static std::int64_t epochNow() {
 
 // ---- WinHTTP 拉清单/下载 ----
 
+// 命令行参数加双引号（含空格路径）；内部引号按 Windows 规则翻倍。
+static std::wstring quoteArg(const std::wstring& arg) {
+  std::wstring out = L"\"";
+  for (wchar_t c : arg) {
+    if (c == L'"') out += L"\"\"";
+    else out += c;
+  }
+  out += L"\"";
+  return out;
+}
+
 static bool winhttpGet(const std::string& url, std::string& out_body,
                        std::string& err_code, std::string& err_detail,
                        std::int64_t* total_bytes = nullptr,
@@ -161,6 +172,15 @@ static bool winhttpGet(const std::string& url, std::string& out_body,
     err_detail = std::to_string(GetLastError());
     return false;
   }
+  // 显式超时：WinHTTP 默认 resolve 无限等待，且慢速滴流下载永不报错，
+  // 界面会永久卡在「正在准备安装包」。resolve/connect/send 15s，
+  // receive 60s（按块计时，每块 60s 无数据才算超时）。
+  const DWORD kResolveTimeout = 15000, kConnectTimeout = 15000;
+  const DWORD kSendTimeout = 15000, kReceiveTimeout = 60000;
+  WinHttpSetOption(session, WINHTTP_OPTION_RESOLVE_TIMEOUT, &kResolveTimeout, sizeof(DWORD));
+  WinHttpSetOption(session, WINHTTP_OPTION_CONNECT_TIMEOUT, &kConnectTimeout, sizeof(DWORD));
+  WinHttpSetOption(session, WINHTTP_OPTION_SEND_TIMEOUT, &kSendTimeout, sizeof(DWORD));
+  WinHttpSetOption(session, WINHTTP_OPTION_RECEIVE_TIMEOUT, &kReceiveTimeout, sizeof(DWORD));
   HINTERNET connect = WinHttpConnect(session, host_w.c_str(), is_https ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT, 0);
   if (!connect) {
     WinHttpCloseHandle(session);
@@ -384,13 +404,26 @@ struct UpdaterWin::Impl
       return {true, "MANUAL", ""};
     }
     // 安装版：静默安装，替换+重启交给 Inno。
-    const auto rc = ShellExecuteW(
-        nullptr, L"open", path.c_str(),
-        L"/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RELAUNCH=1",
-        nullptr, SW_SHOW);
-    if (reinterpret_cast<INT_PTR>(rc) <= 32) {
-      return {false, "FAILED", "SHELLEXEC_FAILED=" + std::to_string(reinterpret_cast<INT_PTR>(rc))};
+    // 用 CreateProcessW 而非 ShellExecuteW：同步可判定（失败带真实
+    // GetLastError 诊断码），且加 CREATE_BREAKAWAY_FROM_JOB 防御壳被
+    // 外部 job 包裹时 setup 遭连坐（main.cpp job 侧已开 BREAKAWAY_OK）。
+    // 本 setup 为 PrivilegesRequired=lowest，无需 UAC 提升，可直接启动。
+    STARTUPINFOW setup_si{};
+    setup_si.cb = sizeof(setup_si);
+    setup_si.dwFlags = STARTF_USESHOWWINDOW;
+    setup_si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION setup_pi{};
+    std::wstring setup_cmd = quoteArg(path) +
+        L" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RELAUNCH=1";
+    std::vector<wchar_t> setup_buf(setup_cmd.begin(), setup_cmd.end());
+    setup_buf.push_back(L'\0');
+    if (!CreateProcessW(path.c_str(), setup_buf.data(), nullptr, nullptr, FALSE,
+                        CREATE_BREAKAWAY_FROM_JOB, nullptr, nullptr, &setup_si, &setup_pi)) {
+      return {false, "FAILED",
+              "SETUP_LAUNCH_FAILED=" + std::to_string(GetLastError())};
     }
+    CloseHandle(setup_pi.hThread);
+    CloseHandle(setup_pi.hProcess);
     return {true, "STARTED", ""};
   }
 

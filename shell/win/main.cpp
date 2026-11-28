@@ -883,11 +883,15 @@ bool launch_server(std::wstring* error) {
   g_app.child = pi.hProcess;
   g_app.stdout_read = read_end;
 
-  // 放进 job：壳异常退出时子进程也会被系统回收。
+  // 放进 job：壳异常退出时子进程也会被系统回收（job 只装 server 进程树）。
+  // BREAKAWAY_OK 与 KILL_ON_JOB_CLOSE 并存：万一壳自身被外部 job 包裹
+  // （启动器/沙箱类软件），更新触发的 setup.exe 仍可用
+  // CREATE_BREAKAWAY_FROM_JOB 脱离，不被壳的退出连带处决。
   g_app.job = CreateJobObjectW(nullptr, nullptr);
   if (g_app.job) {
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    info.BasicLimitInformation.LimitFlags =
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
     SetInformationJobObject(g_app.job, JobObjectExtendedLimitInformation, &info, sizeof(info));
     AssignProcessToJobObject(g_app.job, pi.hProcess);
   }
