@@ -1,7 +1,7 @@
 /* app/order_view.js：开单页（销售订单 / 采购订单）的页面骨架、明细行模板与列表列定义。
  * 由 order.js 拆出，只放不依赖页面闭包状态的视图代码，模板文本与拆分前一致。
  */
-import { escapeHtml, money, qtyText } from "./core.js";
+import { escapeHtml, money, qtyText } from "./core_format.js";
 
   // 开单页骨架：表头字段 + 明细表 + 转出库卡片 + 列表卡片。
   export function orderPageHtml(config) {

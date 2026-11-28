@@ -1,6 +1,10 @@
 /* app/update_render.js：软件更新卡片渲染（壳内原生更新与浏览器服务端更新两条路径）。
  */
-import { api, askConfirm, can, escapeHtml, openExternalUrl, showNotice } from "./core.js";
+import { can, showNotice } from "./core_state.js";
+import { escapeHtml } from "./core_format.js";
+import { askConfirm } from "./core_dialog.js";
+import { api } from "./core_api.js";
+import { openExternalUrl } from "./core_export.js";
 import { nativeUpdateBridge, nativeUpdatePlatform } from "./update_bridge.js";
 import { formatBytes, mandatoryActive, mandatoryReasonText, normalizeUpdateStatus, versionWithBuild, winFailureText } from "./update_normalize.js";
 

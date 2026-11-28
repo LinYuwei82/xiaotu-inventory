@@ -1,7 +1,10 @@
 /* app/shell.js：导航、路由与页面挂载。
  * 固定页面配置表在 pages.js，导航分组在 system.js。
  */
-import { api, can, confirmLeavePage, escapeHtml, main, money, nav, notice, setUnsavedGuard, showNotice, state } from "./core.js";
+import { can, main, nav, notice, showNotice, state } from "./core_state.js";
+import { escapeHtml, money } from "./core_format.js";
+import { api } from "./core_api.js";
+import { confirmLeavePage, setUnsavedGuard } from "./core.js";
 import { crudPage, itemPage } from "./masterdata.js";
 import { FIXED_PAGES } from "./pages.js";
 import { NAV_GROUPS, NAV_LAYOUT } from "./system.js";

@@ -1,7 +1,10 @@
 /* app/admin.js：用户管理页。
  * 由原 web/app.js 按职责拆出；审计日志与系统参数已拆到 admin_audit.js / admin_settings.js。
  */
-import { api, askConfirm, escapeHtml, showNotice } from "./core.js";
+import { showNotice } from "./core_state.js";
+import { escapeHtml } from "./core_format.js";
+import { askConfirm } from "./core_dialog.js";
+import { api } from "./core_api.js";
 import { USER_ROLES } from "./stock.js";
 
   export function roleLabel(code) {

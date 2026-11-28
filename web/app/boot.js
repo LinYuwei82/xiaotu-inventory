@@ -1,7 +1,11 @@
 /* app/boot.js：启动流程：登录门禁、修改口令与首屏引导。
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
-import { API_BASE, api, can, clearRememberToken, editionAllows, escapeHtml, flushActiveDraft, hasUnsaved, keychainAvailable, keychainCall, loadScript, main, nav, notice, saveRememberToken, showNotice, state, updateNetworkBanner } from "./core.js";
+import { API_BASE, can, editionAllows, main, nav, notice, showNotice, state } from "./core_state.js";
+import { escapeHtml } from "./core_format.js";
+import { flushActiveDraft, updateNetworkBanner } from "./core_draft.js";
+import { api, loadScript } from "./core_api.js";
+import { clearRememberToken, hasUnsaved, keychainAvailable, keychainCall, saveRememberToken } from "./core.js";
 import { buildNav, expandGroup, goToPage, handleHashChange, hashPageKey, mountPage, navHtml, readNavState, replaceHash, writeNavState } from "./shell.js";
 import { FIXED_PAGES } from "./pages.js";
 import { blockMandatoryUpdate, maybeReportInstallResultOnce, requestNativeUpdateStatus } from "./update_bridge.js";

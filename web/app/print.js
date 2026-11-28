@@ -1,7 +1,11 @@
 /* app/print.js：打印视图组装、页面打印与 PDF 导出。
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
-import { api, askConfirm, escapeHtml, isWinWebview, money, showNotice } from "./core.js";
+import { showNotice } from "./core_state.js";
+import { escapeHtml, money } from "./core_format.js";
+import { askConfirm } from "./core_dialog.js";
+import { api } from "./core_api.js";
+import { isWinWebview } from "./core_export.js";
 
   export function printPage(layout) {
     const handlers = window.webkit && window.webkit.messageHandlers;

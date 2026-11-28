@@ -1,7 +1,10 @@
 /* app/finance.js：收付款等财务页。
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
-import { api, askAlert, askConfirm, askPrompt, escapeHtml, money, showNotice } from "./core.js";
+import { showNotice } from "./core_state.js";
+import { escapeHtml, money } from "./core_format.js";
+import { askAlert, askConfirm, askPrompt } from "./core_dialog.js";
+import { api } from "./core_api.js";
 
   export async function financePage(mount) {
     const today = new Date().toISOString().slice(0, 10);

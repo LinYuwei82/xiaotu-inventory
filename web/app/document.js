@@ -1,7 +1,13 @@
 /* app/document.js：业务单据列表与单据详情编辑页。
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
-import { api, askConfirm, can, clearDraft, downloadCsv, downloadXlsx, escapeHtml, itemOptionText, money, newRequestId, parseQty, qtyAmountCents, qtyAmountText, qtyText, readDraft, setUnsavedGuard, showNotice, startDraftTimer, taxForAmount, writeDraft } from "./core.js";
+import { can, showNotice } from "./core_state.js";
+import { escapeHtml, itemOptionText, money, parseQty, qtyAmountCents, qtyAmountText, qtyText, taxForAmount } from "./core_format.js";
+import { askConfirm } from "./core_dialog.js";
+import { clearDraft, readDraft, startDraftTimer, writeDraft } from "./core_draft.js";
+import { api, newRequestId } from "./core_api.js";
+import { downloadCsv, downloadXlsx } from "./core_export.js";
+import { setUnsavedGuard } from "./core.js";
 import { documentLineRowHtml, documentLinesHead, documentListColumns, documentPageHtml } from "./document_view.js";
 import { createDocumentList } from "./documents.js";
 import { exportPdfTarget, printTarget } from "./print.js";

@@ -1,7 +1,9 @@
 /* app/report_actions.js：报表页导出 CSV / Excel 与打印 / PDF 按钮的事件绑定。
  * 路径拼装全部委托给传入的查询函数，保持与页面筛选一致。
  */
-import { downloadCsv, downloadXlsx, showNotice, withQuery } from "./core.js";
+import { showNotice } from "./core_state.js";
+import { withQuery } from "./core_api.js";
+import { downloadCsv, downloadXlsx } from "./core_export.js";
 import { exportPdfTarget, printTarget } from "./print.js";
 
 export function wireReportDownloads(mount, q, profitAllowed) {

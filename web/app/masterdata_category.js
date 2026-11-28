@@ -1,7 +1,10 @@
 /* app/masterdata_category.js：商品分类树页面（最多三层）。
  * 由 masterdata.js 拆出，供 pages.js 与入口共同加载。
  */
-import { api, askConfirm, can, escapeHtml, showNotice } from "./core.js";
+import { can, showNotice } from "./core_state.js";
+import { escapeHtml } from "./core_format.js";
+import { askConfirm } from "./core_dialog.js";
+import { api } from "./core_api.js";
 
   // 商品分类树：数据库不限层，界面按产品约定只允许建到第三层。
   export async function itemCategoryPage(mount) {

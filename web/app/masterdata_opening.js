@@ -1,7 +1,11 @@
 /* app/masterdata_opening.js：期初导入页（库存/应收/应付/资金账户）。
  * 由 masterdata.js 拆出，供 pages.js 与入口共同加载。
  */
-import { API_BASE, api, askAlert, askConfirm, downloadXlsx, escapeHtml, isWinWebview, showNotice, state } from "./core.js";
+import { API_BASE, showNotice, state } from "./core_state.js";
+import { escapeHtml } from "./core_format.js";
+import { askAlert, askConfirm } from "./core_dialog.js";
+import { api } from "./core_api.js";
+import { downloadXlsx, isWinWebview } from "./core_export.js";
 
   // 期初导入：库存 / 应收 / 应付 / 资金账户四类，有业务流水后服务端会拒绝。
   export async function openingPage(mount) {

@@ -1,7 +1,10 @@
 /* app/salesreport_statement.js：往来对账单页面（应收/应付）。
  * 由 salesreport.js 拆出，供 pages.js 与入口共同加载。
  */
-import { api, downloadCsv, downloadXlsx, escapeHtml, money, showNotice } from "./core.js";
+import { showNotice } from "./core_state.js";
+import { escapeHtml, money } from "./core_format.js";
+import { api } from "./core_api.js";
+import { downloadCsv, downloadXlsx } from "./core_export.js";
 import { exportPdfTarget, printTarget } from "./print.js";
 
   // ---------- 对账单 ----------

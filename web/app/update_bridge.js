@@ -1,6 +1,8 @@
 /* app/update_bridge.js：桌面壳更新桥（macOS WKWebView / Windows WebView2）与强制升级拦截。
  */
-import { askDialog, isWinWebview, showNotice } from "./core.js";
+import { showNotice } from "./core_state.js";
+import { askDialog } from "./core_dialog.js";
+import { isWinWebview } from "./core_export.js";
 import { formatBytes, isWinCheckResult, isWinFailureCode, mandatoryActive, mandatoryReasonText, mapWinCheckResult, normalizeUpdateStatus, parseWebviewMessage, versionWithBuild } from "./update_normalize.js";
 
   // ---------- 桌面壳更新桥 ----------

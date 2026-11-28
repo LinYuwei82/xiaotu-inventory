@@ -1,7 +1,10 @@
 /* app/admin_settings.js：系统参数页（公司抬头、负库存、会话超时、成本口径与本机免输）。
  * 由 admin.js 拆出，供 pages.js 与入口共同加载。
  */
-import { api, askConfirm, can, clearRememberToken, keychainAvailable, saveRememberToken, showNotice, state } from "./core.js";
+import { can, showNotice, state } from "./core_state.js";
+import { askConfirm } from "./core_dialog.js";
+import { api } from "./core_api.js";
+import { clearRememberToken, keychainAvailable, saveRememberToken } from "./core.js";
 
   // ---------- 系统参数 ----------
 

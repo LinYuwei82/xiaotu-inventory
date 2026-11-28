@@ -1,7 +1,9 @@
 /* app/documents.js：单据列表的筛选、排序与行渲染工具。
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
-import { api, escapeHtml, money, params, showNotice } from "./core.js";
+import { params, showNotice } from "./core_state.js";
+import { escapeHtml, money } from "./core_format.js";
+import { api } from "./core_api.js";
 
   export const DOC_FILTER_PREFIX = "xt.docFilter.";
   export const DOC_FILTER_STATUS = ["", "draft", "approved", "reversed"];

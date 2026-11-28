@@ -1,7 +1,10 @@
 /* app/print_template.js：打印模板配置页。
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
-import { api, askConfirm, escapeHtml, showNotice } from "./core.js";
+import { showNotice } from "./core_state.js";
+import { escapeHtml } from "./core_format.js";
+import { askConfirm } from "./core_dialog.js";
+import { api } from "./core_api.js";
 import { printColumnsHtml, printTemplateListHtml, printTemplatePageHtml } from "./print_template_view.js";
 
   export async function printTemplatePage(mount) {

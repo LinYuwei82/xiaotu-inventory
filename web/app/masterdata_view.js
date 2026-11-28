@@ -1,7 +1,7 @@
 /* app/masterdata_view.js：基础资料通用 CRUD 页的静态模板与表格渲染。
  * 由 masterdata.js 拆出，只放不依赖页面闭包状态的视图代码，模板文本与拆分前一致。
  */
-import { escapeHtml } from "./core.js";
+import { escapeHtml } from "./core_format.js";
 
   // CRUD 页骨架：标题栏（导入/导出/合并/新增）+ 表单卡片 + 往来单位合并卡片 + 筛选条 + 列表。
   export function crudPageHtml(def, flags) {

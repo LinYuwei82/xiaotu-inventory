@@ -1,7 +1,11 @@
 /* app/order.js：开单页：采购/销售/调拨等下单流程。
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
-import { api, askConfirm, clearDraft, escapeHtml, itemOptionText, newRequestId, parseQty, qtyAmountText, qtyText, readDraft, showNotice, startDraftTimer, writeDraft } from "./core.js";
+import { showNotice } from "./core_state.js";
+import { escapeHtml, itemOptionText, parseQty, qtyAmountText, qtyText } from "./core_format.js";
+import { askConfirm } from "./core_dialog.js";
+import { clearDraft, readDraft, startDraftTimer, writeDraft } from "./core_draft.js";
+import { api, newRequestId } from "./core_api.js";
 import { createDocumentList } from "./documents.js";
 import { orderConvertLinesHtml, orderLineRowHtml, orderLinesHead, orderListColumns, orderPageHtml } from "./order_view.js";
 import { exportPdfTarget, printTarget } from "./print.js";

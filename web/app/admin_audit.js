@@ -1,7 +1,10 @@
 /* app/admin_audit.js：审计日志页与审计摘要的展示层翻译。
  * 由 admin.js 拆出，供 pages.js 与入口共同加载。
  */
-import { api, bizTypeText, downloadCsv, downloadXlsx, escapeHtml, showNotice } from "./core.js";
+import { showNotice } from "./core_state.js";
+import { bizTypeText, escapeHtml } from "./core_format.js";
+import { api } from "./core_api.js";
+import { downloadCsv, downloadXlsx } from "./core_export.js";
 
   // ---------- 审计日志 ----------
   export const AUDIT_ENTITIES = [

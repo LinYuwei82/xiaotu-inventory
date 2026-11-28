@@ -1,7 +1,7 @@
 /* app/report_tables_trade.js：资金与往来类报表表格的纯渲染函数（输入数据，输出 HTML）。
  * 包含资金流水、账户余额、采购明细、采购汇总与应收应付账龄。
  */
-import { emptyRow, escapeHtml, money, qtyIsNegative, qtyText } from "./core.js";
+import { emptyRow, escapeHtml, money, qtyIsNegative, qtyText } from "./core_format.js";
 
 export function fundLedgerTableHtml(rows) {
   return !rows.length

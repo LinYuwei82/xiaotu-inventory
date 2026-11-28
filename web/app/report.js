@@ -1,7 +1,9 @@
 /* app/report.js：经营报表页（筛选、查询编排与事件绑定）。
  * 页面骨架与表格渲染在 report_tables*.js，导出 / 打印绑定在 report_actions.js。
  */
-import { api, editionAllows, escapeHtml, itemOptionText } from "./core.js";
+import { editionAllows } from "./core_state.js";
+import { escapeHtml, itemOptionText } from "./core_format.js";
+import { api } from "./core_api.js";
 import { wireReportDownloads, wireReportPrints } from "./report_actions.js";
 import { reportPageHtml } from "./report_tables.js";
 import {

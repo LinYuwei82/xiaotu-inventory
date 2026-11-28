@@ -1,7 +1,9 @@
 /* app/stock.js：库存查询页与角色常量。
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
-import { api, bizTypeText, can, escapeHtml, money, qtyIsNegative, qtyText, showNotice } from "./core.js";
+import { can, showNotice } from "./core_state.js";
+import { bizTypeText, escapeHtml, money, qtyIsNegative, qtyText } from "./core_format.js";
+import { api } from "./core_api.js";
 
   export async function stockPage(mount) {
     let itemFilter = 0;

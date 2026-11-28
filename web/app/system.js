@@ -1,7 +1,10 @@
 /* app/system.js：恢复向导、关于页与导航配置。
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
-import { api, askConfirm, can, escapeHtml, showNotice } from "./core.js";
+import { can, showNotice } from "./core_state.js";
+import { escapeHtml } from "./core_format.js";
+import { askConfirm } from "./core_dialog.js";
+import { api } from "./core_api.js";
 import { formatBytes } from "./update_normalize.js";
 import { renderUpdateCard } from "./update_render.js";
 

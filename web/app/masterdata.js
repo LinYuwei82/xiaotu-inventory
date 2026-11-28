@@ -1,7 +1,11 @@
 /* app/masterdata.js：通用 CRUD 列表/表单与商品页。
  * 商品分类与期初导入已拆到 masterdata_category.js / masterdata_opening.js。
  */
-import { API_BASE, api, askConfirm, can, csvField, downloadCsv, downloadXlsx, escapeHtml, invalidateMergedTraders, isWinWebview, saveText, showNotice, state } from "./core.js";
+import { API_BASE, can, showNotice, state } from "./core_state.js";
+import { escapeHtml } from "./core_format.js";
+import { askConfirm } from "./core_dialog.js";
+import { api, invalidateMergedTraders } from "./core_api.js";
+import { csvField, downloadCsv, downloadXlsx, isWinWebview, saveText } from "./core_export.js";
 import { crudPageHtml, crudTableHtml, fieldInputHtml, mergeLogsHtml, mergePanelHtml, optionLabel } from "./masterdata_view.js";
 
   export async function crudPage(mount, def) {

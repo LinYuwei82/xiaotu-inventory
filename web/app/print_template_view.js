@@ -1,7 +1,7 @@
 /* app/print_template_view.js：打印模板配置页的静态模板与两张表格渲染。
  * 由 print_template.js 拆出，只放不依赖页面闭包状态的视图代码，模板文本与拆分前一致。
  */
-import { escapeHtml } from "./core.js";
+import { escapeHtml } from "./core_format.js";
 
   // 模板页骨架：标题栏工具栏 + 编辑卡片 + 模板列表卡片。
   export function printTemplatePageHtml() {

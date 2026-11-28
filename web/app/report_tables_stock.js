@@ -1,7 +1,7 @@
 /* app/report_tables_stock.js：库存类报表表格的纯渲染函数（输入数据，输出 HTML）。
  * 包含库存余额、库存流水、收发明细、进销存汇总、销售毛利与其他出入库。
  */
-import { bizCategoryText, bizTypeText, emptyRow, escapeHtml, money, qtyIsNegative, qtyText } from "./core.js";
+import { bizCategoryText, bizTypeText, emptyRow, escapeHtml, money, qtyIsNegative, qtyText } from "./core_format.js";
 
 // 数量跨单位不可加总，页面合计只汇总金额，与 CSV / Excel 一致。
 export function balancesTableHtml(rows) {

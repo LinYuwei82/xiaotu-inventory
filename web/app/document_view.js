@@ -1,7 +1,8 @@
 /* app/document_view.js：单据录入页的页面模板、明细行模板与列表列定义。
  * 由 document.js 拆出，只放不依赖页面闭包状态的视图代码，模板文本与拆分前一致。
  */
-import { bizCategoryText, can, escapeHtml, money, qtyText } from "./core.js";
+import { can } from "./core_state.js";
+import { bizCategoryText, escapeHtml, money, qtyText } from "./core_format.js";
 
   // 单据页骨架：仓库/日期/往来单位/业务类型等表头字段 + 明细表 + 列表卡片。
   export function documentPageHtml(config, flags) {

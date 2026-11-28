@@ -1,7 +1,10 @@
 /* app/salesreport.js：销售报表、仪表盘、往来对账单。
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
-import { api, downloadCsv, downloadXlsx, emptyRow, escapeHtml, itemOptionText, money, showNotice, withQuery } from "./core.js";
+import { showNotice } from "./core_state.js";
+import { emptyRow, escapeHtml, itemOptionText, money } from "./core_format.js";
+import { api, withQuery } from "./core_api.js";
+import { downloadCsv, downloadXlsx } from "./core_export.js";
 import { exportPdfTarget, printTarget } from "./print.js";
 
   export async function salesReportPage(mount) {
