@@ -2,6 +2,7 @@
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
 import { API_BASE, api, askAlert, askConfirm, can, csvField, downloadCsv, downloadXlsx, escapeHtml, invalidateMergedTraders, isWinWebview, params, saveText, showNotice, state } from "./core.js";
+import { crudPageHtml, crudTableHtml, fieldInputHtml, mergeLogsHtml, mergePanelHtml, optionLabel } from "./masterdata_view.js";
 
   export async function crudPage(mount, def) {
     let rows = [];
@@ -17,49 +18,16 @@ import { API_BASE, api, askAlert, askConfirm, can, csvField, downloadCsv, downlo
         ${can(io.write) ? `<button class="btn" data-role="import">导入</button>` : ""}`
       : "";
 
-    mount.innerHTML = `
-      <div class="page-head">
-        <div>
-          <h2>${escapeHtml(def.title)}</h2>
-          <p class="page-sub">${escapeHtml(def.api)}</p>
-        </div>
-        <div class="page-actions">
-          ${ioButtons}
-          ${isTrader && can("customer.write") ? '<button class="btn" data-role="merge-open">合并单位</button>' : ""}
-          <button class="btn primary" data-role="new">新增</button>
-        </div>
-      </div>
-      <div class="card" data-role="form-card" hidden>
-        <form class="grid-form" data-role="form"></form>
-        <div class="form-actions">
-          <button class="btn primary" type="button" data-role="save">保存</button>
-          <button class="btn" type="button" data-role="cancel">取消</button>
-        </div>
-      </div>
-      ${isTrader ? `<div class="card" data-role="merge-card" hidden>
-        <div class="card-head">
-          <h3>合并往来单位</h3>
-          <button class="btn" type="button" data-role="merge-close">关闭</button>
-        </div>
-        <p class="page-sub" data-role="merge-hint"></p>
-        <div data-role="merge-body"></div>
-        <div class="card-head"><h3>最近合并与撤销</h3></div>
-        <div data-role="merge-log"></div>
-      </div>` : ""}
-      ${def.filters ? '<div class="card filters" data-role="filters"></div>' : ""}
-      <div class="card">
-        <table class="table" data-role="table"></table>
-      </div>`;
+    mount.innerHTML = crudPageHtml(def, {
+      ioButtons,
+      isTrader,
+      mergeButton: can("customer.write"),
+    });
 
     const formCard = mount.querySelector('[data-role="form-card"]');
     const form = mount.querySelector('[data-role="form"]');
     const table = mount.querySelector('[data-role="table"]');
     const filtersBar = mount.querySelector('[data-role="filters"]');
-
-    function optionLabel(option) {
-      if (option.full_name) return option.full_name;
-      return [option.code, option.name].filter(Boolean).join(" ") || String(option.id);
-    }
 
     async function renderFilters() {
       if (!def.filters) return;
@@ -124,57 +92,6 @@ import { API_BASE, api, askAlert, askConfirm, can, csvField, downloadCsv, downlo
       return params.length ? "?" + params.join("&") : "";
     }
 
-    function fieldInput(field, value) {
-      if (field.type === "bool") {
-        return `<label class="checkbox">
-            <input type="checkbox" data-field="${escapeHtml(field.key)}" ${
-              value ? "checked" : ""
-            } /> ${escapeHtml(field.label)}
-          </label>`;
-      }
-      if (field.optionsApi) {
-        const options = optionCache[field.optionsApi] || [];
-        return `<label class="field">
-            <span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>
-            <select data-field="${escapeHtml(field.key)}" ${field.required ? "required" : ""}>
-              <option value="0">未指定</option>
-              ${options
-                .filter((option) => option.status !== false)
-                .map(
-                  (option) =>
-                    `<option value="${option.id}" ${
-                      String(option.id) === String(value) ? "selected" : ""
-                    }>${escapeHtml(
-                      "　".repeat(Math.max(0, (option.depth || 1) - 1)) + optionLabel(option)
-                    )}</option>`
-                )
-                .join("")}
-            </select>
-          </label>`;
-      }
-      if (field.type === "int") {
-        const scale = field.scale || 1;
-        const min = field.min === undefined ? "" : ` min="${Number(field.min) / scale}"`;
-        const max = field.max === undefined ? "" : ` max="${Number(field.max) / scale}"`;
-        const shown =
-          value === undefined || value === null
-            ? ""
-            : Number(value) / scale;
-        return `<label class="field">
-          <span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>
-          <input type="number" step="${scale === 1 ? "1" : "0.01"}"${min}${max} data-field="${escapeHtml(
-          field.key
-        )}" value="${escapeHtml(shown)}" ${field.required ? "required" : ""} />
-        </label>`;
-      }
-      return `<label class="field">
-          <span>${escapeHtml(field.label)}${field.required ? " *" : ""}</span>
-          <input type="text" data-field="${escapeHtml(field.key)}" value="${escapeHtml(
-        value === undefined || value === null ? "" : value
-      )}" ${field.required ? "required" : ""} />
-        </label>`;
-    }
-
     async function loadOptions() {
       for (const field of def.fields) {
         if (field.optionsApi && !optionCache[field.optionsApi]) {
@@ -188,7 +105,7 @@ import { API_BASE, api, askAlert, askConfirm, can, csvField, downloadCsv, downlo
       form.innerHTML =
         def.fields
           .map((field) =>
-            fieldInput(field, row ? row[field.key] : field.default)
+            fieldInputHtml(field, row ? row[field.key] : field.default, optionCache)
           )
           .join("") + (def.formExtra ? def.formExtra(row) : "");
       formCard.hidden = false;
@@ -215,36 +132,7 @@ import { API_BASE, api, askAlert, askConfirm, can, csvField, downloadCsv, downlo
     }
 
     function renderTable() {
-      if (!rows.length) {
-        table.innerHTML = '<tbody><tr><td class="empty">暂无数据，点击「新增」开始</td></tr></tbody>';
-        return;
-      }
-      const head = def.columns
-        .map((column) => `<th>${escapeHtml(column.label)}</th>`)
-        .join("");
-      const body = rows
-        .map((row) => {
-          const cells = def.columns
-            .map((column) => {
-              const value = row[column.key];
-              if (column.type === "bool") {
-                return `<td>${value ? "是" : "否"}</td>`;
-              }
-              if (column.type === "percent_bp") {
-                return `<td>${(Number(value || 0) / 100).toFixed(2)}%</td>`;
-              }
-              return `<td>${escapeHtml(value)}</td>`;
-            })
-            .join("");
-          return `<tr data-id="${row.id}">${cells}
-              <td class="actions">
-                <button class="link" data-role="edit">编辑</button>
-                <button class="link danger" data-role="delete">删除</button>
-              </td>
-            </tr>`;
-        })
-        .join("");
-      table.innerHTML = `<thead><tr>${head}<th class="actions">操作</th></tr></thead><tbody>${body}</tbody>`;
+      table.innerHTML = crudTableHtml(rows, def.columns);
     }
 
     async function reload() {
@@ -260,35 +148,9 @@ import { API_BASE, api, askAlert, askConfirm, can, csvField, downloadCsv, downlo
     let mergePartners = [];
     let mergeLogs = [];
 
-    function mergeOriginLabel(origin) {
-      if (origin === "AUTO_ARCHIVE") return "自动补建";
-      if (origin === "MANUAL") return "手工/合并";
-      return origin || "—";
-    }
-
     function renderMergeLogs() {
       if (!mergeLog) return;
-      mergeLog.innerHTML = !mergeLogs.length
-        ? '<p class="page-sub">还没有合并记录</p>'
-        : `<table class="table"><thead><tr><th>时间</th><th>保留档案</th><th>被合并</th>
-             <th>执行人</th><th>状态</th><th>操作</th></tr></thead><tbody>${mergeLogs
-             .map(
-               (log) => `<tr>
-                 <td>${escapeHtml(log.created_at)}</td>
-                 <td>${escapeHtml(log.target_code + " " + log.target_name)}</td>
-                 <td>${escapeHtml(log.source_ids)}</td>
-                 <td>${escapeHtml(log.actor)}</td>
-                 <td>${log.undone_at ? "已撤销 " + escapeHtml(log.undone_at) : "已合并"}</td>
-                 <td class="actions">${
-                   log.undone_at
-                     ? '<span class="page-sub">—</span>'
-                     : log.can_undo
-                       ? `<button class="link" data-role="undo" data-log="${log.id}" data-name="${escapeHtml(log.target_name)}">撤销</button>`
-                       : `<span class="page-sub" title="${escapeHtml(log.undo_reason)}">不可撤销</span>`
-                 }</td>
-               </tr>`
-             )
-             .join("")}</tbody></table>`;
+      mergeLog.innerHTML = mergeLogsHtml(mergeLogs);
     }
 
     async function openMergePanel() {
@@ -308,24 +170,7 @@ import { API_BASE, api, askAlert, askConfirm, can, csvField, downloadCsv, downlo
         mergeHint.textContent =
           `候选组 ${preview.groups} 组（高置信 ${preview.high}、中高 ${preview.medium}、` +
           `仅名称 ${preview.name_only}）。仅名称相同属低置信，不会自动合并，请逐组核对。`;
-        mergeBody.innerHTML = !mergePartners.length
-          ? '<p class="page-sub">当前没有可合并的档案</p>'
-          : `<table class="table"><thead><tr><th>合并</th><th>保留</th><th>编码</th>
-               <th>名称</th><th>来源</th></tr></thead><tbody>${mergePartners
-               .map(
-                 (row) => `<tr>
-                   <td><input type="checkbox" data-merge-source value="${row.id}" /></td>
-                   <td><input type="radio" name="merge-target-${def.key}" value="${row.id}" /></td>
-                   <td>${escapeHtml(row.code)}</td>
-                   <td>${escapeHtml(row.name)}</td>
-                   <td>${escapeHtml(mergeOriginLabel(row.origin))}</td>
-                 </tr>`
-               )
-               .join("")}</tbody></table>
-             <div class="form-actions">
-               <button class="btn primary" type="button" data-role="merge-run">合并所选</button>
-               <span class="page-sub">先勾选要并入的档案，再选一条作为保留档案</span>
-             </div>`;
+        mergeBody.innerHTML = mergePanelHtml(mergePartners, def.key);
         renderMergeLogs();
       } catch (error) {
         mergeHint.textContent = "读取失败：" + error.message;

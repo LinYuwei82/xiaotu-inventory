@@ -1,5 +1,6 @@
 // P3 前端统一归一的回归测试（重构方案 §2.4）：
-// 从 web/app/update.js 源码中按花括号配对提取归一相关纯函数并求值，保证测的是生产代码本体。
+// 从 web/app/update_normalize.js 与 update_bridge.js 源码中按花括号配对提取归一相关
+// 纯函数并求值，保证测的是生产代码本体。
 // 覆盖：mapEngineLastResult 全分支、normalizeUpdateStatus 双平台映射、
 // 引擎 status_json 字段契约（读取键必须落在 引擎字段 ∪ mac 扩展键 ∪ 旧格式迁移键 内）、
 // parseWebviewMessage / win 检查码辅助函数。
@@ -9,7 +10,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const src = readFileSync(join(repoRoot, "web", "app", "update.js"), "utf8");
+const src =
+  readFileSync(join(repoRoot, "web", "app", "update_normalize.js"), "utf8") +
+  "\n" +
+  readFileSync(join(repoRoot, "web", "app", "update_bridge.js"), "utf8");
 
 let passed = 0;
 let failed = 0;
@@ -30,7 +34,7 @@ function eq(actual, expected, name) {
 function extract(name) {
   const marker = `function ${name}(`;
   const start = src.indexOf(marker);
-  if (start < 0) throw new Error(`update.js 中找不到函数 ${name}`);
+  if (start < 0) throw new Error(`update 模块中找不到函数 ${name}`);
   const braceStart = src.indexOf("{", start + marker.length);
   let depth = 0;
   for (let i = braceStart; i < src.length; i++) {

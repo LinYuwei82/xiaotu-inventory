@@ -2,8 +2,9 @@
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
 import { API_BASE, api, can, clearRememberToken, editionAllows, escapeHtml, flushActiveDraft, hasUnsaved, keychainAvailable, keychainCall, loadScript, main, nav, notice, saveRememberToken, showNotice, state, updateNetworkBanner } from "./core.js";
-import { FIXED_PAGES, buildNav, expandGroup, goToPage, handleHashChange, hashPageKey, mountPage, navHtml, readNavState, replaceHash, writeNavState } from "./shell.js";
-import { blockMandatoryUpdate, maybeReportInstallResultOnce, requestNativeUpdateStatus } from "./update.js";
+import { buildNav, expandGroup, goToPage, handleHashChange, hashPageKey, mountPage, navHtml, readNavState, replaceHash, writeNavState } from "./shell.js";
+import { FIXED_PAGES } from "./pages.js";
+import { blockMandatoryUpdate, maybeReportInstallResultOnce, requestNativeUpdateStatus } from "./update_bridge.js";
 
   export function clearBootstrapHash() {
     if (location.hash) {

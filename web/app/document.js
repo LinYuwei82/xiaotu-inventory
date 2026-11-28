@@ -1,7 +1,8 @@
 /* app/document.js：业务单据列表与单据详情编辑页。
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
-import { api, askConfirm, bizCategoryText, can, clearDraft, downloadCsv, downloadXlsx, escapeHtml, itemOptionText, money, newRequestId, parseQty, qtyAmountCents, qtyAmountText, qtyText, readDraft, setUnsavedGuard, showNotice, startDraftTimer, taxForAmount, writeDraft } from "./core.js";
+import { api, askConfirm, can, clearDraft, downloadCsv, downloadXlsx, escapeHtml, itemOptionText, money, newRequestId, parseQty, qtyAmountCents, qtyAmountText, qtyText, readDraft, setUnsavedGuard, showNotice, startDraftTimer, taxForAmount, writeDraft } from "./core.js";
+import { documentEditLinesHead, documentLineRowHtml, documentLinesHead, documentListColumns, documentPageHtml } from "./document_view.js";
 import { createDocumentList } from "./documents.js";
 import { exportPdfTarget, printTarget } from "./print.js";
 
@@ -11,19 +12,7 @@ import { exportPdfTarget, printTarget } from "./print.js";
     // 只有其他出入库有业务类型；入库可用期初，出库可用领用与报损，赠品两方向通用。
     const otherDoc = docType === "OTH_IN" || docType === "OTH_OUT";
     const salesDoc = docType === "SAL_OUT" || docType === "SAL_RET";
-    const categoryOptions =
-      docType === "OTH_IN"
-        ? [
-            ["GIFT", "赠品"],
-            ["OPENING", "期初"],
-            ["OTHER", "其他"],
-          ]
-        : [
-            ["GIFT", "赠品"],
-            ["USAGE", "领用"],
-            ["LOSS", "报损"],
-            ["OTHER", "其他"],
-          ];
+    const flags = { costAdjust, otherDoc, salesDoc };
     let warehouses = [];
     let items = [];
     let editingId = 0;
@@ -33,61 +22,7 @@ import { exportPdfTarget, printTarget } from "./print.js";
     // 录入页的脏标记：任一字段变动即置脏，保存成功、重置或切换单据后清除。
     let dirty = false;
 
-    mount.innerHTML = `
-      <div class="page-head">
-        <div>
-          <h2>${escapeHtml(config.title)}</h2>
-          <p class="page-sub">${escapeHtml(config.subtitle)}</p>
-        </div>
-        <button class="btn" data-role="refresh">刷新</button>
-      </div>
-      <div class="card">
-        <form class="doc-form" data-role="form">
-          <div class="doc-head">
-            <label class="field" ${costAdjust ? "hidden" : ""}><span>${config.twoWarehouse ? "调出仓库" : "仓库"}</span>
-              <select data-role="warehouse" required></select>
-            </label>
-            <label class="field" ${config.twoWarehouse ? "" : "hidden"}><span>调入仓库</span>
-              <select data-role="target-warehouse" required></select>
-            </label>
-            <label class="field"><span>单据日期</span>
-              <input type="date" data-role="date" required />
-            </label>
-            <label class="field" ${costAdjust ? "hidden" : ""}><span>${escapeHtml(config.partnerLabel)}</span>
-              <input type="text" data-role="partner" placeholder="${escapeHtml(
-                config.partnerPlaceholder
-              )}" ${config.partnerApi ? "hidden" : ""} />
-              <select data-role="partner-select" ${config.partnerApi ? "" : "hidden"}></select>
-            </label>
-            <label class="field" ${otherDoc ? "" : "hidden"}><span>业务类型</span>
-              <select data-role="biz-category">
-                ${categoryOptions
-                  .map(([value, label]) => `<option value="${value}">${label}</option>`)
-                  .join("")}
-              </select>
-            </label>
-            <label class="field" ${salesDoc ? "" : "hidden"}><span>业务员</span>
-              <select data-role="salesperson">
-                <option value="0">未指定</option>
-              </select>
-            </label>
-          </div>
-          <div class="doc-remark">
-            <label class="field"><span>备注</span>
-              <textarea data-role="remark" rows="2" maxlength="200" placeholder="选填，最多 200 个字"></textarea>
-            </label>
-          </div>
-          <table class="table lines" data-role="lines"></table>
-          <p class="page-sub" data-role="doc-totals"></p>
-          <div class="form-actions">
-            <button class="btn" type="button" data-role="add-line">添加明细行</button>
-            <button class="btn" type="button" data-role="save-draft">存为草稿</button>
-            <button class="btn primary" type="button" data-role="submit">保存并审核</button>
-            <button class="btn" type="button" data-role="cancel-edit" hidden>取消编辑</button>
-          </div>
-        </form>
-      </div>
-      <div class="card" data-role="doc-list"></div>`;
+    mount.innerHTML = documentPageHtml(config, flags);
 
     const form = mount.querySelector('[data-role="form"]');
     const warehouseSelect = mount.querySelector('[data-role="warehouse"]');
@@ -103,32 +38,7 @@ import { exportPdfTarget, printTarget } from "./print.js";
       docType,
       mount: mount.querySelector('[data-role="doc-list"]'),
       emptyText: `还没有${config.docLabel}单`,
-      columns: [
-        { title: "单据号", cell: (doc) => escapeHtml(doc.doc_no) },
-        { title: "日期", cell: (doc) => escapeHtml(doc.doc_date) },
-        { title: "仓库", cell: (doc) => escapeHtml(doc.warehouse_name) },
-        { title: config.partnerLabel, cell: (doc) => escapeHtml(doc.customer || "—") },
-        ...(otherDoc
-          ? [
-              {
-                title: "业务类型",
-                cell: (doc) => escapeHtml(bizCategoryText(doc.biz_category) || "—"),
-              },
-            ]
-          : []),
-        ...(salesDoc
-          ? [
-              {
-                title: "业务员",
-                cell: (doc) => escapeHtml(doc.salesperson_name || "未指定"),
-              },
-            ]
-          : []),
-        { title: "数量", cell: (doc) => (costAdjust ? "—" : qtyText(doc.total_qty)) },
-        { title: "金额（元）", cell: (doc) => money(doc.total_amount_cents) },
-        { title: "状态", cell: (doc) => statusLabel(doc.status) },
-        { title: "操作", actions: true, cell: (doc) => actionsFor(doc) },
-      ],
+      columns: documentListColumns(config, flags),
     });
     const documentsTable = documentList.table;
 
@@ -162,16 +72,9 @@ import { exportPdfTarget, printTarget } from "./print.js";
 
     function addLine(line) {
       const row = document.createElement("tr");
+      row.innerHTML = documentLineRowHtml(line, costAdjust, itemOptions, warehouseOptions);
+      linesTable.querySelector("tbody").appendChild(row);
       if (costAdjust) {
-        row.innerHTML = `
-          <td><select data-role="item">${itemOptions(line ? line.item_id : undefined)}</select></td>
-          <td><select data-role="line-warehouse">${warehouseOptions(
-            line ? line.warehouse_id : undefined
-          )}</select></td>
-          <td><input type="text" inputmode="decimal" value="0.00" data-role="adjust" /></td>
-          <td><input type="text" placeholder="调整原因" data-role="reason" /></td>
-          <td class="actions"><button class="link danger" type="button" data-role="remove">移除</button></td>`;
-        linesTable.querySelector("tbody").appendChild(row);
         row.querySelector('[data-role="remove"]').addEventListener("click", () => row.remove());
         if (line) {
           row.querySelector('[data-role="adjust"]').value = (line.adjust_cents / 100).toFixed(2);
@@ -179,17 +82,6 @@ import { exportPdfTarget, printTarget } from "./print.js";
         }
         return;
       }
-      row.innerHTML = `
-        <td><select data-role="item">${itemOptions(line ? line.item_id : undefined)}</select></td>
-        <td><span class="qty-cell"><input type="text" inputmode="decimal" value="1" data-role="qty" /><span class="unit-hint" data-role="unit"></span></span></td>
-        <td><input type="number" min="0" step="0.01" value="0.00" data-role="price" /></td>
-        <td><input type="text" class="readonly" value="—" data-role="amount" disabled /></td>
-        <td><input type="number" min="0" max="100" step="0.01" value="0" data-role="tax-rate" /></td>
-        <td><label class="checkbox"><input type="checkbox" data-role="tax-included" /></label></td>
-        <td><input type="text" class="readonly" value="—" data-role="tax" disabled /></td>
-        <td><input type="text" class="readonly" value="—" data-role="with-tax" disabled /></td>
-        <td class="actions"><button class="link danger" type="button" data-role="remove">移除</button></td>`;
-      linesTable.querySelector("tbody").appendChild(row);
       row.querySelector('[data-role="remove"]').addEventListener("click", () => {
         row.remove();
         recalcTotals();
@@ -266,40 +158,9 @@ import { exportPdfTarget, printTarget } from "./print.js";
     }
 
     function resetLines() {
-      linesTable.innerHTML = costAdjust
-        ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
-        : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（录入价）</th><th>税率（%）</th><th>含税</th><th>税额（元）</th><th>价税合计（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+      linesTable.innerHTML = documentLinesHead(costAdjust);
       addLine();
       recalcTotals();
-    }
-
-    function statusLabel(status) {
-      return { APPROVED: "已审核", DRAFT: "草稿", VOIDED: "已作废" }[status] || status;
-    }
-
-    function actionsFor(doc) {
-      const print =
-        '<button class="link" data-role="print">打印</button>' +
-        '<button class="link" data-role="pdf">导出 PDF</button>' +
-        '<button class="link" data-role="export-csv">CSV</button>' +
-        '<button class="link" data-role="export-xlsx">Excel</button>';
-      if (costAdjust && !can("cost.adjust")) {
-        return doc.status === "DRAFT"
-          ? print + '<button class="link" data-role="edit">编辑</button>'
-          : print;
-      }
-      if (doc.status === "DRAFT") {
-        return (
-          print +
-          '<button class="link" data-role="approve">审核</button>' +
-          '<button class="link" data-role="edit">编辑</button>' +
-          '<button class="link danger" data-role="delete">删除</button>'
-        );
-      }
-      if (doc.status === "APPROVED") {
-        return print + '<button class="link danger" data-role="reverse">反审核</button>';
-      }
-      return print;
     }
 
     async function reload() {
@@ -445,9 +306,7 @@ import { exportPdfTarget, printTarget } from "./print.js";
       if (otherDoc) bizCategorySelect.value = data.biz_category || "OTHER";
       if (salesDoc) salespersonSelect.value = String(data.salesperson_id || 0);
       remarkInput.value = data.remark || "";
-      linesTable.innerHTML = costAdjust
-        ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
-        : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（录入价）</th><th>税率（%）</th><th>含税</th><th>税额（元）</th><th>价税合计（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+      linesTable.innerHTML = documentLinesHead(costAdjust);
       for (const line of data.lines || []) {
         addLine(
           costAdjust
@@ -655,9 +514,7 @@ import { exportPdfTarget, printTarget } from "./print.js";
         if (otherDoc) bizCategorySelect.value = detail.biz_category || "OTHER";
         if (salesDoc) salespersonSelect.value = String(detail.salesperson_id || 0);
         remarkInput.value = detail.remark || "";
-        linesTable.innerHTML = costAdjust
-          ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
-          : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
+        linesTable.innerHTML = documentEditLinesHead(costAdjust);
         for (const line of detail.lines) addLine(line);
         dirty = false;
         mount.querySelector('[data-role="cancel-edit"]').hidden = false;

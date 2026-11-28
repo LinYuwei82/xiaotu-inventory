@@ -2,7 +2,8 @@
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
 import { api, askConfirm, can, escapeHtml, showNotice } from "./core.js";
-import { formatBytes, renderUpdateCard } from "./update.js";
+import { formatBytes } from "./update_normalize.js";
+import { renderUpdateCard } from "./update_render.js";
 
   export async function restorePage(mount) {
     const canRestore = can("*");
