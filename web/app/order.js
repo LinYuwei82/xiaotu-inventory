@@ -226,7 +226,8 @@ import { exportPdfTarget, printTarget } from "./print.js";
       for (const line of data.lines || []) {
         addLine({
           item_id: line.item_id,
-          qty: parseQty(line.qty, true) || "0",
+          // 草稿里存的就是十进制文本，这里只做合法性校验。
+          qty: parseQty(line.qty, true) === null ? "0" : String(line.qty).trim(),
           price_cents: Math.round(Number(line.price || 0) * 100),
         });
       }
@@ -267,16 +268,15 @@ import { exportPdfTarget, printTarget } from "./print.js";
       const lines = [];
       for (const row of linesTable.querySelectorAll("tbody tr")) {
         const itemId = Number(row.querySelector('[data-role="item"]').value);
-        const qty = parseQty(
-          row.querySelector('[data-role="qty"]').value,
-          docType === "STK_CNT"
-        );
+        // 接口数量是十进制字符串；parseQty 只用于校验（它返回 ×10000 的定点整数）。
+        const qtyInput = row.querySelector('[data-role="qty"]').value.trim();
+        const qty = parseQty(qtyInput, docType === "STK_CNT");
         const price = Math.round(Number(row.querySelector('[data-role="price"]').value || 0) * 100);
         if (!itemId || qty === null) {
           showNotice("请检查明细行的商品与数量", "error");
           return null;
         }
-        lines.push({ item_id: itemId, qty, price_cents: price });
+        lines.push({ item_id: itemId, qty: qtyInput, price_cents: price });
       }
       if (!lines.length) {
         showNotice("请至少添加一行明细", "error");

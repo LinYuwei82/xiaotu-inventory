@@ -175,7 +175,8 @@ import { documentLineRowHtml, documentLinesHead, itemOptionsHtml, warehouseOptio
             }
           : {
               item_id: line.item_id,
-              qty: parseQty(line.qty, true) || "0",
+              // 草稿里存的就是十进制文本，这里只做合法性校验。
+              qty: parseQty(line.qty, true) === null ? "0" : String(line.qty).trim(),
               price_cents: Math.round(Number(line.price || 0) * 100),
               tax_rate_bp: Math.round(Number(line.tax_rate || 0) * 100),
               price_includes_tax: Boolean(line.tax_included),
@@ -214,10 +215,9 @@ import { documentLineRowHtml, documentLinesHead, itemOptionsHtml, warehouseOptio
         });
         continue;
       }
-      const qty = parseQty(
-        row.querySelector('[data-role="qty"]').value,
-        ctx.docType === "STK_CNT"
-      );
+      // 接口数量是十进制字符串；parseQty 只用于校验（它返回 ×10000 的定点整数）。
+      const qtyInput = row.querySelector('[data-role="qty"]').value.trim();
+      const qty = parseQty(qtyInput, ctx.docType === "STK_CNT");
       const price = Math.round(Number(row.querySelector('[data-role="price"]').value || 0) * 100);
       const rateBp = Math.round(
         Number(row.querySelector('[data-role="tax-rate"]').value || 0) * 100
@@ -228,7 +228,7 @@ import { documentLineRowHtml, documentLinesHead, itemOptionsHtml, warehouseOptio
       }
       lines.push({
         item_id: itemId,
-        qty,
+        qty: qtyInput,
         price_cents: price,
         tax_rate_bp: rateBp,
         price_includes_tax: row.querySelector('[data-role="tax-included"]').checked,
