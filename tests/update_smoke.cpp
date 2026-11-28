@@ -463,6 +463,26 @@ int main() {
   check(win_manifest.url.find("win64-setup.exe") != std::string::npos,
         "v2 Windows 优先取 setup");
 
+  // 绿色版包偏好（原 apply_update_smoke 迁移）：prefer_portable 选 zip、缺省回落 setup。
+  xiaotu::UpdateManifest win_portable;
+  check(xiaotu::parse_manifest(v2_base_manifest(), "windows", win_portable, error, true) &&
+            win_portable.url.find("portable.zip") != std::string::npos,
+        "prefer_portable（绿色版）优先 portable");
+  auto win_no_portable = v2_base_manifest();
+  win_no_portable["platforms"]["windows"]["artifacts"].erase("portable");
+  check(xiaotu::parse_manifest(win_no_portable, "windows", win_portable, error, true) &&
+            win_portable.url.find("win64-setup.exe") != std::string::npos,
+        "缺 portable 回落 setup");
+  auto win_no_setup = v2_base_manifest();
+  win_no_setup["platforms"]["windows"]["artifacts"].erase("setup");
+  check(xiaotu::parse_manifest(win_no_setup, "windows", win_portable, error, false) &&
+            win_portable.url.find("portable.zip") != std::string::npos,
+        "缺 setup 选 portable");
+  auto win_no_artifacts = v2_base_manifest();
+  win_no_artifacts["platforms"]["windows"]["artifacts"] = nlohmann::json::object();
+  check(!xiaotu::parse_manifest(win_no_artifacts, "windows", win_portable, error),
+        "setup 与 portable 都缺应拒绝");
+
   xiaotu::UpdateManifest first_manifest;
   check(xiaotu::parse_manifest(v2_base_manifest(), first_manifest, error) &&
             first_manifest.platform == "macos",
