@@ -3,6 +3,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <WebKit/WebKit.h>
 
+#include <cstdlib>
 #include <string>
 
 #include "print_paper.h"
@@ -433,23 +434,9 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
     [self callUpdateCallback:@"xiaotuUpdateStatusDone" payload:[[XiaotuUpdater shared] status]];
     return;
   }
-  if ([message.name isEqualToString:@"xiaotuUpdateSkip"]) {
-    [[XiaotuUpdater shared] skipVersion:body[@"version"]
-                                   days:body[@"days"]
-                             completion:^(NSDictionary* result) {
-                               [self callUpdateCallback:@"xiaotuUpdateSkipDone" payload:result];
-                             }];
-    return;
-  }
   if ([message.name isEqualToString:@"xiaotuUpdateInstall"]) {
     [[XiaotuUpdater shared] installUpdateWithCompletion:^(NSDictionary* result) {
       [self callUpdateCallback:@"xiaotuUpdateInstallDone" payload:result];
-    }];
-    return;
-  }
-  if ([message.name isEqualToString:@"xiaotuUpdateResume"]) {
-    [[XiaotuUpdater shared] resumeWithCompletion:^(NSDictionary* result) {
-      [self callUpdateCallback:@"xiaotuUpdateResumeDone" payload:result];
     }];
     return;
   }
@@ -458,30 +445,6 @@ static BOOL XiaotuApplyPaper(NSPrintInfo* info, NSDictionary* paper, NSString** 
                             completion:^(NSDictionary* result) {
                               [self callUpdateCallback:@"xiaotuUpdateOptionsDone" payload:result];
                             }];
-    return;
-  }
-  if ([message.name isEqualToString:@"xiaotuUpdateDownload"]) {
-    [[XiaotuUpdater shared] downloadUpdateWithCompletion:^(NSDictionary* result) {
-      [self callUpdateCallback:@"xiaotuUpdateDownloadDone" payload:result];
-    }];
-    return;
-  }
-  if ([message.name isEqualToString:@"xiaotuUpdateCancelPrefetch"]) {
-    [[XiaotuUpdater shared] cancelPrefetchWithCompletion:^(NSDictionary* result) {
-      [self callUpdateCallback:@"xiaotuUpdateCancelDone" payload:result];
-    }];
-    return;
-  }
-  if ([message.name isEqualToString:@"xiaotuUpdateRollback"]) {
-    [[XiaotuUpdater shared] rollbackUpdateWithCompletion:^(NSDictionary* result) {
-      [self callUpdateCallback:@"xiaotuUpdateRollbackDone" payload:result];
-    }];
-    return;
-  }
-  if ([message.name isEqualToString:@"xiaotuUpdateOpenBackupFolder"]) {
-    [[XiaotuUpdater shared] openBackupFolderWithCompletion:^(NSDictionary* result) {
-      [self callUpdateCallback:@"xiaotuUpdateOpenBackupFolderDone" payload:result];
-    }];
     return;
   }
 }
@@ -728,14 +691,8 @@ void EnsureShellWindow(const std::string& title) {
   [controller addScriptMessageHandler:script_handler name:@"xiaotuPrintPdf"];
   [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateCheckNow"];
   [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateStatus"];
-  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateSkip"];
   [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateInstall"];
-  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateResume"];
   [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateOptions"];
-  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateDownload"];
-  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateCancelPrefetch"];
-  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateRollback"];
-  [controller addScriptMessageHandler:script_handler name:@"xiaotuUpdateOpenBackupFolder"];
   static XiaotuKeychainHandler* g_keychainHandler = nil;
   if (g_keychainHandler == nil) {
     g_keychainHandler = [[XiaotuKeychainHandler alloc] init];
@@ -793,10 +750,14 @@ int run_webview(const std::string& url, const std::string& title) {
     NSURL* nsurl = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
     [g_shell_webview loadRequest:[NSURLRequest requestWithURL:nsurl]];
     NSLog(@"[xiaotu] 启动打点 开始加载页面");
-    // 更新预检查：清单地址与通道来自 Info.plist；health 只用于读取本地 schema。
-    [[XiaotuUpdater shared] noteLaunch];
+    // 更新预检查：清单地址与通道来自 Info.plist；health 只用于 min_supported 握手。
+    // XIAOTU_UPDATE_URL 环境变量覆盖清单地址（本地端到端测试用，与 win 壳同款）。
     NSString* manifest_url =
         [[NSBundle mainBundle] objectForInfoDictionaryKey:@"XiaotuUpdateManifestURL"];
+    const char* update_url_env = getenv("XIAOTU_UPDATE_URL");
+    if (update_url_env != nullptr && *update_url_env) {
+      manifest_url = [NSString stringWithUTF8String:update_url_env];
+    }
     NSString* update_channel =
         [[NSBundle mainBundle] objectForInfoDictionaryKey:@"XiaotuUpdateChannel"];
     NSString* health_base = nil;
