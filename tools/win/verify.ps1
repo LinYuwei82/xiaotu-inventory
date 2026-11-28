@@ -114,13 +114,17 @@ function Get-HttpResult([string]$Method, [string]$Url, $Body, $WebSession) {
     }
 }
 
-function Wait-Server([string]$OutFile, [int]$Seconds) {
+function Wait-Server([string]$OutFile, [string]$ErrFile, [int]$Seconds) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     while ((Get-Date) -lt $deadline) {
         if (Test-Path $OutFile) {
             # 服务端输出是 UTF-8（无 BOM）。PowerShell 5.1 的 Get-Content 默认按 ANSI
             # 代码页（936）读，中文会变乱码，"服务地址:" 永远匹配不上，必须显式指定 UTF8。
+            # 一次性 bootstrap token 故意只写 stderr（避免落进普通日志），必须一起读。
             $text = Get-Content -Raw $OutFile -Encoding UTF8 -ErrorAction SilentlyContinue
+            if ($ErrFile -and (Test-Path $ErrFile)) {
+                $text += "`n" + (Get-Content -Raw $ErrFile -Encoding UTF8 -ErrorAction SilentlyContinue)
+            }
             if ($text -match "服务地址:\s*(http://127\.0\.0\.1:(\d+))") {
                 $port = [int]$Matches[2]
                 $token = ""
@@ -156,6 +160,11 @@ if ((Test-Path $DataDir) -and (Test-Path (Join-Path $DataDir "app.db")) -and -no
     Stop-Transcript | Out-Null
     exit 2
 }
+# 数据目录不存在时先建空目录：后续“数据目录位置”和“app.db 落在 -DataDir”都依赖它存在。
+if (-not (Test-Path $DataDir)) {
+    New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+}
+
 if ((Test-Path (Join-Path $DataDir "app.db")) -and $AllowExistingData) {
     $backup = Join-Path $LogDir "data-backup"
     New-Item -ItemType Directory -Force -Path $backup | Out-Null
@@ -326,6 +335,10 @@ if ($SkipInstall) {
         Read-Host | Out-Null
     }
 
+    # Inno 在已安装/静默覆盖场景会拉起新壳（RestartAfterSilent）；Start-Process -Wait 会等整棵
+    # 进程树，验收会卡在安装步骤。该变量让安装器只装不启动，启动交给第 7 步的受控服务端。
+    $env:XIAOTU_APPLY_HELPER = "1"
+
     # ---------- 5. 静默安装 ----------
     Invoke-Check "静默安装" {
         $log = Join-Path $LogDir "install.log"
@@ -376,7 +389,7 @@ if ($SkipInstall) {
         $err = Join-Path $LogDir "server-stderr.log"
         $script:ServerProc = Start-Process -FilePath $serverExe -ArgumentList @("--data", "`"$DataDir`"") `
             -RedirectStandardOutput $out -RedirectStandardError $err -PassThru
-        $info = Wait-Server $out 20
+        $info = Wait-Server $out (Join-Path $LogDir "server-stderr.log") 20
         if (-not $info) { throw "20 秒内未读到服务地址，见 $out" }
         $login = Get-HttpResult "POST" ($info.Base + "/api/session") ('{"token":"' + $info.Token + '"}') $script:WebSession
         if ($login.Status -ne 200) { throw "单机 token 换会话失败: HTTP $($login.Status) $($login.Body)" }
@@ -449,8 +462,9 @@ if ($SkipInstall) {
 
     # ---------- 10. 卸载 ----------
     Invoke-Check "静默卸载" {
-        $unins = Join-Path $installDir "unins000.exe"
-        if (-not (Test-Path $unins)) { throw "未找到卸载器 $unins" }
+        $unins = (Get-ChildItem -Path $installDir -Filter "unins*.exe" -ErrorAction SilentlyContinue |
+            Sort-Object Name | Select-Object -First 1).FullName
+        if (-not $unins) { throw "未找到卸载器（$installDir\unins*.exe）" }
         $p = Start-Process -FilePath $unins -ArgumentList @(
             "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
         ) -Wait -PassThru
