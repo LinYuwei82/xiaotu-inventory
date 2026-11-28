@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """更新清单与 appcast 生成/签名/校验工具。
 
-只依赖 cryptography（Ed25519）。清单签名输入遵循 docs/更新模块技术方案.md：
+只依赖 cryptography（Ed25519）。清单签名输入遵循 docs/进销存技术方案.md §6.8：
 去掉 signature 字段后按键排序、无空白、UTF-8 编码，再做 Ed25519 签名。
 
 用法：
