@@ -124,11 +124,6 @@ bool rollout_allows(int percent, int bucket);
 
 // ---- 原生桥接层复用的小判定（纯函数，便于 ctest 覆盖） ----
 
-// 手动检查冷却：返回距下次可检查的秒数；<= 0 表示当前可检查。
-// last_manual_epoch 为 0（从未手动检查）时直接放行。
-std::int64_t manual_check_retry_after(std::int64_t last_manual_epoch, std::int64_t now_epoch,
-                                      std::int64_t cooldown_seconds);
-
 // 跳过天数合法范围：1–30 的整数。
 bool valid_skip_days(int days);
 

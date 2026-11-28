@@ -304,13 +304,6 @@ int main() {
   check(!xiaotu::evaluate_manifest(staged, staged_query, 0).update_available,
         "未命中灰度桶不下发");
 
-  // 手动检查冷却：函数按参数校验（壳侧口径现为 1 分钟）。
-  check(xiaotu::manual_check_retry_after(0, 5000, 600) == 0, "从未手动检查时可立即检查");
-  check(xiaotu::manual_check_retry_after(1000, 1000, 600) == 600, "刚检查完剩余完整冷却");
-  check(xiaotu::manual_check_retry_after(1000, 1300, 600) == 300, "冷却中返回剩余秒数");
-  check(xiaotu::manual_check_retry_after(1000, 1600, 600) == 0, "冷却到期后放行");
-  check(xiaotu::manual_check_retry_after(2000, 1000, 600) == 0, "时钟回拨时不阻塞");
-
   // 跳过天数范围：1–30 的整数。
   check(xiaotu::valid_skip_days(1) && xiaotu::valid_skip_days(30), "1 与 30 天应合法");
   check(!xiaotu::valid_skip_days(0) && !xiaotu::valid_skip_days(31) &&

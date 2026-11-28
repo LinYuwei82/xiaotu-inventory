@@ -20,7 +20,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 // 以下桥方法结果字典见 docs/前端交接-更新模块.md；completion 主线程回调。
 
-// 立即检查一次（绕过 24h 定时，遵守跳过）；冷却期内返回 COOLDOWN。
+// 立即检查一次（绕过 24h 定时，遵守跳过）；手动检查不设冷却。
 - (void)checkNowWithCompletion:(void (^)(NSDictionary<NSString*, id>* result))completion;
 
 // 轻量握手：读取服务端 /api/health 的 min_supported_version 并与当前壳版本比较。

@@ -120,8 +120,6 @@ struct EngineConfig {
   // 本机版本；留空/非正时回落到二进制编译值（current_product_version / current_build_number）。
   std::string current_version;
   std::int64_t current_build = 0;
-  // 手动检查冷却（秒），走 manual_check_retry_after。
-  std::int64_t manual_cooldown_seconds = 300;
   // 自动检查间隔（秒）；检查成功后 next_check_epoch = now + 该值。
   std::int64_t auto_check_interval_seconds = 6 * 3600;
   // 检查成功后 next_check_epoch 的 ±抖动（秒）；0 表示不抖动。

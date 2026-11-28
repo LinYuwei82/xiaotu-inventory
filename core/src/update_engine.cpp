@@ -70,7 +70,6 @@ struct UpdateEngine::Persisted {
   std::string last_error;
   std::int64_t last_check_epoch = 0;
   std::int64_t next_check_epoch = 0;
-  std::int64_t last_manual_check_epoch = 0;
   int consecutive_failures = 0;
   std::string install_id;
   std::string channel;
@@ -195,11 +194,10 @@ std::string UpdateEngine::build_status_json_locked() const {
   j["bytes_done"] = st_->bytes_done;
   j["pending_path"] = st_->pending_path;
   j["pending_size"] = st_->pending_size;
-  // retry_after：手动冷却与失败退避取较大者，前端据此禁用按钮。
-  std::int64_t retry = manual_check_retry_after(st_->last_manual_check_epoch, t,
-                                                cfg_.manual_cooldown_seconds);
+  // retry_after：仅失败退避（手动冷却已移除），前端据此提示稍后重试。
+  std::int64_t retry = 0;
   if (st_->consecutive_failures > 0) {
-    retry = std::max(retry, st_->next_check_epoch - t);
+    retry = st_->next_check_epoch - t;
   }
   j["retry_after"] = retry > 0 ? retry : 0;
   j["last_error"] = st_->last_error;
@@ -217,7 +215,6 @@ std::string UpdateEngine::build_status_json_locked() const {
   j["skip_until_epoch"] = st_->skip_until_epoch;
   j["manifest_sha256"] = st_->manifest_sha256;
   j["manifest_setup_url"] = st_->manifest_setup_url;
-  j["last_manual_check_epoch"] = st_->last_manual_check_epoch;
   j["enabled"] = cfg_.enabled;
   j["auto_check"] = cfg_.auto_check;
   j["prefetch"] = cfg_.prefetch;
@@ -319,7 +316,6 @@ void UpdateEngine::load() {
       get_str(j, "last_error", st_->last_error);
       get_i64(j, "last_check_epoch", st_->last_check_epoch);
       get_i64(j, "next_check_epoch", st_->next_check_epoch);
-      get_i64(j, "last_manual_check_epoch", st_->last_manual_check_epoch);
       get_int(j, "consecutive_failures", st_->consecutive_failures);
       // 落盘的 install_id 优先（灰度分桶必须跨重启稳定）。
       std::string persisted_id;
@@ -386,16 +382,7 @@ bool UpdateEngine::check(bool manual) {
     if (st_->state == UpdateState::kDownloading || st_->state == UpdateState::kInstalling) {
       return false;  // 忙：下载/安装期间不重入
     }
-    if (manual) {
-      const std::int64_t remain = manual_check_retry_after(
-          st_->last_manual_check_epoch, t, cfg_.manual_cooldown_seconds);
-      if (remain > 0) {
-        st_->last_result = "COOLDOWN";
-        persist_locked();
-        return false;
-      }
-      st_->last_manual_check_epoch = t;
-    } else if (t < st_->next_check_epoch) {
+    if (!manual && t < st_->next_check_epoch) {
       // 自动检查：间隔与失败退避都收敛到 next_check_epoch 一个门槛。
       return false;
     }

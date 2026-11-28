@@ -477,10 +477,9 @@ UpdaterWin::UpdaterWin() : impl_(std::make_unique<Impl>()) {
   // install_id 只用于灰度分桶：先给一个随机值，load() 读到落盘 id 会覆盖，
   // 首次运行生成的这个随引擎首次 persist 固定下来。
   cfg.install_id = generateUuid();
-  // 旧壳行为对齐（§5.2）：checkNow 无手动冷却；自动间隔 24h 兜底，
-  // 实际节奏由本壳 autoCheckLoop 的 24h±2h 抖动 / 失败退避控制；
+  // 旧壳行为对齐（§5.2）：checkNow 无手动冷却（引擎已移除该机制）；
+  // 自动间隔 24h 兜底，实际节奏由本壳 autoCheckLoop 的 24h±2h 抖动 / 失败退避控制；
   // 旧 v2 路径不查 min_os，保持行为不变。
-  cfg.manual_cooldown_seconds = 0;
   cfg.auto_check_interval_seconds = 86400;
   cfg.ignore_min_os = true;
   cfg.download_dir = fs::path(downloadDir());

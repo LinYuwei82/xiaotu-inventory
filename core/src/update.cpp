@@ -610,15 +610,6 @@ bool rollout_allows(int percent, int bucket) {
   return bucket >= 0 && bucket < std::clamp(percent, 0, 100);
 }
 
-std::int64_t manual_check_retry_after(std::int64_t last_manual_epoch, std::int64_t now_epoch,
-                                      std::int64_t cooldown_seconds) {
-  if (last_manual_epoch <= 0 || cooldown_seconds <= 0 || now_epoch < last_manual_epoch) {
-    return 0;
-  }
-  const std::int64_t remaining = last_manual_epoch + cooldown_seconds - now_epoch;
-  return remaining > 0 ? remaining : 0;
-}
-
 bool valid_skip_days(int days) {
   return days >= 1 && days <= 30;
 }

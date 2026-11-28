@@ -186,7 +186,6 @@ struct Harness {
     cfg.install_id = "install-id-fixed";
     cfg.current_version = "1.4.2";
     cfg.current_build = 100;
-    cfg.manual_cooldown_seconds = 300;
     cfg.auto_check_interval_seconds = 3600;
     cfg.download_dir = dir / "dl";
     cfg.os_version = "11.0";
@@ -362,21 +361,15 @@ void test_rule4_progress_persisted() {
   check(s["pending_size"] == kPayloadSize, "rule4: 重启后 pending_size 还在");
 }
 
-// 手动冷却 + 失败退避（规则 5：全部走注入时钟）。
-void test_cooldown_and_backoff() {
+// 手动检查无冷却 + 失败退避（规则 5：全部走注入时钟）。
+void test_backoff_and_manual_check() {
   Harness h;
-  check(h.engine->check(true), "cooldown: 首次手动检查放行");
-  check(h.transport.fetch_count == 1, "cooldown: 拉了一次清单");
+  check(h.engine->check(true), "manual: 首次手动检查放行");
+  check(h.transport.fetch_count == 1, "manual: 拉了一次清单");
 
   h.clock.epoch += 10;
-  check(!h.engine->check(true), "cooldown: 冷却期内手动检查被挡");
-  check(h.transport.fetch_count == 1, "cooldown: 被挡时不拉网络");
-  check(h.status()["retry_after"] > 0, "cooldown: retry_after 非零");
-  check(h.status()["last_result"] == "COOLDOWN", "cooldown: last_result=COOLDOWN");
-
-  h.clock.epoch += 300;
-  check(h.engine->check(true), "cooldown: 冷却结束放行");
-  check(h.transport.fetch_count == 2, "cooldown: 第二次真正拉清单");
+  check(h.engine->check(true), "manual: 冷却已移除，连续手动检查放行");
+  check(h.transport.fetch_count == 2, "manual: 第二次真正拉清单");
 
   // 失败退避：1→60s，2→600s，3→3600s（check_retry_delay 口径）。
   h.transport.fetch_ok = false;
@@ -602,7 +595,7 @@ void test_status_json_field_snapshot() {
       "auto_check",              "bytes_done",            "bytes_total",
       "build",                   "channel",               "consecutive_failures",
       "enabled",                 "install_id",            "last_check_epoch",
-      "last_error",              "last_manual_check_epoch", "last_result",
+      "last_error",              "last_result",
       "manifest_setup_url",      "manifest_sha256",       "manifest_build",
       "manifest_size",           "manifest_version",      "mandatory",
       "mandatory_deadline",      "mandatory_reason",      "next_check_epoch",
@@ -637,7 +630,7 @@ int main() {
   test_rule2_verify_before_install();
   test_rule3_partial_cleanup();
   test_rule4_progress_persisted();
-  test_cooldown_and_backoff();
+  test_backoff_and_manual_check();
   test_stale_pending_cleared_on_load();
   test_crash_recovery();
   test_skip_flow();

@@ -357,7 +357,6 @@ std::int64_t ji64(const nlohmann::json& j, const char* key) {
     cfg.platform = "macos";
     cfg.channel = "stable";
     cfg.install_id = installation_id().UTF8String ?: "";
-    cfg.manual_cooldown_seconds = 60;
     cfg.auto_check_interval_seconds = 86400;
     cfg.auto_check_jitter_seconds = 7200;
     cfg.first_check_delay_seconds = 30;
@@ -528,16 +527,6 @@ std::int64_t ji64(const nlohmann::json& j, const char* key) {
     const bool judged = _engine->check(true);
     nlohmann::json s = [self engineStatus];
     const bool hasPending = !jstr(s, "version").empty();
-    if (!judged && jstr(s, "last_result") == "COOLDOWN") {
-      respond(@{
-        @"ok" : @NO,
-        @"code" : @"COOLDOWN",
-        @"retry_after" : @(ji64(s, "retry_after")),
-        @"update_available" : @NO,
-        @"status" : [self status],
-      });
-      return;
-    }
     [self armTimerOnQueue];
     respond(@{
       @"ok" : @(judged),

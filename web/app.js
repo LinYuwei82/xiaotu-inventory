@@ -7090,6 +7090,7 @@
     ) {
       return "CHECK_FAILED";
     }
+    // 手动冷却已移除；此映射仅为兼容旧壳落盘的 last_result=COOLDOWN。
     if (raw === "COOLDOWN") return hasPending ? "UPDATE_AVAILABLE" : "NO_UPDATE";
     return raw;  // NO_UPDATE / UPDATE_AVAILABLE / SKIPPED / NOT_IN_ROLLOUT /
                  // OS_UNSUPPORTED / INCOMPATIBLE_* / CHECK_FAILED 等同名透传
@@ -7630,10 +7631,7 @@
     window.xiaotuUpdateCheckDone = (payload) => {
       const status = normalizeUpdateStatus((payload && payload.status) || {}, statusPlatform);
       render(status);
-      if (payload && payload.code === "COOLDOWN") {
-        // 不显示具体秒数：只提示稍后再试，避免用户盯着倒计时。
-        showNotice("检查过于频繁，请稍后再试", "error");
-      } else if (payload && payload.update_available) {
+      if (payload && payload.update_available) {
         showNotice("发现新版本，可点「安装更新」完成替换", "ok");
       } else if (payload && payload.ok === false) {
         showNotice(resultText(status), "error");
