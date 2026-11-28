@@ -181,11 +181,21 @@ elif [ -x "/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helper
   JSC_BIN="/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc"
 fi
 if [ -z "$JSC_BIN" ]; then
-  echo "    跳过：未找到 jsc，web/app.js 未做语法机检（Linux CI 预期如此）" >&2
+  echo "    跳过：未找到 jsc，前端脚本未做语法机检（Linux CI 预期如此）" >&2
 else
-  if ! "$JSC_BIN" -e "try { new Function(readFile('$ROOT/web/app.js')); print('    web/app.js 语法通过'); } catch (e) { print('web/app.js 语法错误: ' + e); quit(1); }"; then
+  # jsc 没有目录列举能力，文件列表由 shell 注入后与检查脚本拼成临时脚本。
+  SYNTAX_JS="$(mktemp "${TMPDIR:-/tmp}/xiaotu-web-syntax.XXXXXX.js")"
+  {
+    printf 'const FILES = ['
+    printf '%s\n' web/app.js web/app/*.js | sed 's/.*/"&",/'
+    printf '];\n'
+    cat "$ROOT/tools/ci/web_syntax_check.js"
+  } > "$SYNTAX_JS"
+  if ! "$JSC_BIN" "$SYNTAX_JS"; then
+    rm -f "$SYNTAX_JS"
     exit 1
   fi
+  rm -f "$SYNTAX_JS"
   if ! "$JSC_BIN" "$ROOT/tools/ci/qty_text_check.js"; then
     exit 1
   fi

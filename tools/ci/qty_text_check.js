@@ -1,9 +1,9 @@
-// 数量显示契约断言：直接抽取 web/app.js 里的 qtyText 源码执行，避免测一份副本。
+// 数量显示契约断言：直接抽取 web/app/core_format.js 里的 qtyText 源码执行，避免测一份副本。
 // 服务端返回的 qty 已经是十进制字符串（"20"、"10.5"）；本地计算值才是 ×10000 定点整数。
-const source = readFile("web/app.js");
+const source = readFile("web/app/core_format.js");
 const marker = "function qtyText(value)";
 const start = source.indexOf(marker);
-if (start < 0) throw new Error("web/app.js 中找不到 qtyText");
+if (start < 0) throw new Error("web/app/core_format.js 中找不到 qtyText");
 
 let depth = 0;
 let end = -1;
