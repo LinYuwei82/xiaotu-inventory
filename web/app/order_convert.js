@@ -37,7 +37,9 @@ import { orderConvertLinesHtml } from "./order_view.js";
     for (const row of ctx.convertLines.querySelectorAll("tbody tr")) {
       const input = row.querySelector('[data-role="convert-qty"]');
       if (input.disabled) continue;
-      const qty = parseQty(input.value.trim(), true);
+      // 接口数量是十进制字符串；parseQty 只用于校验与判断是否为 0。
+      const qtyInput = input.value.trim();
+      const qty = parseQty(qtyInput, true);
       if (qty === null) {
         showNotice("数量格式不正确，最多 4 位小数", "error");
         return;
@@ -49,7 +51,7 @@ import { orderConvertLinesHtml } from "./order_view.js";
         showNotice("单价必须是不小于 0 的数字", "error");
         return;
       }
-      const entry = { order_line_id: Number(row.dataset.lineId), qty };
+      const entry = { order_line_id: Number(row.dataset.lineId), qty: qtyInput };
       // 价格未改动时不传，交给后端沿用订单价。
       if (priceCents !== Number(row.dataset.priceCents)) entry.price_cents = priceCents;
       lines.push(entry);
