@@ -1,22 +1,24 @@
 /* app/report.js：经营报表页（筛选、查询编排与事件绑定）。
- * 页面骨架与表格渲染在 report_tables.js，导出 / 打印绑定在 report_actions.js。
+ * 页面骨架与表格渲染在 report_tables*.js，导出 / 打印绑定在 report_actions.js。
  */
 import { api, editionAllows, escapeHtml, itemOptionText } from "./core.js";
 import { wireReportDownloads, wireReportPrints } from "./report_actions.js";
+import { reportPageHtml } from "./report_tables.js";
 import {
-  agingTableHtml,
   balancesTableHtml,
-  fundBalancesTableHtml,
-  fundLedgerTableHtml,
   goodsFlowTableHtml,
   inventorySummaryTableHtml,
   ledgerTableHtml,
   otherFlowTableHtml,
   profitTableHtml,
+} from "./report_tables_stock.js";
+import {
+  agingTableHtml,
+  fundBalancesTableHtml,
+  fundLedgerTableHtml,
   purchaseDetailTableHtml,
   purchaseSummaryTableHtml,
-  reportPageHtml,
-} from "./report_tables.js";
+} from "./report_tables_trade.js";
 
 export async function reportPage(mount) {
   const today = new Date().toISOString().slice(0, 10);
