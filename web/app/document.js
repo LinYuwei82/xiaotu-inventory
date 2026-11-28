@@ -2,7 +2,7 @@
  * 由原 web/app.js 按职责拆出，供本模块与入口共同加载。
  */
 import { api, askConfirm, can, clearDraft, downloadCsv, downloadXlsx, escapeHtml, itemOptionText, money, newRequestId, parseQty, qtyAmountCents, qtyAmountText, qtyText, readDraft, setUnsavedGuard, showNotice, startDraftTimer, taxForAmount, writeDraft } from "./core.js";
-import { documentEditLinesHead, documentLineRowHtml, documentLinesHead, documentListColumns, documentPageHtml } from "./document_view.js";
+import { documentLineRowHtml, documentLinesHead, documentListColumns, documentPageHtml } from "./document_view.js";
 import { createDocumentList } from "./documents.js";
 import { exportPdfTarget, printTarget } from "./print.js";
 
@@ -514,7 +514,7 @@ import { exportPdfTarget, printTarget } from "./print.js";
         if (otherDoc) bizCategorySelect.value = detail.biz_category || "OTHER";
         if (salesDoc) salespersonSelect.value = String(detail.salesperson_id || 0);
         remarkInput.value = detail.remark || "";
-        linesTable.innerHTML = documentEditLinesHead(costAdjust);
+        linesTable.innerHTML = documentLinesHead(costAdjust);
         for (const line of detail.lines) addLine(line);
         dirty = false;
         mount.querySelector('[data-role="cancel-edit"]').hidden = false;

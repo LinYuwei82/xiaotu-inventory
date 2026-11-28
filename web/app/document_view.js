@@ -78,18 +78,11 @@ import { bizCategoryText, can, escapeHtml, money, qtyText } from "./core.js";
       <div class="card" data-role="doc-list"></div>`;
   }
 
-  // 新建/恢复草稿时的明细表头：成本调整只有调整金额与原因，其余单据带数量与税额列。
+  // 明细表头：成本调整只有调整金额与原因，其余单据带数量与税额列。
   export function documentLinesHead(costAdjust) {
     return costAdjust
       ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
       : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（录入价）</th><th>税率（%）</th><th>含税</th><th>税额（元）</th><th>价税合计（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
-  }
-
-  // 编辑草稿时的明细表头，沿用拆分前的精简列。
-  export function documentEditLinesHead(costAdjust) {
-    return costAdjust
-      ? `<thead><tr><th>商品</th><th>仓库</th><th>调整金额（元）</th><th>调整原因</th><th class="actions">操作</th></tr></thead><tbody></tbody>`
-      : `<thead><tr><th>商品</th><th>数量</th><th>单价（元）</th><th>金额（元）</th><th class="actions">操作</th></tr></thead><tbody></tbody>`;
   }
 
   // 单条明细行：商品下拉与仓库下拉由页面提供选项渲染函数。
