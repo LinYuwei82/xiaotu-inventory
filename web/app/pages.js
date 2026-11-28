@@ -1,14 +1,18 @@
 /* app/pages.js：固定业务页配置表（菜单 key、标题、权限与页面渲染函数）。
  * 导航分组与排版仍在 system.js / shell.js。
  */
-import { auditPage, settingPage, userPage } from "./admin.js";
+import { userPage } from "./admin.js";
+import { auditPage } from "./admin_audit.js";
+import { settingPage } from "./admin_settings.js";
 import { documentPage } from "./document.js";
 import { financePage } from "./finance.js";
-import { itemCategoryPage, openingPage } from "./masterdata.js";
+import { itemCategoryPage } from "./masterdata_category.js";
+import { openingPage } from "./masterdata_opening.js";
 import { orderPage } from "./order.js";
 import { printTemplatePage } from "./print_template.js";
 import { reportPage } from "./report.js";
-import { dashboardPage, salesReportPage, statementPage } from "./salesreport.js";
+import { dashboardPage, salesReportPage } from "./salesreport.js";
+import { statementPage } from "./salesreport_statement.js";
 import { stockPage } from "./stock.js";
 import { aboutPage, restorePage } from "./system.js";
 
